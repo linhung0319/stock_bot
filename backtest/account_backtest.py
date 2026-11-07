@@ -23,7 +23,7 @@ B-5：整個帳戶的模擬 —— 分桶 + 核心當清算中心（design_v2_mo
   成本     ：每單位成交金額 5 bp（按股票代號合併後的淨額）
   「下單日」：當天合併後有任一檔淨交易超過總值 0.25%
 
-執行：uv run python backtest/account_backtest.py
+執行：uv run python backtest/account_backtest.py（B-5 之後接著跑 B-6）
 輸出：backtest/results/B5_summary.md、B5a_parking.csv、B5b_account.csv、B5b_orders_<情境>.csv
 """
 from __future__ import annotations
@@ -124,10 +124,38 @@ class Scenario:
     cross_cap: float | None = None      # 同一檔跨桶合計的目標上限
     cross_cap_hi: float = 0.15          # 跨桶合計超過這個比例才減回 cross_cap
     mom_lazy_band: float | None = 0.5   # 動能留任股偏離目標超過這個比例才拉回；None = 永不拉回（只在換股、比例改變時交易）
+    piggyback: bool = False             # True：動能比例回調只在當天本來就有其他原因的單時才做
+    # B-6 入金出金
+    deposit: float = 0.0                # 每月入金，占當時總資產的比例
+    deposit_day: int = 10               # 月報日之後第幾個交易日入金（0 = 月報那天，併入月報）
+    deposit_naive: bool = False         # True：入金全進核心（對照組：不照目標分配）
+    withdraw_date: str | None = None    # 一次出金的日期（之後第一個交易日）
+    withdraw_frac: float = 0.0          # 出金占當時總資產的比例
 
 
 # 每張單的原因。RATIO_REASONS 是「只因為比例漂移」的原因，其餘是訊號
 RATIO_REASONS = {"動能比例回調", "單檔上限", "自選桶上限", "跨桶上限"}
+
+
+def flow_schedule(sc: Scenario, days: pd.DatetimeIndex, rdays: list) -> dict:
+    """日期 -> ('入金', 金額) 或 ('出金', 比例)。離下一個月報日不到 5 個交易日的入金併進月報日。"""
+    out: dict = {}
+    if sc.deposit > 0:
+        rpos = [days.get_loc(r) for r in rdays]
+        for a, b in zip(rpos[:-1], rpos[1:]):
+            if a == 0:
+                continue  # 第一個月不入金
+            i = a + sc.deposit_day
+            if i >= b:
+                continue
+            if b - i < 5:
+                i = b
+            out[days[i]] = ("入金", sc.deposit)
+    if sc.withdraw_date and sc.withdraw_frac > 0:
+        i = days.searchsorted(pd.Timestamp(sc.withdraw_date))
+        if i < len(days):
+            out[days[i]] = ("出金", sc.withdraw_frac)
+    return out
 
 
 def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
@@ -147,7 +175,12 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
     applied = {tk: "STD" for tk in own}  # 已執行到帳上的自選狀態
     std_w = sc.own_total / len(own) if own else 0
     values, orders, events = [], [], []
-    own_w, max_w = [], []  # 每天收盤：自選桶占比、單一代號（跨桶合計，不含 SPY）最大占比
+    own_w, max_w, mom_w = [], [], []  # 每天收盤：自選桶占比、單一代號（跨桶合計，不含 SPY）最大占比、動能占比
+    flows = flow_schedule(sc, days, rdays)
+    units, n_dep, n_wd = 1.0, 0, 0  # 單位淨值：入金出金不算報酬
+
+    def own_state_target(tk, tot):
+        return std_w * tot * (0.5 if applied[tk] == "RED" else 1.0)
 
     def px_open(tk, d):
         return 1.0 if tk == "CASH" else float(O.at[d, tk])
@@ -156,11 +189,68 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
         is_r = d in rset
         first = i == 0
         act_own = bool(pending) and (is_r or not sc.own_monthly)
-        if first or is_r or act_own:
+        flow = flows.get(d) if not first else None
+        if first or is_r or act_own or flow:
             val = {k: u * px_open(k[1], d) for k, u in lots.items()}
             total = sum(val.values()) if val else 1.0
             tgt = dict(val)  # 目標金額；先等於現值
             why: dict[tuple[str, str], str] = {}  # 這一格為什麼被改
+
+            # 入金／出金（§2.1.1）：先處理，之後的規則以入金出金後的帳為準
+            if flow:
+                kind, x = flow
+                amt = x * total if kind == "入金" else -x * total
+                units += amt / (total / units)
+                new_total = total + amt
+                cells = {}  # 非核心格子的當下目標
+                for tk in own:
+                    cells[("own", tk)] = min(own_state_target(tk, new_total), sc.own_cap * new_total)
+                if held_mom and w_prev is not None:
+                    nt = new_total * (1 - sc.own_total) * sc.mom_frac * w_prev / 5
+                    for t in held_mom:
+                        o = cells.get(("own", t), tgt.get(("own", t), 0.0))
+                        cells[("mom", t)] = min(nt, max(0.0, sc.cross_cap * new_total - o)) if sc.cross_cap else nt
+                cash_frac = (1 - sc.crash_cut) if crash else 0.0
+                if kind == "入金":
+                    left = amt
+                    if not sc.deposit_naive:
+                        gaps = sorted(((c - tgt.get(k, 0.0), k) for k, c in cells.items()), reverse=True)
+                        for g, k in gaps:
+                            if left <= 0:
+                                break
+                            if g <= ORDER_MIN * new_total:  # 缺口太小不補，併進核心
+                                continue
+                            b = min(g, left)
+                            tgt[k] = tgt.get(k, 0.0) + b
+                            why[k] = kind
+                            left -= b
+                    tgt[("core", "CASH")] = tgt.get(("core", "CASH"), 0.0) + left * cash_frac
+                    tgt[("core", "SPY")] = tgt.get(("core", "SPY"), 0.0) + left * (1 - cash_frac)
+                    n_dep += 1
+                else:
+                    need = -amt
+                    c = min(need, tgt.get(("core", "CASH"), 0.0))
+                    tgt[("core", "CASH")] = tgt.get(("core", "CASH"), 0.0) - c
+                    need -= c
+                    over = sorted(((tgt.get(k, 0.0) - c_, k) for k, c_ in cells.items()), reverse=True)
+                    for e, k in over:
+                        if e <= 0 or need <= 0:
+                            break
+                        b = min(e, need)
+                        tgt[k] -= b
+                        why[k] = kind
+                        need -= b
+                    c = min(need, tgt.get(("core", "SPY"), 0.0))
+                    tgt[("core", "SPY")] = tgt.get(("core", "SPY"), 0.0) - c
+                    need -= c
+                    if need > 1e-12:  # 核心不夠：其餘格子按比例
+                        rest = {k: v for k, v in tgt.items() if k[0] != "core" and v > 0}
+                        rs = sum(rest.values())
+                        for k, v in rest.items():
+                            tgt[k] = v - need * v / rs
+                            why[k] = kind
+                    n_wd += 1
+                total = new_total
 
             # 自選桶
             if first:
@@ -197,6 +287,7 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                 own_val = sc.own_total * total
             sys_val = total - own_val
 
+            lazy_prev: dict = {}
             # 動能桶（只在換股日決定）
             if is_r and not sc.spy_only:
                 order = list(ranks[d].index)
@@ -232,6 +323,7 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                     elif changed:
                         tgt[("mom", t)], why[("mom", t)] = t_t, w_reason
                     elif sc.mom_lazy_band is not None and abs(cur - t_t) > sc.mom_lazy_band * t_t:
+                        lazy_prev[("mom", t)] = cur
                         tgt[("mom", t)], why[("mom", t)] = t_t, "動能比例回調"
                     if sc.cross_cap is not None:
                         m = tgt.get(("mom", t), 0.0)
@@ -252,6 +344,16 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
             if sc.spy_only and is_r:
                 new_crash = bool(sc.crash_rule and C["SPY"].shift(1).at[d] < spy_sma200.shift(1).at[d])
                 crash_changed, crash = new_crash != crash, new_crash
+
+            # 搭便車：當天沒有其他原因的單，就撤回動能比例回調
+            if sc.piggyback and lazy_prev and not first:
+                others = crash_changed or any(
+                    r != "動能比例回調" and abs(tgt.get(k, 0.0) - val.get(k, 0.0)) > ORDER_MIN * total
+                    for k, r in why.items())
+                if not others:
+                    for k, c0 in lazy_prev.items():
+                        tgt[k] = c0
+                        why.pop(k, None)
 
             # 核心桶 = 系統部位 − 動能
             mom_val = sum(v for k, v in tgt.items() if k[0] == "mom")
@@ -276,6 +378,10 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                     net[k[1]] = net.get(k[1], 0.0) + dv
             traded = sum(abs(x) for x in net.values())
             fee = traded * FEE
+            if flow:  # 入金出金日：短債 ETF（現金）的買賣也算一張單
+                dc = tgt.get(("core", "CASH"), 0.0) - val.get(("core", "CASH"), 0.0)
+                if abs(dc) > 1e-12:
+                    net["短債ETF"] = dc
             big = {t: x for t, x in net.items() if abs(x) > ORDER_MIN * total}
             # 原因：改到的非核心格子；核心只在崩盤規則切換時算原因（其餘是被動吸收）
             reasons = {why.get(k, "其他") for k in set(tgt) | set(val)
@@ -283,6 +389,10 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
             if crash_changed:
                 reasons.add("崩盤規則")
             reasons.discard("其他")
+            if flow:
+                reasons.add(flow[0])
+                if not big:  # 入金出金當天一定要操作
+                    big = {t: x for t, x in net.items() if abs(x) > 1e-9}
             if big and not first:
                 orders.append(dict(date=d, n_orders=len(big), reasons="、".join(sorted(reasons)),
                                    ratio_only=bool(reasons) and reasons <= RATIO_REASONS,
@@ -297,12 +407,13 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
 
         cv = {k: u * (1.0 if k[1] == "CASH" else float(C.at[d, k[1]])) for k, u in lots.items()}
         tv = sum(cv.values())
-        values.append(tv)
+        values.append(tv / units)  # 單位淨值；沒有入金出金時等於帳戶價值
         by_tk: dict[str, float] = {}
         for k, x in cv.items():
             if k[0] != "core":
                 by_tk[k[1]] = by_tk.get(k[1], 0.0) + x
         own_w.append(sum(x for k, x in cv.items() if k[0] == "own") / tv)
+        mom_w.append(sum(x for k, x in cv.items() if k[0] == "mom") / tv)
         max_w.append(max(by_tk.values(), default=0.0) / tv)
         for tk, s in sigs.items():
             a = s.get(d); a = a if isinstance(a, str) else None
@@ -317,7 +428,10 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
     n_ratio = int(od.ratio_only.sum()) if len(od) else 0
     extra = dict(純比例下單日每年=n_ratio / yrs,
                  含比例原因下單日每年=(od.reasons.str.contains("|".join(RATIO_REASONS)).sum() / yrs if len(od) else 0),
-                 自選桶平均占比=ow.mean(), 自選桶最高占比=ow.max(), 單一代號最高占比=mw.max(),
+                 自選桶平均占比=ow.mean(), 自選桶期末占比=ow.iloc[-1],
+                 動能平均占比=pd.Series(mom_w).mean(),
+                 入金出金下單日每年=(od.reasons.str.contains("入金|出金").sum() / yrs if len(od) else 0),
+                 入金次數=n_dep, 出金次數=n_wd, 自選桶最高占比=ow.max(), 單一代號最高占比=mw.max(),
                  單一代號超過15天數比例=(mw > 0.15).mean(),
                  桶上限次數每年=cnt.get("TRIM_BUCKET", 0) / yrs, 跨桶減碼次數每年=cnt.get("CROSS_TRIM", 0) / yrs,
                  跨桶限買次數每年=cnt.get("CROSS_LIMIT_BUY", 0) / yrs)
@@ -370,7 +484,7 @@ def main():
         replace(base, name="完整設計（崩盤時全換現金）", crash_cut=0.0),
         replace(base, name="完整設計（自選訊號併入月報）", own_monthly=True),
     ]
-    main_sc = replace(base, name="完整設計＋桶上限＋跨桶上限（主要方案）", own_monthly=True,
+    main_sc = replace(base, name="完整設計＋桶上限＋跨桶上限（B-5c 主要方案）", own_monthly=True,
                       own_bucket_hi=0.25, cross_cap=0.10)
     scenarios += [
         replace(base, name="月報版＋自選桶上限 25%→20%", own_monthly=True, own_bucket_hi=0.25),
@@ -401,6 +515,58 @@ def main():
     res.to_csv(OUT / "B5b_account.csv", index=False)
     write_summary(pk, res)
     print("完成，見 backtest/results/B5_summary.md")
+    run_b6(ranks, prices, runs)
+
+
+# ---------------------------------------------------------------- B-6
+
+B6_WITHDRAW = {"2000": "2008-10-15", "2013": "2021-11-15"}  # 一次出金：2008 在崩盤規則啟動中；2021-11 在高點
+
+
+def run_b6(ranks, prices, runs):
+    """B-6：搭便車的比例調整；每月定額入金、一次大額出金（design §2.1、§2.1.1）。"""
+    plain = Scenario("新主要方案，不搭便車", own_monthly=True, cross_cap=0.10)
+    main6 = replace(plain, name="新主要方案（跨桶上限＋搭便車）", piggyback=True)
+    dep = replace(main6, deposit=0.01)
+    rows = []
+    spy_c = prices.last_close["SPY"]
+    for label, own, start in runs:
+        tag = start[:4]
+        wd = B6_WITHDRAW[tag]
+        scs = [plain, main6,
+               replace(dep, name="＋每月入金 1%（月中，當天給單）"),
+               replace(dep, name="＋每月入金 1%（月報日，併入月報）", deposit_day=0),
+               replace(dep, name="＋每月入金 1%（月中，全進 VOO，對照）", deposit_naive=True),
+               replace(main6, name=f"＋一次出金 25%（{wd}）", withdraw_date=wd, withdraw_frac=0.25),
+               replace(dep, name=f"＋每月入金 1%（月中）＋一次出金 25%（{wd}）", withdraw_date=wd, withdraw_frac=0.25)]
+        for sc in scs:
+            v, orders, events, extra = simulate_account(sc, own, start, mb.END, ranks, prices)
+            st = account_stats(v, spy_c, orders)
+            st.update(extra)
+            rows.append(dict(期間=label, 情境=sc.name, **st))
+            if sc == main6:
+                orders.to_csv(OUT / f"B6_orders_{tag}.csv", index=False)
+            if sc.withdraw_date and sc.deposit == 0:
+                d0 = pd.Timestamp(sc.withdraw_date)
+                orders[pd.to_datetime(orders.date).between(d0, d0 + pd.Timedelta(days=7))].to_csv(
+                    OUT / f"B6_withdraw_orders_{tag}.csv", index=False)
+            print("B-6", label, sc.name, f"{st['年化']*100:.1f}%", flush=True)
+    res = pd.DataFrame(rows)
+    res.to_csv(OUT / "B6_account.csv", index=False)
+    L = ["# B-6 原始表格", "", "由 `backtest/account_backtest.py` 的 `run_b6` 產生。年化、Sharpe、回撤用單位淨值計算（入金出金不算報酬）。",
+         "每月入金 = 當時總資產的 1%（一年約 12%）；出金 = 當時總資產的 25%。", ""]
+    for label in res.期間.unique():
+        sub = res[res.期間 == label]
+        L += [f"## {label}", "",
+              "| 情境 | 年化 | Sharpe | 最大回撤 | 下單日/年 | 其中入金出金 | 其中純比例 | 自選桶平均 | 自選桶期末 | 動能平均 | 單一代號最高 |",
+              "|---|---|---|---|---|---|---|---|---|---|---|"]
+        for _, r in sub.iterrows():
+            L.append(f"| {r.情境} | {r.年化*100:.1f}% | {r.Sharpe:.2f} | {r.最大回撤*100:.0f}% | {r.下單日每年:.1f} | "
+                     f"{r.入金出金下單日每年:.1f} | {r.純比例下單日每年:.1f} | {r.自選桶平均占比*100:.0f}% | {r.自選桶期末占比*100:.0f}% | "
+                     f"{r.動能平均占比*100:.0f}% | {r.單一代號最高占比*100:.0f}% |")
+        L.append("")
+    (OUT / "B6_summary.md").write_text("\n".join(L), encoding="utf-8")
+    print("完成，見 backtest/results/B6_summary.md")
 
 
 def write_summary(pk: pd.DataFrame, res: pd.DataFrame):
