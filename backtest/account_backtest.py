@@ -138,7 +138,7 @@ RATIO_REASONS = {"動能比例回調", "單檔上限", "自選桶上限", "跨�
 
 
 def flow_schedule(sc: Scenario, days: pd.DatetimeIndex, rdays: list) -> dict:
-    """日期 -> ('入金', 金額) 或 ('出金', 比例)。離下一個月報日不到 5 個交易日的入金併進月報日。"""
+    """日期 -> ('入金', 比例) 或 ('出金', 比例)。入金出金一律當天處理（使用者主動操作）。"""
     out: dict = {}
     if sc.deposit > 0:
         rpos = [days.get_loc(r) for r in rdays]
@@ -148,8 +148,6 @@ def flow_schedule(sc: Scenario, days: pd.DatetimeIndex, rdays: list) -> dict:
             i = a + sc.deposit_day
             if i >= b:
                 continue
-            if b - i < 5:
-                i = b
             out[days[i]] = ("入金", sc.deposit)
     if sc.withdraw_date and sc.withdraw_frac > 0:
         i = days.searchsorted(pd.Timestamp(sc.withdraw_date))
@@ -229,10 +227,19 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                     n_dep += 1
                 else:
                     need = -amt
+                    # 出金後會超過單檔上限的自選股，同一份清單先減回（減下來的錢抵出金），免得下個月再賣一次
+                    for tk in own:
+                        k = ("own", tk)
+                        if tgt.get(k, 0.0) > sc.own_cap_hi * new_total:
+                            b = min(tgt[k] - sc.own_cap * new_total, need)
+                            tgt[k] -= b
+                            why[k] = "單檔上限"
+                            need -= b
                     c = min(need, tgt.get(("core", "CASH"), 0.0))
                     tgt[("core", "CASH")] = tgt.get(("core", "CASH"), 0.0) - c
                     need -= c
-                    over = sorted(((tgt.get(k, 0.0) - c_, k) for k, c_ in cells.items()), reverse=True)
+                    # 順序（§2.1.1）：核心現金 → 動能高於目標的部分 → VOO → 動能按比例 → 最後才是自選按比例
+                    over = sorted(((tgt.get(k, 0.0) - c_, k) for k, c_ in cells.items() if k[0] == "mom"), reverse=True)
                     for e, k in over:
                         if e <= 0 or need <= 0:
                             break
@@ -243,12 +250,16 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                     c = min(need, tgt.get(("core", "SPY"), 0.0))
                     tgt[("core", "SPY")] = tgt.get(("core", "SPY"), 0.0) - c
                     need -= c
-                    if need > 1e-12:  # 核心不夠：其餘格子按比例
-                        rest = {k: v for k, v in tgt.items() if k[0] != "core" and v > 0}
+                    for bucket in ("mom", "own"):
+                        if need <= 1e-12:
+                            break
+                        rest = {k: v for k, v in tgt.items() if k[0] == bucket and v > 0}
                         rs = sum(rest.values())
+                        c = min(need, rs)
                         for k, v in rest.items():
-                            tgt[k] = v - need * v / rs
+                            tgt[k] = v - c * v / rs
                             why[k] = kind
+                        need -= c
                     n_wd += 1
                 total = new_total
 
@@ -397,7 +408,7 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                 orders.append(dict(date=d, n_orders=len(big), reasons="、".join(sorted(reasons)),
                                    ratio_only=bool(reasons) and reasons <= RATIO_REASONS,
                                    orders="；".join(f"{'買' if x > 0 else '賣'} {t} {abs(x)/total*100:.1f}%"
-                                                   for t, x in sorted(big.items(), key=lambda z: -abs(z[1])))))
+                                                   for t, x in sorted(big.items(), key=lambda z: (-round(abs(z[1]), 12), z[0])))))
             # 手續費從核心扣
             ck = ("core", "CASH") if tgt.get(("core", "CASH"), 0) >= fee else ("core", "SPY")
             tgt[ck] = tgt.get(ck, 0.0) - fee
@@ -429,7 +440,7 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
     extra = dict(純比例下單日每年=n_ratio / yrs,
                  含比例原因下單日每年=(od.reasons.str.contains("|".join(RATIO_REASONS)).sum() / yrs if len(od) else 0),
                  自選桶平均占比=ow.mean(), 自選桶期末占比=ow.iloc[-1],
-                 動能平均占比=pd.Series(mom_w).mean(),
+                 動能平均占比=pd.Series(mom_w).mean(), 動能期末占比=mom_w[-1],
                  入金出金下單日每年=(od.reasons.str.contains("入金|出金").sum() / yrs if len(od) else 0),
                  入金次數=n_dep, 出金次數=n_wd, 自選桶最高占比=ow.max(), 單一代號最高占比=mw.max(),
                  單一代號超過15天數比例=(mw > 0.15).mean(),
@@ -535,7 +546,7 @@ def run_b6(ranks, prices, runs):
         wd = B6_WITHDRAW[tag]
         scs = [plain, main6,
                replace(dep, name="＋每月入金 1%（月中，當天給單）"),
-               replace(dep, name="＋每月入金 1%（月報日，併入月報）", deposit_day=0),
+               replace(dep, name="＋每月入金 1%（剛好在月報日，同一份清單）", deposit_day=0),
                replace(dep, name="＋每月入金 1%（月中，全進 VOO，對照）", deposit_naive=True),
                replace(main6, name=f"＋一次出金 25%（{wd}）", withdraw_date=wd, withdraw_frac=0.25),
                replace(dep, name=f"＋每月入金 1%（月中）＋一次出金 25%（{wd}）", withdraw_date=wd, withdraw_frac=0.25)]
