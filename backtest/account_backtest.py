@@ -23,7 +23,7 @@ B-5：整個帳戶的模擬 —— 分桶 + 核心當清算中心（design_v2_mo
   成本     ：每單位成交金額 5 bp（按股票代號合併後的淨額）
   「下單日」：當天合併後有任一檔淨交易超過總值 0.25%
 
-執行：uv run python backtest/account_backtest.py（B-5 之後接著跑 B-6）
+執行：uv run python backtest/account_backtest.py（依序跑 B-5、B-6、B-7）
 輸出：backtest/results/B5_summary.md、B5a_parking.csv、B5b_account.csv、B5b_orders_<情境>.csv
 """
 from __future__ import annotations
@@ -125,6 +125,7 @@ class Scenario:
     cross_cap_hi: float = 0.15          # 跨桶合計超過這個比例才減回 cross_cap
     mom_lazy_band: float | None = 0.5   # 動能留任股偏離目標超過這個比例才拉回；None = 永不拉回（只在換股、比例改變時交易）
     piggyback: bool = False             # True：動能比例回調只在當天本來就有其他原因的單時才做
+    urgent_frac: float | None = None    # B-7：own_monthly 時，單筆變動 ≥ 總資產這個比例的自選訊號隔天就執行（當天通知），其餘等月報
     # B-6 入金出金
     deposit: float = 0.0                # 每月入金，占當時總資產的比例
     deposit_day: int = 10               # 月報日之後第幾個交易日入金（0 = 月報那天，併入月報）
@@ -176,6 +177,7 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
     own_w, max_w, mom_w = [], [], []  # 每天收盤：自選桶占比、單一代號（跨桶合計，不含 SPY）最大占比、動能占比
     flows = flow_schedule(sc, days, rdays)
     units, n_dep, n_wd = 1.0, 0, 0  # 單位淨值：入金出金不算報酬
+    n_urgent = 0  # B-7：月中當天通知（緊急自選訊號）的天數
 
     def own_state_target(tk, tot):
         return std_w * tot * (0.5 if applied[tk] == "RED" else 1.0)
@@ -186,7 +188,26 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
     for i, d in enumerate(days):
         is_r = d in rset
         first = i == 0
-        act_own = bool(pending) and (is_r or not sc.own_monthly)
+        # 這一天要執行哪些自選訊號：月報日或「隨時執行」版本 → 全部；否則只執行夠大的（緊急）
+        todo: dict = {}
+        if pending and (is_r or not sc.own_monthly):
+            todo = dict(pending)
+        elif pending and sc.urgent_frac is not None:
+            v0 = {k: u * px_open(k[1], d) for k, u in lots.items()}
+            t0 = sum(v0.values())
+            for tk, act in pending.items():
+                cur = v0.get(("own", tk), 0.0)
+                if act == "REDUCE" and applied[tk] == "STD":
+                    chg = cur * 0.5
+                elif act == "READD" and applied[tk] == "RED":
+                    chg = max(0.0, std_w * t0 - cur)
+                else:
+                    chg = 0.0
+                if chg >= sc.urgent_frac * t0:
+                    todo[tk] = act
+            if todo:
+                n_urgent += 1
+        act_own = bool(todo)
         flow = flows.get(d) if not first else None
         if first or is_r or act_own or flow:
             val = {k: u * px_open(k[1], d) for k, u in lots.items()}
@@ -267,7 +288,7 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
             if first:
                 for tk in (own if not sc.spy_only else []):
                     tgt[("own", tk)] = std_w * total
-            for tk, act in (pending.items() if act_own else []):
+            for tk, act in todo.items():
                 cur = tgt.get(("own", tk), 0.0)
                 if act == "REDUCE" and applied[tk] == "STD":
                     tgt[("own", tk)] = cur * 0.5
@@ -413,8 +434,8 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
             ck = ("core", "CASH") if tgt.get(("core", "CASH"), 0) >= fee else ("core", "SPY")
             tgt[ck] = tgt.get(ck, 0.0) - fee
             lots = {k: v / px_open(k[1], d) for k, v in tgt.items() if v > 1e-12}
-            if act_own:
-                pending = {}
+            for tk in todo:
+                pending.pop(tk, None)
 
         cv = {k: u * (1.0 if k[1] == "CASH" else float(C.at[d, k[1]])) for k, u in lots.items()}
         tv = sum(cv.values())
@@ -442,7 +463,7 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                  自選桶平均占比=ow.mean(), 自選桶期末占比=ow.iloc[-1],
                  動能平均占比=pd.Series(mom_w).mean(), 動能期末占比=mom_w[-1],
                  入金出金下單日每年=(od.reasons.str.contains("入金|出金").sum() / yrs if len(od) else 0),
-                 入金次數=n_dep, 出金次數=n_wd, 自選桶最高占比=ow.max(), 單一代號最高占比=mw.max(),
+                 入金次數=n_dep, 出金次數=n_wd, 緊急通知每年=n_urgent / yrs, 自選桶最高占比=ow.max(), 單一代號最高占比=mw.max(),
                  單一代號超過15天數比例=(mw > 0.15).mean(),
                  桶上限次數每年=cnt.get("TRIM_BUCKET", 0) / yrs, 跨桶減碼次數每年=cnt.get("CROSS_TRIM", 0) / yrs,
                  跨桶限買次數每年=cnt.get("CROSS_LIMIT_BUY", 0) / yrs)
@@ -578,6 +599,48 @@ def run_b6(ranks, prices, runs):
         L.append("")
     (OUT / "B6_summary.md").write_text("\n".join(L), encoding="utf-8")
     print("完成，見 backtest/results/B6_summary.md")
+    run_b7(ranks, prices, runs)
+
+
+# ---------------------------------------------------------------- B-7
+
+def run_b7(ranks, prices, runs):
+    """B-7：依緊急程度分級通知。比例 20/30/50；自選訊號單筆變動 ≥ 門檻就隔天執行，其餘等月報。"""
+    base7 = Scenario("x", own_monthly=True, cross_cap=0.10, piggyback=True, mom_frac=0.30 / 0.80)
+    scs = [replace(base7, name="全部併入月報"),
+           replace(base7, name="緊急門檻 10%", urgent_frac=0.10),
+           replace(base7, name="緊急門檻 5%", urgent_frac=0.05),
+           replace(base7, name="緊急門檻 3%", urgent_frac=0.03),
+           replace(base7, name="緊急門檻 2%", urgent_frac=0.02),
+           replace(base7, name="全部隔天執行", own_monthly=False)]
+    rows = []
+    spy_c = prices.last_close["SPY"]
+    for label, own, start in runs:
+        for sc in scs:
+            v, orders, events, extra = simulate_account(sc, own, start, mb.END, ranks, prices)
+            st = account_stats(v, spy_c, orders)
+            st.update(extra)
+            for ev, (a, b) in EVENTS.items():
+                x = v.loc[a:b]
+                st[ev] = x.iloc[-1] / x.iloc[0] - 1 if len(x) > 1 and x.index[0] <= pd.Timestamp(a) + pd.Timedelta(days=7) else np.nan
+            rows.append(dict(期間=label, 情境=sc.name, **st))
+            if sc.urgent_frac == 0.05:
+                orders.to_csv(OUT / f"B7_orders_{start[:4]}.csv", index=False)
+            print("B-7", label, sc.name, f"{st['年化']*100:.1f}%", flush=True)
+    res = pd.DataFrame(rows)
+    res.to_csv(OUT / "B7_account.csv", index=False)
+    L = ["# B-7 原始表格", "", "由 `backtest/account_backtest.py` 的 `run_b7` 產生。比例 20/30/50，跨桶上限、搭便車。", ""]
+    for label in res.期間.unique():
+        sub = res[res.期間 == label]
+        L += [f"## {label}", "",
+              "| 情境 | 年化 | Sharpe | 最大回撤 | 下單日/年 | 月中緊急通知/年 | " + " | ".join(EVENTS) + " |",
+              "|" + "---|" * (6 + len(EVENTS))]
+        for _, r in sub.iterrows():
+            evs = " | ".join("—" if pd.isna(r[e]) else f"{r[e]*100:.0f}%" for e in EVENTS)
+            L.append(f"| {r.情境} | {r.年化*100:.1f}% | {r.Sharpe:.2f} | {r.最大回撤*100:.0f}% | {r.下單日每年:.1f} | {r.緊急通知每年:.1f} | {evs} |")
+        L.append("")
+    (OUT / "B7_summary.md").write_text("\n".join(L), encoding="utf-8")
+    print("完成，見 backtest/results/B7_summary.md")
 
 
 def write_summary(pk: pd.DataFrame, res: pd.DataFrame):
