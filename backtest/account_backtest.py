@@ -10,8 +10,12 @@ B-5：整個帳戶的模擬 —— 分桶 + 核心當清算中心（design_v2_mo
              減持：收盤距 252 日高點 ≤ -20% → 隔天開盤賣掉目前持有的一半
              加回：收盤 > 200 日均線連續 10 天、距上次切換 ≥ 15 個交易日、且不在暴跌狀態 → 隔天開盤買回到標準比重
              上限：每月檢查，單檔超過 own_cap_hi（15%）→ 減到 own_cap（10%）
+             桶上限（選用）：每月檢查，自選桶合計超過 own_bucket_hi（例如 25%）→ 按比例減回 own_total（20%）
   動能桶   ：系統部位（總值 − 自選桶）的 mom_frac（40%）；排名前 5 進場、掉出前 15 名出場、lazy；
              依波動度減碼（以 1/3 為單位）；崩盤規則啟動時再 × 0.5
+  跨桶上限 （選用）：同一檔股票自選＋動能合計。動能買進或調整時最多買到 cross_cap（10%）；
+             每月檢查，合計超過 cross_cap_hi（15%）→ 減回 cross_cap，先減動能那部分，不夠再減自選。
+             被上限擋下的動能金額留在核心，不分給其他動能股
   核心桶   ：系統部位扣掉動能後的全部。崩盤規則啟動時一半放現金；
              其他桶減下來的錢進核心（崩盤時進現金、平時進 SPY），加回的錢從核心出
   崩盤規則 ：每月換股日，SPY 前一日收盤 < 200 日均線 → 啟動
@@ -116,6 +120,14 @@ class Scenario:
     exit_rank: int = 15
     spy_only: bool = False
     own_monthly: bool = False  # True：自選訊號累積到每月換股日才執行（併入月報）
+    own_bucket_hi: float | None = None  # 自選桶合計超過這個比例 → 按比例減回 own_total
+    cross_cap: float | None = None      # 同一檔跨桶合計的目標上限
+    cross_cap_hi: float = 0.15          # 跨桶合計超過這個比例才減回 cross_cap
+    mom_lazy_band: float | None = 0.5   # 動能留任股偏離目標超過這個比例才拉回；None = 永不拉回（只在換股、比例改變時交易）
+
+
+# 每張單的原因。RATIO_REASONS 是「只因為比例漂移」的原因，其餘是訊號
+RATIO_REASONS = {"動能比例回調", "單檔上限", "自選桶上限", "跨桶上限"}
 
 
 def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
@@ -135,6 +147,7 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
     applied = {tk: "STD" for tk in own}  # 已執行到帳上的自選狀態
     std_w = sc.own_total / len(own) if own else 0
     values, orders, events = [], [], []
+    own_w, max_w = [], []  # 每天收盤：自選桶占比、單一代號（跨桶合計，不含 SPY）最大占比
 
     def px_open(tk, d):
         return 1.0 if tk == "CASH" else float(O.at[d, tk])
@@ -147,6 +160,7 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
             val = {k: u * px_open(k[1], d) for k, u in lots.items()}
             total = sum(val.values()) if val else 1.0
             tgt = dict(val)  # 目標金額；先等於現值
+            why: dict[tuple[str, str], str] = {}  # 這一格為什麼被改
 
             # 自選桶
             if first:
@@ -156,10 +170,12 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                 cur = tgt.get(("own", tk), 0.0)
                 if act == "REDUCE" and applied[tk] == "STD":
                     tgt[("own", tk)] = cur * 0.5
+                    why[("own", tk)] = "自選訊號"
                     applied[tk] = "RED"
                     events.append(dict(date=d, ticker=tk, action=act))
                 elif act == "READD" and applied[tk] == "RED":
                     tgt[("own", tk)] = max(cur, std_w * total)
+                    why[("own", tk)] = "自選訊號"
                     applied[tk] = "STD"
                     events.append(dict(date=d, ticker=tk, action=act))
             if is_r:
@@ -167,8 +183,18 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                     cur = tgt.get(("own", tk), 0.0)
                     if cur > sc.own_cap_hi * total:
                         tgt[("own", tk)] = sc.own_cap * total
+                        why[("own", tk)] = "單檔上限"
                         events.append(dict(date=d, ticker=tk, action="TRIM"))
             own_val = sum(v for k, v in tgt.items() if k[0] == "own")
+            if is_r and sc.own_bucket_hi is not None and own_val > sc.own_bucket_hi * total:
+                f = sc.own_total * total / own_val
+                before = {k[1]: v / total for k, v in tgt.items() if k[0] == "own"}
+                for k in [k for k in tgt if k[0] == "own"]:
+                    tgt[k] *= f
+                    why.setdefault(k, "自選桶上限")
+                events.append(dict(date=d, ticker="*", action="TRIM_BUCKET",
+                                   detail="；".join(f"{t} {w*100:.1f}%→{w*f*100:.1f}%" for t, w in before.items())))
+                own_val = sc.own_total * total
             sys_val = total - own_val
 
             # 動能桶（只在換股日決定）
@@ -189,11 +215,35 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                 name_t = sys_val * sc.mom_frac * eff / 5
                 for k in [k for k in tgt if k[0] == "mom" and k[1] not in names]:
                     tgt[k] = 0.0
+                    why[k] = "動能換股"
                 changed = (w_prev is None) or eff != w_prev
+                crash_flip = new_crash != crash
+                w_reason = "崩盤規則" if crash_flip else "波動度減碼"
                 for t in names:
                     cur = tgt.get(("mom", t), 0.0)
-                    if changed or t in new or abs(cur - name_t) > 0.5 * name_t:
-                        tgt[("mom", t)] = name_t
+                    own_t = tgt.get(("own", t), 0.0)
+                    t_t = name_t
+                    if sc.cross_cap is not None:
+                        t_t = min(name_t, max(0.0, sc.cross_cap * total - own_t))
+                        if t_t < name_t and (t in new or changed):
+                            events.append(dict(date=d, ticker=t, action="CROSS_LIMIT_BUY"))
+                    if t in new:
+                        tgt[("mom", t)], why[("mom", t)] = t_t, "動能換股"
+                    elif changed:
+                        tgt[("mom", t)], why[("mom", t)] = t_t, w_reason
+                    elif sc.mom_lazy_band is not None and abs(cur - t_t) > sc.mom_lazy_band * t_t:
+                        tgt[("mom", t)], why[("mom", t)] = t_t, "動能比例回調"
+                    if sc.cross_cap is not None:
+                        m = tgt.get(("mom", t), 0.0)
+                        if own_t + m > sc.cross_cap_hi * total:
+                            excess = own_t + m - sc.cross_cap * total
+                            cut = min(m, excess)
+                            tgt[("mom", t)] = m - cut
+                            why[("mom", t)] = "跨桶上限"
+                            if excess - cut > 0:
+                                tgt[("own", t)] = own_t - (excess - cut)
+                                why[("own", t)] = "跨桶上限"
+                            events.append(dict(date=d, ticker=t, action="CROSS_TRIM"))
                 held_mom, w_prev = names, eff
                 crash_changed = new_crash != crash
                 crash = new_crash
@@ -227,8 +277,15 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
             traded = sum(abs(x) for x in net.values())
             fee = traded * FEE
             big = {t: x for t, x in net.items() if abs(x) > ORDER_MIN * total}
+            # 原因：改到的非核心格子；核心只在崩盤規則切換時算原因（其餘是被動吸收）
+            reasons = {why.get(k, "其他") for k in set(tgt) | set(val)
+                       if k[0] != "core" and k[1] in big and abs(tgt.get(k, 0.0) - val.get(k, 0.0)) > ORDER_MIN * total}
+            if crash_changed:
+                reasons.add("崩盤規則")
+            reasons.discard("其他")
             if big and not first:
-                orders.append(dict(date=d, n_orders=len(big),
+                orders.append(dict(date=d, n_orders=len(big), reasons="、".join(sorted(reasons)),
+                                   ratio_only=bool(reasons) and reasons <= RATIO_REASONS,
                                    orders="；".join(f"{'買' if x > 0 else '賣'} {t} {abs(x)/total*100:.1f}%"
                                                    for t, x in sorted(big.items(), key=lambda z: -abs(z[1])))))
             # 手續費從核心扣
@@ -238,13 +295,33 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
             if act_own:
                 pending = {}
 
-        values.append(sum(u * (1.0 if k[1] == "CASH" else float(C.at[d, k[1]])) for k, u in lots.items()))
+        cv = {k: u * (1.0 if k[1] == "CASH" else float(C.at[d, k[1]])) for k, u in lots.items()}
+        tv = sum(cv.values())
+        values.append(tv)
+        by_tk: dict[str, float] = {}
+        for k, x in cv.items():
+            if k[0] != "core":
+                by_tk[k[1]] = by_tk.get(k[1], 0.0) + x
+        own_w.append(sum(x for k, x in cv.items() if k[0] == "own") / tv)
+        max_w.append(max(by_tk.values(), default=0.0) / tv)
         for tk, s in sigs.items():
             a = s.get(d); a = a if isinstance(a, str) else None
             if a:
                 pending[tk] = a
     v = pd.Series(values, index=days)
-    return v, pd.DataFrame(orders), pd.DataFrame(events)
+    ev = pd.DataFrame(events, columns=["date", "ticker", "action", "detail"])
+    yrs = (days[-1] - days[0]).days / 365.25
+    cnt = ev.action.value_counts()
+    ow, mw = pd.Series(own_w, index=days), pd.Series(max_w, index=days)
+    od = pd.DataFrame(orders)
+    n_ratio = int(od.ratio_only.sum()) if len(od) else 0
+    extra = dict(純比例下單日每年=n_ratio / yrs,
+                 含比例原因下單日每年=(od.reasons.str.contains("|".join(RATIO_REASONS)).sum() / yrs if len(od) else 0),
+                 自選桶平均占比=ow.mean(), 自選桶最高占比=ow.max(), 單一代號最高占比=mw.max(),
+                 單一代號超過15天數比例=(mw > 0.15).mean(),
+                 桶上限次數每年=cnt.get("TRIM_BUCKET", 0) / yrs, 跨桶減碼次數每年=cnt.get("CROSS_TRIM", 0) / yrs,
+                 跨桶限買次數每年=cnt.get("CROSS_LIMIT_BUY", 0) / yrs)
+    return v, pd.DataFrame(orders), ev, extra
 
 
 def account_stats(v: pd.Series, spy: pd.Series, orders: pd.DataFrame):
@@ -293,19 +370,29 @@ def main():
         replace(base, name="完整設計（崩盤時全換現金）", crash_cut=0.0),
         replace(base, name="完整設計（自選訊號併入月報）", own_monthly=True),
     ]
+    main_sc = replace(base, name="完整設計＋桶上限＋跨桶上限（主要方案）", own_monthly=True,
+                      own_bucket_hi=0.25, cross_cap=0.10)
+    scenarios += [
+        replace(base, name="月報版＋自選桶上限 25%→20%", own_monthly=True, own_bucket_hi=0.25),
+        replace(base, name="月報版＋跨桶上限 15%→10%", own_monthly=True, cross_cap=0.10),
+        main_sc,
+        replace(main_sc, name="主要方案，自選桶上限改 22%→20%", own_bucket_hi=0.22),
+        replace(main_sc, name="主要方案，跨桶上限改 12%→8%", cross_cap=0.08, cross_cap_hi=0.12),
+    ]
     runs = [("2000–2026（自選 MU/NVDA/MSFT）", ["MU", "NVDA", "MSFT"], "2000-02-01"),
             ("2013–2026（自選 MU/NVDA/MSFT/META）", own_all, "2013-06-03")]
     rows = []
     spy_c = prices.last_close["SPY"]
     for label, own, start in runs:
         for sc in scenarios:
-            v, orders, events = simulate_account(sc, own, start, mb.END, ranks, prices)
+            v, orders, events, extra = simulate_account(sc, own, start, mb.END, ranks, prices)
             st = account_stats(v, spy_c, orders)
+            st.update(extra)
             for ev, (a, b) in EVENTS.items():
                 x = v.loc[a:b]
                 st[ev] = x.iloc[-1] / x.iloc[0] - 1 if len(x) > 1 and x.index[0] <= pd.Timestamp(a) + pd.Timedelta(days=7) else np.nan
             rows.append(dict(期間=label, 情境=sc.name, **st))
-            if sc == base:
+            if sc == main_sc:
                 tag = start[:4]
                 orders.to_csv(OUT / f"B5b_orders_{tag}.csv", index=False)
                 events.to_csv(OUT / f"B5b_own_events_{tag}.csv", index=False)
@@ -331,6 +418,12 @@ def write_summary(pk: pd.DataFrame, res: pd.DataFrame):
             evs = " | ".join("—" if pd.isna(r[e]) else f"{r[e]*100:.0f}%" for e in EVENTS)
             L.append(f"| {r.情境} | {r.年化*100:.1f}% | {r.Sharpe:.2f} | {r.最大回撤*100:.0f}% | "
                      f"{r.相對SPY最大回撤*100:.0f}% | {r.下單日每年:.1f} | {r.每次平均單數:.1f} | {evs} |")
+        L += ["", f"### 上限相關：{label}", "",
+              "| 情境 | 自選桶平均 | 自選桶最高 | 單一代號最高 | 單一代號 >15% 的天數 | 桶上限次數/年 | 跨桶減碼/年 | 跨桶限買/年 |",
+              "|---|---|---|---|---|---|---|---|"]
+        for _, r in sub.iterrows():
+            L.append(f"| {r.情境} | {r.自選桶平均占比*100:.0f}% | {r.自選桶最高占比*100:.0f}% | {r.單一代號最高占比*100:.0f}% | "
+                     f"{r.單一代號超過15天數比例*100:.0f}% | {r.桶上限次數每年:.2f} | {r.跨桶減碼次數每年:.2f} | {r.跨桶限買次數每年:.2f} |")
     (OUT / "B5_summary.md").write_text("\n".join(L), encoding="utf-8")
 
 
