@@ -132,6 +132,9 @@ class Scenario:
     deposit_naive: bool = False         # True：入金全進核心（對照組：不照目標分配）
     withdraw_date: str | None = None    # 一次出金的日期（之後第一個交易日）
     withdraw_frac: float = 0.0          # 出金占當時總資產的比例
+    # B-8 依波動度減碼的遲滯
+    vol_hyst: float = 0.0               # 比例要改變時，原始比值 σ̃/σ 要超過新格子的邊界這麼多（例如 0.1）
+    vol_confirm: int = 1                # 新格子要連續幾個換股日同方向才改
 
 
 # 每張單的原因。RATIO_REASONS 是「只因為比例漂移」的原因，其餘是訊號
@@ -170,6 +173,7 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
     lots: dict[tuple[str, str], float] = {}  # (桶, 代號) -> 股數；現金代號 "CASH"，價格 1
     held_mom: list[str] = []
     w_prev, crash, vol_hist = None, False, []
+    vol_w, vol_pend, vol_path = None, 0, []  # B-8：目前的波動度比例、連續同方向的待改次數、每個換股日的比例
     pending: dict[str, str] = {}
     applied = {tk: "STD" for tk in own}  # 已執行到帳上的自選狀態
     std_w = sc.own_total / len(own) if own else 0
@@ -331,7 +335,24 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                 if sc.vol_scale:
                     sigma = mb.excess_vol(prices, names, d)
                     if len(vol_hist) >= mb.VOL_MIN_HISTORY:
-                        w = np.floor(min(1.0, np.median(vol_hist) / sigma) * 3 + 1e-9) / 3
+                        raw = min(1.0, np.median(vol_hist) / sigma)
+                        f3 = lambda x: np.floor(min(1.0, max(0.0, x)) * 3 + 1e-9) / 3
+                        cand = f3(raw)
+                        if vol_w is not None and sc.vol_hyst > 0:
+                            if cand > vol_w:
+                                cand = max(vol_w, f3(raw - sc.vol_hyst))
+                            elif cand < vol_w:
+                                cand = min(vol_w, f3(raw + sc.vol_hyst))
+                        if vol_w is None or cand == vol_w:
+                            vol_pend = 0
+                            vol_w = cand
+                        else:
+                            sign = 1 if cand > vol_w else -1
+                            vol_pend = vol_pend + sign if vol_pend * sign > 0 else sign
+                            if abs(vol_pend) >= sc.vol_confirm:
+                                vol_w, vol_pend = cand, 0
+                        w = vol_w
+                        vol_path.append(w)
                     vol_hist.append(sigma)
                 new_crash = bool(sc.crash_rule and C["SPY"].shift(1).at[d] < spy_sma200.shift(1).at[d])
                 eff = w * (sc.crash_cut if new_crash else 1.0)
@@ -467,6 +488,12 @@ def simulate_account(sc: Scenario, own: list[str], start: str, end: str,
                  單一代號超過15天數比例=(mw > 0.15).mean(),
                  桶上限次數每年=cnt.get("TRIM_BUCKET", 0) / yrs, 跨桶減碼次數每年=cnt.get("CROSS_TRIM", 0) / yrs,
                  跨桶限買次數每年=cnt.get("CROSS_LIMIT_BUY", 0) / yrs)
+    vp = np.array(vol_path)
+    dv = np.sign(np.diff(vp)) if len(vp) > 1 else np.array([])
+    ch = [(i, x) for i, x in enumerate(dv) if x != 0]
+    extra.update(波動度改變次數每年=len(ch) / yrs,
+                 波動度兩個月內反向=sum(1 for (i, a), (j, b) in zip(ch, ch[1:]) if a * b < 0 and j - i <= 2),
+                 波動度平均比例=vp.mean() if len(vp) else 1.0)
     return v, pd.DataFrame(orders), ev, extra
 
 
@@ -643,6 +670,51 @@ def run_b7(ranks, prices, runs):
     print("完成，見 backtest/results/B7_summary.md")
 
 
+# ---------------------------------------------------------------- B-8
+
+def run_b8(ranks, prices, runs):
+    """B-8：依波動度減碼加遲滯，減少「這個月買、下個月賣」的翻轉。主要方案 = B-7 緊急門檻 5%。"""
+    base8 = Scenario("x", own_monthly=True, cross_cap=0.10, piggyback=True, mom_frac=0.30 / 0.80, urgent_frac=0.05)
+    scs = [replace(base8, name="目前（無遲滯）"),
+           replace(base8, name="緩衝 0.10", vol_hyst=0.10),
+           replace(base8, name="緩衝 0.15", vol_hyst=0.15),
+           replace(base8, name="連續 2 個月確認", vol_confirm=2),
+           replace(base8, name="緩衝 0.10＋連續 2 個月", vol_hyst=0.10, vol_confirm=2),
+           replace(base8, name="不做波動度減碼（對照）", vol_scale=False)]
+    rows = []
+    spy_c = prices.last_close["SPY"]
+    for label, own, start in runs:
+        for sc in scs:
+            v, orders, events, extra = simulate_account(sc, own, start, mb.END, ranks, prices)
+            st = account_stats(v, spy_c, orders)
+            st.update(extra)
+            for ev, (a, b) in EVENTS.items():
+                x = v.loc[a:b]
+                st[ev] = x.iloc[-1] / x.iloc[0] - 1 if len(x) > 1 and x.index[0] <= pd.Timestamp(a) + pd.Timedelta(days=7) else np.nan
+            od = orders
+            st["含波動度原因下單日每年"] = (od.reasons.str.contains("波動度").sum() if len(od) else 0) / ((v.index[-1] - v.index[0]).days / 365.25)
+            rows.append(dict(期間=label, 情境=sc.name, **st))
+            if sc.vol_hyst == 0.10 and sc.vol_confirm == 1:
+                orders.to_csv(OUT / f"B8_orders_{start[:4]}.csv", index=False)
+            print("B-8", label, sc.name, f"{st['年化']*100:.1f}%", flush=True)
+    res = pd.DataFrame(rows)
+    res.to_csv(OUT / "B8_account.csv", index=False)
+    L = ["# B-8 原始表格", "", "由 `backtest/account_backtest.py` 的 `run_b8` 產生。比例 20/30/50，跨桶上限、搭便車、緊急門檻 5%。",
+         "緩衝 h：比例要往上一格，σ̃/σ − h 也要在新格子裡；往下一格，σ̃/σ + h 也要在新格子裡。連續 N 個月：新格子要連續 N 個換股日同方向才改。", ""]
+    for label in res.期間.unique():
+        sub = res[res.期間 == label]
+        L += [f"## {label}", "",
+              "| 情境 | 年化 | Sharpe | 最大回撤 | 相對 SPY 最大回撤 | 下單日/年 | 含波動度原因的下單日/年 | 比例改變次數/年 | 兩個月內反向 | 平均比例 | " + " | ".join(EVENTS) + " |",
+              "|" + "---|" * (10 + len(EVENTS))]
+        for _, r in sub.iterrows():
+            evs = " | ".join("—" if pd.isna(r[e]) else f"{r[e]*100:.0f}%" for e in EVENTS)
+            L.append(f"| {r.情境} | {r.年化*100:.1f}% | {r.Sharpe:.2f} | {r.最大回撤*100:.0f}% | {r.相對SPY最大回撤*100:.0f}% | {r.下單日每年:.1f} | "
+                     f"{r.含波動度原因下單日每年:.1f} | {r.波動度改變次數每年:.2f} | {int(r.波動度兩個月內反向)} | {r.波動度平均比例:.2f} | {evs} |")
+        L.append("")
+    (OUT / "B8_summary.md").write_text("\n".join(L), encoding="utf-8")
+    print("完成，見 backtest/results/B8_summary.md")
+
+
 def write_summary(pk: pd.DataFrame, res: pd.DataFrame):
     L = ["# B-5 原始表格", "", "由 `backtest/account_backtest.py` 產生。解讀見 `backtest_B5_2026-11-07.md`。", "",
          "## B-5a 自選股慢規則：減下來的錢放哪裡", "",
@@ -667,5 +739,21 @@ def write_summary(pk: pd.DataFrame, res: pd.DataFrame):
     (OUT / "B5_summary.md").write_text("\n".join(L), encoding="utf-8")
 
 
+def main_b8():
+    data = mb.LeanData(mb.DEFAULT_LEAN)
+    spy = data.bars("SPY").loc[:mb.END]
+    days = spy.index
+    ranks = mb.load_ranks(data, mb.DEFAULT_LEAN, days, 0)
+    own_all = ["MU", "NVDA", "MSFT", "META"]
+    tickers = sorted({t for s in ranks.values() for t in s.index} | {"SPY"} | set(own_all))
+    prices = mb.Prices(data, tickers, days)
+    runs = [("2000–2026（自選 MU/NVDA/MSFT）", ["MU", "NVDA", "MSFT"], "2000-02-01"),
+            ("2013–2026（自選 MU/NVDA/MSFT/META）", own_all, "2013-06-03")]
+    run_b8(ranks, prices, runs)
+
+
 if __name__ == "__main__":
-    main()
+    if "--b8" in sys.argv:
+        main_b8()
+    else:
+        main()
