@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>四桶三層示意圖</title>
+<style>
+:root{
+  --bg:#f6f5f2; --panel:#ffffff; --ink:#1d1d1b; --ink2:#55534e; --mute:#8a877f; --line:#e2dfd8;
+  --cash:#6b7280; --core:#2a78d6; --strat:#eb6834; --own:#1f9d6b;
+  --cash-bg:#f0f1f3; --core-bg:#eaf2fc; --strat-bg:#fdefe8; --own-bg:#e7f6ef;
+  --empty:#f3f2ee; --sel:#1d1d1b; --warn:#9a6700; --warn-bg:#fff6dc;
+  --chat:#e9f7e6; --chat-ink:#1d1d1b;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#161614; --panel:#201f1d; --ink:#ecebe7; --ink2:#bdbab3; --mute:#8d8a83; --line:#34322e;
+    --cash:#a3a9b4; --core:#5b9ce8; --strat:#f08a5d; --own:#43c08d;
+    --cash-bg:#262729; --core-bg:#1b2533; --strat-bg:#33241d; --own-bg:#1a2c24;
+    --empty:#1b1a18; --sel:#ecebe7; --warn:#e0b44a; --warn-bg:#2e2716;
+    --chat:#1f2d1d; --chat-ink:#ecebe7;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#161614; --panel:#201f1d; --ink:#ecebe7; --ink2:#bdbab3; --mute:#8d8a83; --line:#34322e;
+  --cash:#a3a9b4; --core:#5b9ce8; --strat:#f08a5d; --own:#43c08d;
+  --cash-bg:#262729; --core-bg:#1b2533; --strat-bg:#33241d; --own-bg:#1a2c24;
+  --empty:#1b1a18; --sel:#ecebe7; --warn:#e0b44a; --warn-bg:#2e2716;
+  --chat:#1f2d1d; --chat-ink:#ecebe7;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 system-ui,-apple-system,"Segoe UI","Noto Sans TC","Microsoft JhengHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:24px;margin:0 0 4px}
+h2{font-size:18px;margin:32px 0 10px}
+h3{font-size:15px;margin:18px 0 6px}
+p{margin:6px 0}
+.dim{color:var(--mute)}
+.fake{display:inline-block;font-size:12px;color:var(--warn);background:var(--warn-bg);padding:1px 8px;border-radius:10px;margin-left:6px;vertical-align:middle}
+.top{display:flex;align-items:flex-start;gap:12px}
+.top .grow{flex:1}
+#theme{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:4px 10px;cursor:pointer}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.card b{font-size:16px}
+.card .k{font-weight:700;margin-right:6px}
+table{border-collapse:collapse;width:100%}
+.acct td,.acct th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;font-size:14px}
+.acct th{color:var(--mute);font-weight:500}
+.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.tag{display:inline-block;font-size:12px;padding:0 7px;border-radius:9px;font-weight:600;color:#fff}
+.t-cash{background:var(--cash)} .t-core{background:var(--core)} .t-strat{background:var(--strat)} .t-own{background:var(--own)}
+.scroll-x{overflow-x:auto}
+
+/* grid */
+.grid{display:grid;grid-template-columns:64px repeat(4,1fr);gap:8px;margin-top:10px}
+.gh{font-weight:700;padding:8px 10px;border-radius:8px;color:#fff;text-align:center}
+.rh{display:flex;flex-direction:column;justify-content:center;align-items:center;font-weight:700;background:var(--panel);border:1px solid var(--line);border-radius:8px;font-size:15px}
+.rh small{font-weight:400;color:var(--mute);font-size:11px;text-align:center;line-height:1.3}
+.cell{border:2px solid transparent;border-radius:10px;padding:10px 12px;cursor:pointer;text-align:left;font:inherit;color:inherit;min-height:96px;display:flex;flex-direction:column;gap:4px}
+.cell:hover{filter:brightness(.97)}
+.cell.sel{border-color:var(--sel)}
+.cell .tt{font-weight:700;font-size:14px;line-height:1.35}
+.cell .ss{font-size:12.5px;color:var(--ink2);line-height:1.45}
+.cell .when{margin-top:auto;font-size:11.5px;color:var(--mute)}
+.c-cash{background:var(--cash-bg)} .c-core{background:var(--core-bg)} .c-strat{background:var(--strat-bg)} .c-own{background:var(--own-bg)}
+.cell.empty{background:var(--empty);border:2px dashed var(--line);cursor:pointer}
+.cell.empty.sel{border-style:solid;border-color:var(--sel)}
+.cell.empty .tt{color:var(--mute);font-weight:500}
+
+/* detail */
+#detail{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-top:14px}
+.dhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dhead h2{margin:0}
+.two{display:grid;grid-template-columns:1.1fr .9fr;gap:20px}
+ul{margin:4px 0;padding-left:20px}
+li{margin:2px 0}
+.story{background:var(--bg);border-radius:8px;padding:10px 14px}
+.chat{background:var(--chat);color:var(--chat-ink);border-radius:12px 12px 12px 3px;padding:10px 14px;font-size:14px;max-width:440px}
+.chat .h{font-weight:700;margin-bottom:4px}
+.chat .ln{display:flex;justify-content:space-between;gap:10px;border-top:1px dashed rgba(127,127,127,.35);padding:3px 0}
+.chat .ln:first-of-type{border-top:0}
+.chat .btns{margin-top:6px;display:flex;flex-wrap:wrap;gap:6px}
+.chat .btns span{font-size:12px;border:1px solid rgba(127,127,127,.5);border-radius:12px;padding:1px 9px}
+.chat .meta{font-size:12px;color:var(--mute);margin-top:4px}
+.tabs{display:flex;gap:6px;margin:16px 0 0;flex-wrap:wrap}
+.tabs button{font:inherit;font-size:14px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px 8px 0 0;padding:6px 14px;cursor:pointer}
+.tabs button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.tl{border:1px solid var(--line);border-radius:0 8px 8px 8px;padding:12px 14px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.step{position:relative;padding-left:14px;border-left:3px solid var(--line)}
+.step .w{font-size:12px;font-weight:700;color:var(--mute);letter-spacing:.02em}
+.step p{font-size:14px}
+.na{color:var(--mute);font-size:14px;padding:12px 14px;border:1px solid var(--line);border-radius:0 8px 8px 8px}
+.note{font-size:13px;color:var(--warn);background:var(--warn-bg);border-radius:6px;padding:4px 10px;margin-top:8px}
+.rule{background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--strat);border-radius:8px;padding:10px 14px;margin:8px 0}
+.rule.own{border-left-color:var(--own)}
+.rule.gray{border-left-color:var(--mute)}
+.rule b{display:block;margin-bottom:2px}
+.timebar{display:flex;gap:0;margin:8px 0 2px;font-size:13px;flex-wrap:wrap}
+.timebar div{flex:1;min-width:150px;border:1px solid var(--line);padding:6px 10px;background:var(--panel)}
+.timebar div:first-child{border-radius:8px 0 0 8px}
+.timebar div:last-child{border-radius:0 8px 8px 0}
+@media (max-width:860px){
+  .cards{grid-template-columns:1fr}
+  .two{grid-template-columns:1fr}
+  .tl{grid-template-columns:1fr}
+  .grid{grid-template-columns:44px repeat(4,minmax(130px,1fr));min-width:620px}
+  .rh small{display:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="top">
+  <div class="grow">
+    <h1>四桶 × 三層：什麼時候觸發、你做或不做之後會怎樣 <span class="fake">數字都是假的</span></h1>
+    <p class="dim">點下方格子看那一格的例子。每一格是一個獨立的小故事，都從同一個起始帳戶開始。</p>
+  </div>
+  <button id="theme" title="切換深淺色">◐</button>
+</div>
+
+<div class="cards">
+  <div class="card"><span class="k">L0</span><b>規則</b><p>程式算，不用 AI。價格、排名、均線這類數字一到就觸發。大部分的單都從這裡來。</p></div>
+  <div class="card"><span class="k">L1</span><b>每天的便宜檢查</b><p>每天收盤後掃申報與新聞，或比對上次 L2 寫下的條件。大多數日子只標記、不通知，有事才往上送或發通知。</p></div>
+  <div class="card"><span class="k">L2</span><b>完整 AI 審查</b><p>多個 AI 角色辯論、3 票表決。不會每天跑，只在被觸發或固定時間（每月、財報後）跑。結果放網站，LINE 只放結論與股數。</p></div>
+</div>
+<p class="dim" style="margin-top:8px">兩層之間的連結：自選的 L2（每月審查）會寫下「什麼事發生就該降級」的條件，L1 每天檢查那些條件有沒有成立。</p>
+
+<h2>起始帳戶（總資產 $100,000）</h2>
+<div class="scroll-x">
+<table class="acct">
+  <tr><th>桶</th><th>持股</th><th class="num">股數</th><th class="num">價格</th><th class="num">市值</th><th>備註</th></tr>
+  <tr><td><span class="tag t-cash">現金</span></td><td>現金／短債 SGOV</td><td class="num">—</td><td class="num">$100</td><td class="num">$0</td><td>平常幾乎是 0；崩盤規則啟動時，核心的一半會放到這裡</td></tr>
+  <tr><td><span class="tag t-core">核心</span></td><td>VOO</td><td class="num">100</td><td class="num">$500</td><td class="num">$50,000</td><td>其他桶多出或缺少的錢都由它吸收</td></tr>
+  <tr><td rowspan="2"><span class="tag t-strat">策略</span></td><td>ORCL（持有中）</td><td class="num">30</td><td class="num">$200</td><td class="num">$6,000</td><td>每檔目標 = $30,000 ÷ 5 = $6,000</td></tr>
+  <tr><td>GE（還沒持有，排名正在上升）</td><td class="num">0</td><td class="num">$250</td><td class="num">$0</td><td>另外 4 檔省略（共 $24,000）</td></tr>
+  <tr><td rowspan="2"><span class="tag t-own">自選</span></td><td>MU</td><td class="num">130</td><td class="num">$100</td><td class="num">$13,000</td><td>標準比重 13%，52 週高點 $100</td></tr>
+  <tr><td>MSFT</td><td class="num">20</td><td class="num">$350</td><td class="num">$7,000</td><td>標準比重 7%</td></tr>
+</table>
+</div>
+
+<h2>四桶 × 三層</h2>
+<div class="scroll-x"><div class="grid" id="grid"></div></div>
+
+<div id="detail"></div>
+
+<h2>看完 12 格，記住這兩條就夠了</h2>
+<div class="rule"><b>策略類的單（策略桶、核心、比例回調、上限）：沒做就每個月再列</b>系統認為這些是「策略本身」，你沒照做，策略的成績就不是策略的成績。所以下個月報會用當時的價格把差額再列一次。不想再看到，要明確選「排除」或「轉入自選」並寫一句理由。</div>
+<div class="rule own"><b>自選規則與 AI 建議：一次性，你的決定就是最終決定</b>按「這次不做」之後不再提醒，只記進影子組合，一年後可以回頭看當初不做是對是錯。規則狀態照樣前進（例如記成「已減半」），下一次狀態切換（例如加回）時才會再有單。</div>
+<div class="rule gray"><b>忘了回（三種反應以外的第四種）</b>通知發出後 2 個交易日沒回，提醒一次。之後你回「忘了」，系統用當天的價格重算補做清單；如果這期間規則已經反轉（例如減半的股票已經符合加回），補做清單就取消。</div>
+
+<h3>時間怎麼走</h3>
+<div class="timebar">
+  <div><b>收盤後</b>：L0、L1 每天檢查。緊急的當天發通知</div>
+  <div><b>隔天開盤</b>：你照清單下單，然後填快照（每檔股數＋現金）</div>
+  <div><b>月初第一個交易日早上</b>：月報，一個月累積的事一次處理</div>
+</div>
+
+</div>
+
+<script>
+const BUCKETS = [
+  { id: 'cash', name: '現金' },
+  { id: 'core', name: '核心 VOO' },
+  { id: 'strat', name: '策略（動能）' },
+  { id: 'own', name: '自選' },
+];
+const LEVELS = [
+  { id: 'L0', sub: '規則' },
+  { id: 'L1', sub: '每天檢查' },
+  { id: 'L2', sub: 'AI 審查' },
+];
+
+// out: do / part / skip → [隔天, 月初, 下一次觸發]
+const C = {
+'cash-L0': {
+  title: '入金、出金、股利', short: '你回報入金 $10,000', when: '當天給清單',
+  trig: ['你回報「入金 X 元」或「要出金 X 元」→ 當天給清單', '股利入帳 → 先放著，下個月報一起處理', '崩盤規則啟動時，核心換出來的一半放這裡（見「核心 L0」）'],
+  story: '你入金 $10,000，總資產變成 $110,000。系統用新的總資產算每一格「現在應該有多少」，<b>只買不賣</b>，從缺最多的格子開始補：MU 缺 $1,300、MSFT 缺 $700、GE（假設已持有 23 股）缺 $850；補完剩下的買 VOO。缺口小於總資產 0.25% 的格子不補。',
+  msg: { h: '入金 $10,000 的清單', lines: [['MU', '買 13 股'], ['MSFT', '買 2 股'], ['GE', '買 2 股'], ['VOO', '買 14 股（剩下的進核心）']], btns: ['照清單做', '部分完成', '這次不做'] },
+  out: {
+    do: ['四筆成交。你填快照，系統把 MU、MSFT 記進自選，GE 記進策略，VOO 記進核心。', '月報照常，跟這筆入金無關。', '入金不會留下任何「待辦」。'],
+    part: ['你只買了 VOO。快照和清單差超過 1 股 → 系統問：「補做差額」（給你 MU 13、MSFT 2、GE 2 的清單）或「就這樣」。', '選「就這樣」的話，沒買的錢留在現金，算核心的一部分。下一份月報的 VOO 那一行會把閒置現金一起買掉。', 'MU、MSFT 不會因為這次入金再被列；它們只在下一次慢規則切換時才會調整股數。'],
+    skip: ['$10,000 留在帳戶裡當現金。', '下一份月報多一行「VOO 買 19 股（閒置現金）」。錢最後進核心，不是進 MU 或 GE。', '同上。'],
+  },
+  note: '入金清單沒做時「錢進 VOO、不再補 MU/GE」是原型的做法，設計文件沒寫清楚。',
+},
+'cash-L1': { empty: true, title: '沒有', why: '現金不需要每天檢查。唯一跟現金有關的每日動作是：你填快照時，系統比對現金差異，問你多出來的錢是入金、出金還是其他。那是程式比對（L0），不是檢查。' },
+'cash-L2': { empty: true, title: '沒有', why: '入金、出金不呼叫 AI。清單完全照規則算。' },
+
+'core-L0': {
+  title: '崩盤規則；吸收差額', short: 'VOO 跌破 200 日均線', when: '月報',
+  trig: ['每月月報：VOO 收盤低於 200 日均線 → 啟動（核心一半換短債、策略部位減半）', '每月月報：VOO 站回 200 日均線 → 解除（全部買回）', '平常：任何一桶減下來的錢買 VOO，要加回的錢賣 VOO（清單上算出來的那一行）'],
+  story: '1/4 月報：VOO 收在 $480，低於 200 日均線 $495。崩盤規則啟動：核心約 $48,000 的一半換成短債 SGOV；策略每檔目標從 $6,000 減到 $3,000，所以 GE（假設已持有 24 股）也要賣一半。',
+  msg: { h: '1 月月報', lines: [['VOO', '賣 50 股'], ['SGOV', '買 240 股'], ['GE', '賣 12 股（崩盤規則：動能減半）'], ['AI 檢視', '延後（詳見網站）']], btns: ['照清單做', '部分完成', '這次不做'] },
+  out: {
+    do: ['成交。網站的「保險紀錄」記下這次的賣出價 $480。', '之後每個月報檢查一次：還在 200 日均線下就不動。', '3/1 月報 VOO 站回均線 → 解除：賣 SGOV、買回 VOO 和 GE。網站比較買回價和當初的賣出價，看這次保險是賺是賠。'],
+    part: ['你只賣了 25 股 VOO → 系統問「補做差額」或「就這樣」。', '核心是策略類：如果 2 月崩盤規則還在，2 月月報會再列「VOO 賣 25 股、SGOV 買 125 股」。', '如果 2 月就解除了，差額自然消失（本來就要買回）。'],
+    skip: ['什麼都沒成交，但規則狀態記成「啟動中」。', '只要還在啟動中，每個月報都再列一次。核心沒有「排除」可以選。', '解除那個月：因為你根本沒賣，清單上不會有要買回的東西。'],
+  },
+  note: '「核心沒做，下個月再列」是設計的規定；原型目前只對策略桶的股票重列，核心這部分還沒做。',
+},
+'core-L1': { empty: true, title: '沒有', why: 'VOO 不做每日掃描。崩盤規則只在月報時看一次，月中 VOO 跌再多也不會發通知（回測：月中檢查只會增加來回洗）。' },
+'core-L2': {
+  title: '崩盤規則的 AI 檢視', short: '崩盤規則啟動或解除時', when: '月報（附一行）',
+  trig: ['只在崩盤規則「啟動」或「解除」的那次月報跑（大約一年 1 次）'],
+  story: '1/4 崩盤規則啟動時，AI 讀總經數據，正反兩方辯論、法官下結論，結論是「延後」（認為這次只是短暫回檔）。但 <b>AI 只能說明、不能改清單</b>：清單照規則，LINE 上只多一行「AI 檢視：延後」。完整報告和過去 17 次崩盤規則的成績放網站。',
+  msg: { h: '1 月月報（同核心 L0 那則）', lines: [['VOO', '賣 50 股'], ['SGOV', '買 240 股'], ['GE', '賣 12 股'], ['AI 檢視', '延後']], btns: ['照清單做', '部分完成', '這次不做'] },
+  out: {
+    do: ['照規則成交。影子組合記一筆「如果照 AI 延後」。', '同核心 L0。', '解除時再跑一次 AI 檢視，一樣只附一行。一年後網站可以看「AI 說延後的那幾次，延後是不是比較好」。'],
+    part: ['同核心 L0：系統問補做差額或就這樣。', '同核心 L0。', '同核心 L0。'],
+    skip: ['你同意 AI 延後，按「這次不做」。影子組合記下「照規則」那條線。', '這是規則的單（策略類），不是 AI 建議，所以下個月報還是會再列。', '同核心 L0。'],
+  },
+},
+
+'strat-L0': {
+  title: '換股、減碼、比例回調', short: 'ORCL 掉出前 15 名，GE 進前 5 名', when: '月報',
+  trig: ['每月：排名前 5 且沒持有 → 進場', '每月：持股掉出前 15 名 → 出場', '每月：波動度變大 → 整個部位減到 2/3 或 1/3，減下來的錢給核心', '偏離目標 ±50% → 只在那個月本來就有其他單時順便拉回'],
+  story: '12/1 月報：ORCL 排名掉到第 18（超過 15）→ 出場；GE 排名升到第 3 → 進場。賣 ORCL 的 $6,000 拿去買 GE（買單最多用到可用金額的 98%，所以是 23 股），VOO 不用動。這就是策略桶裡「股票之間的轉移」。',
+  msg: { h: '12 月月報', lines: [['ORCL', '賣 30 股（掉出前 15 名）'], ['GE', '買 23 股（進前 5 名）'], ['VOO', '不動']], btns: ['照清單做', '部分完成', '這次不做', '排除 GE', 'ORCL 轉入自選'] },
+  out: {
+    do: ['賣 ORCL、買 GE。帳本：ORCL 從策略桶移除，GE 23 股記進策略桶。', '1 月月報照排名再算一次。GE 只要還在前 15 名就留著。', 'GE 掉出前 15 名的那個月才會賣。'],
+    part: ['你賣了 ORCL，但只買了 10 股 GE → 系統問「補做差額（買 13 股）」或「就這樣」。', '就算選「就這樣」，1 月月報還是會列「GE 買 13 股（上次沒照做）」，股數用 1 月的價格重算。', '要停止，只能選「排除 GE」並寫一句理由。'],
+    skip: ['什麼都沒變。', '1 月月報把兩項都再列一次，用當時的排名和價格重算。如果 ORCL 回到前 15 名，就不用賣了。', '一直不做就一直列。不想賣 ORCL：選「轉入自選」，ORCL 變成你的自選股（要寫理由），之後照自選規則管。不想買 GE：選「排除」，由第 6 名遞補。'],
+  },
+},
+'strat-L1': {
+  title: '每日事件掃描', short: 'ORCL 被收購的申報', when: '大多不通知；被收購當天通知',
+  trig: ['每天收盤後掃持股與排名 6～10 名的申報、新聞', '大多數日子：沒事，或只標記，不通知', '單月跌超過 20%：AI 寫一段原因說明，附在下一則通知', '被收購（合併委託書、公開收購申報）：規則直接提出出場，當天通知', '財報不可信、監管重大事件：交給 L2'],
+  story: '12/10 掃描抓到 ORCL 申報了合併委託書（DEFM14A，被收購）。被收購之後股價會黏在收購價附近，動能的前提已經不在，所以<b>規則直接提出出場</b>，不需要 AI 判斷。',
+  msg: { h: 'ORCL 已宣布被收購（當天）', lines: [['ORCL', '賣 30 股'], ['VOO', '買 11 股']], btns: ['照清單做', '部分完成', '這次不做'] },
+  out: {
+    do: ['隔天開盤賣 ORCL，錢先進 VOO。', '1 月月報：ORCL 那一格空出來，照排名遞補一檔新股，錢從 VOO 出。', '—'],
+    part: ['你只賣了 15 股 → 系統問「補做差額」或「就這樣」。', '策略類：1 月月報再列「ORCL 賣 15 股」。', '—'],
+    skip: ['ORCL 留著。', '策略類：1 月月報再列一次。', '如果你想參與收購（拿換股或現金）：選「轉入自選」，ORCL 變成自選股，就不會再列。'],
+  },
+},
+'strat-L2': {
+  title: '新股進場的否決法庭', short: 'GE 的漲幅來自一天的暴漲', when: '月報（結果直接改清單）',
+  trig: ['每月：有新股要進場時，先跑規則偵測（被收購、增資、財報重編、單日漲幅占比……）', '有命中才開完整法庭（3 票）。3 票一致才能否決這個月進場', '持股出現財報重編、重大監管事件 → 硬事件版法庭 → 當天建議提早出場（你確認才做）'],
+  story: '12/1 月報前：GE 排第 3，但規則偵測發現它 12 個月 +60% 的漲幅，有 70% 來自 7/15 一天（收購傳聞），之後就沒再相對上漲。開法庭，3:0 否決 → <b>GE 這個月不買</b>，由第 6 名遞補（另一檔股票）。這是 AI 唯一能直接改變清單的地方。',
+  msg: { h: '12 月月報', lines: [['ORCL', '賣 30 股'], ['第 6 名', '買 xx 股（GE 被否決，遞補）'], ['', 'GE 否決理由 → 網站']], btns: ['照清單做', '部分完成', '這次不做'] },
+  out: {
+    do: ['照遞補清單成交。影子組合記一筆「如果沒否決、買了 GE」。', '否決只管這個月。1 月 GE 如果還在前 5 名，會再審一次。', '網站累積「否決的股票後來表現」，用來判斷法庭準不準。'],
+    part: ['同策略 L0：補做差額或就這樣，差額下個月再列。', '同策略 L0。', '—'],
+    skip: ['同策略 L0：策略類，下個月再列。', '同策略 L0。', '—'],
+  },
+  note: '如果遞補的那一檔也被否決，那一格的錢留在核心到下個月。',
+},
+
+'own-L0': {
+  title: '慢規則：減半與加回', short: 'MU 距高點 -22%', when: '≥ 5% 當天；< 5% 月報',
+  trig: ['每天：收盤距 52 週高點跌 ≥ 20% → 減半', '每天：站上 200 日均線連續 10 天（距上次切換 ≥ 15 個交易日）→ 加回到標準比重', '這次要賣或買的金額 ≥ 總資產 5% → 當天通知；不到 5% → 等月報', '單檔超過總資產 15% → 月報減回 10%'],
+  story: '12/9 MU 收在 $78（距高點 -22%）→ 減半，賣 65 股 ≈ $5,070，超過總資產 5% → <b>當天通知</b>。同一天如果是 MSFT 跌 21%，減半只賣 10 股 ≈ $2,760，不到 5% → 不發通知，等 1 月月報。<br>通知上會附上 L2 最近一次的看法；這次 AI 說「出清」，所以多一行讓你選。',
+  msg: { h: 'MU 慢規則減半（距高點 -22%）', lines: [['規則', '賣 65 股'], ['AI（上次審查：出清）', '賣 130 股'], ['VOO', '買 9 股（跟著選項變）']], btns: ['照規則', '照 AI', '部分完成', '這次不做'] },
+  out: {
+    do: ['照規則：賣 65 股，錢進 VOO。MU 狀態變「已減半」。', '月報不再提 MU。', '2 月 MU 漲回 $90、站上 200 日均線 10 天 → 加回：標準 $13,000 ÷ $90 = 144 股，買 79 股，錢從 VOO 出。'],
+    part: ['你只賣了 40 股 → 系統問「補做差額（再賣 25 股）」或「就這樣」。', '選「就這樣」：自選規則是一次性的，月報不會再提。', '加回時補到 144 股：你有 90 股 → 買 54 股。'],
+    skip: ['MU 130 股都留著。狀態照樣記成「已減半」，但目標改成你實際的 130 股，不再提醒。影子組合記下「如果照做」。', '月報不會再提 MU。', '加回時只補到標準：130 股 × $90 = $11,700，標準 $13,000 → 只買 14 股。如果你從頭到尾都沒賣，等於這次減半什麼都沒發生。'],
+  },
+},
+'own-L1': {
+  title: '條件監測', short: 'MU 的「DRAM 合約價下跌」成立', when: '當天（每檔每月最多 1 則）',
+  trig: ['每天：檢查 L2 上次寫下的條件', '財報條件（例如毛利率低於 80%）：新財報出來時由程式比對', '事件條件（例如 DRAM/HBM 合約價下跌）：AI 每天初判，3 個 AI 讀原文確認', '價格條件：只記錄、不通知（價格交給慢規則）', '持股出現財報重編等硬事件 → 交給 L2'],
+  story: '11 月的 L2 審查替 MU 寫了一條事件條件：「DRAM/HBM 合約價下跌 → 降到一半」。1/6 新聞報導合約價季減 8%，3 個 AI 確認成立 → <b>當天通知 AI 建議</b>。這時規則（慢規則）沒有觸發，所以只有 AI 那一行。',
+  msg: { h: 'MU：條件「DRAM 合約價下跌」成立', lines: [['AI 建議', '賣 65 股（降到標準的一半）'], ['VOO', '買 13 股']], btns: ['照 AI', '部分完成', '這次不做'] },
+  out: {
+    do: ['賣 65 股，錢進 VOO。MU 狀態變「一半」。', '月報前一天 L2 重新審查 MU，寫新的條件。', '回到標準要等慢規則加回，或下一次 L2 審查建議「回到標準」。'],
+    part: ['你只賣了 30 股 → 系統問「補做差額」或「就這樣」。', 'AI 建議是一次性的，月報不會再提。', '—'],
+    skip: ['什麼都沒變。影子組合記下「如果照 AI」。', '同一條件不會再觸發，直到下一次 L2 更新條件（月報前一天）。', 'MU 這個月不會再收到這類通知（每檔每月最多 1 則）。但如果 MU 跌到 -20%，慢規則（L0）的通知照樣會來。'],
+  },
+},
+'own-L2': {
+  title: '定期審查', short: 'MSFT 被建議提高到 125%', when: '月報（並列建議）',
+  trig: ['每月（月報前一天）＋每次這檔新財報申報後', '多個 AI 角色：新聞與基本面分析 → 多空辯論 → 3 位經理投票', '輸出：逐條檢查你的買進前提、選一個檔位（出清／一半／不動／回到標準／提高到 125%）、寫 2～5 條條件交給 L1', '3 票同一檔位、和現在不同、有證據 → 月報並列建議；否則只放網站', '另外：新增自選時的健檢；財報重編等硬事件的法庭（當天通知）'],
+  story: '11/30 審查兩檔：<br>• MU：3 票「不動」，和現在相同 → 月報不列，只把新寫的條件交給 L1。<br>• MSFT：收盤在 200 日均線上已連續 6 個月，前提全部成立，3 票「提高到標準的 125%」→ 月報多一行。規則那邊不動。',
+  msg: { h: '12 月月報（自選部分）', lines: [['MSFT 規則', '不動'], ['MSFT AI', '買 4 股（提高到標準的 125%）'], ['VOO', '跟著選項變']], btns: ['照規則', '照 AI', '部分完成'] },
+  out: {
+    do: ['照 AI：買 4 股 MSFT，錢從 VOO 出。', '下個月照常審查；「提高到 125%」同一檔一年最多提一次。', 'MSFT 之後如果被減半再加回，加回的目標是標準比重。'],
+    part: ['你只買了 2 股 → 系統問「補做差額」或「就這樣」。', 'AI 建議是一次性的，月報不會再提。', '—'],
+    skip: ['選「照規則」（不動）。影子組合記下「如果照 AI」。', '不會再提醒。', '12 個月後條件仍成立才可能再提。'],
+  },
+},
+};
+
+const OUT_LABEL = { do: '照做', part: '部分照做', skip: '不照做' };
+const STEP_LABEL = ['隔天', '下個月初（月報）', '下一次觸發'];
+let sel = 'own-L0';
+let tab = 'do';
+
+function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+
+function renderGrid() {
+  const g = document.getElementById('grid');
+  let h = '<div></div>';
+  for (const b of BUCKETS) h += '<div class="gh t-' + b.id + '">' + b.name + '</div>';
+  for (const l of LEVELS) {
+    h += '<div class="rh">' + l.id + '<small>' + l.sub + '</small></div>';
+    for (const b of BUCKETS) {
+      const k = b.id + '-' + l.id, c = C[k];
+      if (c.empty) h += '<button class="cell empty' + (sel === k ? ' sel' : '') + '" data-k="' + k + '"><span class="tt">沒有</span></button>';
+      else h += '<button class="cell c-' + b.id + (sel === k ? ' sel' : '') + '" data-k="' + k + '"><span class="tt">' + c.title + '</span><span class="ss">例：' + c.short + '</span><span class="when">通知：' + c.when + '</span></button>';
+    }
+  }
+  g.innerHTML = h;
+}
+
+function renderDetail() {
+  const [bid, lid] = sel.split('-');
+  const b = BUCKETS.find((x) => x.id === bid), c = C[sel];
+  let h = '<div class="dhead"><span class="tag t-' + bid + '">' + b.name + '</span><h2>' + lid + '：' + (c.empty ? '沒有' : c.title) + '</h2></div>';
+  if (c.empty) { document.getElementById('detail').innerHTML = h + '<p style="margin-top:10px">' + c.why + '</p>'; return; }
+  h += '<div class="two"><div>';
+  h += '<h3>什麼時候會觸發</h3><ul>' + c.trig.map((t) => '<li>' + t + '</li>').join('') + '</ul>';
+  h += '<h3>例子</h3><div class="story">' + c.story + '</div>';
+  h += '</div><div><h3>你在 LINE 上看到的</h3><div class="chat"><div class="h">' + esc(c.msg.h) + '</div>';
+  for (const [a, x] of c.msg.lines) h += '<div class="ln"><span>' + esc(a) + '</span><span>' + esc(x) + '</span></div>';
+  h += '<div class="btns">' + c.msg.btns.map((x) => '<span>' + esc(x) + '</span>').join('') + '</div><div class="meta">通知等級：' + c.when + '</div></div></div></div>';
+  h += '<h3>你的反應 → 之後會怎樣</h3><div class="tabs">';
+  for (const k of ['do', 'part', 'skip']) h += '<button data-tab="' + k + '" class="' + (tab === k ? 'on' : '') + '">' + OUT_LABEL[k] + '</button>';
+  h += '</div><div class="tl">';
+  c.out[tab].forEach((x, i) => { h += '<div class="step"><div class="w">' + STEP_LABEL[i] + '</div><p>' + x + '</p></div>'; });
+  h += '</div>';
+  if (c.note) h += '<div class="note">⚠ ' + c.note + '</div>';
+  document.getElementById('detail').innerHTML = h;
+}
+
+document.addEventListener('click', (e) => {
+  const cell = e.target.closest('.cell');
+  if (cell) { sel = cell.dataset.k; renderGrid(); renderDetail(); return; }
+  const t = e.target.closest('.tabs button');
+  if (t) { tab = t.dataset.tab; renderDetail(); return; }
+  if (e.target.id === 'theme') {
+    const r = document.documentElement;
+    const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    r.dataset.theme = dark ? 'light' : 'dark';
+  }
+});
+renderGrid();
+renderDetail();
+</script>
+</body>
+</html>
