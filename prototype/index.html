@@ -12,19 +12,21 @@
   <span class="fake">價格、新聞、申報、AI 輸出全部是假的</span>
   <select id="scen" aria-label="情境"></select>
   <button id="reset" title="從頭開始這個情境">重來</button>
-  <span class="clock" id="clock"></span>
   <span class="spacer"></span>
-  <button id="step" title="前進半天：開盤前 ↔ 收盤後">下一步</button>
+  <span class="dim">時間：</span>
+  <button id="step" title="前進半天：開盤前 ↔ 收盤後">下一步（半天）</button>
   <button id="day">下一天</button>
-  <button id="nextNotif" class="primary">跳到下一則通知</button>
+  <button id="nextNotif">跳到下一則通知</button>
   <button id="nextMonth">跳到下個月報</button>
   <button id="theme" class="ghost" title="切換深淺色">◐</button>
 </header>
+<section id="now" aria-label="現在"></section>
 <main>
   <section class="col" id="line">
-    <div class="head">LINE 通知 <span class="dim">（你在手機上看到的）</span></div>
+    <div class="head">LINE 通知 <span class="dim">你在手機上看到的</span></div>
     <div class="scroll" id="lineScroll"></div>
     <div class="useract">
+      <span class="dim">你自己的操作：</span>
       <button data-act="deposit">入金</button>
       <button data-act="withdraw">出金</button>
       <button data-act="ratio">改比例</button>
@@ -35,7 +37,7 @@
   </section>
   <section class="col" id="center">
     <div class="head tabs" id="tabs">
-      <button data-tab="log" class="sel">背後發生什麼</button>
+      <button data-tab="log" class="sel">時間軸</button>
       <button data-tab="web">網站</button>
       <button data-tab="table">觸發總表</button>
       <button data-tab="guide">情境說明</button>
@@ -44,7 +46,7 @@
     <div class="scroll" id="centerBody"></div>
   </section>
   <section class="col" id="right">
-    <div class="head">帳戶 <span class="dim">（帳本＝每一股屬於哪一桶）</span></div>
+    <div class="head">帳戶 <span class="dim">帳本＝每一股屬於哪一桶</span></div>
     <div class="scroll" id="acct"></div>
   </section>
 </main>

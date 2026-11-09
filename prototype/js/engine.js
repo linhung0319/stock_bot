@@ -93,6 +93,7 @@
     // ---------- 紀錄 ----------
     addLog(f, title, body, opt) {
       const e = Object.assign({ d: this.d, date: this.dateKey(), phase: this.phase, f, title, body: body || '', cls: '', lvl: '' }, opt || {});
+      if (!e.nid) { const m = /(?:通知|清單) #(\d+)/.exec(title + ' ' + (body || '')); if (m) e.nid = Number(m[1]); }
       this.log.push(e);
       if (/^F\d+$/.test(f) && !(opt && opt.noCount)) this.counters[f] = (this.counters[f] || 0) + 1;
       return e;
@@ -269,14 +270,14 @@
         }
         // 策略類不做 → 下個月再列
         if (it.kind === 'STRATEGY' && it.choice === 'SKIP') {
-          this.mom.owe[tk] = { since: this.dateKey(), f: it.f };
-          this.addLog('F17', '策略類「這次不做」：' + tk, '動能、核心、比例回調、上限的單是策略目標。下一份月報會把差額再列一次；不想再看到要選「排除」或「轉入自選」並寫理由（§2.3.1）。', { cls: '記影子', lvl: 'A0' });
+          this.mom.owe[tk] = { since: this.dateKey(), f: it.f, nid: n.id };
+          this.addLog('F17', '策略類「這次不做」：' + tk, '動能、核心、比例回調、上限的單是策略目標。下一份月報會把差額再列一次；不想再看到要選「排除」或「轉入自選」並寫理由（§2.3.1）。', { cls: '記影子', lvl: 'A0', nid: n.id });
         }
         if (it.kind === 'OWN_RULE' && it.choice === 'SKIP') {
-          this.addLog('F17', '自選規則「這次不做」：' + tk, '規則狀態照樣前進（記成 ' + (this.own[tk] ? this.own[tk].state : '') + '），目標改用實際股數，不再提醒，直到下一次狀態切換（§2.3.1）。差額記影子。', { cls: '記影子', lvl: 'A0' });
+          this.addLog('F17', '自選規則「這次不做」：' + tk, '規則狀態照樣前進（記成 ' + (this.own[tk] ? this.own[tk].state : '') + '），目標改用實際股數，不再提醒，直到下一次狀態切換（§2.3.1）。差額記影子。', { cls: '記影子', lvl: 'A0', nid: n.id });
         }
         if ((it.kind === 'AI_ONLY' || it.kind === 'HARD') && it.choice === 'SKIP') {
-          this.addLog('F17', 'AI 建議「不做」：' + tk, 'AI 建議是一次性的，使用者的決定就是最終決定，不再提醒；「照 AI」那條線記進影子組合。', { cls: '記影子', lvl: 'A0' });
+          this.addLog('F17', 'AI 建議「不做」：' + tk, 'AI 建議是一次性的，使用者的決定就是最終決定，不再提醒；「照 AI」那條線記進影子組合。', { cls: '記影子', lvl: 'A0', nid: n.id });
         }
       }
       if (mode === 'SKIP') this.addLog('F17', '通知 #' + n.id + '：這次不做', '', { cls: '記影子' });
@@ -360,7 +361,7 @@
         n.followUpOpen = true;
         for (const x of n.followUp) {
           const it = n.items.find((i) => i.tk === x.tk && i.kind === 'STRATEGY');
-          if (it) this.mom.owe[x.tk] = { since: this.dateKey(), f: it.f };
+          if (it) this.mom.owe[x.tk] = { since: this.dateKey(), f: it.f, nid: n.id };
         }
       }
     },
@@ -817,8 +818,10 @@
       // 上次沒照做的出場
       for (const tk of Object.keys(this.lots.mom)) {
         if (this.lots.mom[tk] > 0 && !this.mom.model.includes(tk) && !exits.find((x) => x.tk === tk)) {
-          items.push(this.momExitItem(tk, this.lots.mom[tk], '上次沒照做（策略類持續列入）'));
-          this.addLog('F2', tk + '：上次的出場沒照做 → 再列一次', '策略類的偏離要明確選「轉入自選」，否則持續列入月報（§2.3.1）。', { cls: '月報', lvl: 'A0', noCount: true });
+          const owe = this.mom.owe[tk];
+          const oweTxt = owe && owe.nid ? '通知 #' + owe.nid + '（' + owe.since + '）選了這次不做' : '上次沒照做';
+          items.push(this.momExitItem(tk, this.lots.mom[tk], oweTxt + '，策略類持續列入'));
+          this.addLog('F2', tk + '：上次的出場沒照做 → 再列一次', oweTxt + '。策略類的偏離要明確選「轉入自選」，否則持續列入月報（§2.3.1）。', { cls: '月報', lvl: 'A0', noCount: true, nid: owe && owe.nid });
         }
       }
       // 進場
@@ -869,8 +872,9 @@
         const tgt = Math.max(0, this.sharesFor(Math.min(slotT, Math.max(cur * this.price(tk), crossRoom(tk) + cur * this.price(tk))), tk));
         if (scaleReason) { if (tgt !== cur) stayerLines.push(this.line(tk, 'mom', tgt - cur, scaleReason, crashFlip ? (this.crash.on ? 'F5' : 'F6') : 'F4')); }
         else if (this.mom.owe[tk]) {
-          stayerLines.push(this.line(tk, 'mom', tgt - cur, '上次沒照做（策略類持續列入）', this.mom.owe[tk].f));
-          this.addLog('F17', tk + '：上次的策略單沒照做 → 差額再列', '', { cls: '月報', noCount: true });
+          const owe = this.mom.owe[tk];
+          stayerLines.push(this.line(tk, 'mom', tgt - cur, '上次沒照做' + (owe.nid ? '（通知 #' + owe.nid + '）' : '') + '，策略類持續列入', owe.f));
+          this.addLog('F17', tk + '：上次的策略單沒照做 → 差額再列', owe.nid ? '通知 #' + owe.nid + '（' + owe.since + '）沒有照做，差額這個月再列一次。' : '', { cls: '月報', noCount: true, nid: owe.nid });
           delete this.mom.owe[tk];
         }
       }
