@@ -25,7 +25,7 @@
 
 ## 階段一：規則引擎（不需要任何帳號）
 
-### [ ] T0 專案骨架
+### [x] T0 專案骨架
 - 建立 `worker/`（TypeScript、Vitest、wrangler 設定、lint）。本機 `npm test` 能跑。
 - 完成條件：空專案測試通過；`README` 寫明怎麼跑測試與本機開發。
 
@@ -121,3 +121,5 @@
 ## 進度紀錄
 
 （每完成一個任務加一行：日期、任務、做了什麼、和計畫不同的地方、留給下一步的事。）
+
+- 2026-11-11 **T0**：建立 `worker/`（TypeScript 6、Vitest 5、wrangler 4、ESLint 10）。`npm test`、`npm run typecheck`、`npm run lint` 都通過（1 個骨架測試）。`worker/README.md` 寫了指令與目錄。和計畫相同。只在本機驗證，沒有部署。
