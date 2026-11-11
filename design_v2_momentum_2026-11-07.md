@@ -331,7 +331,7 @@ B-7（`backtest_B7_2026-11-07.md`）：門檻 5% 時月中當天通知每年 0.3
 | Claude Code 雲端排程（Max 方案） | 只做 AI 層，由 Worker 用 API 觸發 |
 | GitHub | 程式碼與 prompt（雲端排程 clone 這個 repo） |
 
-- **規則引擎**：上線只有 TypeScript 一份，以 `prototype/js/engine.js` 為起點。驗收：在本機用 Node 重放歷史，結果要對得上 B-7（`backtest/results/`）；原型的 7 個情境當固定測試。Python 回測程式凍結，只當決策依據；日後要改規則，先用 Python 回測確認，再改 TypeScript 引擎並重跑驗收。
+- **規則引擎**：上線只有 TypeScript 一份，以 `prototype/js/engine.js` 為起點。驗收：在本機用 Node 重放歷史，結果要對得上 B-8 的「緩衝 0.10」情境（目前的主要方案，`backtest/results/B8_*`）；原型的 7 個情境當固定測試。Python 回測程式凍結，只當決策依據；日後要改規則，先用 Python 回測確認，再改 TypeScript 引擎並重跑驗收。
 - **AI 層的資料交換**：Worker 存好證據包並給任務編號 → 觸發雲端排程（觸發文字只帶編號）→ Claude Code 向 Worker 取證據包 → 照 repo 裡的 prompt 判斷 → 把固定格式的 JSON 送回 Worker → Worker 檢查。Worker 把送回的內容當成不可信輸入：只接受固定欄位與列舉值，不合格或逾時就照規則並記錄。驗證金鑰用雲端環境的 network secret，權限只限讀寫該任務編號。
 - **AI 層介面固定**：輸入是證據包與 prompt 版本，輸出是固定格式 JSON。之後可以改成由 Worker 直接呼叫 Claude API（粗估每月 US$ 10～20，用量未實測），不用動引擎和網站。
 - **使用者主動的操作**（入金、出金、改比例、填快照）：規則清單由 Worker 當下算出；需要 AI 的部分另外觸發，晚幾分鐘補上。

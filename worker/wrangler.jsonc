@@ -1,0 +1,7 @@
+{
+  // stock bot：規則引擎、排程、網站、LINE（design_v2 §2.7）
+  // 金鑰一律用 `wrangler secret put`，不寫在這裡。
+  "name": "stock-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01"
+}
