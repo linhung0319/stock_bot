@@ -21,6 +21,16 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 | `npm run dev` | 本機開發（`wrangler dev`，不需要 Cloudflare 帳號） |
 | `npm run deploy` | 部署（需要先 `npx wrangler login`） |
 
+## 重放驗收（T2）
+
+引擎用回測的輸入逐日重放，結果要和 `../backtest/results/B8_*` 完全相同。
+
+1. 在 repo 根目錄匯出固定檔（約 40 秒，輸出到 `worker/fixtures/replay/`，不進 git）：
+   `uv run python worker/scripts/export_replay_data.py`
+2. `npm run replay` 印出比對表；`npm test` 也會跑同一組驗收（沒有固定檔時標成 skipped）。
+
+日後要改規則：先用 Python 回測確認，再改 `src/engine/` 並重跑這個驗收。
+
 ## 目錄
 
 - `src/engine/`：規則引擎。純函式：不讀網路、不讀時鐘、不碰儲存。
