@@ -31,6 +31,11 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 
 日後要改規則：先用 Python 回測確認，再改 `src/engine/` 並重跑這個驗收。
 
+## 部署與實測
+
+需要 Cloudflare 與 claude.ai 帳號的步驟寫在 [`SETUP.md`](SETUP.md)。
+從本機實抓一次公開資料來源（不經過 Cloudflare）：`npx tsx scripts/probe-local.ts`。
+
 ## 目錄
 
 - `src/engine/`：規則引擎。純函式：不讀網路、不讀時鐘、不碰儲存。

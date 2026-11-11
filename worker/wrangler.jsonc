@@ -1,7 +1,26 @@
 {
   // stock bot：規則引擎、排程、網站、LINE（design_v2 §2.7）
-  // 金鑰一律用 `wrangler secret put`，不寫在這裡。
+  // 金鑰一律用 `wrangler secret put`，不寫在這裡：
+  //   ADMIN_TOKEN        管理端點（/admin/*）的 Bearer token（在 Cloudflare Access 設好之前用）
+  //   AI_TASK_SECRET     雲端排程取證據包、送回結果用的 Bearer token（和 claude.ai 雲端環境的 network secret 相同）
+  //   ROUTINE_FIRE_URL   雲端排程的 /fire 網址
+  //   ROUTINE_TOKEN      雲端排程的 API token
+  //   EDGAR_USER_AGENT   SEC 要求的 User-Agent（含聯絡方式）
   "name": "stock-bot",
   "main": "src/index.ts",
-  "compatibility_date": "2026-11-01"
+  "compatibility_date": "2026-11-01",
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "stock-bot",
+      // 執行 `npx wrangler d1 create stock-bot` 後，把印出來的 database_id 填在這裡
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": {
+    // T4 實測：美股收盤後（UTC 23:05、23:10，週一到週五）各跑一半，避開免費方案每次 50 個對外請求的上限
+    "crons": ["5,10 23 * * 1-5"]
+  }
 }
