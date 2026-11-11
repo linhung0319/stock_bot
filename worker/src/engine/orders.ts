@@ -58,7 +58,7 @@ export function planToLines(plan: Pick<PlanResult, 'targets' | 'why' | 'events'>
     let sh: number;
     if (tgt <= 1e-9) sh = -have;
     else if (reason === '自選訊號' && bucket === 'own' && reduced.has(ticker)) sh = -(digits ? roundNear(have / 2, digits) : halveShares(have));
-    else if (tgt < cur) sh = -Math.min(have, roundNear((cur - tgt) / px, digits));
+    else if (tgt < cur) sh = -Math.min(have, reason === '出金' ? Math.ceil((cur - tgt) / px - 1e-9) : roundNear((cur - tgt) / px, digits));
     else sh = roundDown((tgt - cur) / px, digits);
     if (sh !== 0) lines.push({ ticker, bucket, shares: sh, reason });
   }
@@ -178,7 +178,8 @@ export function crashCoreLines(ctx: CoreContext, turnOn: boolean): OrderLine[] {
   const pv = ctx.price(ctx.cfg.coreTicker);
   const pb = ctx.price(ctx.bondTicker);
   if (turnOn) {
-    const coreVal = ctx.coreShares * pv + ctx.bondShares * pb + ctx.cash;
+    // 帳上現金不算在這裡：現金由 composeWithCore 照一半一半交給核心
+    const coreVal = ctx.coreShares * pv + ctx.bondShares * pb;
     const move = coreVal * (1 - ctx.cfg.crashCut) - ctx.bondShares * pb;
     if (move <= 0) return [];
     return [

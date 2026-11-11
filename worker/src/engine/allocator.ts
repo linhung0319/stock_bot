@@ -31,6 +31,8 @@ export interface MonthlyInput {
   companyOf?: (ticker: string) => string;
   /** 上次的策略單沒照做、這個月要把差額再列一次的動能代號（設計 §2.3.1）。 */
   owed?: string[];
+  /** 遞補者也被否決、這個月留在核心的格數（設計 §2.4）。 */
+  emptySlots?: number;
 }
 
 export interface FlowInput {
@@ -270,7 +272,7 @@ export function planDay(inp: PlanInput): PlanResult {
   if (inp.monthly) {
     const m = inp.monthly;
     selection = selectMomentum(m.order, st.heldMom, {
-      slots: cfg.momSlots,
+      slots: Math.max(0, cfg.momSlots - (m.emptySlots ?? 0)),
       exitRank: cfg.exitRank,
       blocked: m.blocked,
       companyOf: m.companyOf,
