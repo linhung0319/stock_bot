@@ -1,16 +1,19 @@
 // Worker 進入點：路由與排程。
 //   /health                      不需要驗證
 //   /ai/task/:id/evidence|result 雲端排程用，Bearer AI_TASK_SECRET
-//   /admin/*                     管理用，Bearer ADMIN_TOKEN（Cloudflare Access 設好之前）
+//   /admin/*                     管理用，Bearer ADMIN_TOKEN
+//   /api/*、/demo/api/*          網站的 API（Cloudflare Access；src/app/site/）
+//   其他                         網站的靜態檔（public/，由 Cloudflare 直接回應，不會進到這裡）
 import { acceptResult, createTask, fireRoutine, getTask, readEvidence, sweepTimeouts, taskTimings } from './app/aiTasks';
 import { bearerOk, json, type Env, type Fetcher } from './app/env';
 import { loadAccount, requiredTickers } from './app/ledgerStore';
 import { probeSummary, runProbe, saveProbe } from './app/probe';
+import { handleSite } from './app/site/api';
 import { runIngest, type IngestResult } from './data/ingest';
 import { loadConstituents, loadRanking, recentAlerts, recentRuns, saveRun, seriesFreshness } from './data/store';
 import { errText } from './data/util';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 
 /** 每日資料抓取的排程（美股收盤後；UTC 23:30 = 美東 18:30 或 19:30）。 */
 export const INGEST_CRON = '30 23 * * 1-5';
@@ -86,7 +89,11 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
     }
     return json({ error: 'not_found' }, 404);
   }
-  return new Response('stock bot', { status: 200 });
+
+  const site = await handleSite(request, env, fetcher, now);
+  if (site) return site;
+  // 靜態檔由 Cloudflare 在 Worker 之前回應；會走到這裡的是不存在的路徑
+  return new Response('stock bot', { status: 404 });
 }
 
 export default {

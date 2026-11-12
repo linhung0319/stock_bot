@@ -5,9 +5,7 @@ import {
   applySnapshot,
   bookShares,
   composeNotif,
-  createAccount,
   dailyCheck,
-  excessVol,
   monthlyReport,
   respond,
   totalValue,
@@ -18,6 +16,7 @@ import {
   type ResponseInput,
   type Snapshot,
 } from '../../src/engine';
+import { createDemoAccount } from '../../src/demo/driver';
 import { ranksAt, viewAt, type Market } from './market';
 
 export interface SimOptions {
@@ -41,18 +40,7 @@ export class Sim {
     public opt: SimOptions = {},
   ) {
     this.d = market.idx0;
-    const v0 = viewAt(market, this.d - 1);
-    const model = init.momModel ?? Object.keys(init.mom ?? {});
-    const cache: Record<string, Float64Array> = {};
-    const retOf = (t: string) => {
-      if (!cache[t]) {
-        const c = market.close[t];
-        cache[t] = Float64Array.from(c.map((x, k) => (k ? x / c[k - 1] - 1 : NaN)));
-      }
-      return cache[t];
-    };
-    const s0 = excessVol(retOf, model, 'VOO', v0.i - 125, v0.i + 1);
-    this.acct = createAccount({ volW: 1, volHist: Array.from({ length: 24 }, () => s0 * (opt.sigmaMedianFactor ?? 1.35)), ...init }, v0);
+    this.acct = createDemoAccount(market, init, opt.sigmaMedianFactor);
   }
   get date(): string {
     return this.market.days[this.d];

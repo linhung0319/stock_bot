@@ -21,6 +21,7 @@ import {
   type MarketView,
   type Notif,
   type Premise,
+  type ShadowRecord,
   type Tier,
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
@@ -130,6 +131,7 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
         actual: sumFor(act?.lines ?? [], tk),
         price: view.close[tk] ? priceOf(view, tk) : 0,
         choice: it.choice,
+        notif: n.id,
       };
       if (rec.ai !== null || rec.actual !== rec.rule || it.aiLine) acct.shadow.push(rec);
       // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒
@@ -147,6 +149,34 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
     n.status = 'RESPONDED';
   }
   return acct;
+}
+
+/**
+ * 改決定：已經回覆、還沒填快照的清單退回「等你決定」。
+ * 回覆時只記了三件事——合成的清單、沒照做的紀錄、策略單的欠單——這裡把它們收回；
+ * 每一項原本選的選項留著（回到第一步時還是上次的選擇）。成交之後（已填快照）不能改。
+ * 沒照做的紀錄只增不減，所以不刪，改成加一筆作廢記號；讀的時候用 liveShadow() 濾掉。
+ */
+export function reopen(acct0: Account, view: MarketView, id: number): { acct: Account; ok: boolean } {
+  const acct = clone(acct0);
+  const n = acct.notifs.find((x) => x.id === id);
+  if (!n || n.status !== 'RESPONDED' || n.followUpOpen) return { acct, ok: false };
+  n.status = 'PENDING';
+  delete n.composed;
+  delete n.respondedAt;
+  for (const [tk, o] of Object.entries(acct.mom.owe)) if (o.notif === id) delete acct.mom.owe[tk];
+  acct.shadow.push({ date: view.date, f: 'REOPEN', ticker: null, title: '改決定：先前的回覆作廢', rule: 0, ai: null, actual: 0, price: 0, choice: 'REOPEN', notif: id });
+  return { acct, ok: true };
+}
+
+/** 沒照做的紀錄裡，拿掉被「改決定」作廢的那幾筆（同一則通知、在作廢記號之前的）和記號本身。 */
+export function liveShadow(records: ShadowRecord[]): ShadowRecord[] {
+  const voidedBefore = new Map<number, number>();
+  records.forEach((s, k) => {
+    if (s.choice === 'REOPEN' && s.notif !== undefined) voidedBefore.set(s.notif, k);
+  });
+  if (!voidedBefore.size) return records;
+  return records.filter((s, k) => s.choice !== 'REOPEN' && (s.notif === undefined || k > (voidedBefore.get(s.notif) ?? -1)));
 }
 
 // ---------------------------------------------------------------- 快照 → 事件

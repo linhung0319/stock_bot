@@ -6,10 +6,14 @@
   //   ROUTINE_FIRE_URL   雲端排程的 /fire 網址
   //   ROUTINE_TOKEN      雲端排程的 API token
   //   EDGAR_USER_AGENT   SEC 要求的 User-Agent（含聯絡方式）
+  //   ACCESS_TEAM_DOMAIN Cloudflare Access 的團隊網域（xxx.cloudflareaccess.com）
+  //   ACCESS_AUD         Access 應用程式的 AUD；這兩個都設了，網站（/api、/demo/api）才用 Access 驗證登入
   "name": "stock-bot",
-  "main": "src/index.ts",
+  "main": "src/worker.ts",
   "compatibility_date": "2026-11-01",
   "observability": { "enabled": true },
+  // 網站的靜態檔（public/）。符合檔名的請求由 Cloudflare 直接回應；其他（/api、/admin、/ai…）才進 Worker
+  "assets": { "directory": "./public" },
   "d1_databases": [
     {
       "binding": "DB",

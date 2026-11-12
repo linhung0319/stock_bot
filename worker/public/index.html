@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<!-- 這個網站自己有深色模式（跟著系統，也可以按右上角切換）。請 Dark Reader 這類擴充功能不要再改一次顏色，否則按鈕底色和門檻尺會不見 -->
+<meta name="darkreader-lock">
+<title>stock bot</title>
+<link rel="preload" href="/fonts/display.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/app.css">
+<script>
+// 深淺色：預設跟著系統；按過切換鈕（或網址帶 ?theme=light／dark）就記住
+try {
+  var t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('stockbot.theme');
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+} catch (e) {}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">跳到內容</a>
+<header class="top">
+  <div class="top-in">
+    <a class="brand" href="#/" aria-label="stock bot">stock<i aria-hidden="true"></i>bot</a>
+    <nav class="nav" aria-label="主要">
+      <a href="#/" data-nav="home">待辦<span class="badge" id="navBadge" hidden></span></a>
+      <a href="#/account" data-nav="account">帳戶</a>
+      <a href="#/history" data-nav="history">紀錄</a>
+      <a href="#/do" data-nav="do">我要…</a>
+    </nav>
+    <button class="mode" id="modeBtn" type="button" aria-pressed="false">示範資料</button>
+    <button class="theme" id="themeBtn" type="button" aria-label="切換深色或淺色" title="切換深色或淺色">◐</button>
+  </div>
+</header>
+<div id="demoBar" hidden></div>
+<div id="notices"></div>
+<main id="main" tabindex="-1"></main>
+<div id="toast" role="status" aria-live="polite"></div>
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

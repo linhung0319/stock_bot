@@ -4,3 +4,6 @@ dist/
 .dev.vars
 fixtures/replay/
 .secrets.json
+
+# 做標題字型時下載的原始字型檔（scripts/build-font.py）
+.font-cache/

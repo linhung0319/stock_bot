@@ -163,6 +163,8 @@ export interface ShadowRecord {
   price: number;
   choice: string;
   note?: string;
+  /** 哪一則通知的回覆產生的（改決定時用來作廢）。 */
+  notif?: number;
 }
 
 export type LedgerEventKind = 'TRADE' | 'TRANSFER' | 'DEPOSIT' | 'WITHDRAW' | 'DIVIDEND' | 'CASH_OTHER' | 'UNCLASSIFIED' | 'CLASSIFIED';

@@ -5,6 +5,11 @@ export interface Env {
   ROUTINE_FIRE_URL?: string;
   ROUTINE_TOKEN?: string;
   EDGAR_USER_AGENT?: string;
+  /** Cloudflare Access：團隊網域（例如 xxx.cloudflareaccess.com）與這個應用程式的 AUD。兩個都設了，網站才用 Access 驗證。 */
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
+  /** 只給本機開發（.dev.vars）：'1' = 網站不驗證登入。部署的環境不要設。 */
+  DEV_NO_AUTH?: string;
 }
 
 export type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;

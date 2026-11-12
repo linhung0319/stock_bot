@@ -1,4 +1,4 @@
-# 部署與實測步驟（T4、T5）
+# 部署與實測步驟（T4、T5、T8）
 
 這些步驟需要你本人的帳號，程式沒辦法代做。指令都在 `worker/` 底下執行。
 金鑰一律用 `wrangler secret put`（會提示你輸入，不會進 repo，也不會印出來）。
@@ -79,3 +79,38 @@
    把結果貼給 Claude，就可以把 T5 的結論寫下來；送回結果被擋的話會改用 git push 傳結果。
 
 每個排程任務每小時最多觸發 30 次（官方文件，研究預覽階段可能會變）。
+
+## T8：網站與登入（Cloudflare Access）
+
+網站的靜態檔在 `public/`，API 在 `/api/*`（真實帳本）與 `/demo/api/*`（示範資料）。
+**還沒設定 Access 之前，API 預設是關的**（回 401）；網頁本身打得開，但只會看到「還沒設定登入」。
+這時可以在那個畫面貼 `ADMIN_TOKEN` 暫時進去看；Access 設好之後這條路會自動失效。
+
+1. 建資料表並部署（這次多一張 `demo_state`，只給示範模式用）：
+   ```
+   npx wrangler d1 migrations apply stock-bot --remote
+   npx wrangler deploy
+   ```
+2. 開啟 Access：Cloudflare 後台 → Workers & Pages → `stock-bot` → Settings → Domains & Routes →
+   `workers.dev` 那一列按 **Enable Cloudflare Access**。跳出來的視窗會顯示兩個值：`POLICY_AUD` 與 `TEAM_DOMAIN`，先複製下來。
+   再按 **Manage Cloudflare Access**，把允許登入的 email 改成只有你自己。
+3. 把那兩個值交給 Worker（Worker 會自己再驗一次 Access 簽的權杖，Access 設定被改壞時 API 也不會打開）：
+   ```
+   npx wrangler secret put ACCESS_AUD           # 貼 POLICY_AUD
+   npx wrangler secret put ACCESS_TEAM_DOMAIN   # 貼 TEAM_DOMAIN（https://xxx.cloudflareaccess.com 或 xxx.cloudflareaccess.com 都可以）
+   ```
+4. 讓機器用的端點略過 Access。`/ai/*`（雲端排程）、`/admin/*`（你用 curl）、`/health` 各有自己的金鑰或不需要登入，
+   但 Access 開在整個網域上會把它們也擋住。到 Zero Trust → Access → Applications，各加一個 Self-hosted 應用程式：
+   網域填同一個 `stock-bot.<子網域>.workers.dev`，路徑分別填 `ai`、`admin`、`health`，政策選 **Bypass**、對象 Everyone。
+   路徑比較明確的應用程式會優先於整個網域的那一個。
+5. 確認：
+   - 用瀏覽器開網站 → 先看到 Access 的登入畫面 → 登入後看到 stock bot。
+   - `curl https://<網址>/health` 仍然回 `{"ok":true,…}`。
+   - `curl -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/data/status` 仍然可用。
+   - 沒登入時 `curl https://<網址>/api/state` 回 401 或被導到登入頁。
+
+第 2、4 步的後台操作是照 2026-11-12 查到的官方文件寫的（`developers.cloudflare.com/workers/configuration/cloudflare-access/`、
+`…/cloudflare-one/access-controls/policies/app-paths/`），沒有實際在後台做過；畫面上的名稱如果不一樣，以後台為準。
+Bypass 會讓那幾個路徑不經過 Access 也不留 Access 的紀錄；它們靠各自的 Bearer 金鑰保護。
+
+設好之後，網站右上角的「示範資料」可以隨時切換：示範模式用假價格與假的 AI 內容，存在另一張表，不會動到真正的帳本。

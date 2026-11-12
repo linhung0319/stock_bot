@@ -10,4 +10,13 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
   },
+  {
+    // 網站的前端（public/js）：在瀏覽器裡跑，沒有經過打包
+    files: ['public/**/*.js'],
+    languageOptions: {
+      globals: Object.fromEntries(
+        ['window', 'document', 'location', 'localStorage', 'sessionStorage', 'navigator', 'fetch', 'URLSearchParams', 'Node', 'Event', 'setTimeout', 'requestAnimationFrame', 'ResizeObserver', 'matchMedia'].map((g) => [g, 'readonly']),
+      ),
+    },
+  },
 );
