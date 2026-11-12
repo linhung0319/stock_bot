@@ -36,10 +36,18 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 需要 Cloudflare 與 claude.ai 帳號的步驟寫在 [`SETUP.md`](SETUP.md)。
 從本機實抓一次公開資料來源（不經過 Cloudflare）：`npx tsx scripts/probe-local.ts`。
 
+## 每日資料抓取（T6）
+
+- 排程：每個交易日 UTC 23:30（美股收盤後）。手動跑一次：`POST /admin/ingest`（加 `?rank=1` 會連排名一起產生）。
+- 看狀態：`GET /admin/data/status`（最近幾次抓取、告警、價格最新到哪一天、最新的排名與成分股比對）。
+- 用真實資料在本機跑一次（含排名，約 510 個對外請求，存在暫時的本機 D1）：`npx tsx scripts/ingest-local.ts`。
+- 資料表在 `migrations/0002_data_and_ledger.sql`；改了 migration 要 `npx wrangler d1 migrations apply stock-bot --remote` 再部署。
+- 當天其實休市（臨時休市）而被告警「價格不是最新的」：在 D1 的 `calendar_overrides` 補一筆（`open = 0`）。
+
 ## 目錄
 
 - `src/engine/`：規則引擎。純函式：不讀網路、不讀時鐘、不碰儲存。
-- `src/data/`：資料抓取。
+- `src/data/`：資料抓取、交易日曆、D1 存取、組成引擎要的市場資料。
 - `src/app/`：排程、網站、LINE、AI 任務端點。
 - `test/`：測試。
 - `scripts/`：本機工具（重放驗收等）。

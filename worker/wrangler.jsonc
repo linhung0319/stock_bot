@@ -14,13 +14,13 @@
     {
       "binding": "DB",
       "database_name": "stock-bot",
-      // 執行 `npx wrangler d1 create stock-bot` 後，把印出來的 database_id 填在這裡
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "a0bdb989-0a39-4d7f-83fb-5b1c587a10de",
       "migrations_dir": "migrations"
     }
   ],
   "triggers": {
     // T4 實測：美股收盤後（UTC 23:05、23:10，週一到週五）各跑一半，避開免費方案每次 50 個對外請求的上限
-    "crons": ["5,10 23 * * 1-5"]
+    // T6 每日資料抓取：UTC 23:30（美東 18:30 或 19:30，收盤後）
+    "crons": ["5,10 23 * * 1-5", "30 23 * * 1-5"]
   }
 }

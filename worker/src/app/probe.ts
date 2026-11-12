@@ -1,6 +1,7 @@
 // T4 實測：從 Cloudflare 抓四個資料來源，記錄成功率與耗時（存 D1 的 probe_runs）。
 // 分兩半跑（A、B），每一半的對外請求都在 50 個以內（免費方案的上限）。
 import { compareMembership, fetchEdgarSubmissions, fetchSpyHoldings, fetchWikiSp500, fetchYahooDaily } from '../data/sources';
+import { pool } from '../data/util';
 import type { Env, Fetcher } from './env';
 
 /** 約 60 檔：核心 ETF、短債、基準，加上市值與成交金額大的股票（含 BRK.B 這種特殊代號）。 */
@@ -35,21 +36,6 @@ async function timed(part: string, source: string, target: string, fn: () => Pro
     const st = /HTTP (\d{3})/.exec(msg);
     return { part, source, target, ok: false, status: st ? Number(st[1]) : null, ms: Date.now() - t0, detail: msg.slice(0, 300) };
   }
-}
-
-/** 一次最多同時 n 個請求。 */
-async function pool<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(n, items.length) }, async () => {
-      while (next < items.length) {
-        const i = next++;
-        out[i] = await fn(items[i]);
-      }
-    }),
-  );
-  return out;
 }
 
 export async function runProbe(env: Pick<Env, 'EDGAR_USER_AGENT'>, part: 'A' | 'B', fetcher: Fetcher): Promise<ProbeRow[]> {

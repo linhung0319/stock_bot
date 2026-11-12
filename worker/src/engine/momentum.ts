@@ -36,8 +36,8 @@ function stableSort<T>(xs: T[], cmp: (a: T, b: T) => number): T[] {
     .map((o) => o.x);
 }
 
-/** 由成分股資料建立 50 檔股票池並照動能排名。rows 的順序會影響同分時的取捨（照成分股檔的順序）。 */
-export function rankUniverse(rows: UniverseRow[], opt: UniverseOptions = {}): RankedStock[] {
+/** 50 檔股票池（還沒排名；不看 momentum）：股價 > 5 → 成交金額前 100 → 市值前 50。 */
+export function universeOf(rows: UniverseRow[], opt: UniverseOptions = {}): UniverseRow[] {
   const minPrice = opt.minPrice ?? 5;
   const nLiquid = opt.liquid ?? 100;
   const nUniverse = opt.universe ?? 50;
@@ -45,7 +45,12 @@ export function rankUniverse(rows: UniverseRow[], opt: UniverseOptions = {}): Ra
   // 成交金額前 100（由小到大穩定排序後取最後 100，和 Python 回測相同）
   const liquid = stableSort(ok, (a, b) => a.dollarVolume - b.dollarVolume).slice(-nLiquid);
   // 其中市值前 50
-  const large = stableSort(liquid, (a, b) => b.weight - a.weight).slice(0, nUniverse);
+  return stableSort(liquid, (a, b) => b.weight - a.weight).slice(0, nUniverse);
+}
+
+/** 由成分股資料建立 50 檔股票池並照動能排名。rows 的順序會影響同分時的取捨（照成分股檔的順序）。 */
+export function rankUniverse(rows: UniverseRow[], opt: UniverseOptions = {}): RankedStock[] {
+  const large = universeOf(rows, opt);
   const ranked = stableSort(
     large.filter((r) => Number.isFinite(r.momentum)),
     (a, b) => b.momentum - a.momentum,
