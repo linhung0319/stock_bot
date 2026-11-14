@@ -77,6 +77,12 @@ export async function loadShadow(db: D1Database, limit = 500): Promise<ShadowRec
   return rows.reverse().map((r) => JSON.parse(r.body) as ShadowRecord);
 }
 
+/** 影子紀錄裡、某一天之後出現過的代號（影子組合要用它們之後的價格，即使已經不持有）。 */
+export async function shadowTickers(db: D1Database, since: string): Promise<string[]> {
+  const rows = (await db.prepare('SELECT DISTINCT ticker FROM shadow_records WHERE ticker IS NOT NULL AND date >= ?').bind(since).all<{ ticker: string }>()).results;
+  return rows.map((r) => r.ticker);
+}
+
 /** 每天一定要有最新價格的代號：核心 ETF、短債 ETF、三桶（含未分類）的持股、動能名單、自選。 */
 export function requiredTickers(acct: Account | null, defaults: { core: string; bond: string } = { core: 'VOO', bond: 'SGOV' }): string[] {
   if (!acct) return [defaults.core, defaults.bond];

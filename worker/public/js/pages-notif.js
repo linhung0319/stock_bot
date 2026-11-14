@@ -1,5 +1,6 @@
 // 待辦與紀錄、通知頁（三步驟：看建議與理由 → 下單 → 填快照）、填快照。
 import { api, getMode } from './api.js';
+import { runRow, shadowLines } from './pages-ai.js';
 import { actionText, day, h, money, put, qty, toast } from './dom.js';
 import { consoleBox, glass, icon, longDay, menuList, page, tiles } from './layout.js';
 import { actParts, bucketTag, chevron, headline, orderRows, whyBlock } from './parts.js';
@@ -78,6 +79,7 @@ function records(hist, initial = 0) {
     ['全部', () => [...hist.notifs.map((n) => ({ date: n.date, el: () => historyRow(n) })), ...hist.events.filter((e) => !e.notif).map((e) => ({ date: e.date, el: () => eventRow(e) }))].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)), '還沒有紀錄。'],
     ['通知', () => hist.notifs.map((n) => ({ el: () => historyRow(n) })), '還沒有通知。'],
     ['帳本', () => hist.events.map((e) => ({ el: () => eventRow(e) })), '帳本還沒有變動。'],
+    ['AI 紀錄', () => (hist.runs ?? []).map((r) => ({ el: () => runRow(r) })), '還沒有 AI 紀錄。AI 層設定好之後，每一次審查、否決、檢視都會留在這裡：看了哪些資料、每一票怎麼判、哪些引用通過檢查。'],
   ];
   const showList = (rows, empty) => {
     if (!rows.length) return box.replaceChildren(glass('empty', h('p', { class: 'dim' }, empty)));
@@ -108,6 +110,7 @@ function records(hist, initial = 0) {
     if (!hist.shadow.length) return box.replaceChildren(glass('empty', h('p', { class: 'dim' }, '還沒有。你每次都照規則做的話，這裡會是空的。')));
     box.replaceChildren(
       h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '每一次規則和 AI 的建議不同、或你沒照規則做，都記一筆。之後可以回頭看：照規則、照 AI、你實際做的，哪一個比較好。'),
+      shadowLines(hist.shadowSum),
       glass(
         'scroll-x',
         h(

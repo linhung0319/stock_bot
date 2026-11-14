@@ -13,9 +13,10 @@ import { runIngest, type IngestResult } from '../data/ingest';
 import { buildMarketView, rebaseNotifSeq } from '../data/marketView';
 import { NO_SIGNAL_ALERTS, loadCalendarOverrides, loadRanking, loadRun, loadSeries, saveAlerts, saveRun, type Alert, type DataRun, type Ranking } from '../data/store';
 import { errText } from '../data/util';
+import { closeStaleRuns } from './aiRuns';
 import { sweepTimeouts } from './aiTasks';
 import type { Env, Fetcher } from './env';
-import { ConflictError, loadAccount, requiredTickers, saveAccount } from './ledgerStore';
+import { ConflictError, loadAccount, requiredTickers, saveAccount, shadowTickers } from './ledgerStore';
 import { alertText, lineConfigured, notifLink, notifText, pushLine, type AlertRow } from './line';
 
 export type Attempt = 'FIRST' | 'FINAL' | 'MANUAL';
@@ -55,7 +56,10 @@ export interface FlowResult {
 export async function ingest(env: Env, fetcher: Fetcher, now: Date, forceRank = false): Promise<IngestResult | { error: string }> {
   try {
     const loaded = await loadAccount(env.DB);
-    return await runIngest(env.DB, fetcher, { now, required: requiredTickers(loaded?.acct ?? null), forceRank });
+    // 影子組合要用最近 7 個月內影子紀錄裡的代號（觀察期最長 6 個月）
+    const since = new Date(now.getTime() - 213 * 86400_000).toISOString().slice(0, 10);
+    const track = loaded ? await shadowTickers(env.DB, since) : [];
+    return await runIngest(env.DB, fetcher, { now, required: requiredTickers(loaded?.acct ?? null), forceRank, track });
   } catch (e) {
     const error = errText(e);
     console.error('每日資料抓取失敗', e);
@@ -308,6 +312,7 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
     // 缺席告警：再試之後今天還是沒有跑完；AI 任務逾時
     if (!ok) alerts.push({ kind: 'FLOW_MISSED', message: `今天（訊號日 ${session}）的流程沒有跑完，沒有產生清單${res.status === 'NO_SIGNAL' ? '：資料不完整（原因見上面或網站）' : ''}。明天會補做；要手動重跑用 POST /admin/flow。` });
     const timedOut = await sweepTimeouts(db, opt.now);
+    await closeStaleRuns(db, opt.now);
     if (timedOut.length) alerts.push({ kind: 'AI_TIMEOUT', message: `${timedOut.length} 個 AI 任務逾時，已照規則處理（${timedOut.join('、')}）。` });
   }
   await saveAlerts(db, at, session, alerts);

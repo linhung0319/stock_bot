@@ -53,6 +53,13 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - 新帳戶的依波動度減碼起始歷史：`src/engine/volSeed.ts`，由 `npx tsx scripts/vol-seed.ts` 從重放固定檔產生。
 - 設定 LINE：見 [`SETUP.md`](SETUP.md) 的 T7。
 
+## AI 共用骨架（T9）
+
+- `src/ai/check.ts`：證據包與輸出外殼的格式、每一票的程式檢查、3 票表決（純函式）。`src/ai/pack.ts`：證據包產生器的共用部分。`src/ai/shadow.ts`：影子組合三條線與 Beta 後驗。
+- `src/app/aiRuns.ts`：一次 AI 執行的儲存、觸發、收結果後表決、逾時照規則（`migrations/0005_ai_runs.sql`）。
+- 網站：紀錄區的「AI 紀錄」、`#/ai/<執行編號>`（`public/js/pages-ai.js`）、匯出 md（`/api/ai/run/<編號>/md`）。
+- 雲端排程的共用 prompt：`../ai/prompts/run.md`；各功能的 prompt 在 T10、T11 加上。
+
 ## 網站（T8）
 
 - 本機看網站：`npm run dev`，開 `http://127.0.0.1:8787/?demo=1`（示範資料）。第一次要先建本機的資料表：

@@ -13,7 +13,9 @@ import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
 import { advanceDemo, demoAtEnd, demoFill, demoFilledSnapshot, demoMarket, demoView, resetDemo, type AdvanceMode, type DemoState, type OnNotifs } from '../../demo/driver';
 import { ranksAt } from '../../demo/market';
 import type { Env } from '../env';
-import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, saveAccount, saveSnapshot, type LoadedAccount } from '../ledgerStore';
+import { getRun, listRuns, type AiRun } from '../aiRuns';
+import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, saveAccount, saveSnapshot, shadowTickers, type LoadedAccount } from '../ledgerStore';
+import { noteOfRun } from './aiViews';
 import { annotate } from './explain';
 import type { AiNote } from './types';
 
@@ -51,6 +53,9 @@ export interface SiteData {
 
 export interface SiteBackend {
   mode: 'real' | 'demo';
+  /** AI 執行紀錄（新的在前）。示範模式沒有完整紀錄，回傳空的。 */
+  runs(): Promise<AiRun[]>;
+  run(id: string): Promise<AiRun | null>;
   /** extra：這次操作另外需要價格的代號（真實模式沒有存的會當場去抓）。 */
   load(extra?: string[]): Promise<SiteData>;
   save(acct: Account, cause: string): Promise<void>;
@@ -73,7 +78,9 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const ranking = await loadRanking(env.DB);
       const core = acct?.cfg.coreTicker ?? 'VOO';
       const required = requiredTickers(acct);
-      const want = [...new Set([...required, BENCHMARK, ...(ranking?.order ?? []), ...extra])];
+      const shadowSince = new Date(now.getTime() - 213 * 86400_000).toISOString().slice(0, 10);
+      const shadowed = acct ? await shadowTickers(env.DB, shadowSince) : [];
+      const want = [...new Set([...required, BENCHMARK, ...(ranking?.order ?? []), ...shadowed, ...extra])];
       let series = await loadSeries(env.DB, want);
       const session = series.get(core)?.d.at(-1) ?? null;
       // 這次操作要用、但沒有存或不是最新的代號：當場抓一次（新增自選、快照出現新代號、建立帳戶）
@@ -115,11 +122,15 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const alerts = (await env.DB.prepare("SELECT message, MAX(id) AS id FROM alerts WHERE at >= ? AND (sent_at IS NULL OR sent_at NOT IN ('RESOLVED', 'SKIPPED_OLD')) GROUP BY message ORDER BY id DESC LIMIT 5").bind(since).all<{ message: string }>()).results;
       for (const a of alerts) warnings.push(a.message);
       const [events, shadow] = acct ? await Promise.all([loadEvents(env.DB, 300), loadShadow(env.DB, 300)]) : [[], []];
-      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes: [], events, shadow, today: taipeiDate(now), warnings };
+      // AI 紀錄 → 建議單上的 AI 說明
+      const aiNotes = (await listRuns(env.DB, now, { limit: 200 })).map(noteOfRun).filter((n): n is AiNote => n !== null);
+      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), warnings };
     },
     async save(acct, cause) {
       rev = await saveAccount(env.DB, acct, loaded, cause, now);
     },
+    runs: () => listRuns(env.DB, now, { limit: 200 }),
+    run: (id) => getRun(env.DB, id, now),
     async recordSnapshot(date, snap) {
       await saveSnapshot(env.DB, date, snap, now, rev);
     },
@@ -211,6 +222,8 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
     async recordSnapshot() {
       // 示範模式不另外留快照原文
     },
+    runs: async () => [],
+    run: async () => null,
     async reset(id) {
       await read();
       st = st ?? { scenario: id, d: 0, acct: null as unknown as Account };

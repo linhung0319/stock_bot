@@ -50,7 +50,31 @@ const validatePing: ResultValidator = (r, ev) => {
   return null;
 };
 
-export const VALIDATORS: Record<string, ResultValidator> = { PING: validatePing };
+/**
+ * T9 的 AI 執行：只檢查外層的形狀（每一票的內容由 src/ai/check.ts 逐條檢查，不合格的那一票算成「證據不足」，
+ * 不會整份退回；整份退回只在外層就不對的時候）。
+ */
+const validateRun: ResultValidator = (r, ev) => {
+  const extra = onlyKeys(r, ['task_id', 'kind', 'run_id', 'samples', 'process']);
+  if (extra) return extra;
+  if (r.run_id !== ev.run_id) return 'run_id 和證據包不同';
+  if (!Array.isArray(r.samples) || r.samples.length < 1 || r.samples.length > 5) return 'samples 要是 1～5 份輸出外殼';
+  if (r.process !== undefined) {
+    if (!Array.isArray(r.process) || r.process.length > 30) return 'process 要是 30 筆以內的陣列';
+    for (const p of r.process) {
+      if (typeof p !== 'object' || p === null || Array.isArray(p)) return 'process 的每一筆要是物件';
+      const o = p as Record<string, unknown>;
+      const bad = onlyKeys(o, ['role', 'model', 'text']);
+      if (bad) return `process：${bad}`;
+      if (typeof o.role !== 'string' || o.role.length > 60) return 'process.role 要是 60 字以內的字串';
+      if (o.model !== undefined && (typeof o.model !== 'string' || o.model.length > 80)) return 'process.model 要是 80 字以內的字串';
+      if (typeof o.text !== 'string' || o.text.length > 30_000) return 'process.text 要是 30000 字以內的字串';
+    }
+  }
+  return null;
+};
+
+export const VALIDATORS: Record<string, ResultValidator> = { PING: validatePing, RUN: validateRun };
 
 export function newTaskId(): string {
   const b = new Uint8Array(16);
@@ -109,7 +133,7 @@ export async function readEvidence(db: D1Database, id: string, now: Date): Promi
 }
 
 /** 雲端排程送回結果。只收一次；不合格就記錄原因，之後照規則。 */
-export async function acceptResult(db: D1Database, id: string, bodyText: string, now: Date): Promise<Response> {
+export async function acceptResult(db: D1Database, id: string, bodyText: string, now: Date, onDone?: (task: AiTaskRow, result: Record<string, unknown>) => Promise<unknown>): Promise<Response> {
   const t = await getTask(db, id);
   if (!t) return Response.json({ error: 'not_found' }, { status: 404 });
   if (t.status !== 'PENDING' && t.status !== 'FETCHED') return Response.json({ error: 'task_closed', status: t.status }, { status: 409 });
@@ -137,6 +161,14 @@ export async function acceptResult(db: D1Database, id: string, bodyText: string,
   const why = v(r, JSON.parse(t.evidence));
   if (why) return reject(why);
   await db.prepare("UPDATE ai_tasks SET status = 'DONE', result = ?, completed_at = ? WHERE id = ?").bind(JSON.stringify(r), now.toISOString(), id).run();
+  // 收下之後的處理（AI 執行：逐票檢查、表決）。結果已經存了，這裡出錯不影響回給雲端排程的回應
+  if (onDone) {
+    try {
+      await onDone(t, r);
+    } catch (e) {
+      console.error('結果收下之後的處理出錯', e);
+    }
+  }
   return Response.json({ ok: true });
 }
 

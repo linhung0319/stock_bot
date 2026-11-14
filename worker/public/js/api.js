@@ -58,7 +58,33 @@ async function call(method, path, body) {
   return data;
 }
 
+/** 下載一個檔案（例如匯出的 md）：帶著同樣的登入方式取回內容，再交給瀏覽器存檔。 */
+async function download(path, filename) {
+  const headers = {};
+  const token = read(sessionStorage, KEY_TOKEN);
+  if (token) headers.Authorization = 'Bearer ' + token;
+  const res = await fetch((mode === 'demo' ? '/demo/api' : '/api') + path, { headers, cache: 'no-store', credentials: 'same-origin' });
+  if (!res.ok) {
+    let msg = `伺服器回應 ${res.status}`;
+    try {
+      msg = (await res.json()).error ?? msg;
+    } catch {
+      /* 不是 JSON */
+    }
+    throw new ApiError(res.status, msg);
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export const api = {
   get: (path) => call('GET', path),
   post: (path, body = {}) => call('POST', path, body),
+  download,
 };

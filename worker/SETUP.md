@@ -147,3 +147,12 @@ UTC 01:30 再檢查一次，沒跑完就重跑，還是不行就推一則告警�
 
 LINE 免費方案每月推播有則數上限（以 Official Account Manager 顯示的為準）。這個系統平常一個月約 1 則月報，加上偶爾的當天通知、提醒和告警，
 不會碰到上限；碰到時推播會失敗、記在 `/admin/flow/status`，網站的警示列仍看得到告警。
+
+## T9：AI 共用骨架
+
+程式不需要新的帳號。部署時套用新的資料表（`0005`，AI 執行紀錄）：
+```
+npx wrangler d1 migrations apply stock-bot --remote
+npx wrangler deploy
+```
+T5 的雲端排程建好之後，排程的 Instructions 用 `ai/prompts/run.md` 的「排程的 prompt」（它也會把 PING 任務交給 `ping.md` 處理，所以同一個排程就夠）。

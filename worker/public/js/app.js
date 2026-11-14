@@ -4,6 +4,7 @@ import { ApiError, api, getMode, setMode } from './api.js';
 import { day, h, toast } from './dom.js';
 import { menuList, page } from './layout.js';
 import { accountPage, addOwnPage, authPage, depositPage, doPage, holdingPage, ratioPage, removePage, setupPage, withdrawPage } from './pages-more.js';
+import { aiRunPage } from './pages-ai.js';
 import { homePage, notifPage, snapshotPage } from './pages-notif.js';
 import { attach } from './slime.js';
 
@@ -36,6 +37,7 @@ const ROUTES = [
   [/^#?\/?$/, 'home', () => homePage(ctx)],
   [/^#\/history$/, 'home', () => homePage(ctx, { records: 0 })],
   [/^#\/n\/(\d+)$/, 'home', (m) => notifPage(ctx, Number(m[1]))],
+  [/^#\/ai\/([A-Za-z0-9_.%-]+)$/, 'home', (m) => aiRunPage(ctx, decodeURIComponent(m[1]))],
   [/^#\/snapshot$/, 'home', () => snapshotPage(ctx)],
   [/^#\/account$/, 'account', () => accountPage(ctx)],
   [/^#\/h\/([A-Za-z0-9.%-]+)$/, 'account', (m) => holdingPage(ctx, decodeURIComponent(m[1]))],
@@ -48,7 +50,7 @@ const ROUTES = [
   [/^#\/setup$/, '', () => setupPage(ctx)],
 ];
 // 這些頁面要有帳戶才看得到
-const NEED_ACCOUNT = /^#\/(n\/|snapshot|h\/|history|do\/)/;
+const NEED_ACCOUNT = /^#\/(n\/|ai\/|snapshot|h\/|history|do\/)/;
 
 async function loadState() {
   ctx.state = await api.get('/state');

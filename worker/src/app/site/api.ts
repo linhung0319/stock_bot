@@ -14,6 +14,7 @@ import {
   drawdownFromHigh,
   explainCash,
   itemAction,
+  liveShadow,
   recommendStdWeights,
   removeOwn,
   reopen,
@@ -36,6 +37,9 @@ import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
 import { json, type Env, type Fetcher } from '../env';
 import { siteAuth } from './access';
 import { ConflictError, demoBackend, realBackend, type DemoBackend, type SiteBackend, type SiteData } from './backend';
+import { bookFromView, followUp, shadowSummary } from '../../ai/shadow';
+import { BENCHMARK } from '../../data/ingest';
+import { exportMd, rowOfNote, runDetail, runRow } from './aiViews';
 import { choiceEffect } from './bubble';
 import { annotate } from './explain';
 import { accountView, composedView, ctxOf, historyView, holdingDetail, notifView, snapshotForm, stateView } from './views';
@@ -53,6 +57,7 @@ export class SiteError extends Error {
 }
 
 const TICKER = /^[A-Z][A-Z0-9.-]{0,9}$/;
+const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 const MAX_BODY = 64 * 1024;
 
 function ready(d: SiteData): Ready {
@@ -208,7 +213,46 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
 
   if (rest === 'state' && get) return json(stateView(await backend.load()));
 
-  if (rest === 'history' && get) return json(historyView(ready(await backend.load())));
+  if (rest === 'history' && get) {
+    const d = ready(await backend.load());
+    // AI 紀錄（示範模式只有腳本裡的假說明）與影子組合的三條線
+    const runs = d.demo ? d.aiNotes.map(rowOfNote) : (await backend.runs()).map(runRow);
+    const shadowSum = shadowSummary(liveShadow([...d.shadow, ...d.acct.shadow]), bookFromView(d.axis, d.view.close));
+    return json({ ...historyView(d), runs, shadowSum });
+  }
+
+  const aiRun = /^ai\/run\/([A-Za-z0-9_.-]{1,100})(\/md)?$/.exec(rest);
+  if (aiRun && get) {
+    const id = aiRun[1];
+    if (id.startsWith('demo-')) {
+      const d = await backend.load();
+      const note = d.demo ? d.aiNotes[Number(id.slice(5))] : undefined;
+      if (!note) throw new SiteError(404, '找不到這次 AI 執行');
+      if (aiRun[2]) throw new SiteError(400, '示範資料沒有完整的紀錄可以匯出');
+      return json({ ...rowOfNote(note, Number(id.slice(5))), note });
+    }
+    const run = await backend.run(id);
+    if (!run) throw new SiteError(404, '找不到這次 AI 執行');
+    const d = await backend.load(run.ticker ? [run.ticker] : []);
+    if (aiRun[2]) {
+      const background: string[] = [];
+      if (d.acct && d.view) {
+        const a = d.acct;
+        const total = totalValue(a, d.view);
+        background.push(`帳戶分三桶：自選 ${pct(a.cfg.ratio.own)}、動能 ${pct(a.cfg.ratio.strat)}、核心 ${pct(a.cfg.ratio.core)}（比例是風險預算，不是目標）${a.paper ? '；目前是紙上交易' : ''}。`);
+        if (run.ticker) {
+          const px = d.view.close[run.ticker]?.[d.view.i];
+          const held = (['own', 'mom', 'core'] as const).map((b) => [b, a.lots[b][run.ticker!] ?? 0] as const).filter(([, n]) => n);
+          if (held.length && px) background.push(`${run.ticker} 目前持有：${held.map(([b, n]) => `${{ own: '自選', mom: '動能', core: '核心' }[b]} ${n} 股`).join('、')}，占總資產 ${pct((held.reduce((x, [, n]) => x + n, 0) * px) / total)}。`);
+          const st = a.rule.own[run.ticker];
+          if (st) background.push(`自選慢規則：${st.applied === 'HALF' ? '減半中' : '標準'}；標準比重 ${pct(st.stdWeight)}。`);
+        }
+      }
+      return new Response(exportMd(run, { background }), { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': `attachment; filename="${run.runId}.md"` } });
+    }
+    const fu = run.ticker && d.view ? followUp(bookFromView(d.axis, d.view.close), run.ticker, run.asOf, BENCHMARK) : null;
+    return json(runDetail(run, fu));
+  }
 
   if (rest === 'account' && post) return createFromSnapshot(backend, await body(req));
 

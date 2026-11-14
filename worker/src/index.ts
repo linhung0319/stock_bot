@@ -5,6 +5,7 @@
 //   /api/*、/demo/api/*          網站的 API（Cloudflare Access；src/app/site/）
 //   其他                         網站的靜態檔（public/，由 Cloudflare 直接回應，不會進到這裡）
 import { acceptResult, createTask, fireRoutine, getTask, readEvidence, taskTimings } from './app/aiTasks';
+import { finalizeRun } from './app/aiRuns';
 import { bearerOk, json, type Env, type Fetcher } from './app/env';
 import { getFlowState, ingest, pushPending, recentFlowRuns, runFlow, sendTestPush } from './app/flow';
 import { loadAccount } from './app/ledgerStore';
@@ -46,7 +47,7 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
   if (ai) {
     if (!bearerOk(request, env.AI_TASK_SECRET)) return json({ error: 'unauthorized' }, 401);
     if (ai[2] === 'evidence' && request.method === 'GET') return readEvidence(env.DB, ai[1], now);
-    if (ai[2] === 'result' && request.method === 'POST') return acceptResult(env.DB, ai[1], await request.text(), now);
+    if (ai[2] === 'result' && request.method === 'POST') return acceptResult(env.DB, ai[1], await request.text(), now, (task, result) => (task.kind === 'RUN' ? finalizeRun(env.DB, task, result, now) : Promise.resolve()));
     return json({ error: 'method_not_allowed' }, 405);
   }
 

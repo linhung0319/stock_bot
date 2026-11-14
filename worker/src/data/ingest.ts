@@ -31,6 +31,8 @@ export interface IngestOptions {
   forceRank?: boolean;
   /** 每天追蹤市值前幾名的完整日線（月底才會抓全部成分股的成交金額）。 */
   topN?: number;
+  /** 另外要追蹤、但不是必要的代號（例如影子紀錄裡已經賣掉的股票）。抓不到只記錄。 */
+  track?: string[];
 }
 
 export interface IngestResult extends DataRun {
@@ -107,7 +109,7 @@ export async function runIngest(db: D1Database, fetcher: Fetcher, opt: IngestOpt
   const required = [...new Set(opt.required)];
   const top = members ? [...members.holdings].sort((a, b) => b[1] - a[1]).slice(0, opt.topN ?? 80).map((h) => h[0]) : [];
   const lastRanking = await loadRanking(db);
-  const tracked = [...new Set([...required, BENCHMARK, ...top, ...(lastRanking?.order ?? [])])];
+  const tracked = [...new Set([...required, BENCHMARK, ...top, ...(lastRanking?.order ?? []), ...(opt.track ?? [])])];
   const got = await fetchBars(fetcher, tracked, '2y', session);
   const series = new Map<string, Series>();
   for (const g of got) if (g.bars.length) series.set(g.ticker, seriesFromBars(g.ticker, g.bars, at, session));
