@@ -743,11 +743,11 @@ export interface StateView {
   /** 史萊姆在待辦頁、帳戶頁說的話。 */
   bubble: { todo: Bubble; account: Bubble | null };
   /** 可以復原的快照（設計 §10 第 39 點）。 */
-  undo: { date: string; at: string } | null;
+  undo: { date: string; at: string; cashOther: number; cashWarn: boolean } | null;
 }
 
 export function stateView(d: SiteData): StateView {
-  const base = { mode: d.mode, demo: d.demo ?? null, today: d.today, priceDate: d.view?.date ?? null, rankDate: d.rankSession, warnings: d.warnings, undo: d.undoable ? { date: d.undoable.date, at: d.undoable.at } : null };
+  const base = { mode: d.mode, demo: d.demo ?? null, today: d.today, priceDate: d.view?.date ?? null, rankDate: d.rankSession, warnings: d.warnings, undo: d.undoable ? { date: d.undoable.date, at: d.undoable.at, cashOther: d.undoable.cashOther, cashWarn: d.undoable.cashWarn } : null };
   if (!d.acct || !d.view) return { ...base, hasAccount: !!d.acct, account: null, todo: [], recent: [], bubble: { todo: { k: '開始', say: [d.acct ? '帳戶在，但還沒有可用的價格資料。' : '還沒有帳戶。填一次券商裡現在的持股，我就從那裡開始記帳。'], mood: 'idle' }, account: null } };
   const r = d as Ready;
   const order = { ANSWER: 0, TRADE: 1, DECIDE: 2, INFO: 3 };

@@ -464,11 +464,11 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       return {
         acct,
         snapshot: snap,
-        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, bigCash: out.bigCash, removedOwn: out.removedOwn, monthlyId },
+        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, monthlyId },
       };
     });
     // 送出前的帳戶留下來，填錯了可以復原（只留最後一份；之後帳戶有變動就不能復原）
-    if (before) await backend.saveUndo(before, r.after.acct, r.after.view.date);
+    if (before) await backend.saveUndo(before, r.after.acct, r.after.view.date, { cashOther: Number(r.result.cashOther) || 0, cashWarn: r.result.cashWarn === true });
     return json({ ok: true, ...r.result, undoable: true });
   }
   if (rest === 'snapshot/undo' && post) {

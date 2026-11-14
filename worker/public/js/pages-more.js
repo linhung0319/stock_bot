@@ -3,7 +3,7 @@ import { api, setToken } from './api.js';
 import { actionText, day, h, money, pct, put, qty, toast } from './dom.js';
 import { consoleBox, glass, meterEl, menuList, page, tiles } from './layout.js';
 import { aiBlock, bucketTag, chart, fold, rankTable } from './parts.js';
-import { actionButton, errBox, linkButton, planBubble, slips, trayBody, trayTitle } from './pages-notif.js';
+import { actionButton, errBox, linkButton, planBubble, slips, trayBody, trayTitle, undoButton } from './pages-notif.js';
 import { ownMonitor, requestDrafts } from './pages-ai.js';
 import { say } from './slime.js';
 
@@ -372,6 +372,28 @@ function ownEdit(ctx, d) {
     msg,
     h('p', { class: 'small faint', style: 'margin-top:14px' }, '不想再持有：到「填快照」把自選這一檔的股數改成 0，就會移出自選。'),
   ];
+}
+
+// ---------------------------------------------------------------- 復原上一份快照（設計 §10 第 39 點）
+
+export function undoPage(ctx) {
+  const u = ctx.state.undo;
+  const at = u ? new Date(u.at).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  const body = u
+    ? [
+        h('p', null, `最後一份快照：${day(u.date)} 的收盤價，${at} 送出。`),
+        u.cashOther ? h('p', { class: u.cashWarn ? 'small' : 'small dim', style: u.cashWarn ? 'color:var(--warn)' : null }, `那份快照的現金和估計的成交金額差 ${u.cashOther > 0 ? '+' : '−'}${money(Math.abs(u.cashOther), 2)}${u.cashWarn ? '，大到不太像成交價差、手續費或股利。' : '。'}`) : null,
+        h('h5', { style: 'margin-top:14px' }, '復原會退回'),
+        h('ul', { class: 'small dim', style: 'margin:6px 0 14px 1.2em' }, h('li', null, '那份快照記下的成交、其他現金變動；因為股數改成 0 而移出的自選（前提、標準比重、規則狀態都回來）。'), h('li', null, '那份快照完成的清單，回到「等成交」。'), h('li', null, '帳戶回到送出之前；之後到「填快照」重填。')),
+        undoButton(ctx, '確定復原'),
+      ]
+    : [h('p', null, '現在沒有可以復原的快照。'), h('p', { class: 'small dim' }, '只能復原最後一份快照，而且之後帳戶還沒有其他變動（收盤後的每日流程、入金出金、回覆通知、改標準比重…）。不符合的話，再填一次快照把數字改對就好。'), h('div', { class: 'btn-row', style: 'margin-top:12px' }, h('a', { class: 'btn', href: '#/snapshot' }, '去填快照'))];
+  return page({
+    view: 'page',
+    banner: { back: { href: '#/do', label: '我要…' }, title: '復原上一份快照', sub: '帳戶回到最後一份快照送出之前，再重填。', bubble: { k: '復原', say: [u ? `可以復原 ${day(u.date)} 那份快照。` : '現在沒有可以復原的快照。'], mood: u?.cashWarn ? 'worry' : u ? 'watch' : 'idle' } },
+    pane: glass('pad narrow', body),
+    rail: tiles(ctx.state),
+  });
 }
 
 // ---------------------------------------------------------------- 建立帳戶

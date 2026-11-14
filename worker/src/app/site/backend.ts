@@ -14,7 +14,7 @@ import { advanceDemo, demoAtEnd, demoFill, demoFilledSnapshot, demoMarket, demoV
 import { ranksAt } from '../../demo/market';
 import type { Env } from '../env';
 import { getRun, listRuns, type AiRun } from '../aiRuns';
-import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, saveAccount, saveSnapshot, saveSnapshotUndo, shadowTickers, snapshotUndoInfo, undoSnapshot, type LoadedAccount, type SnapshotUndoInfo } from '../ledgerStore';
+import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, saveAccount, saveSnapshot, saveSnapshotUndo, shadowTickers, snapshotUndoInfo, undoSnapshot, type LoadedAccount, type SnapshotUndoInfo, type SnapshotWarn, warnOf } from '../ledgerStore';
 import { noteOfRun } from './aiViews';
 import { loadSnapshot, type MacroSnapshot } from '../crashAi';
 import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
@@ -67,7 +67,7 @@ export interface SiteBackend {
   save(acct: Account, cause: string): Promise<void>;
   recordSnapshot(date: string, snap: Snapshot): Promise<void>;
   /** 快照存檔後：留下送出前的帳戶，好讓使用者復原（設計 §10 第 39 點）。 */
-  saveUndo(before: Account, after: Account, date: string): Promise<void>;
+  saveUndo(before: Account, after: Account, date: string, warn: SnapshotWarn): Promise<void>;
   undoSnapshot(): Promise<{ ok: true; date: string } | { ok: false; reason: string }>;
   /** AI 層的網站操作（只有真實模式有）。 */
   ai?: SiteAi;
@@ -157,8 +157,8 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
     async recordSnapshot(date, snap) {
       await saveSnapshot(env.DB, date, snap, now, rev);
     },
-    async saveUndo(before, after, date) {
-      if (rev !== null) await saveSnapshotUndo(env.DB, rev, before, after, date, now);
+    async saveUndo(before, after, date, warn) {
+      if (rev !== null) await saveSnapshotUndo(env.DB, rev, before, after, date, now, warn);
     },
     undoSnapshot: () => undoSnapshot(env.DB, now),
     ai: {
@@ -229,8 +229,8 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
     rev += 1;
   };
   const demoUndoable = async (): Promise<SnapshotUndoInfo | null> => {
-    const row = await env.DB.prepare("SELECT rev, date, at FROM snapshot_undo WHERE mode = 'demo'").first<SnapshotUndoInfo>();
-    return row && row.rev === rev ? row : null;
+    const row = await env.DB.prepare("SELECT rev, date, at, notifs FROM snapshot_undo WHERE mode = 'demo'").first<{ rev: number; date: string; at: string; notifs: string }>();
+    return row && row.rev === rev ? { rev: row.rev, date: row.date, at: row.at, ...warnOf(row.notifs) } : null;
   };
   const info = (s: DemoState): DemoInfo => {
     const sc = DEMO_SCRIPTS[s.scenario];
@@ -273,8 +273,8 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
     async recordSnapshot() {
       // 示範模式不另外留快照原文
     },
-    async saveUndo(before, _after, date) {
-      await env.DB.prepare("INSERT INTO snapshot_undo (mode, rev, date, at, state, notifs) VALUES ('demo', ?, ?, ?, ?, '{}') ON CONFLICT(mode) DO UPDATE SET rev = excluded.rev, date = excluded.date, at = excluded.at, state = excluded.state").bind(rev, date, now.toISOString(), JSON.stringify(before)).run();
+    async saveUndo(before, _after, date, warn) {
+      await env.DB.prepare("INSERT INTO snapshot_undo (mode, rev, date, at, state, notifs) VALUES ('demo', ?, ?, ?, ?, ?) ON CONFLICT(mode) DO UPDATE SET rev = excluded.rev, date = excluded.date, at = excluded.at, state = excluded.state, notifs = excluded.notifs").bind(rev, date, now.toISOString(), JSON.stringify(before), JSON.stringify({ warn })).run();
     },
     async undoSnapshot() {
       await read();

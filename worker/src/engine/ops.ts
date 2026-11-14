@@ -206,22 +206,28 @@ export interface SnapshotResult {
   created: Notif[];
   /** 扣掉估計的成交金額後，現金多出（＋）或少掉（−）的部分；記成「其他現金變動」，不再問（2026-11-15）。 */
   cashOther: number;
-  /** 差額超過總資產 2%：畫面提醒「如果是入金／出金，到『我要…』登記」，不擋路。 */
-  bigCash: boolean;
+  /**
+   * 「可能填錯」：差額大到不像成交價差、手續費或股利（超過總資產 0.5%，而且超過這次成交金額的 3%）。
+   * 只是警告：差額照樣記成其他現金變動；畫面提醒填錯了可以復原、或其實是入金出金要去登記。
+   */
+  cashWarn: boolean;
   /** 自己賣光、自動移出自選的代號。 */
   removedOwn: string[];
   /** 分桶快照不允許時的原因（帳戶不變）。 */
   error?: string;
 }
 
-/** 扣掉估計成交金額後剩下的現金差：不問，記成其他現金變動（成交價差、手續費、股利；設計 §10 第 38 點）。 */
-const BIG_CASH = 0.02;
-function settleCash(acct: Account, view: MarketView, cash: number, expected: number, withdrawn: number): { cashOther: number; bigCash: boolean } {
+/** 「可能填錯」的門檻（設計 §10 第 39 點）。 */
+export const CASH_WARN = { ofTotal: 0.005, ofTraded: 0.03 };
+
+/** 扣掉估計成交金額後剩下的現金差：不問，記成其他現金變動（成交價差、手續費、股利；設計 §10 第 38 點）。traded：這次估計的成交金額（買賣都算正的）。 */
+function settleCash(acct: Account, view: MarketView, cash: number, expected: number, withdrawn: number, traded: number): { cashOther: number; cashWarn: boolean } {
   const residual = Math.round((cash - expected) * 100) / 100;
   acct.cash = cash;
   if (withdrawn) recordExternalFlow(acct, view, -withdrawn);
   if (Math.abs(residual) >= 0.01) acct.events.push({ date: view.date, kind: 'CASH_OTHER', amount: residual, reason: '和估計的成交金額不同（成交價、手續費、股利）' });
-  return { cashOther: Math.abs(residual) >= 0.01 ? residual : 0, bigCash: Math.abs(residual) > BIG_CASH * totalValue(acct, view) };
+  const warn = Math.abs(residual) > Math.max(CASH_WARN.ofTotal * totalValue(acct, view), CASH_WARN.ofTraded * traded);
+  return { cashOther: Math.abs(residual) >= 0.01 ? residual : 0, cashWarn: warn };
 }
 
 /**
@@ -249,6 +255,7 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
   const flows = { own: 0, mom: 0 };
   let expectedCash = acct.cash;
   let withdrawn = 0;
+  let traded = 0;
   const assign = (bucket: Bucket, ticker: string, q: number, reason: string, notif?: number) => {
     if (!q) return;
     addLot(acct, bucket, ticker, q);
@@ -281,6 +288,7 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
           assign(l.bucket, l.ticker, a, String(l.reason), n.id);
         });
         expectedCash -= q * px(m.ticker);
+        traded += Math.abs(q * px(m.ticker));
         if (Math.abs(q - m.shares) > 1) {
           fu.push({ ticker: m.ticker, listed: m.shares, done: q });
           // 策略類的差額，下個月月報再列
@@ -321,6 +329,7 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
   // 清單上沒有的變動
   for (const [t, d] of Object.entries(diff)) {
     expectedCash -= d * px(t);
+    traded += Math.abs(d * px(t));
     if (t === acct.cfg.coreTicker || t === acct.bondTicker) {
       assign('core', t, d, snap.note ? `核心的手動交易：${snap.note}` : '核心的手動交易');
       continue;
@@ -340,7 +349,7 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
   acct.units.core = flowUnits(acct.units.core, valueBefore.core, -(flows.own + flows.mom));
 
   // 現金
-  const cashRes = settleCash(acct, view, snap.cash, expectedCash, withdrawn);
+  const cashRes = settleCash(acct, view, snap.cash, expectedCash, withdrawn, traded);
   acct.snapshotDate = view.date;
   return { acct, completed, followUps, created, ...cashRes, removedOwn: [] };
 }
@@ -359,7 +368,7 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
   const acct = clone(acct0);
   const lots = snap.lots!;
   const px = fill ?? ((t: string) => priceOf(view, t));
-  const fail = (error: string): SnapshotResult => ({ acct: acct0, completed: [], followUps: [], created: [], cashOther: 0, bigCash: false, removedOwn: [], error });
+  const fail = (error: string): SnapshotResult => ({ acct: acct0, completed: [], followUps: [], created: [], cashOther: 0, cashWarn: false, removedOwn: [], error });
   for (const t of Object.keys(lots.core)) if (lots.core[t] && t !== acct.cfg.coreTicker && t !== acct.bondTicker) return fail(`${t} 不是核心的標的：核心只放 ${acct.cfg.coreTicker} 和 ${acct.bondTicker}`);
   for (const t of Object.keys(lots.own)) if (lots.own[t] && (t === acct.cfg.coreTicker || t === acct.bondTicker)) return fail(`${t} 是核心的標的，請填在核心`);
   for (const t of Object.keys(lots.mom)) if (lots.mom[t] && (t === acct.cfg.coreTicker || t === acct.bondTicker)) return fail(`${t} 是核心的標的，請填在核心`);
@@ -388,11 +397,15 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
   let expectedCash = acct.cash;
   for (const [t, q] of Object.entries(unc)) expectedCash += q * px(t); // 未分類的股數已經付過錢
   let withdrawn = 0;
+  let traded = 0;
   const assign = (bucket: Bucket, ticker: string, q: number, reason: string, notif?: number, kind: 'TRADE' | 'TRANSFER' = 'TRADE') => {
     if (!q) return;
     addLot(acct, bucket, ticker, q);
     if (bucket !== 'core') flows[bucket] += q * px(ticker);
-    if (kind === 'TRADE') expectedCash -= q * px(ticker);
+    if (kind === 'TRADE') {
+      expectedCash -= q * px(ticker);
+      traded += Math.abs(q * px(ticker));
+    }
     acct.events.push({ date: view.date, kind, ticker, bucket, shares: q, reason, ...(notif !== undefined ? { notif } : {}) });
   };
   /** 拿走這一桶這一檔同方向的變動（整筆算給清單，和舊的總股數快照相同）。 */
@@ -492,7 +505,7 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
   acct.units.mom = flowUnits(acct.units.mom, valueBefore.mom, flows.mom);
   acct.units.core = flowUnits(acct.units.core, valueBefore.core, -(flows.own + flows.mom));
   if (acct.monthlyBlocked && !Object.values(acct.lots.unc).some((x) => x)) acct.monthlyBlocked = false;
-  const cashRes = settleCash(acct, view, snap.cash, expectedCash, withdrawn);
+  const cashRes = settleCash(acct, view, snap.cash, expectedCash, withdrawn, traded);
   acct.snapshotDate = view.date;
   return { acct, completed, followUps, created: [], ...cashRes, removedOwn };
 }

@@ -588,11 +588,11 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect((await web.notif(w.notifId)).title).not.toContain('暫停');
   });
 
-  it('現金和預期差很多：不再問，記成其他現金變動，回傳提醒（2026-11-15）', async () => {
+  it('現金和預期差很多：不再問，記成其他現金變動；超過總資產 0.5%、又沒有成交可以解釋 → 回傳「可能填錯」（2026-11-15）', async () => {
     simStart();
     const snap = await demoSnapshot({});
-    const r = await web.post<{ created: unknown[]; cashOther: number; bigCash: boolean }>('/snapshot', { ...snap, cash: snap.cash + 500 });
-    expect(r).toMatchObject({ created: [], cashOther: 500, bigCash: false });
+    const r = await web.post<{ created: unknown[]; cashOther: number; cashWarn: boolean }>('/snapshot', { ...snap, cash: snap.cash + 500 });
+    expect(r).toMatchObject({ created: [], cashOther: 500, cashWarn: true }); // 總資產約 9.7 萬，0.5% 約 490
     expect((await demoAcct()).acct.events.at(-1)).toMatchObject({ kind: 'CASH_OTHER', amount: 500 });
     expect((await web.state()).todo).toEqual([]);
   });
@@ -606,7 +606,9 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     const r = await web.post<{ removedOwn: string[] }>('/snapshot', { lots, cash: f.cashBook });
     expect(r.removedOwn).toEqual(['MU']);
     expect((await demoAcct()).acct.own.MU).toBeUndefined();
-    expect((await web.state()).undo).not.toBeNull();
+    // 現金沒跟著改：差一整檔的錢 → 待辦頁會提醒「可能填錯」
+    expect((await web.state()).undo).toMatchObject({ cashWarn: true });
+    expect((await web.state()).undo!.cashOther).toBeLessThan(0);
     await web.post('/snapshot/undo');
     expect((await demoAcct()).acct).toEqual(before); // 前提、標準比重、規則狀態都回來
     expect((await web.state()).undo).toBeNull();
@@ -859,13 +861,13 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     expect(bad.error).toContain('不在這個月的動能名單上');
     expect((await loadAccount(db))!.rev).toBe(before.rev);
     // 自選賣 1 股 MU、新加 2 股 ORCL（寫為什麼買），現金比估計多 3 元
-    const r = await web.post<{ created: unknown[]; cashOther: number; bigCash: boolean; removedOwn: string[] }>('/snapshot', {
+    const r = await web.post<{ created: unknown[]; cashOther: number; cashWarn: boolean; removedOwn: string[] }>('/snapshot', {
       lots: { ...lots, own: { ...lots.own, MU: lots.own.MU - 1, ORCL: 2 } },
       cash: form.cashBook + pMU - 2 * pOR + 3,
       note: '換股',
       why: { ORCL: '雲端資料庫訂單成長' },
     });
-    expect(r).toMatchObject({ created: [], cashOther: 3, bigCash: false, removedOwn: [] });
+    expect(r).toMatchObject({ created: [], cashOther: 3, cashWarn: false, removedOwn: [] });
     let acct = (await loadAccount(db))!.acct;
     expect(acct.lots.own.ORCL).toBe(2);
     expect(acct.lots.own.MU).toBe(lots.own.MU - 1);
@@ -908,7 +910,7 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     const r = await web.post<{ completed: number[]; undoable: boolean }>('/snapshot', { lots, cash: form.cashExpected + m.close.VOO[upTo] + 7, note: '填錯的' });
     expect(r).toMatchObject({ completed: [w.notifId], undoable: true });
     expect(await count('ledger_events')).toBeGreaterThan(n0.ev);
-    expect((await web.state()).undo).toEqual({ date: '2026-12-09', at: NOW.toISOString() });
+    expect((await web.state()).undo).toEqual({ date: '2026-12-09', at: NOW.toISOString(), cashOther: 7, cashWarn: false });
     await web.post('/snapshot/undo');
     const back = (await loadAccount(db))!;
     expect(back.rev).toBe(mid.rev + 2);

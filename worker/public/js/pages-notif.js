@@ -149,9 +149,8 @@ export async function homePage(ctx, opt = {}) {
       bubble: st.bubble.todo,
     },
     pane: [
-      st.undo
-        ? glass('pad', h('p', { class: 'small', style: 'margin:0 0 10px' }, `剛送出的快照（${day(st.undo.date)}）填錯了，可以復原：帳戶回到送出之前，再重填。今晚收盤後的每日流程跑過、或做了其他操作之後就不能復原。`), undoButton(ctx, '復原這份快照'))
-        : null,
+      // 上一份快照「可能填錯」（現金差額大到不像成交價差、手續費、股利）才提醒；平常要復原到「我要…」
+      st.undo?.cashWarn ? cashWarnBox(ctx, st.undo.cashOther, st.undo.date) : null,
       h(
         'div',
         { class: 'todo-area' },
@@ -234,6 +233,17 @@ export function undoButton(ctx, label) {
       ctx.refresh();
     }
   });
+}
+
+/** 「可能填錯」的警告：差額照樣記成其他現金變動，沒填錯就不用理。 */
+export function cashWarnBox(ctx, amount, date) {
+  return glass(
+    'pad warn-box',
+    h('h3', { class: 'panel-h', style: 'color:var(--warn)' }, `${date ? `上一份快照（${day(date)}）` : '這份快照'}可能填錯了`),
+    h('p', { class: 'small', style: 'margin:6px 0 10px' }, `現金和估計的成交金額差 ${amount > 0 ? '+' : '−'}${money(Math.abs(amount), 2)}，大到不太像成交價差、手續費或股利（例如忘了改現金、股數打錯）。差額已經記成其他現金變動；沒填錯就不用理。`),
+    h('ul', { class: 'small dim', style: 'margin:0 0 12px 1.2em' }, h('li', null, '填錯了：復原，帳戶回到送出之前再重填。'), h('li', null, '其實是入金或出金：先復原，到「我要…」登記入金／出金後再填快照，單位淨值才不會把它算成報酬。')),
+    undoButton(ctx, '復原這份快照'),
+  );
 }
 
 // 建議單預設收合：收合時看得到「做什麼」、一句話的「為什麼」和目前的決定；點開才是完整的理由與選項。
@@ -802,11 +812,10 @@ export async function snapshotPage(ctx) {
           r.followUps.length ? h('p', null, `有 ${r.followUps.length} 份清單和快照差超過 1 股，要你選補做還是就這樣。`) : null,
           r.removedOwn.length ? h('p', null, `${r.removedOwn.join('、')} 賣光了，已移出自選（之後不再追蹤，也不會被買回）。`) : null,
           r.cashOther ? h('p', { class: 'small dim' }, `現金和估計的成交金額差 ${r.cashOther > 0 ? '+' : '−'}${money(Math.abs(r.cashOther), 2)}，記成其他現金變動（成交價、手續費、股利）。`) : null,
-          r.bigCash ? h('p', { class: 'small', style: 'color:var(--warn)' }, '這個差額超過總資產 2%。如果其實是入金或出金，請到「我要…」登記，單位淨值才不會把它算成報酬。') : null,
           r.created.map((n) => h('p', null, n.title)),
-          h('div', { class: 'btn-row', style: 'margin-top:12px' }, undoButton(ctx, '填錯了？復原這份快照')),
-          h('p', { class: 'small faint' }, '復原會讓帳戶回到送出之前，再重填一次。今晚收盤後的每日流程跑過、或做了其他操作之後就不能復原。'),
+          r.cashWarn ? null : h('p', { class: 'small faint' }, '填錯了可以到「我要…」→「復原上一份快照」，回到送出之前再重填。'),
         ),
+        ...(r.cashWarn ? [cashWarnBox(ctx, r.cashOther, null)] : []),
       );
     } catch (e) {
       msg.replaceChildren(errBox(e));

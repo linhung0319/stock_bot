@@ -98,15 +98,24 @@ describe('快照 → 事件', () => {
     const sim = calm();
     const nav0 = navPerUnit(sim.acct, sim.pre).total;
     const same = applySnapshot(sim.acct, sim.pre, snapOf(sim.acct, {}, sim.acct.cash));
-    expect(same).toMatchObject({ created: [], cashOther: 0, bigCash: false });
+    expect(same).toMatchObject({ created: [], cashOther: 0, cashWarn: false });
     const small = applySnapshot(sim.acct, sim.pre, snapOf(sim.acct, {}, sim.acct.cash + 3));
-    expect(small).toMatchObject({ created: [], cashOther: 3, bigCash: false });
+    expect(small).toMatchObject({ created: [], cashOther: 3, cashWarn: false });
     expect(small.acct.events.at(-1)).toMatchObject({ kind: 'CASH_OTHER', amount: 3 });
     const big = applySnapshot(sim.acct, sim.pre, snapOf(sim.acct, {}, sim.acct.cash + 0.03 * totalValue(sim.acct, sim.pre)));
     expect(big.created).toEqual([]);
-    expect(big.bigCash).toBe(true);
+    expect(big.cashWarn).toBe(true);
     expect(big.acct.cash).toBeCloseTo(sim.acct.cash + 0.03 * totalValue(sim.acct, sim.pre), 6);
     expect(navPerUnit(big.acct, sim.pre).total).toBeGreaterThan(nav0); // 算報酬，不是入金
+    // 有成交時，成交金額 3% 以內的差（成交價、手續費）不算可能填錯；超過才算
+    const t = totalValue(sim.acct, sim.pre);
+    const px = priceOf(sim.pre, 'VOO');
+    const n = sim.acct.lots.core.VOO; // 核心的 VOO 全部賣掉
+    expect(0.025 * n * px).toBeGreaterThan(0.005 * t); // 2.5% 的差已經超過總資產 0.5%：靠成交金額那一條放行
+    const sell = (adj: number) => applySnapshot(sim.acct, sim.pre, snapOf(sim.acct, { VOO: -n }, sim.acct.cash + n * px + adj));
+    expect(sell(0.025 * n * px).cashWarn).toBe(false); // 差成交金額 2.5%（超過總資產 0.5%，但在 3% 以內）
+    expect(sell(0.035 * n * px).cashWarn).toBe(true);
+    expect(sell(-n * px).cashWarn).toBe(true); // 賣了卻忘了改現金
     // 舊的「現金差額」通知（改版前留下的）仍然可以回答
     const legacy = structuredClone(sim.acct);
     legacy.notifs.push({ id: legacy.nextId++, kind: 'CASH_DIFF', date: sim.pre.date, seq: sim.pre.i, title: 't', items: [], status: 'PENDING', coreAbsorb: false, reminded: false, amount: 5000 });

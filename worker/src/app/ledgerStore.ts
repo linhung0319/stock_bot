@@ -98,13 +98,29 @@ export interface SnapshotUndoInfo {
   rev: number;
   date: string;
   at: string;
+  /** 那份快照的現金差額與「可能填錯」（待辦頁只在可能填錯時提醒）。 */
+  cashOther: number;
+  cashWarn: boolean;
+}
+export interface SnapshotWarn {
+  cashOther: number;
+  cashWarn: boolean;
+}
+/** snapshot_undo.notifs 欄位裡的警告（舊的列沒有就當沒事）。 */
+export function warnOf(notifsJson: string): SnapshotWarn {
+  try {
+    const w = (JSON.parse(notifsJson) as { warn?: SnapshotWarn }).warn;
+    return { cashOther: w?.cashOther ?? 0, cashWarn: !!w?.cashWarn };
+  } catch {
+    return { cashOther: 0, cashWarn: false };
+  }
 }
 
 /**
  * 快照存檔後呼叫：留下送出前的帳戶，好讓使用者復原。只留最後一份（新的蓋掉舊的）。
  * 通知只存這次有變的（送出前的內容）與這次新產生的編號，避免整份通知太大。
  */
-export async function saveSnapshotUndo(db: D1Database, rev: number, before: Account, after: Account, date: string, now: Date): Promise<void> {
+export async function saveSnapshotUndo(db: D1Database, rev: number, before: Account, after: Account, date: string, now: Date, warn: SnapshotWarn): Promise<void> {
   const prev = new Map(before.notifs.map((n) => [n.id, JSON.stringify(n)]));
   const changed: Notif[] = [];
   const created: number[] = [];
@@ -116,14 +132,14 @@ export async function saveSnapshotUndo(db: D1Database, rev: number, before: Acco
   const { notifs: _n, events: _e, shadow: _s, ...state } = before;
   await db
     .prepare("INSERT INTO snapshot_undo (mode, rev, date, at, state, notifs) VALUES ('real', ?, ?, ?, ?, ?) ON CONFLICT(mode) DO UPDATE SET rev = excluded.rev, date = excluded.date, at = excluded.at, state = excluded.state, notifs = excluded.notifs")
-    .bind(rev, date, now.toISOString(), JSON.stringify(state), JSON.stringify({ changed, created }))
+    .bind(rev, date, now.toISOString(), JSON.stringify(state), JSON.stringify({ changed, created, warn }))
     .run();
 }
 
 /** 現在可以復原的快照（帳戶版本還停在那份快照存檔後）；沒有就是 null。 */
 export async function snapshotUndoInfo(db: D1Database, currentRev: number | null): Promise<SnapshotUndoInfo | null> {
-  const row = await db.prepare("SELECT rev, date, at FROM snapshot_undo WHERE mode = 'real'").first<SnapshotUndoInfo>();
-  return row && currentRev !== null && row.rev === currentRev ? row : null;
+  const row = await db.prepare("SELECT rev, date, at, notifs FROM snapshot_undo WHERE mode = 'real'").first<{ rev: number; date: string; at: string; notifs: string }>();
+  return row && currentRev !== null && row.rev === currentRev ? { rev: row.rev, date: row.date, at: row.at, ...warnOf(row.notifs) } : null;
 }
 
 /**

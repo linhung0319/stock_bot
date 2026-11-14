@@ -152,7 +152,7 @@ describe('分桶快照：變動放哪一桶由使用者決定，不再問分類'
     const sim = calm();
     const s = applySnapshot(sim.acct, sim.pre, bucketSnap(sim.acct, sim.pre, { core: { VOO: -3 } }, { note: '要用錢' }));
     expect(s.error).toBeUndefined();
-    expect(s).toMatchObject({ created: [], followUps: [], cashOther: 0, bigCash: false });
+    expect(s).toMatchObject({ created: [], followUps: [], cashOther: 0, cashWarn: false });
     expect(s.acct.lots.core.VOO).toBe(sim.acct.lots.core.VOO - 3);
     expect(s.acct.events.at(-1)).toMatchObject({ kind: 'TRADE', bucket: 'core', ticker: 'VOO', shares: -3, reason: '核心的手動交易：要用錢' });
   });
