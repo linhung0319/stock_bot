@@ -588,17 +588,13 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect((await web.notif(w.notifId)).title).not.toContain('暫停');
   });
 
-  it('現金和預期差很多 → 問是入金、出金、股利還是其他', async () => {
+  it('現金和預期差很多：不再問，記成其他現金變動，回傳提醒（2026-11-15）', async () => {
     simStart();
     const snap = await demoSnapshot({});
-    const r = await web.post<{ created: { id: number; kind: string }[] }>('/snapshot', { ...snap, cash: snap.cash + 500 });
-    expect(r.created.map((c) => c.kind)).toEqual(['CASH_DIFF']);
-    const id = r.created[0].id;
-    expect((await web.notif(id)).ask).toEqual({ type: 'CASH_DIFF', amount: 500 });
-    expect((await web.fail(`/notif/${id}/cash`, { kind: '出金' })).status).toBe(422); // 現金變多不會是出金
-    await web.post(`/notif/${id}/cash`, { kind: '股利' });
-    expect((await web.notif(id)).status).toBe('DONE');
-    expect((await demoAcct()).acct.events.at(-1)).toMatchObject({ kind: 'DIVIDEND', amount: 500 });
+    const r = await web.post<{ created: unknown[]; cashOther: number; bigCash: boolean }>('/snapshot', { ...snap, cash: snap.cash + 500 });
+    expect(r).toMatchObject({ created: [], cashOther: 500, bigCash: false });
+    expect((await demoAcct()).acct.events.at(-1)).toMatchObject({ kind: 'CASH_OTHER', amount: 500 });
+    expect((await web.state()).todo).toEqual([]);
   });
 
   it('輸入檢查：金額、代號、股數不對都擋在外面，帳戶不變', async () => {
@@ -831,6 +827,53 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     expect((await web.fail(`/notif/${r2.created[0].id}/classify`, { bucket: 'own', removeOwn: true })).error).toContain('全部賣掉時');
     await web.post(`/notif/${r2.created[0].id}/classify`, { bucket: 'own', reason: '先減一點' });
     expect((await loadAccount(db))!.acct.own.MU).toBeDefined();
+  });
+
+  it('分桶快照（T14 改版）：表單分三桶；清單外的變動照填的桶記帳、不問分類與現金；持股頁改標準比重、加前提', async () => {
+    const form = await web.get<SnapshotForm>('/snapshot/form');
+    expect(form.coreTickers).toEqual(['VOO', 'SGOV']);
+    expect(form.buckets.core[0]).toMatchObject({ ticker: 'VOO', listed: 0 });
+    expect(form.buckets.own.some((r) => r.ticker === 'MU')).toBe(true);
+    const lots = { own: Object.fromEntries(form.buckets.own.map((r) => [r.ticker, r.expected])), mom: Object.fromEntries(form.buckets.mom.map((r) => [r.ticker, r.expected])), core: Object.fromEntries(form.buckets.core.map((r) => [r.ticker, r.expected])) };
+    const pMU = m.close.MU[upTo];
+    const pOR = m.close.ORCL[upTo];
+    // 動能放不在名單上的 → 擋下，帳戶不變
+    const before = (await loadAccount(db))!;
+    const bad = await web.fail('/snapshot', { lots: { ...lots, mom: { ...lots.mom, ORCL: 1 } }, cash: form.cashBook - pOR });
+    expect(bad).toMatchObject({ status: 422 });
+    expect(bad.error).toContain('不在這個月的動能名單上');
+    expect((await loadAccount(db))!.rev).toBe(before.rev);
+    // 自選賣 1 股 MU、新加 2 股 ORCL（寫為什麼買），現金比估計多 3 元
+    const r = await web.post<{ created: unknown[]; cashOther: number; bigCash: boolean; removedOwn: string[] }>('/snapshot', {
+      lots: { ...lots, own: { ...lots.own, MU: lots.own.MU - 1, ORCL: 2 } },
+      cash: form.cashBook + pMU - 2 * pOR + 3,
+      note: '換股',
+      why: { ORCL: '雲端資料庫訂單成長' },
+    });
+    expect(r).toMatchObject({ created: [], cashOther: 3, bigCash: false, removedOwn: [] });
+    let acct = (await loadAccount(db))!.acct;
+    expect(acct.lots.own.ORCL).toBe(2);
+    expect(acct.lots.own.MU).toBe(lots.own.MU - 1);
+    expect(acct.own.ORCL.premises).toEqual([{ id: 'P1', text: '雲端資料庫訂單成長', origin: 'USER' }]);
+    expect((await web.state()).todo).toEqual([]);
+    const hist = await web.get<HistoryView>('/history');
+    expect(hist.events.some((e) => e.text === '成交：自選 ORCL +2 股（自選的手動交易：換股）')).toBe(true);
+    expect(hist.events.some((e) => e.text.startsWith('其他現金變動：'))).toBe(true);
+    // 持股頁：改標準比重、加前提
+    await web.post('/ops/std-weight', { ticker: 'ORCL', stdWeight: 0.04 });
+    expect((await web.fail('/ops/std-weight', { ticker: 'AMD', stdWeight: 0.04 })).error).toContain('不在自選裡');
+    expect((await web.fail('/ops/std-weight', { ticker: 'ORCL', stdWeight: 0.9 })).status).toBe(422);
+    await web.post('/ops/own-premises', { ticker: 'ORCL', premises: [{ text: '毛利率維持 70% 以上' }] });
+    acct = (await loadAccount(db))!.acct;
+    expect(acct.rule.own.ORCL.stdWeight).toBe(0.04);
+    expect(acct.own.ORCL.premises.map((p) => p.text)).toEqual(['雲端資料庫訂單成長', '毛利率維持 70% 以上']);
+    expect((await web.get<HoldingDetail>('/holding/ORCL')).own!.stdWeight).toBe(0.04);
+    // 自選股數改成 0 → 自動移出自選
+    const f2 = await web.get<SnapshotForm>('/snapshot/form');
+    const l2 = { own: Object.fromEntries(f2.buckets.own.map((x) => [x.ticker, x.expected])), mom: Object.fromEntries(f2.buckets.mom.map((x) => [x.ticker, x.expected])), core: Object.fromEntries(f2.buckets.core.map((x) => [x.ticker, x.expected])) };
+    const r2 = await web.post<{ removedOwn: string[] }>('/snapshot', { lots: { ...l2, own: { ...l2.own, ORCL: 0 } }, cash: f2.cashBook + 2 * pOR });
+    expect(r2.removedOwn).toEqual(['ORCL']);
+    expect((await loadAccount(db))!.acct.own.ORCL).toBeUndefined();
   });
 
   it('價格不是最新的：畫面上有警告', async () => {

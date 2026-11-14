@@ -105,6 +105,7 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - API：`/api/*`（真實帳本）與 `/demo/api/*`（示範）是同一組端點，程式在 `src/app/site/`：
   `api.ts`（路由）、`backend.ts`（資料來源）、`views.ts`（組成畫面要的資料）、`explain.ts`（每一項建議的理由）、`auth.ts`（登入 cookie 的驗證）、`lineLogin.ts`（LINE 登入）。
 - 驗收：`test/site.test.ts` 用網站 API 走情境 ① 與 ⑤，每一步和直接呼叫引擎的結果比對。
+- 填快照照三桶分開填（2026-11-15，設計 §10 第 38 點）：`POST /api/snapshot` 送 `lots: { own, mom, core }`，變動放哪一桶由使用者決定，不再問分類與現金差額（差額記成其他現金變動）。自選加新代號＝新增自選、股數改 0＝移出自選；標準比重與前提在持股頁改（`/api/ops/std-weight`、`/api/ops/own-premises`）。只送總股數 `shares` 的舊格式仍收（示範與驗收測試用）。
 - 部署與 LINE 登入設定：見 [`SETUP.md`](SETUP.md) 的 T8。
 
 ## 目錄

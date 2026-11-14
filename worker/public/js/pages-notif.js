@@ -618,34 +618,40 @@ function askForm(v, ctx) {
 export async function snapshotPage(ctx) {
   const f = await api.get('/snapshot/form');
   const only = f.lists.length === 1 ? f.lists[0] : null;
-  const inputs = new Map();
-  const tbody = h('tbody');
-  const cash = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: `估計約 ${f.cashExpected.toLocaleString('en-US')}`, 'aria-label': '券商顯示的現金' });
+  const NAMES = { own: '自選', mom: '動能', core: '核心' };
+  const HINT = {
+    own: '你自己選的股票。清單以外自己買的放這裡（新代號會加進自選、可以寫為什麼買）；股數改成 0 就移出自選。',
+    mom: '照動能清單買的。清單以外的買進，只有那檔在這個月的動能名單上、那一格還沒買足時才能放這裡。',
+    core: `只放 ${f.coreTickers.join(' 和 ')}。`,
+  };
+  /** 每一列：{ bucket, ticker(), input, expected, why? } */
+  const rows = [];
   const parse = (el) => {
     const t = el.value.replace(/[,\s$]/g, '');
     return t === '' ? NaN : Number(t);
   };
-  // 史萊姆：和預期不同的地方（只有內容變了才重講一次）
+  const cash = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: `估計約 ${f.cashExpected.toLocaleString('en-US')}`, 'aria-label': '券商顯示的現金' });
+  const note = h('input', { type: 'text', maxlength: 300, placeholder: '例如：財報不如預期，先賣掉一半', 'aria-label': '這次自己交易的原因' });
   const summary = h('ul', { class: 'sum-list' });
   let lastSaid = '';
   const recount = () => {
     const off = [];
-    for (const { ticker, input, expected } of inputs.values()) {
-      const t = ticker();
-      const q = parse(input);
+    for (const r of rows) {
+      const t = r.ticker();
+      const q = parse(r.input);
       if (!t && !(q > 0)) continue;
-      if (!Number.isFinite(q)) off.push(`${t || '新代號'} 要填數字`);
-      else if (Math.abs(q - expected) > 1e-9) off.push(`${t || '新代號'} ${q - expected > 0 ? '+' : '−'}${qty(q - expected)} 股`);
+      if (!Number.isFinite(q)) off.push(`${NAMES[r.bucket]} ${t || '新代號'} 要填數字`);
+      else if (Math.abs(q - r.expected) > 1e-9) off.push(`${NAMES[r.bucket]} ${t || '新代號'} ${q - r.expected > 0 ? '+' : '−'}${qty(q - r.expected)} 股`);
     }
     const c = parse(cash);
     put(
       summary,
       f.lists.length ? h('li', null, h('span', null, '等成交的清單'), h('span', null, f.lists.map((l) => l.title).join('、'))) : null,
-      h('li', null, h('span', null, '和預期不同'), h('span', { class: off.length ? 'num' : 'num faint' }, off.length ? `${off.length} 檔` : '沒有')),
+      h('li', null, h('span', null, '和清單不同'), h('span', { class: off.length ? 'num' : 'num faint' }, off.length ? `${off.length} 處` : '沒有')),
       h('li', null, h('span', null, '現金'), h('span', { class: 'num' }, Number.isFinite(c) ? money(c, 2) : '還沒填')),
     );
     const b = off.length
-      ? { k: '和預期不同的地方', say: [em(off.slice(0, 3).join('、')), off.length > 3 ? ` 等 ${off.length} 檔` : '', '。送出後我會對帳，對不上的再問你。'], mood: 'watch' }
+      ? { k: '和清單不同的地方', say: [em(off.slice(0, 3).join('、')), off.length > 3 ? ` 等 ${off.length} 處` : '', '。照你填的桶記帳；可以在下面寫一句原因。'], mood: 'watch' }
       : { k: '填快照', say: [f.lists.length ? '股數都和「清單做完」一樣。' : '股數和帳本一樣。', Number.isFinite(c) ? '送出就完成。' : '最後填上券商顯示的現金。'], mood: f.lists.length ? 'happy' : 'watch' };
     const key = JSON.stringify(b.say);
     if (key !== lastSaid) {
@@ -654,48 +660,67 @@ export async function snapshotPage(ctx) {
     }
     return b;
   };
-  const addRow = (r, isNew = false) => {
-    const input = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', value: String(r.expected), 'aria-label': `${r.ticker || '新代號'} 的股數` });
-    const tkIn = isNew ? h('input', { type: 'text', placeholder: '代號', style: 'width:6.5em;text-transform:uppercase', 'aria-label': '股票代號' }) : null;
+  const tbodies = { own: h('tbody'), mom: h('tbody'), core: h('tbody') };
+  const addRow = (bucket, r, isNew = false) => {
+    const input = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', value: String(r.expected), 'aria-label': `${NAMES[bucket]} ${r.ticker || '新代號'} 的股數` });
+    const tkIn = isNew ? h('input', { type: 'text', placeholder: '代號', value: r.ticker || '', style: 'width:6.5em;text-transform:uppercase', 'aria-label': '股票代號' }) : null;
+    const why = isNew && bucket === 'own' ? h('input', { type: 'text', maxlength: 300, placeholder: '為什麼買（選填，會成為這檔的前提）', style: 'width:100%', 'aria-label': '為什麼買' }) : null;
     const delta = h('span', { class: 'delta' });
     const tr = h(
       'tr',
       null,
-      h('td', null, isNew ? tkIn : h('span', { class: 'tk' }, r.ticker), r.where ? h('div', { class: 'small faint' }, r.where) : isNew ? h('div', { class: 'small faint' }, '清單外的股票') : null),
+      h('td', null, isNew ? tkIn : h('span', { class: 'tk' }, r.ticker), isNew ? h('div', { class: 'small faint' }, bucket === 'own' ? '新加進自選' : '清單外買進') : null),
       h('td', { class: 'r num wide' }, isNew ? '—' : qty(r.book)),
       h('td', { class: 'r num wide' }, r.listed ? (r.listed > 0 ? '+' : '−') + qty(r.listed) : ''),
       h('td', { class: 'r' }, input),
       h('td', null, delta),
     );
+    const row = { bucket, ticker: () => (isNew ? tkIn.value.trim().toUpperCase() : r.ticker), input, expected: isNew ? 0 : r.expected, why };
     const upd = () => {
       const v = parse(input);
-      const d = v - r.expected;
+      const d = v - row.expected;
       const off = Number.isFinite(v) && Math.abs(d) > 1e-9;
       tr.classList.toggle('diff', off || !Number.isFinite(v));
-      delta.textContent = !Number.isFinite(v) ? '要填數字' : off ? `和預期差 ${d > 0 ? '+' : '−'}${qty(d)}` : '';
+      delta.textContent = !Number.isFinite(v) ? '要填數字' : off ? `${d > 0 ? '+' : '−'}${qty(d)}${bucket === 'own' && !isNew && v === 0 ? '（移出自選）' : ''}` : '';
       recount();
     };
     input.addEventListener('input', upd);
     tkIn?.addEventListener('input', recount);
-    inputs.set(tr, { ticker: () => (isNew ? tkIn.value.trim().toUpperCase() : r.ticker), input, expected: r.expected });
-    tbody.append(tr);
-    if (isNew) tkIn.focus();
+    rows.push(row);
+    tbodies[bucket].append(tr);
+    // 新加進自選的「為什麼買」放在下一列，橫跨整張表（手機上代號那一欄太窄）
+    if (why) tbodies[bucket].append(h('tr', { class: 'why-row' }, h('td', { colspan: 5, style: 'padding-top:0' }, why)));
+    if (isNew && !r.ticker) tkIn.focus();
+    if (isNew) upd();
   };
-  f.rows.forEach((r) => addRow(r));
+  for (const b of ['own', 'mom', 'core']) f.buckets[b].forEach((r) => addRow(b, r));
+  for (const t of f.coreTickers) if (!f.buckets.core.some((r) => r.ticker === t)) addRow('core', { ticker: t, book: 0, listed: 0, expected: 0 });
+  // 改版前留下的未分類持股：先放進自選那一桶，你可以改放動能
+  for (const u of f.unc) addRow('own', { ticker: u.ticker, book: 0, listed: 0, expected: u.shares }, true);
   cash.addEventListener('input', recount);
-  const note = h('input', { type: 'text', maxlength: 300, placeholder: '例如：財報不如預期，先賣掉一半', 'aria-label': '這次自己交易的原因' });
+
+  const section = (b) =>
+    glass(
+      '',
+      h('div', { class: 'pad', style: 'padding-bottom:0' }, h('h2', { class: 'panel-h' }, NAMES[b]), h('p', { class: 'small dim', style: 'margin:4px 0 0' }, HINT[b])),
+      h('div', { class: 'scroll-x' }, h('table', { class: 'snap' }, h('thead', null, h('tr', null, h('th', null, '代號'), h('th', { class: 'r wide' }, '帳本'), h('th', { class: 'r wide' }, '清單'), h('th', { class: 'r' }, '券商現在的股數'), h('th', null, ''))), tbodies[b])),
+      b === 'core' ? null : h('div', { class: 'pad btn-row' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow(b, { ticker: '', book: 0, listed: 0, expected: 0 }, true) }, b === 'own' ? '加一檔到自選' : '加一檔到動能')),
+    );
+
   const msg = h('div');
   const out = h('div');
   const foot = h('div', { style: 'display:contents' });
   const send = actionButton('送出快照', 'primary block', async () => {
-    const shares = {};
-    for (const { ticker, input } of inputs.values()) {
-      const t = ticker();
-      const q = parse(input);
+    const lots = { own: {}, mom: {}, core: {} };
+    const why = {};
+    for (const r of rows) {
+      const t = r.ticker();
+      const q = parse(r.input);
       if (!t && !(q > 0)) continue;
-      if (!t) return msg.replaceChildren(errBox(new Error('有一列沒填代號')));
-      if (!Number.isFinite(q) || q < 0) return msg.replaceChildren(errBox(new Error(`${t} 的股數要填 0 以上的數字`)));
-      shares[t] = (shares[t] ?? 0) + q;
+      if (!t) return msg.replaceChildren(errBox(new Error(`${NAMES[r.bucket]}有一列沒填代號`)));
+      if (!Number.isFinite(q) || q < 0) return msg.replaceChildren(errBox(new Error(`${NAMES[r.bucket]} ${t} 的股數要填 0 以上的數字`)));
+      lots[r.bucket][t] = (lots[r.bucket][t] ?? 0) + q;
+      if (r.why?.value.trim()) why[t] = r.why.value.trim();
     }
     const c = parse(cash);
     if (!Number.isFinite(c)) {
@@ -703,23 +728,27 @@ export async function snapshotPage(ctx) {
       return msg.replaceChildren(errBox(new Error('請填券商現在顯示的現金（可用資金）。')));
     }
     try {
-      const r = await api.post('/snapshot', { shares, cash: c, note: note.value });
+      const r = await api.post('/snapshot', { lots, cash: c, note: note.value, why });
       msg.replaceChildren();
+      // 新加進自選、有寫為什麼買的：請 AI 把它改寫成可以追蹤的出場條件（結果在持股頁，勾選後才監測；AI 層沒設定就略過）
+      for (const [t, w] of Object.entries(why)) api.post('/ops/own-check', { ticker: t, lines: [w] }).catch(() => {});
       await ctx.refresh(false);
       form.hidden = true;
       // 帳本已經照快照更新，不能再回上一步
       const stepsEl = document.querySelector('.banner .steps');
       if (stepsEl) stepsEl.replaceWith(stepBar(4));
       const more = r.followUps.length + r.created.length;
-      const next = [h('a', { class: 'btn primary block', href: '#/' }, more ? '去回答' : '回待辦'), h('div', { class: 'linkrow' }, h('a', { class: 'linkbtn', href: '#/account' }, '看帳戶'))];
-      foot.replaceChildren(...next);
+      foot.replaceChildren(h('a', { class: 'btn primary block', href: r.monthlyId ? `#/n/${r.monthlyId}` : '#/' }, more ? '去回答' : r.monthlyId ? '看重算的月報' : '回待辦'), h('div', { class: 'linkrow' }, h('a', { class: 'linkbtn', href: '#/account' }, '看帳戶')));
       say(more ? { k: '快照收到了', say: ['帳本更新了，', neg(`還有 ${more} 件事要你回答`), '。'], mood: 'alert' } : { k: '快照收到了', say: [em('帳本已更新'), r.completed.length ? `，${r.completed.length} 份清單完成。` : '，這份快照是新的起點。'], mood: 'happy' }, 'hop');
       out.replaceChildren(
         glass(
           'pad',
           h('h2', { class: 'panel-h' }, more ? '快照收到了，還有事要你回答' : '快照收到了，帳本已更新'),
-          r.completed.length ? h('p', null, `完成了 ${r.completed.length} 份清單，成交已照清單分到各桶。`) : h('p', null, '沒有等成交的清單；這份快照成為新的起點。'),
-          r.followUps.length ? h('p', null, `有 ${r.followUps.length} 份清單和快照對不上，要你選補做還是就這樣。`) : null,
+          r.completed.length ? h('p', null, `完成了 ${r.completed.length} 份清單，成交照你填的桶記帳。`) : h('p', null, '沒有等成交的清單；這份快照成為新的起點。'),
+          r.followUps.length ? h('p', null, `有 ${r.followUps.length} 份清單和快照差超過 1 股，要你選補做還是就這樣。`) : null,
+          r.removedOwn.length ? h('p', null, `${r.removedOwn.join('、')} 賣光了，已移出自選（之後不再追蹤，也不會被買回）。`) : null,
+          r.cashOther ? h('p', { class: 'small dim' }, `現金和估計的成交金額差 ${r.cashOther > 0 ? '+' : '−'}${money(Math.abs(r.cashOther), 2)}，記成其他現金變動（成交價、手續費、股利）。`) : null,
+          r.bigCash ? h('p', { class: 'small', style: 'color:var(--warn)' }, '這個差額超過總資產 2%。如果其實是入金或出金，請到「我要…」登記，單位淨值才不會把它算成報酬。') : null,
           r.created.map((n) => h('p', null, n.title)),
         ),
       );
@@ -734,9 +763,9 @@ export async function snapshotPage(ctx) {
           class: 'btn',
           type: 'button',
           onclick: () => {
-            for (const { ticker, input } of inputs.values()) {
-              input.value = String(f.autofill.shares[ticker()] ?? 0);
-              input.dispatchEvent(new Event('input'));
+            for (const r of rows) {
+              r.input.value = String(r.expected);
+              r.input.dispatchEvent(new Event('input'));
             }
             cash.value = String(f.autofill.cash);
             recount();
@@ -748,30 +777,30 @@ export async function snapshotPage(ctx) {
     : null;
   const form = h(
     'div',
-    null,
+    { class: 'stackv' },
     f.lists.length
-      ? h('p', { style: 'margin-bottom:12px' }, '等成交的清單：', f.lists.map((l, k) => [k ? '、' : '', h('a', { href: `#/n/${l.id}` }, l.title)]), '。股數先幫你填好「照清單做完」的數字，和券商不一樣的地方直接改。')
-      : h('p', { style: 'margin-bottom:12px' }, '現在沒有等成交的清單。自己交易過、或只是想對帳，都可以填：把和券商不一樣的地方改掉就好。'),
+      ? h('p', null, '等成交的清單：', f.lists.map((l, k) => [k ? '、' : '', h('a', { href: `#/n/${l.id}` }, l.title)]), '。每一桶的股數先幫你填好「照清單做完」的數字，和券商不一樣的地方直接改。')
+      : h('p', null, '現在沒有等成交的清單。自己交易過、或只是想對帳，都可以填：把和券商不一樣的地方改掉，變動放在哪一桶由你決定。'),
+    f.unc.length ? h('p', { class: 'small', style: 'color:var(--warn)' }, `改版前有還沒分類的持股（${f.unc.map((u) => `${u.ticker} ${qty(u.shares)} 股`).join('、')}），先放在自選那一桶；要放動能就把它移過去。`) : null,
+    section('own'),
+    section('mom'),
+    section('core'),
     glass(
-      '',
-      h('div', { class: 'scroll-x' }, h('table', { class: 'snap' }, h('thead', null, h('tr', null, h('th', null, '代號'), h('th', { class: 'r wide' }, '帳本'), h('th', { class: 'r wide' }, '清單'), h('th', { class: 'r' }, '券商現在的股數'), h('th', null, ''))), tbody)),
-      h('div', { class: 'pad btn-row' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow({ ticker: '', book: 0, expected: 0, listed: 0, where: '' }, true) }, '加一檔清單外的股票'), fill),
-    ),
-    glass('pad', h('label', { class: 'field', style: 'margin:0' }, h('span', null, '券商現在顯示的現金'), h('div', { style: 'max-width:14em' }, cash), h('small', null, `帳本上是 ${money(f.cashBook, 2)}`, f.withdraw ? `；清單做完要轉出 ${money(f.withdraw)}，請填轉出之後的現金` : '', '。不用填成交價，系統用現金的變化對帳；差太多會問你是入金、出金還是股利。')),
-      h('label', { class: 'field', style: 'margin:14px 0 0' }, h('span', null, '這次自己交易的原因（選填）'), note, h('small', null, '有清單以外的買賣（例如自己緊急賣出）時寫一句，會記在帳本那幾筆變動上；核心的 VOO／SGOV 也記。')),
+      'pad',
+      h('label', { class: 'field', style: 'margin:0' }, h('span', null, '券商現在顯示的現金'), h('div', { style: 'max-width:14em' }, cash), h('small', null, `帳本上是 ${money(f.cashBook, 2)}`, f.withdraw ? `；清單做完要轉出 ${money(f.withdraw)}，請填轉出之後的現金` : '', '。照券商畫面填就好，不用算成交價；和估計的差額會記成其他現金變動，不會問你。入金、出金請用「我要…」登記。')),
+      h('label', { class: 'field', style: 'margin:14px 0 0' }, h('span', null, '這次自己交易的原因（選填）'), note, h('small', null, '有清單以外的買賣（例如自己緊急賣出）時寫一句，會記在帳本那幾筆變動上。')),
+      fill ? h('div', { class: 'btn-row', style: 'margin-top:12px' }, fill) : null,
     ),
     msg,
-    f.lists.length ? h('p', { class: 'small faint', style: 'margin-top:10px' }, '送出之前都可以回上一步。送出之後帳本就照這份快照更新；填錯了再填一次快照就好。') : null,
+    f.lists.length ? h('p', { class: 'small faint' }, '送出之前都可以回上一步。送出之後帳本就照這份快照更新；填錯了再填一次快照就好。') : null,
   );
-  form.querySelectorAll('.glass')[1].style.marginTop = '14px';
   foot.append(send, h('div', { class: 'linkrow' }, f.lists.length ? h('a', { class: 'linkbtn', href: only ? `#/n/${only.id}` : '#/' }, '上一步：回下單清單') : null, h('a', { class: 'linkbtn', href: '#/' }, '先不填')));
-  // 送出之前可以回上一步：只有一份清單時直接回那一份；有好幾份就回待辦挑
   const pickOne = { label: '回待辦挑一份清單', href: '#/' };
   const steps = f.lists.length ? stepBar(3, only ? { 1: { label: '回去改決定', go: reopenAndGo(ctx, only.id) }, 2: { label: '回去看下單清單', href: `#/n/${only.id}` } } : { 1: pickOne, 2: pickOne }) : null;
   const first = recount();
   return page({
     view: 'flow',
-    banner: { back: { href: '#/', label: '待辦與紀錄' }, title: '填快照', sub: '照券商現在的畫面，填每一檔的股數和現金。這份快照就是帳本新的起點。', steps, bubble: first },
+    banner: { back: { href: '#/', label: '待辦與紀錄' }, title: '填快照', sub: '照券商現在的畫面，填每一桶每一檔的股數和現金。這份快照就是帳本新的起點。', steps, bubble: first },
     pane: [form, out],
     rail: consoleBox('送出快照', summary, foot, '快照'),
     cta: h('div', { class: 'sticky-cta' }, h('div', { class: 'sum' }, '填好股數與現金'), h('button', { class: 'btn primary', type: 'button', onclick: () => send.click() }, '送出快照')),

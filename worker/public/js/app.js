@@ -3,7 +3,7 @@
 import { ApiError, api, getMode, setMode } from './api.js';
 import { day, h, toast } from './dom.js';
 import { menuList, page } from './layout.js';
-import { accountPage, addOwnPage, authPage, depositPage, doPage, holdingPage, ratioPage, removePage, setupPage, withdrawPage } from './pages-more.js';
+import { accountPage, authPage, depositPage, doPage, holdingPage, ratioPage, setupPage, withdrawPage } from './pages-more.js';
 import { aiRunPage } from './pages-ai.js';
 import { homePage, notifPage, snapshotPage } from './pages-notif.js';
 import { attach } from './slime.js';
@@ -45,8 +45,6 @@ const ROUTES = [
   [/^#\/do\/deposit$/, '', () => depositPage(ctx)],
   [/^#\/do\/withdraw$/, '', () => withdrawPage(ctx)],
   [/^#\/do\/ratio$/, '', () => ratioPage(ctx)],
-  [/^#\/do\/add$/, '', () => addOwnPage(ctx)],
-  [/^#\/do\/remove(?:\/([A-Za-z0-9.%-]+))?$/, '', (m) => removePage(ctx, m[1] ? decodeURIComponent(m[1]) : null)],
   [/^#\/setup$/, '', () => setupPage(ctx)],
 ];
 // 這些頁面要有帳戶才看得到

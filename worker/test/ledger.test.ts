@@ -94,23 +94,24 @@ describe('快照 → 事件', () => {
     expect(s.created.map((n) => n.kind)).toEqual(['CLASSIFY']);
   });
 
-  it('現金：價差在容許範圍內不問；差太多 → 問是入金、出金、股利還是其他', () => {
+  it('現金：扣掉估計成交金額後的差額不問，記成其他現金變動（算報酬）；超過總資產 2% 時提醒（2026-11-15）', () => {
     const sim = calm();
-    const quiet = applySnapshot(sim.acct, sim.pre, snapOf(sim.acct, {}, sim.acct.cash + 3));
-    expect(quiet.created).toEqual([]);
-    expect(quiet.acct.cash).toBe(sim.acct.cash + 3);
-    const s = applySnapshot(sim.acct, sim.pre, snapOf(sim.acct, {}, sim.acct.cash + 5000));
-    expect(s.created.map((n) => n.kind)).toEqual(['CASH_DIFF']);
-    expect(s.created[0].amount).toBeCloseTo(5000, 6);
     const nav0 = navPerUnit(sim.acct, sim.pre).total;
-    // 回答「入金」：買單位，單位淨值不變
-    const dep = explainCash(s.acct, sim.pre, s.created[0].id, '入金');
-    expect(navPerUnit(dep, sim.pre).total).toBeCloseTo(nav0, 9);
+    const same = applySnapshot(sim.acct, sim.pre, snapOf(sim.acct, {}, sim.acct.cash));
+    expect(same).toMatchObject({ created: [], cashOther: 0, bigCash: false });
+    const small = applySnapshot(sim.acct, sim.pre, snapOf(sim.acct, {}, sim.acct.cash + 3));
+    expect(small).toMatchObject({ created: [], cashOther: 3, bigCash: false });
+    expect(small.acct.events.at(-1)).toMatchObject({ kind: 'CASH_OTHER', amount: 3 });
+    const big = applySnapshot(sim.acct, sim.pre, snapOf(sim.acct, {}, sim.acct.cash + 0.03 * totalValue(sim.acct, sim.pre)));
+    expect(big.created).toEqual([]);
+    expect(big.bigCash).toBe(true);
+    expect(big.acct.cash).toBeCloseTo(sim.acct.cash + 0.03 * totalValue(sim.acct, sim.pre), 6);
+    expect(navPerUnit(big.acct, sim.pre).total).toBeGreaterThan(nav0); // 算報酬，不是入金
+    // 舊的「現金差額」通知（改版前留下的）仍然可以回答
+    const legacy = structuredClone(sim.acct);
+    legacy.notifs.push({ id: legacy.nextId++, kind: 'CASH_DIFF', date: sim.pre.date, seq: sim.pre.i, title: 't', items: [], status: 'PENDING', coreAbsorb: false, reminded: false, amount: 5000 });
+    const dep = explainCash(legacy, sim.pre, legacy.nextId - 1, '入金');
     expect(dep.events.at(-1)).toMatchObject({ kind: 'DEPOSIT', amount: 5000 });
-    // 回答「股利」：算報酬，單位淨值上升
-    const div = explainCash(s.acct, sim.pre, s.created[0].id, '股利');
-    expect(navPerUnit(div, sim.pre).total).toBeGreaterThan(nav0);
-    expect(div.events.at(-1)).toMatchObject({ kind: 'DIVIDEND' });
   });
 });
 

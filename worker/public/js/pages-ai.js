@@ -285,7 +285,7 @@ export function ownMonitor(ctx, d) {
   return out;
 }
 
-/** 新增自選頁：請 AI 草擬前提，等結果（每 15 秒看一次，最多 20 分鐘）。onDrafts(drafts) 收到結果時呼叫。 */
+/** 持股頁：請 AI 草擬前提，等結果（每 15 秒看一次，最多 20 分鐘）。onDrafts(drafts) 收到結果時呼叫。 */
 export async function requestDrafts(ticker, lines, onStatus) {
   const r = await api.post('/ops/own-check', { ticker, lines });
   for (let k = 0; k < 80; k++) {

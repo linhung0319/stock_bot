@@ -136,7 +136,7 @@ export async function holdingPage(ctx, ticker) {
             d.own.lastReview ? h('p', { class: 'small dim', style: 'margin-top:10px' }, 'AI 最近一次審查：' + d.own.lastReview) : h('p', { class: 'small faint', style: 'margin-top:10px' }, 'AI 還沒有審查過這一檔。'),
             aiBlock(d.ai),
             ...ownMonitor(ctx, d),
-            d.canRemove ? h('div', { class: 'btn-row', style: 'margin-top:14px' }, h('a', { class: 'btn', href: `#/do/remove/${encodeURIComponent(d.ticker)}` }, '移除自選')) : null,
+            ...ownEdit(ctx, d),
           )
         : null,
       d.history.length ? [h('h2', { class: 'sec', style: 'margin:24px 0 0' }, '這檔的紀錄'), h('div', { class: 'glass rec' }, d.history.map((x) => (x.notif ? h('a', { class: 'rowlink', href: `#/n/${x.notif}` }, h('span', { class: 'd num' }, day(x.date)), h('span', null, x.text), h('span')) : h('div', { class: 'rowlink' }, h('span', { class: 'd num' }, day(x.date)), h('span', null, x.text), h('span')))))] : null,
@@ -297,123 +297,81 @@ export const ratioPage = (() => {
   });
 })();
 
-export function removePage(ctx, preset) {
-  const sel = h('select', null, ctx.state.account.ownTickers.map((t) => h('option', { value: t, selected: t === preset }, t)));
-  return opPage({
-    title: '移除自選',
-    sub: '全部賣出，錢交給核心。之後這一檔不再有規則或 AI 追蹤；想再買要重新新增。',
-    fields: () => (ctx.state.account.ownTickers.length ? h('label', { class: 'field', style: 'margin:0' }, h('span', null, '哪一檔'), h('div', { style: 'max-width:12em' }, sel)) : h('p', null, '自選桶現在是空的。')),
-    payload: () => ({ ticker: sel.value }),
-    path: '/ops/remove-own',
-    confirmLabel: '確定移除，建立清單',
-  })(ctx);
-}
-
-// 新增自選：先看這檔的數字（健檢），再決定前提，最後才建立清單
-export function addOwnPage(ctx) {
-  const tk = h('input', { type: 'text', placeholder: '例如 TSLA', style: 'text-transform:uppercase;max-width:10em', autocapitalize: 'characters' });
+// 持股頁：改標準比重、加前提、請 AI 草擬前提（2026-11-15 起取代新增／移除自選兩頁；新增和賣光都在填快照做）
+function ownEdit(ctx, d) {
   const msg = h('div');
-  const out = h('div');
-  const con = h('div', { style: 'display:contents' });
-  const ctaBox = h('div', { class: 'sticky-cta' });
-  const empty = () => {
-    con.replaceChildren(consoleBox('要下的單', h('p', { class: 'con-empty' }, '先填代號、看這檔的數字。系統只建議比重，不替你決定買不買。'), [actionButton('看這檔的數字', 'primary block', check), h('div', { class: 'linkrow' }, h('a', { class: 'linkbtn', href: '#/' }, '算了'))]));
-    ctaBox.replaceChildren(h('div', { class: 'sum' }, '先看這檔的數字'), actionButton('看數字', 'primary', check));
-  };
-  async function check() {
-    const ticker = tk.value.trim().toUpperCase();
-    if (!ticker) return msg.replaceChildren(errBox(new Error('請填股票代號')));
+  const fail = (e) => msg.replaceChildren(errBox(e));
+  const std = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', value: (d.own.stdWeight * 100).toFixed(1), style: 'width:6em', 'aria-label': '標準比重（%）' });
+  const saveStd = actionButton('改標準比重', '', async () => {
+    const v = Number(std.value.replace(/[%\s]/g, ''));
+    if (!(v > 0 && v <= 50)) return fail(new Error('標準比重填 0.1～50（%）'));
     try {
-      const r = await api.post('/ops/add-own', { ticker, dry: true });
-      msg.replaceChildren();
-      const v = r.preview;
-      const mine = h('textarea', { rows: 3, placeholder: '一行一條，例如：\nAI 伺服器出貨兩年內持續成長\n毛利率跌破 70% 就賣' });
-      const drafts = (r.drafts ?? []).map((d) => ({ ...d, box: h('input', { type: 'checkbox', checked: true }) }));
-      const mode = { v: drafts.length ? 'AI' : 'MINE' };
-      const radio = (val, label, extra) => h('label', { class: 'pick plain' }, h('input', { type: 'radio', name: 'pm', checked: mode.v === val, onchange: () => (mode.v = val) }), h('span', { class: 'lab' }, label), extra ? h('span', { class: 'note', style: 'grid-column:2' }, extra) : null);
-      const premises = () => {
-        if (mode.v === 'MINE') {
-          const xs = mine.value.split('\n').map((x) => x.trim()).filter(Boolean);
-          if (!xs.length) throw new Error('還沒寫前提。寫一兩句，或改選「用系統預設的前提」。');
-          return xs.map((text) => ({ text, origin: 'USER' }));
-        }
-        if (mode.v === 'AI') {
-          const xs = drafts.filter((d) => d.box.checked);
-          if (!xs.length) throw new Error('至少勾一條，或改選別的方式。');
-          return xs.map((d) => ({ text: d.text, origin: 'AI_DRAFT_ACCEPTED', breaksIf: d.breaksIf }));
-        }
-        return [];
-      };
-      const msg2 = h('div');
-      // 真實模式：請 AI 草擬前提（雲端排程要幾分鐘），回來之後變成可以勾選的選項
-      const aiDraftSlot = h('div', { class: 'small' }, h('button', { class: 'btn', type: 'button', onclick: async (ev) => {
-        ev.target.disabled = true;
-        const status = h('span', { class: 'faint', style: 'margin-left:8px' }, '已送出，AI 通常幾分鐘內回來…');
-        ev.target.after(status);
-        try {
-          const v = await requestDrafts(ticker, [], (t) => (status.textContent = t));
-          if (!v.drafts.length) throw new Error(v.summary || 'AI 沒有草擬出前提');
-          drafts.push(...v.drafts.map((d) => ({ ...d, box: h('input', { type: 'checkbox', checked: true }) })));
-          mode.v = 'AI';
-          aiDraftSlot.replaceChildren(radio('AI', 'AI 草擬，我勾選', h('span', null, drafts.map((d) => h('label', { style: 'display:block;margin:6px 0' }, d.box, ' ', d.text, h('span', { class: 'faint' }, `（不成立的訊號：${d.breaksIf}）`))))));
-          aiDraftSlot.querySelector('input[type=radio]').checked = true;
-        } catch (e) {
-          status.textContent = e.message;
-          ev.target.disabled = false;
-        }
-      } }, '請 AI 草擬前提'), h('span', { class: 'faint', style: 'margin-left:8px' }, 'AI 只草擬「現在的股價隱含了哪些前提」，不判斷該不該買。'));
-      const confirm = async () => {
-        try {
-          const ps = premises();
-          const done = await api.post('/ops/add-own', { ticker, premises: ps });
-          // 你自己寫的：請 AI 把其中的出場條件改寫成可追蹤的格式（結果在持股頁，勾選後才開始監測；AI 層沒設定就略過）
-          if (mode.v === 'MINE') api.post('/ops/own-check', { ticker, lines: ps.map((x) => x.text) }).catch(() => {});
-          toast(`${ticker} 已加入自選`);
-          ctx.go(`#/n/${done.notifId}`);
-        } catch (e) {
-          msg2.replaceChildren(errBox(e));
-          msg2.scrollIntoView({ block: 'center' });
-        }
-      };
-      put(
-        out,
-        h('h2', { class: 'sec' }, `${ticker}：加進自選會怎樣`),
-        slips(v, { editable: false }),
-        h('h2', { class: 'sec' }, '你為什麼要買它'),
-        h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '這幾句話是這檔的「前提」。之後 AI 每個月拿它來對照：前提不成立時會建議你減碼。寫不出來也可以，三種方式選一種。'),
-        h(
-          'div',
-          { class: 'picks narrow' },
-          radio('MINE', '我自己寫', mine),
-          drafts.length
-            ? radio('AI', 'AI 草擬，我勾選', h('span', null, h('span', { class: 'fake' }, '示範用的假內容'), drafts.map((d) => h('label', { style: 'display:block;margin:6px 0' }, d.box, ' ', d.text, h('span', { class: 'faint' }, `（不成立的訊號：${d.breaksIf}）`)))))
-            : aiDraftSlot,
-          radio('DEFAULT', '用系統預設的前提', '沒有硬事件；營收年增率沒有連兩季轉負；稀釋 EPS 沒有連兩季年減；慢規則本身。'),
-        ),
-        msg2,
-      );
-      con.replaceChildren(consoleBox(trayTitle(v.composed), trayBody(v.composed), [actionButton(`加入自選，建立 ${ticker} 的清單`, 'primary block', confirm), h('div', { class: 'linkrow' }, linkButton('換一檔', async () => {
-        out.replaceChildren();
-        tk.value = '';
-        tk.focus();
-        empty();
-      }), h('a', { class: 'linkbtn', href: '#/' }, '算了'))]));
-      ctaBox.replaceChildren(h('div', { class: 'sum' }, `${ticker}：寫好前提再加入`), actionButton('加入自選', 'primary', confirm));
-      say(planBubble(v.composed, `${ticker} 加進自選的話`), 'jiggle');
+      await api.post('/ops/std-weight', { ticker: d.ticker, stdWeight: v / 100 });
+      toast(`${d.ticker} 的標準比重改成 ${v}%`);
+      ctx.refresh();
     } catch (e) {
-      out.replaceChildren();
-      msg.replaceChildren(errBox(e));
+      fail(e);
     }
-  }
-  tk.addEventListener('keydown', (ev) => ev.key === 'Enter' && check());
-  empty();
-  return page({
-    view: 'flow',
-    banner: { back: { href: '#/do', label: '我要…' }, title: '新增自選', sub: '自選股是你自己要買的，系統不替你決定買不買；它只告訴你這檔現在的數字、建議的比重。', bubble: { k: '新增自選', say: ['填代號，我先給你看這檔的數字和', em('建議的比重'), '。要不要買由你決定。'], mood: 'watch' } },
-    pane: [glass('pad narrow-sm', h('label', { class: 'field', style: 'margin:0' }, h('span', null, '股票代號'), tk), msg), out],
-    rail: con,
-    cta: ctaBox,
   });
+  const mine = h('textarea', { rows: 2, placeholder: '一行一條，例如：\nAI 伺服器出貨兩年內持續成長\n毛利率跌破 70% 就賣' });
+  const addMine = actionButton('加進前提', '', async () => {
+    const xs = mine.value.split('\n').map((x) => x.trim()).filter(Boolean);
+    if (!xs.length) return fail(new Error('還沒寫前提'));
+    try {
+      await api.post('/ops/own-premises', { ticker: d.ticker, premises: xs.map((text) => ({ text })) });
+      // 請 AI 把你寫的出場條件改寫成可以追蹤的格式（結果出現在這一頁，勾選後才監測；AI 層沒設定就略過）
+      api.post('/ops/own-check', { ticker: d.ticker, lines: xs }).catch(() => {});
+      toast('已加進前提');
+      ctx.refresh();
+    } catch (e) {
+      fail(e);
+    }
+  });
+  const draftSlot = h('div');
+  const askAi = h('button', {
+    class: 'btn',
+    type: 'button',
+    onclick: async (ev) => {
+      ev.target.disabled = true;
+      const status = h('span', { class: 'faint small', style: 'margin-left:8px' }, '已送出，AI 通常幾分鐘內回來…');
+      ev.target.after(status);
+      try {
+        const v = await requestDrafts(d.ticker, [], (t) => (status.textContent = t));
+        if (!v.drafts.length) throw new Error(v.summary || 'AI 沒有草擬出前提');
+        status.remove();
+        const boxes = v.drafts.map((x) => ({ x, box: h('input', { type: 'checkbox', checked: true }) }));
+        draftSlot.replaceChildren(
+          h('div', null, boxes.map(({ x, box }) => h('label', { style: 'display:block;margin:6px 0' }, box, ' ', x.text, h('span', { class: 'faint' }, `（不成立的訊號：${x.breaksIf}）`)))),
+          actionButton('加入勾選的前提', '', async () => {
+            const ps = boxes.filter((b) => b.box.checked).map((b) => ({ text: b.x.text, origin: 'AI_DRAFT_ACCEPTED', breaksIf: b.x.breaksIf }));
+            if (!ps.length) return fail(new Error('至少勾一條'));
+            try {
+              await api.post('/ops/own-premises', { ticker: d.ticker, premises: ps });
+              toast('已加進前提');
+              ctx.refresh();
+            } catch (e) {
+              fail(e);
+            }
+          }),
+        );
+      } catch (e) {
+        status.textContent = e.message;
+        ev.target.disabled = false;
+      }
+    },
+  }, '請 AI 草擬前提');
+  return [
+    h('h5', { style: 'margin-top:16px' }, '標準比重'),
+    h('div', { class: 'btn-row', style: 'align-items:center' }, std, h('span', null, '%'), saveStd),
+    h('p', { class: 'small faint' }, '加回、入金補到這個比重；改了不會馬上下單。系統推薦值是依波動度在自選預算內分的。'),
+    h('h5', { style: 'margin-top:16px' }, '加前提'),
+    mine,
+    h('div', { class: 'btn-row', style: 'margin-top:8px' }, addMine, askAi),
+    h('p', { class: 'small faint' }, '原本只有系統預設的前提時，加了你寫的就取代預設。AI 只草擬「現在的股價隱含了哪些前提」，不判斷該不該買。'),
+    draftSlot,
+    msg,
+    h('p', { class: 'small faint', style: 'margin-top:14px' }, '不想再持有：到「填快照」把自選這一檔的股數改成 0，就會移出自選。'),
+  ];
 }
 
 // ---------------------------------------------------------------- 建立帳戶

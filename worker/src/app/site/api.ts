@@ -4,7 +4,10 @@ import {
   SLOW,
   SYSTEM_DEFAULT_PREMISES,
   addOwn,
+  addPremises,
   applySnapshot,
+  setStdWeight,
+  type BucketShares,
   changeRatio,
   classify,
   clone,
@@ -409,22 +412,83 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
   if (rest === 'snapshot/form' && get) return json(snapshotForm(ready(await backend.load())));
   if (rest === 'snapshot' && post) {
     const b = await body(req);
-    const raw = (b.shares ?? {}) as Record<string, unknown>;
     const shares: Record<string, number> = {};
-    for (const [k, v] of Object.entries(raw).slice(0, 80)) {
-      const q = num(v, `${k} 的股數`, 0, 1e7);
-      if (q > 0) shares[ticker(k)] = q;
+    // 分桶快照（網站從 2026-11-15 起用這個）：每一桶每一檔的股數；沒給就是舊的總股數快照
+    let lots: BucketShares | undefined;
+    if (b.lots && typeof b.lots === 'object') {
+      const raw = b.lots as Record<string, unknown>;
+      lots = { own: {}, mom: {}, core: {} };
+      let n = 0;
+      for (const bk of ['own', 'mom', 'core'] as const) {
+        const rows = (raw[bk] ?? {}) as Record<string, unknown>;
+        for (const [k, v] of Object.entries(rows)) {
+          if (++n > 120) throw new SiteError(422, '代號太多了');
+          const q = num(v, `${k} 的股數`, 0, 1e7);
+          if (q <= 0) continue;
+          const t = ticker(k);
+          lots[bk][t] = (lots[bk][t] ?? 0) + q;
+          shares[t] = (shares[t] ?? 0) + q;
+        }
+      }
+    } else {
+      const raw = (b.shares ?? {}) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(raw).slice(0, 80)) {
+        const q = num(v, `${k} 的股數`, 0, 1e7);
+        if (q > 0) shares[ticker(k)] = q;
+      }
+    }
+    const why: Record<string, string> = {};
+    for (const [k, v] of Object.entries((b.why ?? {}) as Record<string, unknown>).slice(0, 20)) {
+      const w = text(v, `${k} 為什麼買`, 300, false);
+      if (w) why[ticker(k)] = w;
     }
     // 現金可以是負的（融資帳戶，或示範裡買超過現金）；畫面上會提醒
     const note = text(b.note, '這次自己交易的原因', 300, false);
-    const snap: Snapshot = { shares, cash: num(b.cash, '現金', -1e10, 1e10), ...(note ? { note } : {}) };
+    const snap: Snapshot = { shares, cash: num(b.cash, '現金', -1e10, 1e10), ...(lots ? { lots } : {}), ...(note ? { note } : {}), ...(Object.keys(why).length ? { why } : {}) };
     const r = await mutate(backend, '填快照', Object.keys(shares), (d) => {
       const noPrice = Object.keys(shares).filter((t) => !d.view.close[t] || !Number.isFinite(d.view.close[t][d.view.i]));
       if (noPrice.length) throw new SiteError(422, `抓不到 ${noPrice.join('、')} 在 ${d.view.date} 的收盤價。請確認代號有沒有打錯。`);
+      const wasBlocked = d.acct.monthlyBlocked;
       const out = applySnapshot(d.acct, d.view, snap, d.fill);
-      return { acct: out.acct, snapshot: snap, result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })) } };
+      if (out.error) throw new SiteError(422, out.error);
+      let acct = out.acct;
+      let monthlyId: number | null = null;
+      if (wasBlocked && !acct.monthlyBlocked) {
+        // 舊的未分類持股這次放進桶裡了：暫停的月報照分類後的做法重算
+        const m = resumeMonthly(acct, d.view, { order: d.rankOrder, vetoed: d.demo ? DEMO_SCRIPTS[d.demo.scenario].vetoes?.[d.today.slice(0, 7)] : undefined, month: d.today.slice(0, 7) });
+        acct = m.acct;
+        monthlyId = m.notif?.id ?? null;
+      }
+      return {
+        acct,
+        snapshot: snap,
+        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, bigCash: out.bigCash, removedOwn: out.removedOwn, monthlyId },
+      };
     });
     return json({ ok: true, ...r.result });
+  }
+
+  // ---- 持股頁：改標準比重、加前提（2026-11-15 起取代新增自選頁的這兩項）
+  if (rest === 'ops/std-weight' && post) {
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const w = num(b.stdWeight, '標準比重', 0.001, 0.5);
+    await mutate(backend, `改標準比重 ${tk} → ${pct(w)}`, [], (d) => {
+      if (!d.acct.rule.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
+      return { acct: setStdWeight(d.acct, tk, w) };
+    });
+    return json({ ok: true });
+  }
+  if (rest === 'ops/own-premises' && post) {
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const ps = premisesOf(b.premises).map(({ id: _id, ...p }) => p);
+    if (!ps.length) throw new SiteError(422, '至少寫一條前提');
+    await mutate(backend, `${tk} 加前提`, [], (d) => {
+      if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
+      return { acct: addPremises(d.acct, tk, ps) };
+    });
+    return json({ ok: true });
   }
 
   // ---- 你自己的操作：先試算（dry），確定了才存

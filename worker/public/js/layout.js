@@ -172,9 +172,7 @@ export function menuItems(st) {
   return [
     ['deposit', '#/do/deposit', '入金', '把錢匯進券商之後登記。只買不賣，先補離目標最遠的格子。'],
     ['withdraw', '#/do/withdraw', '出金', '要把錢領出來。只賣不買，先動核心、最後才是自選。'],
-    ['snapshot', '#/snapshot', '填快照', '自己交易過，或只是想和券商對帳。'],
-    ['add', '#/do/add', '新增自選', '加一檔你自己想買的股票。系統建議比重，不替你決定買不買。'],
-    ['remove', '#/do/remove', '移除自選', '全部賣出，錢回核心，之後不再追蹤這一檔。'],
+    ['snapshot', '#/snapshot', '填快照', '自己交易過（含新增、賣掉自選），或只是想和券商對帳。變動放哪一桶由你決定。'],
     ['ratio', '#/do/ratio', '改三桶的比例', `現在是自選 ${pct(a.ratio.own, 0)}／動能 ${pct(a.ratio.strat, 0)}／核心 ${pct(a.ratio.core, 0)}。`],
   ];
 }

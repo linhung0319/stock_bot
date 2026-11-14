@@ -182,12 +182,18 @@ export function liveShadow(records: ShadowRecord[]): ShadowRecord[] {
 
 // ---------------------------------------------------------------- 快照 → 事件
 
+export type BucketShares = Record<'own' | 'mom' | 'core', Record<string, number>>;
+
 export interface Snapshot {
-  /** 每一檔的總股數（券商顯示的數字）。 */
+  /** 每一檔的總股數（券商顯示的數字）。給了 lots 時要等於 lots 三桶相加。 */
   shares: Record<string, number>;
+  /** 分桶快照（2026-11-15 起網站用這個）：每一桶每一檔的股數，由使用者決定變動放哪一桶，不再問分類。 */
+  lots?: BucketShares;
   cash: number;
   /** 選填：這次自己交易（清單外的變動）的原因，記在那些事件上；核心的手動交易也記。 */
   note?: string;
+  /** 分桶快照：新加進自選的代號，為什麼買（成為這檔的前提）。 */
+  why?: Record<string, string>;
 }
 
 export interface SnapshotResult {
@@ -196,18 +202,38 @@ export interface SnapshotResult {
   completed: number[];
   /** 快照和清單不同、等使用者選「補做差額／就這樣」的通知。 */
   followUps: number[];
-  /** 新產生的通知（未分類的變動、現金差異）。 */
+  /** 新產生的通知（只用總股數的舊快照才有：未分類的變動）。 */
   created: Notif[];
+  /** 扣掉估計的成交金額後，現金多出（＋）或少掉（−）的部分；記成「其他現金變動」，不再問（2026-11-15）。 */
+  cashOther: number;
+  /** 差額超過總資產 2%：畫面提醒「如果是入金／出金，到『我要…』登記」，不擋路。 */
+  bigCash: boolean;
+  /** 自己賣光、自動移出自選的代號。 */
+  removedOwn: string[];
+  /** 分桶快照不允許時的原因（帳戶不變）。 */
+  error?: string;
+}
+
+/** 扣掉估計成交金額後剩下的現金差：不問，記成其他現金變動（成交價差、手續費、股利；設計 §10 第 38 點）。 */
+const BIG_CASH = 0.02;
+function settleCash(acct: Account, view: MarketView, cash: number, expected: number, withdrawn: number): { cashOther: number; bigCash: boolean } {
+  const residual = Math.round((cash - expected) * 100) / 100;
+  acct.cash = cash;
+  if (withdrawn) recordExternalFlow(acct, view, -withdrawn);
+  if (Math.abs(residual) >= 0.01) acct.events.push({ date: view.date, kind: 'CASH_OTHER', amount: residual, reason: '和估計的成交金額不同（成交價、手續費、股利）' });
+  return { cashOther: Math.abs(residual) >= 0.01 ? residual : 0, bigCash: Math.abs(residual) > BIG_CASH * totalValue(acct, view) };
 }
 
 /**
  * 使用者填快照（每檔股數＋現金）。系統把「上一份快照 → 這一份」的差異拆成事件、分到各桶：
  *   清單上有的代號 → 照清單分到下單的那一桶（兩桶都有單時按股數比例）；差超過 1 股 → 問補做或就這樣
  *   清單上沒有的代號 → 核心 ETF／短債直接歸核心；其他問使用者屬於哪一桶，分類前月報不下單
- *   現金 → 扣掉清單的成交金額後，差太多就問是入金、出金還是其他
+ *   現金 → 扣掉清單的成交金額後的差額記成其他現金變動，不再問（2026-11-15）
+ * 給了 lots（分桶快照，網站從 2026-11-15 起用這個）就照 applyBucketSnapshot：變動放哪一桶由使用者決定。
  * fill：估計成交價用的價格（預設用 view 的收盤）。
  */
 export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, fill?: (ticker: string) => number): SnapshotResult {
+  if (snap.lots) return applyBucketSnapshot(acct0, view, snap, fill);
   const acct = clone(acct0);
   const px = fill ?? ((t: string) => priceOf(view, t));
   const book = bookShares(acct);
@@ -222,7 +248,6 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
   const valueBefore = { own: bucketValue(acct, view, 'own'), mom: bucketValue(acct, view, 'mom'), core: bucketValue(acct, view, 'core') };
   const flows = { own: 0, mom: 0 };
   let expectedCash = acct.cash;
-  let traded = 0;
   let withdrawn = 0;
   const assign = (bucket: Bucket, ticker: string, q: number, reason: string, notif?: number) => {
     if (!q) return;
@@ -256,7 +281,6 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
           assign(l.bucket, l.ticker, a, String(l.reason), n.id);
         });
         expectedCash -= q * px(m.ticker);
-        traded += Math.abs(q * px(m.ticker));
         if (Math.abs(q - m.shares) > 1) {
           fu.push({ ticker: m.ticker, listed: m.shares, done: q });
           // 策略類的差額，下個月月報再列
@@ -297,7 +321,6 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
   // 清單上沒有的變動
   for (const [t, d] of Object.entries(diff)) {
     expectedCash -= d * px(t);
-    traded += Math.abs(d * px(t));
     if (t === acct.cfg.coreTicker || t === acct.bondTicker) {
       assign('core', t, d, snap.note ? `核心的手動交易：${snap.note}` : '核心的手動交易');
       continue;
@@ -317,15 +340,161 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
   acct.units.core = flowUnits(acct.units.core, valueBefore.core, -(flows.own + flows.mom));
 
   // 現金
-  const residual = snap.cash - expectedCash;
-  const tol = Math.max(5, 0.02 * traded, 0.0005 * totalValue(acct, view));
-  acct.cash = snap.cash;
-  if (withdrawn) recordExternalFlow(acct, view, -withdrawn);
-  if (Math.abs(residual) > tol) {
-    created.push(newNotif(acct, view, { kind: 'CASH_DIFF', title: `現金和預期差 ${residual > 0 ? '+' : ''}${residual.toFixed(2)}`, amount: residual, coreAbsorb: false, text: '扣掉清單的成交金額後還有差額。這是入金、出金、股利還是其他？' }));
-  }
+  const cashRes = settleCash(acct, view, snap.cash, expectedCash, withdrawn);
   acct.snapshotDate = view.date;
-  return { acct, completed, followUps, created };
+  return { acct, completed, followUps, created, ...cashRes, removedOwn: [] };
+}
+
+const BUCKETS3 = ['own', 'mom', 'core'] as const;
+
+/**
+ * 分桶快照（2026-11-15 使用者決定，設計 §10 第 38 點）：使用者照帳戶的三桶填每一桶每一檔的股數，
+ * 變動放哪一桶由使用者決定，不再跳分類通知。
+ *   清單上有的（桶＋代號）→ 照清單；差超過 1 股 → 問補做或就這樣（同 §2.3.1）
+ *   清單外的：核心只能是核心 ETF／短債；動能的買進要在當月名單上、那一格還沒買足（2026-11-11 的規則照舊）；
+ *     自選的新代號建立這檔（推薦標準比重、跌深就從減半開始、why 成為前提）；自選賣到 0 股 → 自動移出自選
+ *   現金 → 不問，差額記成其他現金變動
+ */
+function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, fill?: (ticker: string) => number): SnapshotResult {
+  const acct = clone(acct0);
+  const lots = snap.lots!;
+  const px = fill ?? ((t: string) => priceOf(view, t));
+  const fail = (error: string): SnapshotResult => ({ acct: acct0, completed: [], followUps: [], created: [], cashOther: 0, bigCash: false, removedOwn: [], error });
+  for (const t of Object.keys(lots.core)) if (lots.core[t] && t !== acct.cfg.coreTicker && t !== acct.bondTicker) return fail(`${t} 不是核心的標的：核心只放 ${acct.cfg.coreTicker} 和 ${acct.bondTicker}`);
+  for (const t of Object.keys(lots.own)) if (lots.own[t] && (t === acct.cfg.coreTicker || t === acct.bondTicker)) return fail(`${t} 是核心的標的，請填在核心`);
+  for (const t of Object.keys(lots.mom)) if (lots.mom[t] && (t === acct.cfg.coreTicker || t === acct.bondTicker)) return fail(`${t} 是核心的標的，請填在核心`);
+
+  const d: BucketShares = { own: {}, mom: {}, core: {} };
+  for (const b of BUCKETS3) {
+    for (const t of new Set([...Object.keys(acct.lots[b]), ...Object.keys(lots[b])])) {
+      const x = (lots[b][t] ?? 0) - (acct.lots[b][t] ?? 0);
+      if (Math.abs(x) > 1e-9) d[b][t] = x;
+    }
+  }
+  // 舊的「未分類」持股：已經付過錢，這次由三桶的數字決定放哪；還沒回答的分類通知一起結束
+  const unc = acct.lots.unc;
+  acct.lots.unc = {};
+  for (const n of acct.notifs) if (n.kind === 'CLASSIFY' && n.status === 'PENDING') {
+    n.status = 'DONE';
+    n.note = 'snapshot';
+  }
+
+  const completed: number[] = [];
+  const followUps: number[] = [];
+  const removedOwn: string[] = [];
+  const total0 = totalValue(acct0, view);
+  const valueBefore = { own: bucketValue(acct, view, 'own'), mom: bucketValue(acct, view, 'mom'), core: bucketValue(acct, view, 'core') };
+  const flows = { own: 0, mom: 0 };
+  let expectedCash = acct.cash;
+  for (const [t, q] of Object.entries(unc)) expectedCash += q * px(t); // 未分類的股數已經付過錢
+  let withdrawn = 0;
+  const assign = (bucket: Bucket, ticker: string, q: number, reason: string, notif?: number, kind: 'TRADE' | 'TRANSFER' = 'TRADE') => {
+    if (!q) return;
+    addLot(acct, bucket, ticker, q);
+    if (bucket !== 'core') flows[bucket] += q * px(ticker);
+    if (kind === 'TRADE') expectedCash -= q * px(ticker);
+    acct.events.push({ date: view.date, kind, ticker, bucket, shares: q, reason, ...(notif !== undefined ? { notif } : {}) });
+  };
+  /** 拿走這一桶這一檔同方向的變動（整筆算給清單，和舊的總股數快照相同）。 */
+  const take = (b: 'own' | 'mom' | 'core', t: string, listed: number): number => {
+    const x = d[b][t] ?? 0;
+    if (!x || Math.sign(x) !== Math.sign(listed)) return 0;
+    delete d[b][t];
+    return x;
+  };
+
+  const reconcileResponded = () => {
+    for (const n of acct.notifs) {
+      if (n.status !== 'RESPONDED' || !n.composed) continue;
+      const fu: NonNullable<Notif['followUp']> = [];
+      for (const m of n.composed.merged) {
+        // 同一桶的幾行合起來（例如兩個原因都是自選 MU）
+        const per = new Map<'own' | 'mom' | 'core', { shares: number; reason: string }>();
+        for (const l of m.parts) {
+          if (!l.shares) continue;
+          const cur = per.get(l.bucket) ?? { shares: 0, reason: '' };
+          per.set(l.bucket, { shares: cur.shares + l.shares, reason: cur.reason ? `${cur.reason}、${l.reason}` : String(l.reason) });
+        }
+        if (m.shares === 0) {
+          // 同代號兩桶對沖（劃撥）：不用下單，照三桶的數字搬
+          for (const [b, p] of per) assign(b, m.ticker, take(b, m.ticker, p.shares), p.reason, n.id, 'TRANSFER');
+          continue;
+        }
+        let done = 0;
+        for (const [b, p] of per) {
+          const q = take(b, m.ticker, p.shares);
+          assign(b, m.ticker, q, p.reason, n.id);
+          done += q;
+        }
+        if (Math.abs(done - m.shares) > 1) {
+          fu.push({ ticker: m.ticker, listed: m.shares, done });
+          if (n.items.some((i) => i.kind === 'STRATEGY' && !i.cancelled && i.choice !== 'SKIP' && (i.choices.find((c) => c.id === i.choice)?.lines ?? []).some((l) => l.ticker === m.ticker && l.bucket === 'mom'))) {
+            acct.mom.owe[m.ticker] = { since: view.date, notif: n.id };
+          }
+        }
+      }
+      if (n.withdraw) {
+        expectedCash -= n.withdraw;
+        withdrawn += n.withdraw;
+      }
+      for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects);
+      n.status = 'DONE';
+      completed.push(n.id);
+      if (fu.length) {
+        n.followUp = fu;
+        n.followUpOpen = true;
+        followUps.push(n.id);
+      }
+    }
+  };
+  reconcileResponded();
+  // 還沒按回覆、但快照顯示已經照清單做了（非核心的那幾行，同一桶有同方向的變動）→ 當成照預設選項回覆
+  for (const n of acct.notifs) {
+    if (n.status !== 'PENDING' || !n.items.length || n.kind === 'INFO') continue;
+    const pv = composeNotif(acct, view, n);
+    if (pv.lines.some((l) => l.bucket !== 'core' && l.shares !== 0 && d[l.bucket][l.ticker] && Math.sign(d[l.bucket][l.ticker]) === Math.sign(l.shares))) {
+      n.composed = pv;
+      n.respondedAt = view.date;
+      n.status = 'RESPONDED';
+    }
+  }
+  reconcileResponded();
+
+  // 清單外的變動：使用者已經決定放哪一桶
+  const note = snap.note;
+  for (const [t, q] of Object.entries(d.core)) assign('core', t, q, note ? `核心的手動交易：${note}` : '核心的手動交易');
+  for (const [t, q] of Object.entries(d.mom)) {
+    if (q > 0) {
+      const slot = momSlotTarget(acct.cfg, total0, acct.rule.effPrev ?? 1);
+      const held = (acct.lots.mom[t] ?? 0) * px(t);
+      if (!acct.rule.heldMom.includes(t)) return fail(`${t} 不在這個月的動能名單上：清單外買進的只能放自選`);
+      if (held + q * px(t) > slot * (1 + (acct.cfg.lazyBand ?? 0.5))) return fail(`${t} 的動能那一格已經買足：多買的部分請放自選`);
+      delete acct.mom.owe[t];
+    }
+    assign('mom', t, q, note ? `動能的手動交易：${note}` : '動能的手動交易');
+    acct.shadow.push({ date: view.date, f: 'F17', ticker: t, title: '手動交易（動能）', rule: 0, ai: null, actual: q, price: px(t), choice: 'MANUAL', ...(note ? { note } : {}) });
+  }
+  for (const [t, q] of Object.entries(d.own)) {
+    const why = snap.why?.[t]?.trim();
+    if (q > 0) ensureOwnMeta(acct, view, t, 'MANUAL', why || undefined);
+    // 自己賣到 0 股：自動移出自選（之後不再追蹤，也不會被加回或入金買回）
+    const soldOut = q < 0 && (acct.lots.own[t] ?? 0) + q === 0 && !!acct.own[t];
+    const reason = [note ? `自選的手動交易：${note}` : '自選的手動交易', soldOut ? '賣光，移出自選' : ''].filter(Boolean).join('；');
+    assign('own', t, q, reason);
+    if (soldOut) {
+      removeOwnPick(acct, t);
+      removedOwn.push(t);
+    }
+    acct.shadow.push({ date: view.date, f: 'F17', ticker: t, title: soldOut ? '手動交易：賣光並移出自選（如果繼續持有）' : '手動交易（自選）', rule: 0, ai: null, actual: q, price: px(t), choice: 'MANUAL', ...(note ? { note } : {}) });
+  }
+
+  acct.units.own = flowUnits(acct.units.own, valueBefore.own, flows.own);
+  acct.units.mom = flowUnits(acct.units.mom, valueBefore.mom, flows.mom);
+  acct.units.core = flowUnits(acct.units.core, valueBefore.core, -(flows.own + flows.mom));
+  if (acct.monthlyBlocked && !Object.values(acct.lots.unc).some((x) => x)) acct.monthlyBlocked = false;
+  const cashRes = settleCash(acct, view, snap.cash, expectedCash, withdrawn);
+  acct.snapshotDate = view.date;
+  return { acct, completed, followUps, created: [], ...cashRes, removedOwn };
 }
 
 /** 回答現金差額是什麼：入金／出金會調整單位數（不算報酬）；股利與其他算報酬。 */
@@ -518,9 +687,30 @@ export function removeOwn(acct0: Account, view: MarketView, ticker: string): { a
 
 // ---------------------------------------------------------------- 月報上的動作：轉入自選、排除、認養
 
+/**
+ * 幫一檔自選加前提（持股頁，2026-11-15 起取代新增自選頁的前提欄）。
+ * 原本只有系統預設前提時，換成新寫的（三層備案：你寫的 → 勾選的 AI 草稿 → 系統預設）；否則接在後面。
+ */
+export function addPremises(acct0: Account, ticker: string, premises: Omit<Premise, 'id'>[]): Account {
+  const acct = clone(acct0);
+  const meta = acct.own[ticker];
+  if (!meta || !premises.length) return acct0;
+  const keep = meta.premises.every((p) => p.origin === 'SYSTEM_DEFAULT') ? [] : meta.premises;
+  meta.premises = [...keep, ...premises].map((p, k) => ({ ...p, id: `P${k + 1}` }));
+  return acct;
+}
+
+/** 改一檔自選的標準比重（持股頁；設計 §2.2「系統推薦，使用者可改」）。只改之後加回、入金用的目標，不下單。 */
+export function setStdWeight(acct0: Account, ticker: string, stdWeight: number): Account {
+  const acct = clone(acct0);
+  if (!acct.rule.own[ticker] || !(stdWeight > 0)) return acct0;
+  acct.rule.own[ticker].stdWeight = stdWeight;
+  return acct;
+}
+
 function ensureOwnMeta(acct: Account, view: MarketView, ticker: string, origin: 'TRANSFER' | 'ADOPT' | 'MANUAL', reason?: string): void {
   if (acct.own[ticker]) {
-    if (reason) acct.own[ticker].premises.push({ id: `P${acct.own[ticker].premises.length + 1}`, text: reason, origin: 'USER' });
+    if (reason) acct.own[ticker].premises = addPremises(acct, ticker, [{ text: reason, origin: 'USER' }]).own[ticker].premises;
     return;
   }
   const rec = recommendStdWeights(view, [...Object.keys(acct.rule.own), ticker], acct.cfg.ratio.own);

@@ -899,6 +899,17 @@ export interface SnapshotForm {
   lists: { id: number; title: string }[];
   withdraw: number;
   autofill: Snapshot | null;
+  /** 分桶快照（2026-11-15）：每一桶每一檔的帳本股數、清單、照清單做完的股數。 */
+  buckets: Record<'own' | 'mom' | 'core', SnapshotRow[]>;
+  /** 改版前留下的未分類持股：要填進某一桶。 */
+  unc: { ticker: string; shares: number }[];
+  coreTickers: string[];
+}
+export interface SnapshotRow {
+  ticker: string;
+  book: number;
+  listed: number;
+  expected: number;
 }
 
 export function snapshotForm(d: Ready): SnapshotForm {
@@ -926,6 +937,19 @@ export function snapshotForm(d: Ready): SnapshotForm {
       .filter((b) => acct.lots[b][t])
       .map((b) => `${BUCKET_NAME[b]} ${acct.lots[b][t]}`)
       .join('、');
+  // 分桶：清單的每一行照它的桶加上去
+  const per: Record<'own' | 'mom' | 'core', Record<string, number>> = { own: {}, mom: {}, core: {} };
+  for (const n of acct.notifs) {
+    if (n.status !== 'RESPONDED' || !n.composed) continue;
+    for (const m of n.composed.merged) for (const l of m.parts) if (l.shares) per[l.bucket][l.ticker] = (per[l.bucket][l.ticker] ?? 0) + l.shares;
+  }
+  const coreTickers = [acct.cfg.coreTicker, acct.bondTicker];
+  const rowsOf = (b: 'own' | 'mom' | 'core'): SnapshotRow[] => {
+    const ts = new Set([...Object.keys(acct.lots[b]).filter((t) => acct.lots[b][t]), ...Object.keys(per[b]), ...(b === 'core' ? [acct.cfg.coreTicker] : [])]);
+    return [...ts]
+      .map((t) => ({ ticker: t, book: acct.lots[b][t] ?? 0, listed: per[b][t] ?? 0, expected: (acct.lots[b][t] ?? 0) + (per[b][t] ?? 0) }))
+      .sort((x, y) => Number(!!y.listed) - Number(!!x.listed) || coreTickers.indexOf(x.ticker) - coreTickers.indexOf(y.ticker) || x.ticker.localeCompare(y.ticker));
+  };
   const tickers = [...new Set([...Object.keys(book), ...Object.keys(delta)])].sort((a, b) => Number(!!delta[b]) - Number(!!delta[a]) || a.localeCompare(b));
   return {
     priceDate: view.date,
@@ -935,5 +959,8 @@ export function snapshotForm(d: Ready): SnapshotForm {
     lists,
     withdraw,
     autofill: d.autofill ? d.autofill() : null,
+    buckets: { own: rowsOf('own'), mom: rowsOf('mom'), core: rowsOf('core') },
+    unc: Object.entries(acct.lots.unc).filter(([, q]) => q).map(([ticker, shares]) => ({ ticker, shares })),
+    coreTickers,
   };
 }
