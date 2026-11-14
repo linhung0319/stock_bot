@@ -461,6 +461,7 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
 
     const r = deposit(sim.acct, sim.pre, 10000);
     sim.acct = r.acct;
+    sim.respond(r.notif.id); // 自己發起的：按確定就是決定了，直接到第 2 步（T14）
     const w = await web.post<{ notifId: number }>('/ops/deposit', { amount: '10,000' });
     expect(w.notifId).toBe(r.notif.id);
     await expectSame(sim);
@@ -471,8 +472,6 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     // 每一行都說明現在占多少、目標多少
     expect(v.items[0].explain.facts!.length).toBe(v.items[0].choices[0].lines.length);
     expect(v.items[0].explain.facts![0].note).toMatch(/目前 [\d.]+%，目標 [\d.]+%/);
-    sim.respond(r.notif.id);
-    await web.post(`/notif/${w.notifId}/respond`, { mode: 'DO' });
     sim.open();
     expect((await web.fill()).created).toEqual([]);
     await expectSame(sim);
@@ -482,6 +481,7 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     const sim = simStart();
     const r = withdraw(sim.acct, sim.pre, 30000);
     sim.acct = r.acct;
+    sim.respond(r.notif.id); // 自己發起的：按確定就是決定了，直接到第 2 步（T14）
     const w = await web.post<{ notifId: number }>('/ops/withdraw', { amount: 30000 });
     await expectSame(sim);
     const v = await web.notif(w.notifId);
@@ -492,8 +492,6 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect(v.items[0].explain.facts!.find((f) => f.label === '自選 MU')!.note).toContain('單檔上限');
     expect(v.composed!.orders.every((o) => o.shares < 0)).toBe(true);
     expect(v.composed!.withdraw).toBe(30000);
-    sim.respond(r.notif.id);
-    await web.post(`/notif/${w.notifId}/respond`, { mode: 'DO' });
     const form = await web.get<SnapshotForm>('/snapshot/form');
     expect(form.withdraw).toBe(30000);
     sim.open();
@@ -509,13 +507,12 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect(await web.fail('/ops/ratio', { own: 0.2, strat: 0.1, core: 0.8 })).toMatchObject({ status: 422, error: '三個比例加起來要是 100%' });
     const r = changeRatio(sim.acct, sim.pre, { own: 0.2, strat: 0, core: 0.8 });
     sim.acct = r.acct;
+    sim.respond(r.notif.id); // 自己發起的：按確定就是決定了，直接到第 2 步（T14）
     const w = await web.post<{ notifId: number }>('/ops/ratio', { own: 0.2, strat: 0, core: 0.8 });
     await expectSame(sim);
     const v = await web.notif(w.notifId);
     expect(v.items[0].explain.why).toContain('20% / 30% / 50% 改成 20% / 0% / 80%');
     expect(orderOf(v, 'VOO')!.shares).toBeGreaterThan(0);
-    sim.respond(r.notif.id);
-    await web.post(`/notif/${w.notifId}/respond`, { mode: 'DO' });
     sim.open();
     await web.fill();
     await expectSame(sim);
@@ -595,6 +592,29 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect(r).toMatchObject({ created: [], cashOther: 500, cashWarn: true }); // 總資產約 9.7 萬，0.5% 約 490
     expect((await demoAcct()).acct.events.at(-1)).toMatchObject({ kind: 'CASH_OTHER', amount: 500 });
     expect((await web.state()).todo).toEqual([]);
+  });
+
+  it('入金按確定就到第 2 步；忘了填快照到月報日 → 月報暫停；取消入金 → 暫停解除、月報重算（T14）', async () => {
+    simStart();
+    const before = (await demoAcct()).acct;
+    const w = await web.post<{ notifId: number }>('/ops/deposit', { amount: 3000 });
+    let v = await web.notif(w.notifId);
+    expect(v).toMatchObject({ status: 'RESPONDED', step: 2, cancel: { label: '取消這筆入金' } });
+    await web.post('/advance', { mode: 'month' });
+    let st = await web.state();
+    const paused = st.todo.find((t) => t.title.startsWith('月報暫停'));
+    expect(paused?.title).toBe(`月報暫停：清單 #${w.notifId} 決定了還沒填快照`);
+    expect(st.account!.monthlyBlocked).toBe(true);
+    await web.post(`/notif/${w.notifId}/cancel`);
+    v = await web.notif(w.notifId);
+    expect(v).toMatchObject({ status: 'CANCELLED', statusLabel: '已取消', cancel: null });
+    const after = (await demoAcct()).acct;
+    expect(after.cash).toBeCloseTo(before.cash, 6);
+    expect(after.monthlyBlocked).toBe(false);
+    st = await web.state();
+    expect(st.todo.some((t) => t.title.startsWith('月報暫停'))).toBe(false);
+    expect(after.notifs.some((n) => (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY') && n.status === 'PENDING')).toBe(true);
+    expect((await web.fail(`/notif/${w.notifId}/cancel`)).status).toBe(409);
   });
 
   it('示範模式也可以復原上一份快照（T14）', async () => {
@@ -783,11 +803,12 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     const stored = after.acct.notifs.find((n) => n.id === w.notifId)! as Notif & { items: { x?: { why: string } }[] };
     expect(stored.items[0].x!.why).toContain('入金只買不賣');
     const v = await web.notif(w.notifId);
-    await web.post(`/notif/${w.notifId}/respond`, { mode: 'DO' });
+    expect(v.status).toBe('RESPONDED'); // 自己發起的：按確定就是決定了（T14）
+    expect(v.cancel).toEqual({ label: '取消這筆入金' });
     // 上一步（改決定）也存進 D1：通知退回等你決定，再回覆一次
     await web.post(`/notif/${w.notifId}/reopen`);
     const reopened = (await loadAccount(db))!;
-    expect(reopened.rev).toBe(after.rev + 2);
+    expect(reopened.rev).toBe(after.rev + 1);
     expect(reopened.acct.notifs.find((n) => n.id === w.notifId)).toMatchObject({ status: 'PENDING' });
     expect((await web.get<HistoryView>('/history')).shadow).toEqual([]); // 作廢記號不顯示
     await web.post(`/notif/${w.notifId}/respond`, { mode: 'DO' });
@@ -901,7 +922,6 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     expect(core).toEqual(['VOO', 'SGOV', '現金']);
 
     const w = await web.post<{ notifId: number }>('/ops/deposit', { amount: 5000 });
-    await web.post(`/notif/${w.notifId}/respond`, { mode: 'DO' });
     const mid = (await loadAccount(db))!;
     const n0 = { ev: await count('ledger_events'), sh: await count('shadow_records'), snap: await count('snapshots') };
     const form = await web.get<SnapshotForm>('/snapshot/form');

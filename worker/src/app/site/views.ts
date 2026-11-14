@@ -20,6 +20,7 @@ import {
   type Notif,
   type OrderLine,
   type Snapshot,
+  cashflowKind,
 } from '../../engine';
 import type { SiteData } from './backend';
 import { accountBubble, todoBubble, type Bubble } from './bubble';
@@ -78,6 +79,7 @@ const STATUS_LABEL: Record<Notif['status'], string> = {
   RESPONDED: '等你下單、填快照',
   DONE: '已完成',
   SKIPPED: '這次不做',
+  CANCELLED: '已取消',
   READ: '已讀',
   SUPERSEDED: '已被新的清單取代',
 };
@@ -147,6 +149,8 @@ export interface ComposedView {
 
 export interface NotifView {
   id: number;
+  /** 自己發起的入金／出金／改比例，填快照之前可以取消（設計 §10 第 40 點）。 */
+  cancel: { label: string } | null;
   kind: Notif['kind'];
   kindLabel: string;
   date: string;
@@ -423,6 +427,7 @@ export function notifView(d: Ready, n: Notif): NotifView {
     status: n.status,
     statusLabel: n.followUpOpen ? '快照和清單不同' : n.status === 'PENDING' && !listLike ? (n.kind === 'INFO' || n.kind === 'MONTHLY_EMPTY' ? '未讀' : '等你回答') : STATUS_LABEL[n.status],
     step: !listLike ? 0 : n.status === 'PENDING' ? 1 : n.status === 'RESPONDED' ? 2 : 0,
+    cancel: cashflowKind(n) && (n.status === 'PENDING' || n.status === 'RESPONDED') && !n.followUpOpen ? { label: `取消這筆${cashflowKind(n)}` } : null,
     reminded: n.reminded,
     note: n.note ?? null,
     ref: n.ref ?? null,
@@ -637,7 +642,7 @@ function coreHoldings(d: Ready, total: number): HoldingView[] {
       out.push({ bucket: 'core', ticker: t, shares: sh, price: px, value, pct: value / total, state: '短債', detail: '崩盤規則啟動時，核心的一半放在這裡', tone: 'muted', gauge: null, meter: null, target: null });
     }
   }
-  out.push({ bucket: 'core', ticker: '現金', shares: 0, price: null, value: acct.cash, pct: acct.cash / total, state: '帳上現金', detail: '股利與交易剩下的零頭；月報時交給核心', tone: 'muted', gauge: null, meter: null, target: null });
+  out.push({ bucket: 'core', ticker: '現金', shares: 0, price: null, value: acct.cash, pct: acct.cash / total, state: '帳上現金', detail: acct.pendingWithdraw ? `出金 ${fmtMoney(acct.pendingWithdraw)} 還沒從券商轉出：券商現在會多顯示這筆` : '股利與交易剩下的零頭；月報時交給核心', tone: 'muted', gauge: null, meter: null, target: null });
   return out;
 }
 
@@ -908,6 +913,8 @@ export interface SnapshotForm {
   /** 改版前留下的未分類持股：要填進某一桶。 */
   unc: { ticker: string; shares: number }[];
   coreTickers: string[];
+  /** 之前已經記成出金、但券商的現金可能還沒扣掉的金額。 */
+  pendingWithdraw: number;
 }
 export interface SnapshotRow {
   ticker: string;
@@ -963,6 +970,7 @@ export function snapshotForm(d: Ready): SnapshotForm {
     lists,
     withdraw,
     autofill: d.autofill ? d.autofill() : null,
+    pendingWithdraw: acct.pendingWithdraw ?? 0,
     buckets: { own: rowsOf('own'), mom: rowsOf('mom'), core: rowsOf('core') },
     unc: Object.entries(acct.lots.unc).filter(([, q]) => q).map(([ticker, shares]) => ({ ticker, shares })),
     coreTickers,

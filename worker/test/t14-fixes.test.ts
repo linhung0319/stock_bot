@@ -1,6 +1,6 @@
 // T14 使用者角度走一遍時發現、修掉的問題（設計 §10 第 37 點）。
 import { describe, expect, it } from 'vitest';
-import { addPremises, annualizedVol, applySnapshot, bookShares, classify, priceOf, recentVol, recommendStdWeights, removeOwn, respond, setStdWeight, type Account, type BucketShares, type MarketView } from '../src/engine';
+import { addPremises, annualizedVol, applySnapshot, bookShares, cancelCashflow, changeRatio, classify, deposit, liveShadow, monthlyWait, navPerUnit, priceOf, recentVol, recommendStdWeights, removeOwn, respond, resumeMonthly, setStdWeight, withdraw, type Account, type BucketShares, type MarketView } from '../src/engine';
 import { scenarios } from './helpers/scenarios';
 import { Sim } from './helpers/sim';
 
@@ -288,5 +288,129 @@ describe('持股頁：改標準比重、加前提', () => {
       ['P1', 'USER'],
       ['P2', 'AI_DRAFT_ACCEPTED'],
     ]);
+  });
+});
+
+// ---------------------------------------------------------------- 決定了沒填快照、取消、出金還沒轉出（設計 §10 第 40 點）
+
+describe('決定了還沒填快照：提醒一次；月報日先暫停，填完重算', () => {
+  it('回覆後 2 個交易日沒填快照 → 提醒一次（只一次）', () => {
+    const sim = calm();
+    const dep = deposit(sim.acct, sim.pre, 2000);
+    sim.acct = dep.acct;
+    sim.respond(dep.notif.id);
+    const titles: string[] = [];
+    for (let k = 0; k < 4; k++) {
+      titles.push(...sim.close().map((n) => n.title));
+      sim.d++;
+    }
+    const fill = titles.filter((t) => t.includes('決定了還沒填快照'));
+    expect(fill).toEqual([`提醒：清單 #${dep.notif.id}（${dep.notif.date}）決定了還沒填快照`]);
+  });
+
+  it('月報日還有決定了沒填快照的清單 → 月報暫停；填完快照 → 用暫停時的輸入重算', () => {
+    const sim = calm();
+    const dep = deposit(sim.acct, sim.pre, 2000);
+    sim.acct = dep.acct;
+    sim.respond(dep.notif.id);
+    while (sim.date < '2027-01-04') {
+      sim.close();
+      sim.d++;
+    }
+    expect(monthlyWait(sim.acct)).toMatchObject({ kind: 'FILL', notif: { id: dep.notif.id } });
+    const paused = sim.preOpen()!;
+    expect(paused.title).toBe(`月報暫停：清單 #${dep.notif.id} 決定了還沒填快照`);
+    expect(sim.acct.monthlyBlocked).toBe(true);
+    const s = sim.open()!; // 填快照：入金清單完成
+    expect(s.completed).toEqual([dep.notif.id]);
+    expect(sim.acct.monthlyBlocked).toBe(false);
+    expect(monthlyWait(sim.acct)).toBeNull();
+    const m = resumeMonthly(sim.acct, sim.pre);
+    expect(m.notif!.title).not.toContain('暫停');
+    expect(m.acct.notifs.find((n) => n.id === paused.id)!.status).toBe('READ');
+  });
+});
+
+describe('取消自己發起的入金／出金／改比例（填快照之前）', () => {
+  it('入金：帳上現金與單位退回，記一筆「取消入金」；填過快照就不能取消', () => {
+    const sim = calm();
+    const nav0 = navPerUnit(sim.acct, sim.pre);
+    const dep = deposit(sim.acct, sim.pre, 5000);
+    expect(dep.acct.cash).toBe(sim.acct.cash + 5000);
+    const c = cancelCashflow(dep.acct, sim.pre, dep.notif.id);
+    expect(c.ok).toBe(true);
+    expect(c.acct.cash).toBe(sim.acct.cash);
+    expect(c.acct.units.total).toBeCloseTo(sim.acct.units.total, 9);
+    expect(navPerUnit(c.acct, sim.pre).total).toBeCloseTo(nav0.total, 9);
+    expect(c.acct.events.at(-1)).toMatchObject({ kind: 'WITHDRAW', amount: 5000, reason: `取消入金（通知 #${dep.notif.id}）` });
+    expect(c.acct.notifs.find((n) => n.id === dep.notif.id)!.status).toBe('CANCELLED');
+    expect(cancelCashflow(c.acct, sim.pre, dep.notif.id).ok).toBe(false);
+    // 回覆後也能取消；填過快照就不行
+    const a1 = respond(dep.acct, sim.pre, dep.notif.id, { mode: 'DO' });
+    expect(cancelCashflow(a1, sim.pre, dep.notif.id).ok).toBe(true);
+    sim.acct = a1;
+    sim.open();
+    expect(cancelCashflow(sim.acct, sim.pre, dep.notif.id)).toMatchObject({ ok: false, error: expect.stringContaining('復原上一份快照') });
+  });
+
+  it('出金：清單作廢，之後的快照不記出金；改比例：比例與標準比重改回，影子紀錄作廢', () => {
+    const sim = calm();
+    const wd = withdraw(sim.acct, sim.pre, 3000);
+    const a1 = respond(wd.acct, sim.pre, wd.notif.id, { mode: 'DO' });
+    const c = cancelCashflow(a1, sim.pre, wd.notif.id);
+    expect(c.ok).toBe(true);
+    const s = applySnapshot(c.acct, sim.pre, bucketSnap(c.acct, sim.pre, {}));
+    expect(s.completed).toEqual([]);
+    expect(s.acct.events.some((e) => e.kind === 'WITHDRAW')).toBe(false);
+    const std0 = Object.fromEntries(Object.entries(sim.acct.rule.own).map(([t, o]) => [t, o.stdWeight]));
+    const ch = changeRatio(sim.acct, sim.pre, { own: 0.3, strat: 0.2, core: 0.5 });
+    expect(ch.acct.cfg.ratio.own).toBe(0.3);
+    const back = cancelCashflow(ch.acct, sim.pre, ch.notif.id);
+    expect(back.acct.cfg.ratio).toEqual(sim.acct.cfg.ratio);
+    expect(Object.fromEntries(Object.entries(back.acct.rule.own).map(([t, o]) => [t, o.stdWeight]))).toEqual(std0);
+    expect(liveShadow(back.acct.shadow).some((x) => x.choice === 'RATIO')).toBe(false);
+    // 不是自己發起的清單不能取消
+    const m = structuredClone(sim.acct);
+    m.notifs.push({ id: m.nextId++, kind: 'MONTHLY', date: sim.pre.date, seq: sim.pre.i, title: 't', items: [], status: 'PENDING', coreAbsorb: true, reminded: false });
+    expect(cancelCashflow(m, sim.pre, m.nextId - 1).ok).toBe(false);
+  });
+});
+
+describe('出金還沒從券商轉出', () => {
+  it('勾了：記成出金、單位照樣贖回，對帳時先扣掉這筆；之後的快照照樣扣，轉出後就不扣', () => {
+    const sim = calm();
+    const wd = withdraw(sim.acct, sim.pre, 3000);
+    const a1 = respond(wd.acct, sim.pre, wd.notif.id, { mode: 'DO' });
+    const lines = wd.notif.preview!.lines;
+    const delta: Partial<BucketShares> = { own: {}, mom: {}, core: {} };
+    for (const l of lines) delta[l.bucket]![l.ticker] = (delta[l.bucket]![l.ticker] ?? 0) + l.shares;
+    // 券商的現金：賣完還沒扣出金
+    const snap1 = { ...bucketSnap(a1, sim.pre, delta), withdrawPending: true };
+    const s1 = applySnapshot(a1, sim.pre, snap1);
+    expect(s1.completed).toEqual([wd.notif.id]);
+    expect(s1.cashOther).toBe(0);
+    expect(s1.cashWarn).toBe(false);
+    expect(s1.acct.pendingWithdraw).toBe(3000);
+    expect(s1.acct.cash).toBeCloseTo(snap1.cash - 3000, 6);
+    expect(s1.acct.events.some((e) => e.kind === 'WITHDRAW' && e.amount === 3000)).toBe(true);
+    // 下一份快照：還沒轉出（券商一樣的數字）
+    const s2 = applySnapshot(s1.acct, sim.pre, { ...bucketSnap(s1.acct, sim.pre, {}), cash: snap1.cash, withdrawPending: true });
+    expect(s2.cashOther).toBe(0);
+    expect(s2.acct.pendingWithdraw).toBe(3000);
+    // 轉出了：券商的現金少 3000，不勾
+    const s3 = applySnapshot(s2.acct, sim.pre, { ...bucketSnap(s2.acct, sim.pre, {}), cash: snap1.cash - 3000 });
+    expect(s3.cashOther).toBe(0);
+    expect(s3.acct.pendingWithdraw).toBeUndefined();
+    // 沒勾、券商也還沒扣 → 差 +3000（會被當成其他現金變動），所以才要勾
+    const wrong = applySnapshot(a1, sim.pre, { ...snap1, withdrawPending: false });
+    expect(wrong.cashOther).toBeCloseTo(3000, 6);
+  });
+
+  it('出金的清單不用下單（現金就夠付）也要等快照才完成，才會記出金', () => {
+    const sim = calm();
+    const a = structuredClone(sim.acct);
+    a.notifs.push({ id: a.nextId++, kind: 'CASHFLOW', date: sim.pre.date, seq: sim.pre.i, title: '出金', status: 'PENDING', coreAbsorb: true, reminded: false, withdraw: 100, items: [{ key: 'k', f: 'F12', kind: 'CASHFLOW', ticker: null, title: '', choices: [{ id: 'DO', label: '', lines: [] }], choice: 'DO', ruleChoice: 'DO', noSkip: true } as never] });
+    const r = respond(a, sim.pre, a.nextId - 1, { mode: 'DO' });
+    expect(r.notifs.at(-1)!.status).toBe('RESPONDED');
   });
 });

@@ -92,7 +92,7 @@ export interface Item {
 }
 
 export type NotifKind = 'MONTHLY' | 'MONTHLY_EMPTY' | 'URGENT' | 'CASHFLOW' | 'FIX' | 'INFO' | 'CLASSIFY' | 'CASH_DIFF';
-export type NotifStatus = 'PENDING' | 'RESPONDED' | 'DONE' | 'SKIPPED' | 'READ' | 'SUPERSEDED';
+export type NotifStatus = 'PENDING' | 'RESPONDED' | 'DONE' | 'SKIPPED' | 'READ' | 'SUPERSEDED' | 'CANCELLED';
 
 export interface FollowUp {
   ticker: string;
@@ -122,6 +122,12 @@ export interface Notif {
   /** 回覆時合成的清單（之後和快照比對）。 */
   composed?: Composed;
   respondedAt?: string;
+  /** 回覆那天的交易日序號（決定了還沒填快照的提醒用）。 */
+  respondedSeq?: number;
+  /** 決定了還沒填快照，已經提醒過。 */
+  fillReminded?: boolean;
+  /** 改比例：改之前的比例與每檔自選的標準比重（取消時改回去）。 */
+  ratioBefore?: { ratio: { own: number; strat: number; core: number }; std: Record<string, number> };
   followUp?: FollowUp[];
   followUpOpen?: boolean;
   /** CLASSIFY：哪一檔、變動幾股。CASH_DIFF：金額。 */
@@ -205,6 +211,8 @@ export interface Account {
   bondTicker: string;
   /** 紙上交易（流程全跑，帳本標記為紙上）。 */
   paper: boolean;
+  /** 已經記成出金、但券商的現金還沒扣掉（錢還沒轉出）的金額；填快照時從券商現金扣掉再對帳（設計 §10 第 40 點）。 */
+  pendingWithdraw?: number;
   cash: number;
   lots: Lots;
   rule: RuleState;

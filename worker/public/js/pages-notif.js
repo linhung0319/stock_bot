@@ -221,6 +221,27 @@ const reopenAndGo = (ctx, id) => async () => {
   }
 };
 
+/** 取消自己發起的入金／出金／改比例（填快照之前；設計 §10 第 40 點）。按一次先問，再按一次才取消。 */
+function cancelButton(ctx, v) {
+  let armed = false;
+  const b = linkButton(v.cancel.label, async () => {
+    if (!armed) {
+      armed = true;
+      b.textContent = `確定${v.cancel.label}？再按一次`;
+      return;
+    }
+    try {
+      await api.post(`/notif/${v.id}/cancel`, {});
+      toast('已取消');
+      ctx.go('#/');
+    } catch (e) {
+      toast(e.message);
+      ctx.refresh();
+    }
+  });
+  return b;
+}
+
 /** 復原最後一份快照：帳戶回到送出之前，再重填（設計 §10 第 39 點）。 */
 export function undoButton(ctx, label) {
   return actionButton(label, '', async () => {
@@ -468,7 +489,7 @@ export async function notifPage(ctx, id) {
     const live = v.items.filter((i) => !i.cancelled);
     const skippable = live.some((i) => i.choices.some((c) => c.id === 'SKIP'));
     const drawTray = (prev) => {
-      const foot = [actionButton('決定好了，看下單清單', 'primary block', () => submit('DO')), skippable ? h('div', { class: 'linkrow' }, linkButton('整則這次不做', () => submit('SKIP'))) : null, h('p', { class: 'small faint', style: 'text-align:center' }, '按下去只是記下你的決定，系統不會替你下單。')];
+      const foot = [actionButton('決定好了，看下單清單', 'primary block', () => submit('DO')), skippable ? h('div', { class: 'linkrow' }, linkButton('整則這次不做', () => submit('SKIP'))) : null, v.cancel ? h('div', { class: 'linkrow' }, cancelButton(ctx, v)) : null, h('p', { class: 'small faint', style: 'text-align:center' }, '按下去只是記下你的決定，系統不會替你下單。')];
       trayBox.replaceChildren(consoleBox(trayTitle(composed), trayBody(composed, { prev }), foot));
       sumBox.textContent = `${orderN(composed)} 張單，做完現金約 ${money(composed.cashAfter)}`;
     };
@@ -522,7 +543,7 @@ export async function notifPage(ctx, id) {
     return page({
       view: 'flow',
       banner: notifBanner(v, {
-        steps: stepBar(2, { 1: { label: '回去改決定', go: backToDecide } }),
+        steps: stepBar(2, v.cancel ? {} : { 1: { label: '回去改決定', go: backToDecide } }),
         bubble: { k: '下單的時候', say: ['到券商下這 ', em(`${n} 張單`), '（開盤市價單、整股）', v.withdraw ? `，做完從券商轉出 ${money(v.withdraw)}` : '', '，下完回來填快照。'], mood: 'alert' },
       }),
       pane: [
@@ -535,8 +556,8 @@ export async function notifPage(ctx, id) {
         h('h2', { class: 'sec' }, '你的決定與理由'),
         slips(v, { editable: false }),
       ],
-      rail: consoleBox(trayTitle(c, '到券商下這'), trayBody(c, { check: true }), [h('a', { class: 'btn primary block', href: '#/snapshot' }, '下完單了，填快照'), h('div', { class: 'linkrow' }, linkButton('上一步：改決定', backToDecide), copy)]),
-      cta: h('div', { class: 'sticky-cta' }, h('div', { class: 'sum' }, linkButton('上一步', backToDecide)), h('a', { class: 'btn primary', href: '#/snapshot' }, '下完單了，填快照')),
+      rail: consoleBox(trayTitle(c, '到券商下這'), trayBody(c, { check: true }), [h('a', { class: 'btn primary block', href: '#/snapshot' }, '下完單了，填快照'), h('div', { class: 'linkrow' }, v.cancel ? cancelButton(ctx, v) : linkButton('上一步：改決定', backToDecide), copy)]),
+      cta: h('div', { class: 'sticky-cta' }, h('div', { class: 'sum' }, v.cancel ? cancelButton(ctx, v) : linkButton('上一步', backToDecide)), h('a', { class: 'btn primary', href: '#/snapshot' }, '下完單了，填快照')),
     });
   }
 
@@ -546,6 +567,7 @@ export async function notifPage(ctx, id) {
   if (v.status === 'DONE') bubble = { k: '當時', say: ['這份清單', em('已經完成'), v.filled.length ? `，${v.filled.length} 筆成交照快照記進帳本了。` : '。'], mood: 'happy' };
   if (v.status === 'SKIPPED') bubble = { k: '當時', say: ['這次', em('整則沒做'), '。差異記在「沒照規則做的」紀錄裡。'], mood: 'watch' };
   if (v.status === 'SUPERSEDED') bubble = { k: '當時', say: ['這份清單被', em('重算過的新清單'), '取代了，以新的為準。'], mood: 'watch' };
+  if (v.status === 'CANCELLED') bubble = { k: '當時', say: ['這份清單', em('取消了'), v.withdraw ? '，出金沒有記帳。' : '。'], mood: 'watch' };
   if (v.followUp) {
     bubble = { k: '要你回答', say: ['快照和清單', neg('對不上'), `（${v.followUp.length} 檔）。要補做差額，還是就這樣？`], mood: 'worry' };
     const msg = h('div');
@@ -723,11 +745,14 @@ export async function snapshotPage(ctx) {
   for (const b of ['own', 'mom', 'core']) f.buckets[b].forEach((r) => addRow(b, r));
   for (const t of f.coreTickers) if (!f.buckets.core.some((r) => r.ticker === t)) addRow('core', { ticker: t, book: 0, listed: 0, expected: 0 });
   const cashDelta = Math.round((f.cashExpected - f.cashBook) * 100) / 100;
+  // 出金：券商的現金可能要等錢轉出才扣（設計 §10 第 40 點）
+  const wdAmount = Math.round((f.withdraw + f.pendingWithdraw) * 100) / 100;
+  const wdPending = wdAmount ? h('input', { type: 'checkbox', checked: f.pendingWithdraw > 0 && !f.withdraw }) : null;
   tbodies.core.append(
     h(
       'tr',
       { class: 'cash-row' },
-      h('td', null, h('span', { class: 'tk' }, '現金'), f.withdraw ? h('div', { class: 'small faint' }, `清單做完要轉出 ${money(f.withdraw)}，填轉出之後的`) : null),
+      h('td', null, h('span', { class: 'tk' }, '現金'), wdAmount ? h('div', { class: 'small faint' }, `照券商現在顯示的填；出金 ${money(wdAmount)} 還沒扣的話勾下面`) : null),
       h('td', { class: 'r num wide' }, money(f.cashBook, 2)),
       h('td', { class: 'r num wide' }, cashDelta ? `約 ${cashDelta > 0 ? '+' : '−'}${money(Math.abs(cashDelta))}` : ''),
       h('td', { class: 'r' }, cash),
@@ -758,6 +783,9 @@ export async function snapshotPage(ctx) {
       )
     : null;
   // 和帳戶頁一樣：每一桶有自己的記號與顏色
+  const wdRow = wdPending
+    ? h('label', { class: 'check-row', style: 'margin:0;padding:12px 20px' }, wdPending, h('span', { class: 'small' }, `出金 ${money(wdAmount)} 還沒從券商轉出（券商的現金還沒扣掉）。勾了系統會先扣掉這筆再對帳，下次填快照再問一次。`))
+    : null;
   const section = (b) =>
     h(
       'section',
@@ -767,7 +795,7 @@ export async function snapshotPage(ctx) {
       glass(
       '',
       h('div', { class: 'scroll-x' }, h('table', { class: 'snap' }, h('thead', null, h('tr', null, h('th', null, '代號'), h('th', { class: 'r wide' }, '帳本'), h('th', { class: 'r wide' }, '清單'), h('th', { class: 'r' }, b === 'core' ? '券商現在的股數／現金' : '券商現在的股數'), h('th', null, ''))), tbodies[b])),
-      b === 'core' ? (fill ? h('div', { class: 'pad btn-row' }, fill) : null) : h('div', { class: 'pad btn-row' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow(b, { ticker: '', book: 0, listed: 0, expected: 0 }, true) }, b === 'own' ? '加一檔到自選' : '加一檔到動能')),
+      b === 'core' ? [wdRow, fill ? h('div', { class: 'pad btn-row' }, fill) : null] : h('div', { class: 'pad btn-row' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow(b, { ticker: '', book: 0, listed: 0, expected: 0 }, true) }, b === 'own' ? '加一檔到自選' : '加一檔到動能')),
       ),
     );
 
@@ -792,7 +820,7 @@ export async function snapshotPage(ctx) {
       return msg.replaceChildren(errBox(new Error('請填券商現在顯示的現金（可用資金）。')));
     }
     try {
-      const r = await api.post('/snapshot', { lots, cash: c, note: note.value, why });
+      const r = await api.post('/snapshot', { lots, cash: c, note: note.value, why, withdrawPending: !!wdPending?.checked });
       msg.replaceChildren();
       // 新加進自選、有寫為什麼買的：請 AI 把它改寫成可以追蹤的出場條件（結果在持股頁，勾選後才監測；AI 層沒設定就略過）
       for (const [t, w] of Object.entries(why)) api.post('/ops/own-check', { ticker: t, lines: [w] }).catch(() => {});

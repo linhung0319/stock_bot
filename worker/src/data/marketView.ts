@@ -78,5 +78,18 @@ export function rebaseNotifSeq(acct: Account, axis: string[]): void {
       }
     }
     n.seq = k;
+    if (n.respondedAt) {
+      let r = pos.get(n.respondedAt);
+      if (r === undefined) {
+        r = -1;
+        for (let j = axis.length - 1; j >= 0; j--) {
+          if (axis[j] <= n.respondedAt) {
+            r = j;
+            break;
+          }
+        }
+      }
+      n.respondedSeq = r;
+    }
   }
 }

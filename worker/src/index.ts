@@ -24,7 +24,7 @@ import { handleSite } from './app/site/api';
 import { handleLineLogin } from './app/site/lineLogin';
 import { loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
-export const VERSION = '0.12.0';
+export const VERSION = '0.13.0';
 
 /** 每日流程（美股收盤後；UTC 23:30 = 美東 18:30 或 19:30 = 台灣早上 7:30）：抓資料、每日檢查、月報、LINE。 */
 // 星期用英文縮寫：Cloudflare 的數字是 1 = 星期日（不是一般 cron 的 1 = 星期一），2026-11-13 因此漏跑過一次週五

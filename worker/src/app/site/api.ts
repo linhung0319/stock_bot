@@ -6,6 +6,8 @@ import {
   addOwn,
   addPremises,
   applySnapshot,
+  cancelCashflow,
+  monthlyWait,
   setStdWeight,
   type BucketShares,
   changeRatio,
@@ -132,6 +134,10 @@ interface Mutation {
 async function mutate(backend: SiteBackend, cause: string, extra: string[], fn: (d: Ready) => Mutation): Promise<{ after: Ready; result: Record<string, unknown> }> {
   const d = ready(await backend.load(extra));
   const r = engine(() => fn(d));
+  if (!r.dry && r.acct.monthlyBlocked && !monthlyWait(r.acct)) {
+    const month = d.today.slice(0, 7);
+    r.acct = engine(() => resumeMonthly(r.acct, d.view, { order: d.rankOrder, vetoed: d.demo ? DEMO_SCRIPTS[d.demo.scenario].vetoes?.[month] : undefined, month })).acct;
+  }
   const after: Ready = { ...d, acct: r.acct };
   annotate(ctxOf(after));
   if (!r.dry) {
@@ -153,6 +159,12 @@ function premisesOf(v: unknown): Premise[] {
     out.push({ id: `P${out.length + 1}`, text: t, origin, ...(breaksIf ? { breaksIf } : {}) });
   }
   return out;
+}
+
+/** 自己發起的入金／出金／改比例：試算後按確定就等於決定了（第 1 步沒有東西可選），直接回覆成「等你下單」。月報合併的入金照常要決定。 */
+function decided(acct: Account, view: MarketView, n: Notif): Account {
+  if (n.kind !== 'CASHFLOW' || n.status !== 'PENDING') return acct;
+  return respond(acct, view, n.id, { mode: 'DO' });
 }
 
 // ---------------------------------------------------------------- 建立帳戶（上線那天的第一份快照）
@@ -343,6 +355,15 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       });
       return json({ ok: true, status: findNotif(r.after.acct, id).status });
     }
+    if (act === 'cancel') {
+      // 取消自己發起的入金／出金／改比例（填快照之前）
+      await mutate(backend, `通知 #${id}：取消`, [], (d) => {
+        const out = cancelCashflow(d.acct, d.view, id);
+        if (!out.ok) throw new SiteError(409, out.error ?? '這份清單不能取消');
+        return { acct: out.acct };
+      });
+      return json({ ok: true });
+    }
     if (act === 'reopen') {
       // 上一步：已經回覆、還沒填快照的清單退回「等你決定」
       await mutate(backend, `通知 #${id}：改決定`, [], (d) => {
@@ -444,7 +465,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     }
     // 現金可以是負的（融資帳戶，或示範裡買超過現金）；畫面上會提醒
     const note = text(b.note, '這次自己交易的原因', 300, false);
-    const snap: Snapshot = { shares, cash: num(b.cash, '現金', -1e10, 1e10), ...(lots ? { lots } : {}), ...(note ? { note } : {}), ...(Object.keys(why).length ? { why } : {}) };
+    const snap: Snapshot = { shares, cash: num(b.cash, '現金', -1e10, 1e10), ...(lots ? { lots } : {}), ...(note ? { note } : {}), ...(Object.keys(why).length ? { why } : {}), ...(b.withdrawPending === true ? { withdrawPending: true } : {}) };
     let before: Account | null = null;
     const r = await mutate(backend, '填快照', Object.keys(shares), (d) => {
       before = d.acct;
@@ -507,7 +528,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const dry = b.dry === true;
     const r = await mutate(backend, `入金 ${amount}`, [], (d) => {
       const out = deposit(d.acct, d.view, amount);
-      return { acct: out.acct, dry, result: { notifId: out.notif.id, mergedIntoMonthly: out.mergedIntoMonthly } };
+      return { acct: dry ? out.acct : decided(out.acct, d.view, out.notif), dry, result: { notifId: out.notif.id, mergedIntoMonthly: out.mergedIntoMonthly } };
     });
     return json({ ok: true, ...r.result, ...(dry ? { preview: notifView(r.after, findNotif(r.after.acct, r.result.notifId as number)) } : {}) });
   }
@@ -519,7 +540,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       const total = totalValue(d.acct, d.view);
       if (amount > total) throw new SiteError(422, `出金金額超過總資產（${Math.floor(total).toLocaleString('en-US')}）`);
       const out = withdraw(d.acct, d.view, amount);
-      return { acct: out.acct, dry, result: { notifId: out.notif.id } };
+      return { acct: dry ? out.acct : decided(out.acct, d.view, out.notif), dry, result: { notifId: out.notif.id } };
     });
     return json({ ok: true, ...r.result, ...(dry ? { preview: notifView(r.after, findNotif(r.after.acct, r.result.notifId as number)) } : {}) });
   }
@@ -532,7 +553,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       const old = d.acct.cfg.ratio;
       if (Math.abs(old.own - ratio.own) < 1e-9 && Math.abs(old.strat - ratio.strat) < 1e-9) throw new SiteError(422, '比例沒有變');
       const out = changeRatio(d.acct, d.view, ratio);
-      return { acct: out.acct, dry, result: { notifId: out.notif.id } };
+      return { acct: dry ? out.acct : decided(out.acct, d.view, out.notif), dry, result: { notifId: out.notif.id } };
     });
     return json({ ok: true, ...r.result, ...(dry ? { preview: notifView(r.after, findNotif(r.after.acct, r.result.notifId as number)) } : {}) });
   }

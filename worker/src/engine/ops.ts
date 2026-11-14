@@ -26,7 +26,7 @@ import {
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
 import { BUY_CASH_FRACTION, planToLines, type OrderLine } from './orders';
-import { composeNotif, monthlyReport, recordExternalFlow, type MonthlyResult } from './report';
+import { composeNotif, monthlyReport, monthlyWait, recordExternalFlow, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
 import type { Bucket } from './types';
 
@@ -113,6 +113,7 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
     if (c && it.choices.some((x) => x.id === c)) it.choice = c;
   }
   n.respondedAt = view.date;
+  n.respondedSeq = view.i;
   n.composed = composeNotif(acct, view, n);
   for (const it of n.items) {
     if (it.cancelled) continue;
@@ -142,8 +143,8 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
   const nothingToTrade = n.composed.lines.length === 0;
   if (input.mode === 'SKIP' || n.items.every((i) => i.cancelled || i.choice === 'SKIP')) {
     n.status = 'SKIPPED';
-  } else if (nothingToTrade) {
-    // 選的選項不用下單（例如 AI「維持減半」）→ 直接完成
+  } else if (nothingToTrade && !n.withdraw) {
+    // 選的選項不用下單（例如 AI「維持減半」）→ 直接完成（出金除外：快照時才記出金）
     for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects);
     n.status = 'DONE';
   } else {
@@ -165,6 +166,8 @@ export function reopen(acct0: Account, view: MarketView, id: number): { acct: Ac
   n.status = 'PENDING';
   delete n.composed;
   delete n.respondedAt;
+  delete n.respondedSeq;
+  delete n.fillReminded;
   for (const [tk, o] of Object.entries(acct.mom.owe)) if (o.notif === id) delete acct.mom.owe[tk];
   acct.shadow.push({ date: view.date, f: 'REOPEN', ticker: null, title: '改決定：先前的回覆作廢', rule: 0, ai: null, actual: 0, price: 0, choice: 'REOPEN', notif: id });
   return { acct, ok: true };
@@ -194,6 +197,8 @@ export interface Snapshot {
   note?: string;
   /** 分桶快照：新加進自選的代號，為什麼買（成為這檔的前提）。 */
   why?: Record<string, string>;
+  /** 出金（這次完成的與之前還沒轉出的）還沒從券商轉出：券商的現金還沒扣掉（設計 §10 第 40 點）。 */
+  withdrawPending?: boolean;
 }
 
 export interface SnapshotResult {
@@ -348,8 +353,9 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
   acct.units.mom = flowUnits(acct.units.mom, valueBefore.mom, flows.mom);
   acct.units.core = flowUnits(acct.units.core, valueBefore.core, -(flows.own + flows.mom));
 
+  if (acct.monthlyBlocked && !Object.values(acct.lots.unc).some((x) => x) && !monthlyWait(acct)) acct.monthlyBlocked = false;
   // 現金
-  const cashRes = settleCash(acct, view, snap.cash, expectedCash, withdrawn, traded);
+  const cashRes = settleCash(acct, view, snap.cash - (acct0.pendingWithdraw ?? 0), expectedCash, withdrawn, traded);
   acct.snapshotDate = view.date;
   return { acct, completed, followUps, created, ...cashRes, removedOwn: [] };
 }
@@ -504,8 +510,12 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
   acct.units.own = flowUnits(acct.units.own, valueBefore.own, flows.own);
   acct.units.mom = flowUnits(acct.units.mom, valueBefore.mom, flows.mom);
   acct.units.core = flowUnits(acct.units.core, valueBefore.core, -(flows.own + flows.mom));
-  if (acct.monthlyBlocked && !Object.values(acct.lots.unc).some((x) => x)) acct.monthlyBlocked = false;
-  const cashRes = settleCash(acct, view, snap.cash, expectedCash, withdrawn, traded);
+  if (acct.monthlyBlocked && !monthlyWait(acct)) acct.monthlyBlocked = false;
+  // 出金還沒轉出：記成出金（單位照樣贖回），但券商的現金還沒扣，對帳時先扣掉，之後的快照再扣到轉出為止
+  const pendingAfter = snap.withdrawPending ? Math.round(((acct0.pendingWithdraw ?? 0) + withdrawn) * 100) / 100 : 0;
+  const cashRes = settleCash(acct, view, snap.cash - pendingAfter, expectedCash, withdrawn, traded);
+  if (pendingAfter) acct.pendingWithdraw = pendingAfter;
+  else delete acct.pendingWithdraw;
   acct.snapshotDate = view.date;
   return { acct, completed, followUps, created: [], ...cashRes, removedOwn };
 }
@@ -605,10 +615,45 @@ export function withdraw(acct0: Account, view: MarketView, amount: number): { ac
   return { acct, notif };
 }
 
+/**
+ * 取消自己發起的入金／出金／改比例（設計 §10 第 40 點）：只有還沒填快照前可以（等你決定、等你下單）。
+ * 入金：帳上現金與單位退回（記一筆出金「取消入金」）；出金：清單作廢（快照之前還沒記帳）；改比例：比例與標準比重改回，影子紀錄作廢。
+ */
+export function cancelCashflow(acct0: Account, view: MarketView, id: number): { acct: Account; ok: boolean; error?: string } {
+  const acct = clone(acct0);
+  const n = acct.notifs.find((x) => x.id === id);
+  if (!n || n.kind !== 'CASHFLOW' || !cashflowKind(n)) return { acct: acct0, ok: false, error: '這則不是入金、出金或改比例的清單' };
+  if (n.status !== 'PENDING' && n.status !== 'RESPONDED') return { acct: acct0, ok: false, error: '這份清單已經結束（填過快照），要改請用「復原上一份快照」' };
+  const kind = cashflowKind(n)!;
+  if (kind === '入金') {
+    const amt = n.deposit ?? 0;
+    acct.cash -= amt;
+    recordExternalFlow(acct, view, -amt);
+    const ev = acct.events.at(-1);
+    if (ev) ev.reason = `取消入金（通知 #${id}）`;
+  } else if (kind === '改比例' && n.ratioBefore) {
+    acct.cfg = { ...acct.cfg, ratio: { ...n.ratioBefore.ratio } };
+    for (const [t, w] of Object.entries(n.ratioBefore.std)) if (acct.rule.own[t]) acct.rule.own[t].stdWeight = w;
+    acct.shadow.push({ date: view.date, f: 'REOPEN', ticker: null, title: '取消改比例：先前的紀錄作廢', rule: 0, ai: null, actual: 0, price: 0, choice: 'REOPEN', notif: id });
+  }
+  for (const [tk, o] of Object.entries(acct.mom.owe)) if (o.notif === id) delete acct.mom.owe[tk];
+  n.status = 'CANCELLED';
+  n.note = `已取消（${view.date}）`;
+  return { acct, ok: true };
+}
+
+/** 入金、出金、改比例的清單是哪一種（看項目的功能代號）。 */
+export function cashflowKind(n: Notif): '入金' | '出金' | '改比例' | null {
+  if (n.kind !== 'CASHFLOW') return null;
+  const f = n.items[0]?.f;
+  return f === 'F11' ? '入金' : f === 'F12' ? '出金' : f === 'F13' ? '改比例' : null;
+}
+
 /** 改比例（設計 §2.1 第 7 點）：使用者觸發，當天給清單；影子組合繼續追蹤「如果沒改」。 */
 export function changeRatio(acct0: Account, view: MarketView, ratio: { own: number; strat: number; core: number }): { acct: Account; notif: Notif } {
   const acct = clone(acct0);
   const old = acct.cfg.ratio;
+  const ratioBefore = { ratio: { ...old }, std: Object.fromEntries(Object.entries(acct.rule.own).map(([t, o]) => [t, o.stdWeight])) };
   const total = totalValue(acct, view);
   const lines: OrderLine[] = [];
   // 自選：每檔股數與標準比重都乘上「新比例 ÷ 舊比例」（原型假設 7）
@@ -635,9 +680,9 @@ export function changeRatio(acct0: Account, view: MarketView, ratio: { own: numb
   }
   const fmt = (r: typeof ratio) => [r.own, r.strat, r.core].map((x) => `${Math.round(x * 100)}%`).join(' / ');
   const item = makeItem({ f: 'F13', kind: 'CASHFLOW', title: `改比例：自選 / Strategy / 核心 ${fmt(old)} → ${fmt(ratio)}`, choices: [{ id: 'DO', label: '照做', lines }], noSkip: true });
-  const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: '改比例的清單', items: [item] });
+  const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: '改比例的清單', items: [item], ratioBefore });
   notif.preview = composeNotif(acct, view, notif);
-  acct.shadow.push({ date: view.date, f: 'F13', ticker: null, title: '改比例（影子組合繼續追蹤「如果沒改」）', rule: 0, ai: null, actual: 0, price: 0, choice: 'RATIO', note: `${fmt(old)} → ${fmt(ratio)}` });
+  acct.shadow.push({ date: view.date, f: 'F13', ticker: null, title: '改比例（影子組合繼續追蹤「如果沒改」）', rule: 0, ai: null, actual: 0, price: 0, choice: 'RATIO', note: `${fmt(old)} → ${fmt(ratio)}`, notif: notif.id });
   return { acct, notif };
 }
 
@@ -854,7 +899,7 @@ export function classify(acct0: Account, view: MarketView, notifId: number, inpu
   acct.shadow.push({ date: view.date, f: 'F17', ticker: tk, title: removing ? '手動交易：賣光並移出自選（如果繼續持有）' : '手動交易', rule: 0, ai: null, actual: q, price: px, choice: 'MANUAL', note: why });
   n.status = 'DONE';
   n.note = input.bucket;
-  const unblocked = acct.monthlyBlocked && !Object.values(acct.lots.unc).some((x) => x);
+  const unblocked = acct.monthlyBlocked && !monthlyWait(acct);
   if (unblocked) acct.monthlyBlocked = false;
   return { acct, monthlyUnblocked: unblocked };
 }

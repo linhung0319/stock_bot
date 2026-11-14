@@ -320,6 +320,11 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
       n.reminded = true;
       created.push(newNotif(acct, view, { kind: 'INFO', title: `提醒：通知 #${n.id}（${n.date}）還沒回報`, text: '照做了嗎？回覆時選「忘了」會用當天價格重算清單；選「這次不做」就不再提醒。', ref: n.id, coreAbsorb: false }));
     }
+    // 決定了、2 個交易日還沒填快照（設計 §10 第 40 點）
+    if (n.status === 'RESPONDED' && n.composed && !n.fillReminded && n.kind !== 'INFO' && view.i - (n.respondedSeq ?? n.seq) >= 2) {
+      n.fillReminded = true;
+      created.push(newNotif(acct, view, { kind: 'INFO', title: `提醒：清單 #${n.id}（${n.date}）決定了還沒填快照`, text: '下單了就去填快照（股數、現金照券商填）；沒下單就回上一步改「這次不做」。月報日還沒填，月報會先暫停。', ref: n.id, coreAbsorb: false }));
+    }
   }
   return { acct, created, log };
 }
@@ -347,12 +352,25 @@ export function monthlyCandidates(acct: Account, view: MarketView, input: Monthl
   return plan.selection?.added ?? [];
 }
 
+/**
+ * 月報要先等的事：有未分類的持股變動（設計 §2.1.1），或有清單決定了還沒填快照（帳本還不是下單後的樣子，月報會重複下單；設計 §10 第 40 點）。
+ */
+export function monthlyWait(acct: Account): { kind: 'UNC' } | { kind: 'FILL'; notif: Notif } | null {
+  if (Object.values(acct.lots.unc).some((x) => x)) return { kind: 'UNC' };
+  const open = acct.notifs.find((n) => n.status === 'RESPONDED' && !!n.composed && n.kind !== 'INFO');
+  return open ? { kind: 'FILL', notif: open } : null;
+}
+
 export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyContext, flow?: FlowInput, flowCashAlreadyIn = false): MonthlyResult {
   const acct = clone(acct0);
-  if (Object.values(acct.lots.unc).some((x) => x)) {
-    // 清單外的變動還沒分類 → 月報暫停（設計 §2.1.1）
+  const wait = monthlyWait(acct);
+  if (wait) {
+    // 先等：未分類的變動、或決定了還沒填快照的清單 → 月報暫停，等完用今天的輸入重算
     acct.monthlyBlocked = true;
-    const notif = newNotif(acct, view, { kind: 'INFO', title: '月報暫停：有未分類的持股變動', text: '請先回答那筆變動是手動交易、新增自選還是轉入自選，屬於哪一桶。分類後會重算月報。', coreAbsorb: false });
+    const notif =
+      wait.kind === 'UNC'
+        ? newNotif(acct, view, { kind: 'INFO', title: '月報暫停：有未分類的持股變動', text: '請先回答那筆變動是手動交易、新增自選還是轉入自選，屬於哪一桶。分類後會重算月報。', coreAbsorb: false })
+        : newNotif(acct, view, { kind: 'INFO', title: `月報暫停：清單 #${wait.notif.id} 決定了還沒填快照`, text: `「${wait.notif.title}」（${wait.notif.date}）決定了還沒填快照，帳本還是下單前的樣子，這時出月報會叫你重複下單。下單了就去填快照；沒下單就回上一步改「這次不做」。之後會用今天的排名重算月報。`, ref: wait.notif.id, coreAbsorb: false });
     // 留下這份月報的輸入（訊號日的排名），分類後用它重算（resumeMonthly）
     notif.monthly = { input: clone(input), before: { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), cash: acct.cash } };
     return { acct, notif, plan: null };
