@@ -100,14 +100,15 @@ export async function startCrashRuns(sc: StartCtx): Promise<void> {
   }
 }
 
-/** 月報那一行：這個月同方向、3 票一致的檢視。 */
-export async function crashOpinionFor(db: D1Database, month: string, direction: CrashDirection): Promise<'照做' | '延後' | null> {
+/** 月報那一行：這個月同方向、3 票一致的檢視（連同是哪一次執行）。 */
+export async function crashOpinionFor(db: D1Database, month: string, direction: CrashDirection): Promise<{ opinion: '照做' | '延後'; runId: string } | null> {
   if (direction === 'NONE') return null;
   const rows = (await db.prepare("SELECT run_id, pack FROM ai_runs WHERE fn = ? AND status = 'DONE' ORDER BY as_of DESC, created_at DESC LIMIT 6").bind(CRASH_REVIEW).all<{ run_id: string; pack: string }>()).results;
   for (const r of rows) {
     const d = (JSON.parse(r.pack).rule.detail ?? {}) as { month?: string; direction?: string };
     if (d.month !== month || d.direction !== direction) continue;
-    return crashOpinionOf((await getRun(db, r.run_id))?.outcome ?? null);
+    const opinion = crashOpinionOf((await getRun(db, r.run_id))?.outcome ?? null);
+    return opinion ? { opinion, runId: r.run_id } : null;
   }
   return null;
 }

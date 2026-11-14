@@ -132,6 +132,7 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
         price: view.close[tk] ? priceOf(view, tk) : 0,
         choice: it.choice,
         notif: n.id,
+        ...(it.runIds?.length ? { runIds: [...it.runIds] } : {}),
       };
       if (rec.ai !== null || rec.actual !== rec.rule || it.aiLine) acct.shadow.push(rec);
       // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒

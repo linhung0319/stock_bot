@@ -168,8 +168,8 @@ export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, 
 // ---------------------------------------------------------------- 套用結論
 
 /** 降級條件成立 → 當天通知（引擎每檔每月最多 1 則）。 */
-function notifyCondition(ctx: ApplyCtx, ticker: string, tier: Tier, text: string, label: string): void {
-  const r = conditionMet(ctx.acct, ctx.view, ticker, tier, text, ctx.view.date.slice(0, 7));
+function notifyCondition(ctx: ApplyCtx, ticker: string, tier: Tier, text: string, label: string, runIds: string[]): void {
+  const r = conditionMet(ctx.acct, ctx.view, ticker, tier, text, ctx.view.date.slice(0, 7), 1, runIds);
   ctx.acct = r.acct;
   ctx.log.push(`${label} → ${r.notif ? `當天通知 #${r.notif.id}` : `不通知（${r.why}）`}`);
 }
@@ -197,7 +197,8 @@ export async function applyOwnCondition(ctx: ApplyCtx, run: AiRun): Promise<void
   const cond = (await loadConditions(ctx.db, t)).find((c) => c.condId === d.condId && c.status === 'ACTIVE');
   if (!cond) return void ctx.log.push(`${run.runId}：條件 ${d.condId} 已經不在監測中（被新的審查替換），不通知`);
   ctx.stmts.push(metStmt(ctx.db, cond.id, ctx.now.toISOString(), `F25 ${run.runId} 3 票確認`));
-  if (cond.direction === 'DOWN' && cond.tierIfMet) notifyCondition(ctx, t, cond.tierIfMet, cond.text, `${run.runId}：條件 ${d.condId} 成立`);
+  // run_id：確認條件成立的 F25，和寫下條件（與成立時的檔位）的那次 F24
+  if (cond.direction === 'DOWN' && cond.tierIfMet) notifyCondition(ctx, t, cond.tierIfMet, cond.text, `${run.runId}：條件 ${d.condId} 成立`, [run.runId, cond.runId]);
   else ctx.log.push(`${run.runId}：升級條件 ${d.condId} 成立 → 下一次審查會看到`);
 }
 
@@ -208,7 +209,7 @@ export async function ownXbrlConditions(ctx: ApplyCtx, facts: Map<string, Quarte
       const m = xbrlConditionMet(rows, c.check as { type: string; metric: string; level: number; quarters?: number });
       if (!m?.met) continue;
       ctx.stmts.push(metStmt(ctx.db, c.id, ctx.now.toISOString(), `新財報（${rows[0].form} ${rows[0].filed}）：${m.values.map((v) => (v === null ? '—' : v.toFixed(4))).join('、')}`));
-      if (c.direction === 'DOWN' && c.tierIfMet) notifyCondition(ctx, t, c.tierIfMet, c.text, `${t} 財報條件 ${c.condId} 成立（程式比對 XBRL）`);
+      if (c.direction === 'DOWN' && c.tierIfMet) notifyCondition(ctx, t, c.tierIfMet, c.text, `${t} 財報條件 ${c.condId} 成立（程式比對 XBRL）`, [c.runId]);
       else ctx.log.push(`${t} 升級的財報條件 ${c.condId} 成立 → 下一次審查會看到`);
     }
   }

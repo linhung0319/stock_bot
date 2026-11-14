@@ -9,6 +9,7 @@ import {
   newNotif,
   priceOf,
   shareCells,
+  syncRunIds,
   totalValue,
   type Account,
   type Choice,
@@ -86,7 +87,7 @@ function sharesText(n: number): string {
  * 慢規則減半（F7）或加回（F8）時，並列最近一次 F24 的檔位（設計 §2.2）。
  * 回傳 null = 沒有 AI 檔位，或 AI 和規則一致（只顯示一行）。
  */
-function ownAiChoice(acct: Account, view: MarketView, ticker: string, action: OwnAction, stateBefore: OwnState): { choice: Choice; aiLine: string } | null {
+function ownAiChoice(acct: Account, view: MarketView, ticker: string, action: OwnAction, stateBefore: OwnState): { choice: Choice; aiLine: string; runIds?: string[] } | null {
   const ai = acct.own[ticker]?.aiTier;
   if (!ai) return null;
   const tier = ai.tier;
@@ -104,6 +105,7 @@ function ownAiChoice(acct: Account, view: MarketView, ticker: string, action: Ow
       effects: [{ type: 'APPLY_TIER', ticker, tier: action === 'READD' && tier === 'HALF' ? 'HALF' : eff }],
     },
     aiLine: `AI（最近一次審查的檔位：${label}）：${sharesText(sh)}`,
+    ...(ai.runId ? { runIds: [ai.runId] } : {}),
   };
 }
 
@@ -123,6 +125,7 @@ function ownRuleItem(acct: Account, view: MarketView, ticker: string, action: Ow
     title: `${ticker} 慢規則${action === 'REDUCE' ? '減半' : '加回'}${note}`,
     choices,
     aiLine: ai?.aiLine,
+    ...(ai?.runIds ? { runIds: ai.runIds } : {}),
     why: action === 'REDUCE' ? '收盤距 52 週高點跌 ≥ 20%' : '收盤站上 200 日均線連續 10 天、距上次切換 ≥ 15 個交易日',
     ...(warn.length ? { note: `注意：${warn.join('；')}` } : {}),
   });
@@ -144,7 +147,10 @@ export function refreshOwnAiChoice(acct0: Account, view: MarketView, ticker: str
       const keep = it.choices.filter((c) => c.id !== 'AI');
       it.choices = ai ? [keep[0], ai.choice, ...keep.slice(1)] : keep;
       it.aiLine = ai?.aiLine;
+      if (ai?.runIds) it.runIds = ai.runIds;
+      else delete it.runIds;
       if (it.choice === 'AI' && !ai) it.choice = it.ruleChoice;
+      syncRunIds(n);
       changed.push(n.id);
     }
   }
@@ -152,7 +158,7 @@ export function refreshOwnAiChoice(acct0: Account, view: MarketView, ticker: str
 }
 
 /** 把規則的計畫（每一格的目標金額）變成清單項目。 */
-function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values: Record<string, number>, ctx: { crashOpinion?: string; ownNotes?: Record<string, string>; coreBefore: CoreContext }): Item[] {
+function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values: Record<string, number>, ctx: { crashOpinion?: string; ownNotes?: Record<string, string>; coreBefore: CoreContext; runIds?: MonthlyContext['runIds'] }): Item[] {
   const lines = planToLines(plan, values, { price: (t) => priceOf(view, t), shares: shareCells(acct) });
   const items: Item[] = [];
   const crashLines: OrderLine[] = [];
@@ -188,6 +194,7 @@ function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values
               choices: [{ id: 'DO', label: '照做', lines: [l] }],
               actions: added.has(t) ? ['EXCLUDE', 'ADOPT'] : [],
               why: '排名前 5 且目前未持有',
+              ...(ctx.runIds?.entry?.[t] ? { runIds: [ctx.runIds.entry[t]] } : {}),
             }),
           );
         }
@@ -220,6 +227,7 @@ function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values
         title: on ? '崩盤規則啟動：核心一半換短債、動能部位減半' : '崩盤規則解除：短債換回核心 ETF、動能部位恢復',
         choices: [{ id: 'DO', label: '照做', lines: [...core, ...crashLines] }],
         aiLine: ctx.crashOpinion ? `AI 檢視：${ctx.crashOpinion}` : undefined,
+        ...(ctx.crashOpinion && ctx.runIds?.crash ? { runIds: [ctx.runIds.crash] } : {}),
         why: on ? '核心 ETF 前一日收盤低於 200 日均線' : '核心 ETF 前一日收盤回到 200 日均線之上',
       }),
     );
@@ -388,7 +396,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
   acct.rule = plan.state;
   for (const tk of Object.keys(ownActions)) acct.own[tk].pending = null;
   acct.mom.owe = {};
-  let items = itemsFromPlan(acct, view, plan, values, { coreBefore, ownNotes, crashOpinion: input.crashOpinion });
+  let items = itemsFromPlan(acct, view, plan, values, { coreBefore, ownNotes, crashOpinion: input.crashOpinion, runIds: input.runIds });
   // 任務 A 准許但觀察：進場那一項註明觀察理由
   for (const it of items) if (it.f === 'F1' && it.ticker && input.watch?.[it.ticker]) it.note = `准許但觀察：${input.watch[it.ticker]}`;
   if (flow) {
@@ -417,6 +425,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
         choices: [{ id: 'AI', label: '照 AI', tier, lines: [{ ticker: tk, bucket: 'own', shares: sh, reason: 'AI 建議' }], effects: [{ type: 'APPLY_TIER', ticker: tk, tier }] }],
         choice: 'SKIP',
         ruleChoice: 'SKIP',
+        ...(m.aiTier.runId ? { runIds: [m.aiTier.runId] } : {}),
       }),
     );
   }
@@ -447,6 +456,8 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     monthly: { input: clone(input), before },
     deposit: flow?.kind === '入金' ? flow.amount : undefined,
   });
+  // 不屬於任何項目的 AI 執行：被否決的代號（F1）、月報的說明（F20）
+  syncRunIds(notif, [...(input.vetoed ?? []).map((t) => input.runIds?.entry?.[t]), ...(input.runIds?.notes ?? [])]);
   notif.preview = composeNotif(acct, view, notif);
   return { acct, notif, plan };
 }
@@ -500,7 +511,7 @@ export function recordAiTier(acct0: Account, ticker: string, tier: Tier, date: s
  * F25：自選降級條件成立（3 票確認、引用通過檢查）→ 當天通知 AI 建議；規則沒有動作，所以只有 AI 一行＋「不做」。
  * 每檔每月最多 perMonth 則（只算 F25，原型假設 6）。回傳 notif = null 表示這次不發。
  */
-export function conditionMet(acct0: Account, view: MarketView, ticker: string, tier: Tier, text: string, month: string, perMonth = 1): { acct: Account; notif: Notif | null; why?: string } {
+export function conditionMet(acct0: Account, view: MarketView, ticker: string, tier: Tier, text: string, month: string, perMonth = 1, runIds?: string[]): { acct: Account; notif: Notif | null; why?: string } {
   const acct = clone(acct0);
   const meta = acct.own[ticker];
   if (!meta) return { acct, notif: null, why: '不是自選股' };
@@ -518,6 +529,7 @@ export function conditionMet(acct0: Account, view: MarketView, ticker: string, t
     choices: [{ id: 'AI', label: '照 AI', tier, lines: [{ ticker, bucket: 'own', shares: sh, reason: 'AI 建議' }], effects: [{ type: 'APPLY_TIER', ticker, tier }] }],
     choice: 'SKIP',
     ruleChoice: 'SKIP',
+    ...(runIds?.length ? { runIds: [...runIds] } : {}),
   });
   const notif = newNotif(acct, view, { kind: 'URGENT', title: `${ticker} 條件成立（F25）`, items: [item] });
   notif.preview = composeNotif(acct, view, notif);
@@ -528,9 +540,10 @@ export function conditionMet(acct0: Account, view: MarketView, ticker: string, t
  * F19 硬事件：建議提早出場，使用者確認才做（設計 §6.2）。
  * byRule = true：動能持股被收購（PENDING_MA）或 NT 10-K／10-Q，由規則直接提出，不需要 AI。
  */
-export function hardEvent(acct0: Account, view: MarketView, ticker: string, code: 'PENDING_MA' | 'ACCOUNTING' | 'REGULATORY', byRule: boolean): { acct: Account; notif: Notif | null } {
+export function hardEvent(acct0: Account, view: MarketView, ticker: string, code: 'PENDING_MA' | 'ACCOUNTING' | 'REGULATORY', byRule: boolean, runIds?: string[]): { acct: Account; notif: Notif | null } {
   const acct = clone(acct0);
   const items: Item[] = [];
+  const ai = runIds?.length ? { runIds: [...runIds] } : {};
   const ownSh = acct.lots.own[ticker] ?? 0;
   const momSh = acct.lots.mom[ticker] ?? 0;
   if (ownSh > 0 && acct.own[ticker]) {
@@ -545,6 +558,7 @@ export function hardEvent(acct0: Account, view: MarketView, ticker: string, code
         choices: [{ id: byRule ? 'DO' : 'AI', label: byRule ? '確認出清' : '照 AI（出清）', tier: 'EXIT', lines: [{ ticker, bucket: 'own', shares: -ownSh, reason: byRule ? '硬事件' : 'AI 建議' }], effects: [{ type: 'APPLY_TIER', ticker, tier: 'EXIT' }] }],
         choice: byRule ? 'DO' : 'SKIP',
         ruleChoice: byRule ? 'DO' : 'SKIP',
+        ...ai,
       }),
     );
   }
@@ -558,6 +572,7 @@ export function hardEvent(acct0: Account, view: MarketView, ticker: string, code
         choices: [{ id: byRule ? 'DO' : 'AI', label: byRule ? '確認出場' : '照 AI（出場）', lines: [{ ticker, bucket: 'mom', shares: -momSh, reason: '動能換股' }] }],
         choice: byRule ? 'DO' : 'SKIP',
         ruleChoice: byRule ? 'DO' : 'SKIP',
+        ...ai,
       }),
     );
     // 名單拿掉這一檔，下個月照排名遞補；沒確認出場的話，下個月月報會再列一次

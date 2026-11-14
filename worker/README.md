@@ -58,6 +58,12 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - `src/ai/check.ts`：證據包與輸出外殼的格式、每一票的程式檢查、3 票表決（純函式）。`src/ai/pack.ts`：證據包產生器的共用部分。`src/ai/shadow.ts`：影子組合三條線與 Beta 後驗。
 - `src/app/aiRuns.ts`：一次 AI 執行的儲存、觸發、收結果後表決、逾時照規則（`migrations/0005_ai_runs.sql`）。
 - 網站：紀錄區的「AI 紀錄」、`#/ai/<執行編號>`（`public/js/pages-ai.js`）、匯出 md（`/api/ai/run/<編號>/md`）。
+
+## 紀錄匯出到本機（T13）
+
+- `GET /admin/export`（`src/app/export.ts`）：每張表的拉法與列數；`?table=<表>&after=<rowid>` 照 rowid 分頁。不匯出 `probe_runs`、`demo_state`、`ai_tasks.evidence`。
+- 本機：在 repo 根目錄 `uv run python scripts/export_records.py`（`--full`、`--out`、`--url`），拉到 `records/`（`.gitignore`，repo 是公開的）。格式與表之間怎麼接：[`docs/analysis/records_guide.md`](../docs/analysis/records_guide.md)。
+- 被退回的 AI 輸出在 `ai_rejections`；雲端排程跑的 commit 在 `ai_runs.repo_commit`；通知項目、通知、影子紀錄的 `runIds` 接到 `ai_runs.run_id`（`migrations/0008_records.sql`）。
 - 雲端排程的共用 prompt：`../ai/prompts/run.md`；各功能的 prompt 在 T10、T11 加上。
 
 ## 自選審查與條件監測（T10）

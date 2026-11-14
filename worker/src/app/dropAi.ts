@@ -109,8 +109,8 @@ export async function applyDropExplain(ctx: ApplyCtx, run: AiRun): Promise<void>
   if (s?.payload?.escalate_to_F19 === true) ctx.stmts.push(...insertHitStmts(ctx.db, t, [escalateHit(run, String(s.payload.escalate_code))], 'AI', ctx.now.toISOString(), () => 'NEW'));
 }
 
-/** 這個月份的 F20 說明（附在月報）。 */
-export async function monthNotes(db: D1Database, since: string, until: string): Promise<string[]> {
+/** 這個月份的 F20 說明（附在月報），連同是哪一次執行。 */
+export async function monthNotes(db: D1Database, since: string, until: string): Promise<{ text: string; runId: string }[]> {
   const rows = (await db.prepare("SELECT run_id, ticker, pack, outcome FROM ai_runs WHERE fn = ? AND status = 'DONE' AND as_of > ? AND as_of <= ? ORDER BY as_of").bind(DROP_EXPLAIN, since, until).all<{ run_id: string; ticker: string; pack: string; outcome: string | null }>()).results;
-  return rows.map((r) => explainLine(r.ticker, (JSON.parse(r.pack).rule.detail as { ret21: number }).ret21, r.outcome ? JSON.parse(r.outcome) : null));
+  return rows.map((r) => ({ text: explainLine(r.ticker, (JSON.parse(r.pack).rule.detail as { ret21: number }).ret21, r.outcome ? JSON.parse(r.outcome) : null), runId: r.run_id }));
 }

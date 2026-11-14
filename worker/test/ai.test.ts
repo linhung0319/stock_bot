@@ -360,7 +360,7 @@ describe('整趟來回：建任務 → 取證據包 → 送回 → 檢查與表�
   it('匯出 md：證據包很長時只放前面，完整原文在網站', () => {
     const p = testPack();
     p.documents[0].text = 'x'.repeat(7000);
-    const md = exportMd({ runId: p.run_id, fn: p.function, ticker: 'MU', asOf: p.as_of, createdAt: '', status: 'DONE', taskId: null, promptVersion: 'v', packHash: 'sha256:0', pack: p, packNotes: [], outcome: judge(p, [sample('HOLD')]), process: [], completedAt: null }, { background: ['測試'] });
+    const md = exportMd({ runId: p.run_id, fn: p.function, ticker: 'MU', asOf: p.as_of, createdAt: '', status: 'DONE', taskId: null, promptVersion: 'v', packHash: 'sha256:0', pack: p, packNotes: [], outcome: judge(p, [sample('HOLD')]), process: [], completedAt: null, repoCommit: null }, { background: ['測試'] });
     expect(md).toContain('以下省略，完整原文在網站');
   });
 });

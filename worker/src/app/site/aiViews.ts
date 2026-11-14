@@ -198,6 +198,7 @@ export function noteOfRun(run: AiRun): AiNote | null {
       .map((c) => ({ kind: CONDITION_KIND(c.type), text: conditionText(c.raw), then: typeof c.raw.tier_if_met === 'string' ? `建議${verdictText('OWN_REVIEW', c.raw.tier_if_met)}` : '重新審查' })),
     sections: run.process.map((p) => ({ title: p.role, text: p.text })),
     fake: false,
+    runId: run.runId,
   };
 }
 

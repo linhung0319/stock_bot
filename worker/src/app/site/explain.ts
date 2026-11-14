@@ -48,8 +48,14 @@ function closeOf(view: MarketView, ticker: string): ArrayLike<number> | null {
   return c && Number.isFinite(c[view.i]) ? c : null;
 }
 
-/** 訊號日以前最新的一份 AI 說明。 */
-export function findNote(notes: AiNote[], kind: AiNote['kind'], ticker: string | undefined, date: string): AiNote | undefined {
+/**
+ * 這一項的 AI 說明：項目帶了 runIds（T13 起）就找那一次執行；沒有（舊的通知）或找不到，照舊取訊號日以前最新的一份。
+ */
+export function findNote(notes: AiNote[], kind: AiNote['kind'], ticker: string | undefined, date: string, runIds?: string[]): AiNote | undefined {
+  if (runIds?.length) {
+    const exact = notes.find((n) => n.kind === kind && n.runId !== undefined && runIds.includes(n.runId));
+    if (exact) return exact;
+  }
   let best: AiNote | undefined;
   for (const n of notes) {
     if (n.kind !== kind || (ticker && n.ticker !== ticker) || n.date > date) continue;
@@ -226,7 +232,8 @@ function momEntry(ctx: ExplainContext, n: Notif, it: Item): Explain {
   if (vetoed.length) why += `排在它前面的 ${vetoed.join('、')} 這個月被 AI 否決，由下一名遞補。`;
   if (excluded.length) why += `你排除了排在前面的 ${excluded.join('、')}。`;
   const { math } = slotMath(ctx, t, sh);
-  const veto = vetoed.length ? findNote(ctx.aiNotes, 'VETO', vetoed[0], n.date) : undefined;
+  const vetoRun = vetoed.length ? n.monthly?.input.runIds?.entry?.[vetoed[0]] : undefined;
+  const veto = vetoed.length ? findNote(ctx.aiNotes, 'VETO', vetoed[0], n.date, vetoRun ? [vetoRun] : undefined) : undefined;
   const facts: Fact[] = [];
   const ownVal = (acct.lots.own[t] ?? 0) * (c ? c[view.i] : 0);
   if (ownVal > 0) facts.push({ label: '自選已經持有', value: fmtMoney(ownVal), note: `同一檔合計最多買到總資產 ${fmtPct(acct.cfg.crossCapBuy ?? 0.1)}，被擋下的部分留在核心` });
@@ -362,7 +369,7 @@ function crash(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const px = c ? c[view.i] : NaN;
   const ma = c ? sma(c, view.i, 200) : NaN;
   const rel = px / ma - 1;
-  const note = findNote(ctx.aiNotes, 'CRASH', undefined, n.date);
+  const note = findNote(ctx.aiNotes, 'CRASH', undefined, n.date, it.runIds);
   return {
     short: on ? `${core} 跌破 200 日均線（${fmtSigned(rel, 1)}）` : `${core} 回到 200 日均線之上（${fmtSigned(rel, 1)}）`,
     why: on
@@ -397,7 +404,7 @@ function ownAiParts(ctx: ExplainContext, n: Notif, it: Item, action: 'REDUCE' | 
   const t = it.ticker!;
   const meta = ctx.acct.own[t];
   const ai = it.choices.find((c) => c.id === 'AI');
-  const note = findNote(ctx.aiNotes, 'REVIEW', t, n.date);
+  const note = findNote(ctx.aiNotes, 'REVIEW', t, n.date, it.runIds);
   if (ai) {
     const label = it.aiLine?.match(/檔位：([^）]+)）/)?.[1] ?? (ai.tier ? TIER_NAME[ai.tier] : '');
     return { ai: note, aiMissing: !note, aiNote: note ? `AI ${md(note.date)} 審查的結論是「${label}」：${note.summary}` : `AI 最近一次審查的結論是「${label}」。` };
@@ -614,7 +621,7 @@ function aiOnly(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const cur = acct.lots.own[t] ?? 0;
   if (it.f === 'F25') {
     const cond = /條件「(.+)」成立/.exec(it.title)?.[1] ?? '';
-    const note = findNote(ctx.aiNotes, 'CONDITION', t, n.date);
+    const note = findNote(ctx.aiNotes, 'CONDITION', t, n.date, it.runIds);
     return {
       gauge: c ? contextDrawdown(c, view.i) : undefined,
       short: `AI 之前寫下的條件成立：${cond}`,
@@ -627,7 +634,7 @@ function aiOnly(ctx: ExplainContext, n: Notif, it: Item): Explain {
       choiceNotes: { AI: tier === 'EXIT' ? '全部賣出、錢回核心，這檔移出自選，之後不再追蹤。想再買要重新新增。' : '照 AI 的檔位調整，慢規則的狀態跟著改。', SKIP: `${SKIP.ai}每檔每個月最多收到一則這種通知。` },
     };
   }
-  const note = findNote(ctx.aiNotes, 'REVIEW', t, n.date);
+  const note = findNote(ctx.aiNotes, 'REVIEW', t, n.date, it.runIds);
   const raise = tier === 'RAISE';
   return {
     gauge: c ? (raise ? aboveMaGauge(c, view.i) : contextDrawdown(c, view.i)) : undefined,
@@ -648,7 +655,7 @@ function hard(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const t = it.ticker!;
   const code = /(PENDING_MA|ACCOUNTING|REGULATORY)/.exec(it.title)?.[1] ?? '';
   const name = { PENDING_MA: '被收購（股價已經貼近收購價，動能的前提不再適用）', ACCOUNTING: '會計問題（財報重編、更換會計師或延遲申報）', REGULATORY: '重大監管事件' }[code] ?? code;
-  const note = findNote(ctx.aiNotes, 'HARD', t, n.date);
+  const note = findNote(ctx.aiNotes, 'HARD', t, n.date, it.runIds);
   const byRule = it.choices.some((c) => c.id === 'DO');
   return {
     short: `硬事件：${name.split('（')[0]}`,

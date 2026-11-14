@@ -18,6 +18,8 @@ export interface AiNote {
   sections?: { title: string; text: string }[];
   /** true = 示範用的假內容。 */
   fake: boolean;
+  /** 來自哪一次 AI 執行（示範的假內容沒有）。 */
+  runId?: string;
 }
 
 export interface Fact {

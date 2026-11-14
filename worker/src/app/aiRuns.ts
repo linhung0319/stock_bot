@@ -26,6 +26,8 @@ export interface AiRun {
   outcome: Outcome | null;
   process: ProcessStep[];
   completedAt: string | null;
+  /** 雲端排程執行時 repo 的 commit（T13 起；舊紀錄、沒有回報、沒有結果的是 null）。 */
+  repoCommit: string | null;
 }
 
 interface Row {
@@ -43,6 +45,7 @@ interface Row {
   outcome: string | null;
   process: string | null;
   completed_at: string | null;
+  repo_commit?: string | null;
 }
 
 const toRun = (r: Row): AiRun => ({
@@ -60,10 +63,21 @@ const toRun = (r: Row): AiRun => ({
   outcome: r.outcome ? JSON.parse(r.outcome) : null,
   process: r.process ? JSON.parse(r.process) : [],
   completedAt: r.completed_at,
+  repoCommit: r.repo_commit ?? null,
 });
 
-async function close(db: D1Database, runId: string, outcome: Outcome, now: Date, process: ProcessStep[] = []): Promise<void> {
-  await db.prepare("UPDATE ai_runs SET status = 'DONE', outcome = ?, process = ?, completed_at = ? WHERE run_id = ? AND status = 'PENDING'").bind(JSON.stringify(outcome), JSON.stringify(process), now.toISOString(), runId).run();
+/** 送回的 repo_commit：像 git commit（7～64 個十六進位字元）才存，其他一律當成沒有。 */
+export function commitOf(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const c = v.trim().toLowerCase();
+  return /^[0-9a-f]{7,64}$/.test(c) ? c : null;
+}
+
+async function close(db: D1Database, runId: string, outcome: Outcome, now: Date, process: ProcessStep[] = [], repoCommit: string | null = null): Promise<void> {
+  await db
+    .prepare("UPDATE ai_runs SET status = 'DONE', outcome = ?, process = ?, completed_at = ?, repo_commit = ? WHERE run_id = ? AND status = 'PENDING'")
+    .bind(JSON.stringify(outcome), JSON.stringify(process), now.toISOString(), repoCommit, runId)
+    .run();
 }
 
 /**
@@ -90,7 +104,7 @@ export async function finalizeRun(db: D1Database, task: AiTaskRow, result: Recor
   if (!row || row.status !== 'PENDING') return null;
   const run = toRun(row);
   const outcome = judge(run.pack, result.samples as unknown[], PAYLOAD_HOOKS[run.fn]);
-  await close(db, run.runId, outcome, now, (result.process as ProcessStep[] | undefined) ?? []);
+  await close(db, run.runId, outcome, now, (result.process as ProcessStep[] | undefined) ?? [], commitOf(result.repo_commit));
   return outcome;
 }
 

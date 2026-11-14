@@ -90,7 +90,7 @@ export async function applyHardEvent(ctx: ApplyCtx, run: AiRun): Promise<void> {
   if (!d.exit || !d.code) return void ctx.log.push(`${run.runId}：${t} 不建議出場（${d.why}）`);
   const held = (ctx.acct.lots.own[t] ?? 0) > 0 || (ctx.acct.lots.mom[t] ?? 0) > 0;
   if (!held) return void ctx.log.push(`${run.runId}：${t} 已經沒有持股，不通知`);
-  const r = hardEvent(ctx.acct, ctx.view, t, d.code, false);
+  const r = hardEvent(ctx.acct, ctx.view, t, d.code, false, [run.runId]);
   ctx.acct = r.acct;
   ctx.log.push(`${run.runId}：${t} ${d.code} → AI 建議提早出場${r.notif ? `，當天通知 #${r.notif.id}` : ''}`);
 }

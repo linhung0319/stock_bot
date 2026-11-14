@@ -172,7 +172,9 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
           input = { order: ranking.order, month, company: ranking.detail.company, ...ai };
         } else {
           const why = pauseReason(run, !!ranking);
-          input = { order: [...acct.rule.heldMom], month, paused: why, ...(ai.crashOpinion ? { crashOpinion: ai.crashOpinion } : {}), ...(ai.notes ? { notes: ai.notes } : {}) };
+          // 暫停換股：否決與遞補用不到，崩盤規則檢視與說明照樣附上（連同它們的 run_id）
+          const runIds = { ...(ai.runIds?.crash ? { crash: ai.runIds.crash } : {}), ...(ai.runIds?.notes ? { notes: ai.runIds.notes } : {}) };
+          input = { order: [...acct.rule.heldMom], month, paused: why, ...(ai.crashOpinion ? { crashOpinion: ai.crashOpinion } : {}), ...(ai.notes ? { notes: ai.notes } : {}), ...(Object.keys(runIds).length ? { runIds } : {}) };
           alerts.push({ kind: 'MONTHLY_PAUSED', message: `${month} 月報照出，但本月暫停換股（${why}），動能名單不變。` });
         }
         const m = monthlyReport(acct, view, input);
@@ -296,9 +298,15 @@ async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal:
   try {
     const { view } = buildMarketView(await loadSeries(env.DB, requiredTickers(acct)), signal, acct.cfg.coreTicker);
     const op = await crashOpinionFor(env.DB, monthOfSignal(signal, ov), crashDirection(acct, view));
-    if (op) out.crashOpinion = op;
+    if (op) {
+      out.crashOpinion = op.opinion;
+      out.runIds = { ...out.runIds, crash: op.runId };
+    }
     const notes = await monthNotes(env.DB, `${signal.slice(0, 7)}-00`, signal);
-    if (notes.length) out.notes = notes;
+    if (notes.length) {
+      out.notes = notes.map((n) => n.text);
+      out.runIds = { ...out.runIds, notes: notes.map((n) => n.runId) };
+    }
   } catch (e) {
     log.push(`崩盤規則檢視與任務 C 的月報輸入出錯：${errText(e)}`);
   }

@@ -86,8 +86,11 @@ export const CONDITION_TYPES = [
   'fred_below',
 ] as const;
 
-/** 一份輸出外殼可以有的欄位。 */
-const ENVELOPE_KEYS = ['run_id', 'function', 'as_of', 'model', 'prompt_version', 'pack_hash', 'samples', 'vote', 'verdict', 'premise_checks', 'evidence', 'lift_or_flip', 'abstain_reason', 'data_quality', 'payload', 'report'];
+/**
+ * 一份輸出外殼可以有的欄位。repo_commit 正式的位置是送回結果的外層（src/app/aiTasks.ts 的 validateRun，存進 ai_runs.repo_commit）；
+ * 子代理也把它抄進每一票時不要因此整票不合格，所以這裡也收，但不讀。
+ */
+const ENVELOPE_KEYS = ['run_id', 'function', 'as_of', 'model', 'prompt_version', 'pack_hash', 'repo_commit', 'samples', 'vote', 'verdict', 'premise_checks', 'evidence', 'lift_or_flip', 'abstain_reason', 'data_quality', 'payload', 'report'];
 export const PREMISE_STATUS = ['HOLDS', 'BROKEN', 'INSUFFICIENT'] as const;
 /** 引用至少要多長（太短的字串幾乎一定是原文的子字串，檢查沒有意義）。 */
 export const MIN_QUOTE = 12;

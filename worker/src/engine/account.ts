@@ -87,6 +87,8 @@ export interface Item {
   cancelled?: boolean;
   note?: string;
   why?: string;
+  /** 這一項的 AI 建議或說明來自哪幾次 AI 執行（ai_runs.run_id，T13 起；之前的通知沒有這個欄位）。 */
+  runIds?: string[];
 }
 
 export type NotifKind = 'MONTHLY' | 'MONTHLY_EMPTY' | 'URGENT' | 'CASHFLOW' | 'FIX' | 'INFO' | 'CLASSIFY' | 'CASH_DIFF';
@@ -130,6 +132,8 @@ export interface Notif {
   monthly?: { input: MonthlyContext; before: SavedState };
   ref?: number;
   note?: string;
+  /** 這則通知用到的所有 AI 執行（各項目的 runIds，加上不屬於任何項目的：F1 否決、F20 說明；T13 起）。 */
+  runIds?: string[];
 }
 
 /** 月報需要、引擎自己算不出來的輸入。 */
@@ -152,6 +156,8 @@ export interface MonthlyContext {
   watch?: Record<string, string>;
   /** 附在月報的說明（任務 C：持股單月跌 > 20% 的原因）。 */
   notes?: string[];
+  /** 這份月報用到的 AI 執行（ai_runs.run_id，T13）：崩盤規則檢視、F1 每檔的審查、F20 說明。 */
+  runIds?: { crash?: string; entry?: Record<string, string>; notes?: string[] };
 }
 
 export interface SavedState {
@@ -175,6 +181,8 @@ export interface ShadowRecord {
   note?: string;
   /** 哪一則通知的回覆產生的（改決定時用來作廢）。 */
   notif?: number;
+  /** 這一項的 AI 建議來自哪幾次 AI 執行（ai_runs.run_id，T13 起；之前的紀錄沒有這個欄位）。 */
+  runIds?: string[];
 }
 
 export type LedgerEventKind = 'TRADE' | 'TRANSFER' | 'DEPOSIT' | 'WITHDRAW' | 'DIVIDEND' | 'CASH_OTHER' | 'UNCLASSIFIED' | 'CLASSIFIED';
@@ -293,8 +301,16 @@ export function addLot(acct: Account, bucket: keyof Lots, ticker: string, n: num
 
 export function newNotif(acct: Account, view: MarketView, o: Partial<Notif> & Pick<Notif, 'kind' | 'title'>): Notif {
   const n: Notif = { id: acct.nextId++, date: view.date, seq: view.i, items: [], status: 'PENDING', coreAbsorb: true, reminded: false, ...o };
+  syncRunIds(n);
   acct.notifs.push(n);
   return n;
+}
+
+/** 通知的 runIds = 各項目的 runIds ＋ 原本就掛在通知上的（例如 F1 否決），去重；沒有就不留這個欄位。 */
+export function syncRunIds(n: Notif, extra: (string | undefined)[] = []): void {
+  const ids = [...new Set([...(n.runIds ?? []), ...n.items.flatMap((i) => i.runIds ?? []), ...extra].filter((x): x is string => !!x))];
+  if (ids.length) n.runIds = ids;
+  else delete n.runIds;
 }
 
 let itemCounter = 0;

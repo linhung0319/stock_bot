@@ -1,12 +1,13 @@
 // Worker 進入點：路由與排程。
 //   /health                      不需要驗證
 //   /ai/task/:id/evidence|result 雲端排程用，Bearer AI_TASK_SECRET
-//   /admin/*                     管理用，Bearer ADMIN_TOKEN
+//   /admin/*                     管理用，Bearer ADMIN_TOKEN（/admin/export：紀錄匯出到本機，src/app/export.ts）
 //   /auth/line/login|callback    網站的 LINE 登入（src/app/site/lineLogin.ts）
 //   /api/*、/demo/api/*          網站的 API（LINE 登入的 cookie；src/app/site/）
 //   其他                         網站的靜態檔（public/，由 Cloudflare 直接回應，不會進到這裡）
 import { acceptResult, createTask, fireRoutine, getTask, readEvidence, taskTimings } from './app/aiTasks';
 import { finalizeRun, listRuns } from './app/aiRuns';
+import { handleExport } from './app/export';
 import { bearerOk, json, type Env, type Fetcher } from './app/env';
 import { getFlowState, ingest, pushPending, recentFlowRuns, runFlow, sendTestPush } from './app/flow';
 import { loadAccount, requiredTickers } from './app/ledgerStore';
@@ -21,7 +22,7 @@ import { handleSite } from './app/site/api';
 import { handleLineLogin } from './app/site/lineLogin';
 import { loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
-export const VERSION = '0.7.0';
+export const VERSION = '0.8.0';
 
 /** 每日流程（美股收盤後；UTC 23:30 = 美東 18:30 或 19:30 = 台灣早上 7:30）：抓資料、每日檢查、月報、LINE。 */
 // 星期用英文縮寫：Cloudflare 的數字是 1 = 星期日（不是一般 cron 的 1 = 星期一），2026-11-13 因此漏跑過一次週五
@@ -78,6 +79,7 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
       return json({ ...rest, ranking: ranking && { session: ranking.session, order: ranking.order } });
     }
     if (path === '/admin/data/status') return json(await dataStatus(env.DB));
+    if (path === '/admin/export' && request.method === 'GET') return handleExport(env.DB, url, VERSION, now);
     if (path === '/admin/flow' && request.method === 'POST') {
       // 手動跑一次每日流程（同一個交易日已經做過就只補推失敗的訊息）
       const r = await runFlow(env, fetcher, { now, attempt: 'MANUAL', forceRank: url.searchParams.get('rank') === '1' });

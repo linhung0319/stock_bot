@@ -6,6 +6,8 @@ import type { Env, Fetcher } from './env';
 
 export const ROUTINE_BETA_HEADER = 'experimental-cc-routine-2026-04-01';
 export const MAX_RESULT_BYTES = 256 * 1024;
+/** 被退回的原始輸出最多存多少（UTF-8 位元組；ai_rejections.raw）。 */
+export const MAX_REJECTED_RAW_BYTES = MAX_RESULT_BYTES;
 /** 觸發後多久沒收到結果算逾時（雲端排程失敗不會主動通知）。 */
 export const TASK_TIMEOUT_MS = 45 * 60 * 1000;
 
@@ -55,9 +57,11 @@ const validatePing: ResultValidator = (r, ev) => {
  * 不會整份退回；整份退回只在外層就不對的時候）。
  */
 const validateRun: ResultValidator = (r, ev) => {
-  const extra = onlyKeys(r, ['task_id', 'kind', 'run_id', 'samples', 'process']);
+  const extra = onlyKeys(r, ['task_id', 'kind', 'run_id', 'repo_commit', 'samples', 'process']);
   if (extra) return extra;
   if (r.run_id !== ev.run_id) return 'run_id 和證據包不同';
+  // 雲端排程跑的 repo commit（T13）：沒回報或 null 都收；格式不像 commit 的不擋結果，存成 NULL（aiRuns.commitOf）
+  if (r.repo_commit !== undefined && r.repo_commit !== null && (typeof r.repo_commit !== 'string' || r.repo_commit.length > 100)) return 'repo_commit 要是 100 字以內的字串或 null';
   if (!Array.isArray(r.samples) || r.samples.length < 1 || r.samples.length > 5) return 'samples 要是 1～5 份輸出外殼';
   if (r.process !== undefined) {
     if (!Array.isArray(r.process) || r.process.length > 30) return 'process 要是 30 筆以內的陣列';
@@ -137,12 +141,19 @@ export async function acceptResult(db: D1Database, id: string, bodyText: string,
   const t = await getTask(db, id);
   if (!t) return Response.json({ error: 'not_found' }, { status: 404 });
   if (t.status !== 'PENDING' && t.status !== 'FETCHED') return Response.json({ error: 'task_closed', status: t.status }, { status: 409 });
+  // 被退回或太晚送到的輸出整份留下（ai_rejections），和任務狀態同一筆交易寫
+  const keepRaw = (status: 'REJECTED' | 'LATE', why: string, httpStatus: number) => {
+    const raw = clipUtf8(bodyText, MAX_REJECTED_RAW_BYTES);
+    return db
+      .prepare('INSERT INTO ai_rejections (task_id, kind, at, status, reason, http_status, raw, raw_bytes, truncated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(id, t.kind, now.toISOString(), status, why.slice(0, 2000), httpStatus, raw.text, raw.bytes, raw.truncated ? 1 : 0);
+  };
   const reject = async (why: string, status = 422) => {
-    await db.prepare("UPDATE ai_tasks SET status = 'REJECTED', error = ?, completed_at = ? WHERE id = ?").bind(why.slice(0, 500), now.toISOString(), id).run();
+    await db.batch([db.prepare("UPDATE ai_tasks SET status = 'REJECTED', error = ?, completed_at = ? WHERE id = ?").bind(why.slice(0, 500), now.toISOString(), id), keepRaw('REJECTED', why, status)]);
     return Response.json({ error: 'rejected', why }, { status });
   };
   if (now.getTime() - Date.parse(t.created_at) > TASK_TIMEOUT_MS) {
-    await db.prepare("UPDATE ai_tasks SET status = 'TIMEOUT', completed_at = ? WHERE id = ?").bind(now.toISOString(), id).run();
+    await db.batch([db.prepare("UPDATE ai_tasks SET status = 'TIMEOUT', completed_at = ? WHERE id = ?").bind(now.toISOString(), id), keepRaw('LATE', '逾時之後才送到', 410)]);
     return Response.json({ error: 'task_expired' }, { status: 410 });
   }
   if (new TextEncoder().encode(bodyText).length > MAX_RESULT_BYTES) return reject('結果太大', 413);
@@ -170,6 +181,15 @@ export async function acceptResult(db: D1Database, id: string, bodyText: string,
     }
   }
   return Response.json({ ok: true });
+}
+
+/** 字串照 UTF-8 截到 max 位元組以內（不切斷字元）。 */
+export function clipUtf8(s: string, max: number): { text: string; bytes: number; truncated: boolean } {
+  const b = new TextEncoder().encode(s);
+  if (b.length <= max) return { text: s, bytes: b.length, truncated: false };
+  let end = max;
+  while (end > 0 && (b[end] & 0xc0) === 0x80) end--; // 退到字元的開頭
+  return { text: new TextDecoder().decode(b.subarray(0, end)), bytes: b.length, truncated: true };
 }
 
 /** 把逾時還沒有結果的任務標成 TIMEOUT，回傳這次標了哪些（給缺席告警用）。 */

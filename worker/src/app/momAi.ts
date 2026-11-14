@@ -265,7 +265,12 @@ export interface MonthInputs {
   watch?: Record<string, string>;
   crashOpinion?: '照做' | '延後';
   notes?: string[];
+  /** 這些輸入來自哪幾次 AI 執行（T13：月報的項目與通知帶 run_id）。 */
+  runIds?: MonthlyContext['runIds'];
 }
+
+/** 本月審查過、由 AI 執行下結論（或還在等）的代號 → run_id。 */
+const entryRunIds = (rows: Iterable<{ ticker: string; runId: string | null }>) => Object.fromEntries([...rows].filter((r) => r.runId).map((r) => [r.ticker, r.runId!]));
 
 /**
  * 出月報之前（每日流程，網路可用）：用訊號日的排名決定否決與遞補。
@@ -293,13 +298,15 @@ export async function prepareEntries(env: Env, fetcher: Fetcher, acct: Account, 
     if (!res.need.length) {
       const watch: Record<string, string> = {};
       for (const r of existing.values()) if (r.decision === 'ALLOW_WATCH' && r.watchReason) watch[r.ticker] = r.watchReason;
-      return { vetoed: res.vetoed, emptySlots: res.emptySlots, watch };
+      const entry = entryRunIds(existing.values());
+      return { vetoed: res.vetoed, emptySlots: res.emptySlots, watch, ...(Object.keys(entry).length ? { runIds: { entry } } : {}) };
     }
     await review(rc, res.need, existing);
   }
   log.push('F1：遞補的審查超過 6 輪，照目前的結果');
   const res = resolveEntries(select, new Map([...existing].map(([t, r]) => [t, r.decision === 'PENDING' ? 'ALLOW' : r.decision])));
-  return { vetoed: res.vetoed, emptySlots: res.emptySlots };
+  const entry = entryRunIds(existing.values());
+  return { vetoed: res.vetoed, emptySlots: res.emptySlots, ...(Object.keys(entry).length ? { runIds: { entry } } : {}) };
 }
 
 /** 月報出了之後：被否決的記下由誰遞補（往前驗證「沒否決時的組合」用）。 */
