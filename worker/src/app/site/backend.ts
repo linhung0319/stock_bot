@@ -16,6 +16,10 @@ import type { Env } from '../env';
 import { getRun, listRuns, type AiRun } from '../aiRuns';
 import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, saveAccount, saveSnapshot, shadowTickers, type LoadedAccount } from '../ledgerStore';
 import { noteOfRun } from './aiViews';
+import { loadSnapshot, type MacroSnapshot } from '../crashAi';
+import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
+import { loadReviews, type MomReview } from '../momAi';
+import { acceptOwnConditions, latestOwnCheck, monitorView, ownCheckView, startOwnCheck, type OwnCheckView } from '../ownCheckAi';
 import { annotate } from './explain';
 import type { AiNote } from './types';
 
@@ -60,6 +64,19 @@ export interface SiteBackend {
   load(extra?: string[]): Promise<SiteData>;
   save(acct: Account, cause: string): Promise<void>;
   recordSnapshot(date: string, snap: Snapshot): Promise<void>;
+  /** AI 層的網站操作（只有真實模式有）。 */
+  ai?: SiteAi;
+}
+
+export interface SiteAi {
+  /** F14：請 AI 健檢（lines 空的 = 草擬前提；有內容 = 改寫出場條件）。 */
+  ownCheck(ticker: string, lines: string[]): Promise<{ runId: string }>;
+  checkView(runId: string): Promise<OwnCheckView | null>;
+  latestCheck(ticker: string): Promise<OwnCheckView | null>;
+  acceptConditions(ticker: string, runId: string, ids: string[]): Promise<number>;
+  monitor(ticker: string): Promise<Awaited<ReturnType<typeof monitorView>>>;
+  /** AI 紀錄頁上方：最新的總經儀表板、最近一個月的動能進場審查、最近的申報事件。 */
+  overview(): Promise<{ macro: MacroSnapshot | null; reviews: MomReview[]; events: SecEventRow[] }>;
 }
 
 const taipeiDate = (now: Date): string => new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
@@ -69,7 +86,7 @@ const taipeiDate = (now: Date): string => new Date(now.getTime() + 8 * 3600_000)
 export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend {
   let loaded: LoadedAccount | null = null;
   let rev: number | null = null;
-  return {
+  const self: SiteBackend = {
     mode: 'real',
     async load(extra = []) {
       loaded = await loadAccount(env.DB);
@@ -134,7 +151,26 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
     async recordSnapshot(date, snap) {
       await saveSnapshot(env.DB, date, snap, now, rev);
     },
+    ai: {
+      async ownCheck(ticker, lines) {
+        const d = await self.load([ticker]);
+        if (!d.acct || !d.view) throw new Error('還沒有帳戶或價格資料');
+        const run = await startOwnCheck(env, fetcher, d.acct, d.view, d.axis, ticker, lines, now);
+        return { runId: run.runId };
+      },
+      checkView: (runId) => ownCheckView(env, runId, now),
+      latestCheck: (ticker) => latestOwnCheck(env, ticker, now),
+      acceptConditions: (ticker, runId, ids) => acceptOwnConditions(env, ticker, runId, ids, now),
+      monitor: (ticker) => monitorView(env, ticker),
+      async overview() {
+        const macro = await loadSnapshot(env.DB);
+        const all = await loadReviews(env.DB);
+        const month = all[0]?.month;
+        return { macro, reviews: month ? all.filter((r) => r.month === month) : [], events: (await loadSecEvents(env.DB)).filter((e) => e.status !== 'INFO' || e.display_only === 0).slice(0, 30) };
+      },
+    },
   };
+  return self;
 }
 
 // ---------------------------------------------------------------- 示範

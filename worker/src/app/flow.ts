@@ -7,14 +7,20 @@
 // 時間模型和示範模式相同（src/demo/driver.ts）：訊號日收盤後先跑每日檢查；訊號日是當月最後一個交易日時，
 // 接著用同一天的收盤與排名出下個月的月報（台灣早上收到，當晚美股開盤下單）。
 import { annotate } from './site/explain';
-import { blockedMonthly, dailyCheck, monthlyReport, type Account, type MonthlyContext, type Notif } from '../engine';
+import { blockedMonthly, dailyCheck, monthlyReport, stepStrategyReview, strategyReminder, type Account, type MarketView, type MonthlyContext, type Notif, type StrategyReviewState } from '../engine';
 import { isLastTradingDayOfMonth, lastCompletedSession, nextTradingDay, tradingDaysBetween, type CalendarOverrides } from '../data/calendar';
 import { runIngest, type IngestResult } from '../data/ingest';
 import { buildMarketView, rebaseNotifSeq } from '../data/marketView';
 import { NO_SIGNAL_ALERTS, loadCalendarOverrides, loadRanking, loadRun, loadSeries, saveAlerts, saveRun, type Alert, type DataRun, type Ranking } from '../data/store';
 import { errText } from '../data/util';
+import type { FlowExtras } from './aiCtx';
 import { closeStaleRuns, listRuns } from './aiRuns';
-import { aiStep } from './ownAi';
+import { aiStep } from './aiStep';
+import { crashDirection, crashOpinionFor } from './crashAi';
+import { monthNotes } from './dropAi';
+import { sectorEtfs } from './filings';
+import { monthOfSignal, prepareEntries, recordReplacements, signalsIn, type MonthInputs } from './momAi';
+import { STRATEGY_STATE_KEY, loadStrategyState } from './strategyAi';
 import { noteOfRun } from './site/aiViews';
 import type { AiNote } from './site/types';
 import { sweepTimeouts } from './aiTasks';
@@ -59,9 +65,9 @@ export interface FlowResult {
 export async function ingest(env: Env, fetcher: Fetcher, now: Date, forceRank = false): Promise<IngestResult | { error: string }> {
   try {
     const loaded = await loadAccount(env.DB);
-    // 影子組合要用最近 7 個月內影子紀錄裡的代號（觀察期最長 6 個月）
+    // 影子組合要用最近 7 個月內影子紀錄裡的代號（觀察期最長 6 個月）；自選股的產業 ETF（F7、F20 的跌幅拆解）
     const since = new Date(now.getTime() - 213 * 86400_000).toISOString().slice(0, 10);
-    const track = loaded ? await shadowTickers(env.DB, since) : [];
+    const track = loaded ? [...(await shadowTickers(env.DB, since)), ...Object.values(await sectorEtfs(env.DB, Object.keys(loaded.acct.own)))] : [];
     return await runIngest(env.DB, fetcher, { now, required: requiredTickers(loaded?.acct ?? null), forceRank, track });
   } catch (e) {
     const error = errText(e);
@@ -99,6 +105,16 @@ export interface Processed {
   created: number[];
   monthly: number | null;
   alerts: Alert[];
+  /** 策略檢討的狀態（和帳戶一起存）。 */
+  strategy: StrategyReviewState;
+  /** 要開 AI 的事（F7 新的減半、F21 提醒）。 */
+  extras: FlowExtras;
+}
+
+/** 動能名單等權的日報酬（策略檢討用「純動能部位」）；名單是空的回傳 null。 */
+function momDayReturn(names: string[], view: MarketView): number | null {
+  const rs = names.map((t) => view.close[t]).filter((c) => c && Number.isFinite(c[view.i]) && Number.isFinite(c[view.i - 1])).map((c) => c[view.i] / c[view.i - 1] - 1);
+  return rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : null;
 }
 
 /** 這個月份的月報出過了沒（含因為未分類而暫停的那一則）。 */
@@ -108,11 +124,13 @@ export const monthlyMade = (acct: Account, month: string): boolean => acct.notif
  * 依序處理 sessions 這幾個交易日：每日檢查；當月最後一個交易日再出下個月的月報；新通知寫下理由。
  * 純粹讀 D1（價格、排名、抓取紀錄），不寫。
  */
-export async function processSessions(db: D1Database, acct0: Account, sessions: string[], ov: CalendarOverrides, aiNotes: AiNote[] = []): Promise<Processed> {
+export async function processSessions(db: D1Database, acct0: Account, sessions: string[], ov: CalendarOverrides, aiNotes: AiNote[] = [], monthInputs: Map<string, MonthInputs> = new Map()): Promise<Processed> {
   let acct = acct0;
   const alerts: Alert[] = [];
   const done: string[] = [];
   let monthly: number | null = null;
+  let strategy = await loadStrategyState(db);
+  const extras: FlowExtras = { reduced: [], strategyAlerts: [] };
   const start = new Set(acct.notifs.map((n) => n.id));
   const core = acct.cfg.coreTicker;
   // 月報要用到新進場股票的價格：把那一天的排名名單也載入
@@ -126,7 +144,21 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
     const view = built.view;
     rebaseNotifSeq(acct, built.axis);
     const before = new Set(acct.notifs.map((n) => n.id));
+    // 策略檢討（設計 §7）：純動能部位（名單等權）相對基準，落後 20／30／40／50% 與每滿一年提醒；永不自動停用
+    const mr = momDayReturn(acct.rule.heldMom, view);
+    const bench = view.close[view.benchmark ?? core];
+    if (mr !== null && bench && Number.isFinite(bench[view.i - 1])) {
+      const st = stepStrategyReview(strategy, s, mr, bench[view.i] / bench[view.i - 1] - 1);
+      strategy = st.state;
+      for (const text of st.alerts) {
+        acct = strategyReminder(acct, view, text).acct;
+        extras.strategyAlerts!.push({ session: s, text });
+      }
+    }
     acct = dailyCheck(acct, view).acct;
+    // F7：今天新觸發減半的自選股（當天通知的，或 < 5% 等月報的）
+    for (const n of acct.notifs) if (!before.has(n.id)) for (const it of n.items) if (it.f === 'F7' && it.ticker) extras.reduced!.push({ ticker: it.ticker, session: s });
+    for (const [t, m] of Object.entries(acct.own)) if (m.pending?.action === 'REDUCE' && m.pending.date === s && !extras.reduced!.some((r) => r.ticker === t && r.session === s)) extras.reduced!.push({ ticker: t, session: s });
     let rankOrder = latest?.order ?? [];
     if (isLastTradingDayOfMonth(s, ov)) {
       const month = nextTradingDay(s, ov).slice(0, 7);
@@ -134,11 +166,13 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
         const ranking = rankings.get(s) ?? null;
         const run = await loadRun(db, s);
         let input: MonthlyContext;
+        // AI 層給的輸入（月報之前在 runFlow 準備好）：任務 A 的否決與遞補、觀察理由、崩盤規則檢視的意見、任務 C 的說明
+        const ai = monthInputs.get(s) ?? {};
         if (ranking && run?.rebalanceOk) {
-          input = { order: ranking.order, month, company: ranking.detail.company };
+          input = { order: ranking.order, month, company: ranking.detail.company, ...ai };
         } else {
           const why = pauseReason(run, !!ranking);
-          input = { order: [...acct.rule.heldMom], month, paused: why };
+          input = { order: [...acct.rule.heldMom], month, paused: why, ...(ai.crashOpinion ? { crashOpinion: ai.crashOpinion } : {}), ...(ai.notes ? { notes: ai.notes } : {}) };
           alerts.push({ kind: 'MONTHLY_PAUSED', message: `${month} 月報照出，但本月暫停換股（${why}），動能名單不變。` });
         }
         const m = monthlyReport(acct, view, input);
@@ -151,7 +185,7 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
     done.push(s);
   }
   const created = acct.notifs.filter((n) => !start.has(n.id)).map((n) => n.id);
-  return { acct, processed: done, created, monthly, alerts };
+  return { acct, processed: done, created, monthly, alerts, strategy, extras };
 }
 
 function pauseReason(run: DataRun | null, ranked: boolean): string {
@@ -246,6 +280,31 @@ export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: A
   return out;
 }
 
+// ---------------------------------------------------------------- 月報的 AI 輸入
+
+/**
+ * 月報訊號日、出月報之前：任務 A 的否決與遞補（還沒審過的跑規則偵測）、崩盤規則檢視的意見（同方向、3 票一致才有）、
+ * 這個月任務 C 的說明。出錯只記下來，月報照規則出（預設准許、沒有 AI 那一行）。
+ */
+async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal: string, ov: CalendarOverrides, now: Date, log: string[]): Promise<MonthInputs> {
+  const out: MonthInputs = {};
+  try {
+    Object.assign(out, await prepareEntries(env, fetcher, acct, signal, ov, now, log));
+  } catch (e) {
+    log.push(`任務 A 的月報輸入出錯，照規則准許：${errText(e)}`);
+  }
+  try {
+    const { view } = buildMarketView(await loadSeries(env.DB, requiredTickers(acct)), signal, acct.cfg.coreTicker);
+    const op = await crashOpinionFor(env.DB, monthOfSignal(signal, ov), crashDirection(acct, view));
+    if (op) out.crashOpinion = op;
+    const notes = await monthNotes(env.DB, `${signal.slice(0, 7)}-00`, signal);
+    if (notes.length) out.notes = notes;
+  } catch (e) {
+    log.push(`崩盤規則檢視與任務 C 的月報輸入出錯：${errText(e)}`);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- 一次流程
 
 export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Promise<FlowResult> {
@@ -257,6 +316,9 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
   const res: FlowResult = { session, attempt: opt.attempt, status: 'SKIPPED', processed: [], created: [], monthly: null, alerts: [], push: { configured: lineConfigured(env), sent: 0, failed: 0, errors: [] }, ms: 0 };
   const alerts: Alert[] = [];
   let acct: Account | null = null;
+  let extras: FlowExtras = {};
+  /** 月報之前準備 AI 輸入時的紀錄（記在流程紀錄的 ai.log）。 */
+  const aiPrep: string[] = [];
 
   try {
     if (await flowDone(db, session)) {
@@ -289,16 +351,22 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
             break;
           }
           const aiNotes = (await listRuns(db, opt.now, { limit: 200 })).map(noteOfRun).filter((n): n is AiNote => n !== null);
-          const p = await processSessions(db, loaded.acct, plan.sessions, ov, aiNotes);
+          // 月報訊號日：先準備 AI 層給月報的輸入（要用網路，所以在純計算的 processSessions 之前）
+          const monthInputs = new Map<string, MonthInputs>();
+          for (const s of signalsIn(plan.sessions, ov)) monthInputs.set(s, await monthEndInputs(env, fetcher, loaded.acct, s, ov, opt.now, aiPrep));
+          const p = await processSessions(db, loaded.acct, plan.sessions, ov, aiNotes, monthInputs);
           alerts.push(...p.alerts);
           try {
-            await saveAccount(db, p.acct, loaded, `每日流程 ${session}${p.monthly !== null ? '（含月報）' : ''}`, opt.now, [setFlowStateStmt(db, 'lastSession', session, at)]);
+            await saveAccount(db, p.acct, loaded, `每日流程 ${session}${p.monthly !== null ? '（含月報）' : ''}`, opt.now, [setFlowStateStmt(db, 'lastSession', session, at), setFlowStateStmt(db, STRATEGY_STATE_KEY, JSON.stringify(p.strategy), at)]);
           } catch (e) {
             if (e instanceof ConflictError && tryNo < 2) continue;
             throw e;
           }
           acct = p.acct;
+          extras = p.extras;
           Object.assign(res, { status: 'DONE', processed: p.processed, created: p.created, monthly: p.monthly });
+          const m = p.monthly !== null ? p.acct.notifs.find((n) => n.id === p.monthly) : undefined;
+          if (m?.monthly) await recordReplacements(db, m.monthly.input.month, m.items.filter((i) => i.f === 'F1' && i.ticker).map((i) => i.ticker!)).catch((e) => aiPrep.push(`記錄遞補出錯：${errText(e)}`));
           break;
         }
       }
@@ -315,10 +383,10 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
   let aiLog: { log: string[]; started: string[] } | null = null;
   if (res.status === 'DONE' || res.status === 'SKIPPED') {
     try {
-      const a = await aiStep(env, fetcher, opt.now, session, ov, res.status === 'DONE' && res.processed.length > 0);
+      const a = await aiStep(env, fetcher, opt.now, session, ov, res.status === 'DONE' && res.processed.length > 0, extras);
       res.created.push(...a.created);
       alerts.push(...a.alerts);
-      aiLog = { log: a.log, started: a.started };
+      aiLog = { log: [...aiPrep, ...a.log], started: a.started };
       if (a.created.length) acct = (await loadAccount(db))?.acct ?? acct;
     } catch (e) {
       console.error('AI 那一段出錯', e);

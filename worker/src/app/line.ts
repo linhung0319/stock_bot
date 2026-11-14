@@ -67,7 +67,9 @@ export function notifText(acct: Account, n: Notif, link: string | null): string 
   } else if (n.kind === 'MONTHLY_EMPTY') {
     out.push('', '本月不用下單。');
   }
-  const optional = n.items.filter((it) => !it.cancelled && it.choice === 'SKIP' && it.kind === 'AI_ONLY').length;
+  // 崩盤規則的 AI 檢視只附一行（設計 §4.4）
+  for (const it of n.items) if (!it.cancelled && it.aiLine?.startsWith('AI 檢視：')) out.push(it.aiLine);
+  const optional = n.items.filter((it) => !it.cancelled && it.choice === 'SKIP' && (it.kind === 'AI_ONLY' || (it.kind === 'HARD' && it.choices.some((c) => c.id === 'AI')))).length;
   if (optional) out.push(`另有 ${optional} 項 AI 建議（預設不做），到網站決定。`);
   if (merged.length || n.items.length) out.push('', '下單前先到網站確認每一張單（照規則／這次不做），做完回來填快照。');
   if (link) out.push(link);

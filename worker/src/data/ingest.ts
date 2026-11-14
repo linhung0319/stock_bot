@@ -3,7 +3,7 @@
 //   signalsOk   必要的價格（核心、短債、持股、動能名單）都是最近一個已收盤交易日的 → 可以產生每日訊號
 //   rebalanceOk SPY 持股檔和 Wikipedia 名單一致 → 可以換股（設計 §2.4）
 import { rankUniverse, universeOf, type UniverseRow } from '../engine/momentum';
-import { isLastTradingDayOfMonth, lastCompletedSession } from './calendar';
+import { isLastTradingDayOfMonth, lastCompletedSession, nextTradingDay } from './calendar';
 import { compareMembership, fetchSpyHoldings, fetchWikiSp500, fetchYahooDaily, normalizeTicker, type DailyBar, type Fetcher } from './sources';
 import {
   lastDate,
@@ -132,7 +132,8 @@ export async function runIngest(db: D1Database, fetcher: Fetcher, opt: IngestOpt
 
   // 3. 月報訊號日（當月最後一個交易日）：股票池與排名
   let ranking: Ranking | null = null;
-  const wantRank = opt.forceRank || isLastTradingDayOfMonth(session, ov);
+  // 前一天也排一次：F1 否決法庭先審這個月可能進場的股票（法庭要幾個小時）
+  const wantRank = opt.forceRank || isLastTradingDayOfMonth(session, ov) || isLastTradingDayOfMonth(nextTradingDay(session, ov), ov);
   if (wantRank && rebalanceOk && snapshot) {
     const r = await buildRanking(db, fetcher, snapshot, series, session, at);
     if (r.ok) ranking = r.ranking;

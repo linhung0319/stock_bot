@@ -211,11 +211,13 @@ export function edgarSubmissionsUrl(cik: string | number): string {
   return `https://data.sec.gov/submissions/CIK${String(cik).replace(/\D/g, '').padStart(10, '0')}.json`;
 }
 
-export function parseEdgarSubmissions(json: unknown): { cik: string; name: string; tickers: string[]; filings: Filing[] } {
+export function parseEdgarSubmissions(json: unknown): { cik: string; name: string; tickers: string[]; sic: string | null; formerNames: string[]; filings: Filing[] } {
   const j = json as {
     cik: string;
     name: string;
     tickers?: string[];
+    sic?: string;
+    formerNames?: { name: string }[];
     filings: { recent: { accessionNumber: string[]; form: string[]; items: string[]; acceptanceDateTime: string[]; filingDate: string[]; primaryDocument: string[] } };
   };
   const r = j.filings.recent;
@@ -227,7 +229,7 @@ export function parseEdgarSubmissions(json: unknown): { cik: string; name: strin
     filingDate: r.filingDate[i],
     primaryDocument: r.primaryDocument[i],
   }));
-  return { cik: String(j.cik).padStart(10, '0'), name: j.name, tickers: j.tickers ?? [], filings };
+  return { cik: String(j.cik).padStart(10, '0'), name: j.name, tickers: j.tickers ?? [], sic: j.sic ? String(j.sic) : null, formerNames: (j.formerNames ?? []).map((x) => x.name), filings };
 }
 
 /** userAgent：SEC 要求帶聯絡方式（例如「名字 email」）。由使用者用 wrangler secret 設定，不寫在程式裡。 */

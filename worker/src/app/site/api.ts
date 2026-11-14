@@ -257,7 +257,48 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
   if (rest === 'account' && post) return createFromSnapshot(backend, await body(req));
 
   const hold = /^holding\/([A-Za-z0-9.-]{1,10})$/.exec(rest);
-  if (hold && get) return json(holdingDetail(ready(await backend.load()), ticker(hold[1])));
+  if (hold && get) {
+    const tk = ticker(hold[1]);
+    const hd = holdingDetail(ready(await backend.load()), tk);
+    // 真實模式：這檔監測中的條件（AI 寫的、你寫的）、最近一次新增自選健檢
+    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), check: await backend.ai.latestCheck(tk) });
+    return json(hd);
+  }
+
+  // ---- AI 層（F14 健檢、F1／F5／F18 的總覽）：只有真實模式
+  if (rest === 'ai/overview' && get) return json(backend.ai ? await backend.ai.overview() : { macro: null, reviews: [], events: [] });
+  if (rest === 'ops/own-check' && post) {
+    if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI。');
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const lines = Array.isArray(b.lines) ? b.lines.filter((x): x is string => typeof x === 'string').map((x) => x.trim().slice(0, 300)).filter(Boolean).slice(0, 6) : [];
+    try {
+      return json({ ok: true, ...(await backend.ai.ownCheck(tk, lines)) });
+    } catch (e) {
+      throw new SiteError(422, errText(e));
+    }
+  }
+  const chk = /^ai\/own-check\/([A-Za-z0-9_.-]{1,100})$/.exec(rest);
+  if (chk && get) {
+    if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI。');
+    const v = await backend.ai.checkView(chk[1]);
+    if (!v) throw new SiteError(404, '找不到這次健檢');
+    return json(v);
+  }
+  if (rest === 'ops/own-conditions' && post) {
+    if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI。');
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const runId = typeof b.runId === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(b.runId) ? b.runId : null;
+    if (!runId) throw new SiteError(422, '缺少健檢的編號');
+    const ids = Array.isArray(b.ids) ? b.ids.filter((x): x is string => typeof x === 'string').slice(0, 10) : [];
+    if (!ids.length) throw new SiteError(422, '至少勾一條');
+    try {
+      return json({ ok: true, added: await backend.ai.acceptConditions(tk, runId, ids) });
+    } catch (e) {
+      throw new SiteError(422, errText(e));
+    }
+  }
 
   // ---- 通知
   const nm = /^notif\/(\d{1,9})(?:\/([a-z]+))?$/.exec(rest);

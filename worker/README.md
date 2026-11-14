@@ -67,6 +67,15 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - 用真實資料看 F24 的證據長什麼樣（不觸發 AI）：`npx tsx scripts/own-evidence-local.ts MU 2026-11-13`。
 - prompt：`../ai/prompts/own_review_v1.md`、`own_condition_v1.md`。
 
+## 其餘 AI 功能（T11）
+
+- 每日流程的 AI 段：`src/app/aiStep.ts`（看新申報 → 套用 AI 結論、財報條件、規則直接提出的硬事件 → 開新的執行），各功能的套用登記在 `APPLIERS`。
+- 規則偵測（不用 LLM）：`src/data/secEvents.ts`（申報分類，移植自 B-9）、`src/ai/detect.ts`（單日漲幅占比、盈餘背離、股數、資料可疑、跌幅拆解、SIC → 產業 ETF）、`src/data/fred.ts`（總經儀表板，fredgraph CSV 不需要金鑰）。
+- 各功能：F18／F19 `src/ai/events.ts`＋`src/app/events.ts`；F1 `src/ai/momEntry.ts`＋`src/app/momAi.ts`；F7／F20 `src/ai/drops.ts`＋`src/app/dropAi.ts`；F5／F6 `src/ai/crash.ts`＋`src/app/crashAi.ts`；F21 `src/ai/strategy.ts`＋`src/app/strategyAi.ts`；F14 `src/ai/ownCheck.ts`＋`src/app/ownCheckAi.ts`。資料表 `migrations/0007_events_entry.sql`。
+- 用真實資料看規則段（不觸發 AI）：`npx tsx scripts/t11-local.ts MU NVDA`（F1 規則偵測、FRED 儀表板、French 動能因子回撤）。
+- 網站：「紀錄 → AI 紀錄」上方有本月動能進場審查、總經儀表板、最近的申報事件；持股頁有監測中的條件與 AI 改寫的出場條件；新增自選可以請 AI 草擬前提。
+- prompt：`../ai/prompts/` 的 `event_scan_v1`、`hard_event_v1`、`mom_entry_v1`、`mom_score_v1`、`own_drop_v1`、`drop_explain_v1`、`crash_review_v1`、`strategy_review_v1`、`own_check_v1`。
+
 ## 網站（T8）
 
 - 本機看網站：`npm run dev`，開 `http://127.0.0.1:8787/?demo=1`（示範資料）。第一次要先建本機的資料表：

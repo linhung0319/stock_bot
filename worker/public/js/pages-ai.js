@@ -187,3 +187,112 @@ export function shadowLines(sum) {
   );
 }
 
+
+// ---------------------------------------------------------------- AI 紀錄上方的總覽（T11）
+
+const DECISION = { ALLOW: '准許', ALLOW_WATCH: '准許但觀察', VETO: '否決', BLOCK: '資料可疑，這個月不進場', PENDING: '等法庭' };
+const SOURCE = { RULE: '規則', AI: 'AI 法庭', DEFAULT: '照規則（AI 沒有結論）' };
+const CODE = { PENDING_MA: '被收購', ACCOUNTING: '會計問題', REGULATORY: '監管或訴訟', EARNINGS_DIVERGENCE: '盈餘背離', ONE_OFF_JUMP: '一次性跳漲', DILUTION: '增資', DATA_SUSPECT: '資料可疑', ALLOW_WATCH: '准許但觀察', ALLOW: '准許', VETO: '否決', INSUFFICIENT: '證據不足', EXIT: '建議出場', HOLD: '不用動' };
+/** 網站不顯示代碼：把文字裡的代碼換成白話。 */
+const plain = (t) => String(t ?? '').replace(/(PENDING_MA|ACCOUNTING|REGULATORY)_CANDIDATE/g, (_, c) => `${CODE[c]}候選`).replace(/\b(PENDING_MA|ACCOUNTING|REGULATORY|EARNINGS_DIVERGENCE|ONE_OFF_JUMP|DILUTION|DATA_SUSPECT|ALLOW_WATCH|ALLOW|VETO|INSUFFICIENT|EXIT|HOLD)\b/g, (m) => CODE[m]);
+const fnum = (x, d = 2) => (x === null || x === undefined || !Number.isFinite(x) ? '—' : x.toFixed(d));
+
+/** 總經儀表板（每月都算）、本月動能新股進場審查、最近的申報事件。真實模式才有內容；載入失敗就不顯示。 */
+export function aiOverview() {
+  const box = h('div', { class: 'stackv', style: 'margin-bottom:14px' });
+  api
+    .get('/ai/overview')
+    .then((o) => {
+      const parts = [];
+      if (o.reviews?.length)
+        parts.push(
+          details(
+            `動能新股進場審查（${o.reviews[0].month} 月報）`,
+            h('table', { class: 'plain' }, h('tbody', null, o.reviews.map((r) => h('tr', null, h('td', { style: 'white-space:nowrap' }, h('span', { class: 'tk' }, r.ticker), r.rank ? h('div', { class: 'small faint' }, `第 ${r.rank} 名`) : null), h('td', null, h('span', { class: 'chip ' + (r.decision === 'VETO' || r.decision === 'BLOCK' ? 'hot' : r.decision === 'ALLOW_WATCH' ? 'warn' : 'ok') }, DECISION[r.decision] ?? r.decision)), h('td', { class: 'small' }, `${SOURCE[r.source] ?? r.source}${r.reasonCode ? ` · ${CODE[r.reasonCode] ?? r.reasonCode}` : ''}${r.replacedBy ? ` · 由 ${r.replacedBy} 遞補` : ''}`, r.watchReason ? h('div', { class: 'faint' }, '觀察：' + r.watchReason) : null, r.note ? h('div', { class: 'faint' }, plain(r.note)) : null))))),
+          ),
+        );
+      if (o.macro)
+        parts.push(
+          details(
+            `總經儀表板（${day(o.macro.asOf)}，崩盤規則檢視用）`,
+            h('div', null,
+              h('dl', { class: 'facts' },
+                o.macro.rows.map((r) => [
+                  h('dt', null, r.label),
+                  h('dd', null,
+                    h('span', { class: 'num' }, r.value === null ? '抓不到' : fnum(r.value)),
+                    r.date ? h('span', { class: 'faint small', style: 'margin-left:8px' }, r.date) : null,
+                    h('small', null, [r.change6m === null ? null : `6 個月變化 ${r.change6m >= 0 ? '+' : ''}${fnum(r.change6m)}`, r.derived, Object.values(r.atBears ?? {}).some((v) => v !== null) ? `真空頭開始時 ${Object.values(r.atBears).map((v) => fnum(v)).join('／')}` : null, r.note].filter(Boolean).join('；')),
+                  ),
+                ]),
+                o.macro.breadth ? [h('dt', null, '市場廣度'), h('dd', null, h('span', { class: 'num' }, `${Math.round((o.macro.breadth.above / o.macro.breadth.n) * 100)}%`), h('small', null, `市值前 50 大裡收盤在 200 日均線之上：${o.macro.breadth.above}／${o.macro.breadth.n}`))] : null,
+              ),
+              h('p', { class: 'small faint', style: 'margin-top:8px' }, '真空頭開始時（2000-10／2002-05／2008-01）的值是現在修正後的數字，不是當時看到的。過去 17 次跌破 200 日均線，3 次是真的空頭。'),
+            ),
+          ),
+        );
+      if (o.events?.length)
+        parts.push(details('最近的申報事件（規則偵測、每日掃描）', h('table', { class: 'plain' }, h('tbody', null, o.events.map((e) => h('tr', null, h('td', { class: 'num' }, day(e.event_date)), h('td', { class: 'tk' }, e.ticker), h('td', null, `${e.form === 'NEWS' ? '新聞標題' : e.form} · ${CODE[e.code] ?? e.code}`, e.detail ? h('div', { class: 'small faint' }, plain(e.detail)) : null), h('td', { class: 'small' }, e.status === 'HANDLED' && /開法庭 (\S+)/.test(e.handled_note ?? '') ? h('a', { href: `#/ai/${/開法庭 (\S+)/.exec(e.handled_note)[1]}` }, '已開審查') : ({ NEW: '待處理', HANDLED: e.handled_note ?? '已處理', INFO: '只記錄' }[e.status] ?? e.status))))))));
+      box.replaceChildren(...parts);
+    })
+    .catch(() => box.replaceChildren());
+  return box;
+}
+
+// ---------------------------------------------------------------- 持股頁：監測條件與新增自選健檢（T11，F14／F25）
+
+/** 這檔監測中的條件，與最近一次健檢 AI 改寫的出場條件（勾選後開始監測）。 */
+export function ownMonitor(ctx, d) {
+  const out = [];
+  if (d.monitor?.length)
+    out.push(h('h5', { style: 'margin-top:12px' }, '監測中的條件（新申報出來時檢查；價格條件只記錄）'), h('table', { class: 'plain' }, h('tbody', null, d.monitor.map((c) => h('tr', null, h('td', null, c.text, c.note ? h('div', { class: 'small faint' }, c.note) : null), h('td', { class: 'small' }, `${c.kind} · ${c.origin}`), h('td', null, h('span', { class: 'chip ' + (c.status === '已成立' ? 'hot' : c.status === '監測中' ? 'ok' : '') }, c.status)))))));
+  const c = d.check;
+  if (c && c.mode === 'REWRITE') {
+    if (c.status === 'PENDING') out.push(h('p', { class: 'small dim', style: 'margin-top:10px' }, 'AI 正在把你寫的出場條件改寫成可以追蹤的格式，回來之後會出現在這裡。'));
+    else if (c.conditions.length) {
+      const boxes = c.conditions.map((x) => ({ x, box: h('input', { type: 'checkbox', checked: !x.manual && !c.accepted.includes(x.condId), disabled: c.accepted.includes(x.condId) }) }));
+      const msg = h('div');
+      out.push(
+        h('h5', { style: 'margin-top:12px' }, 'AI 改寫的出場條件（勾選的會開始監測，成立時當天通知）'),
+        h('div', null, boxes.map(({ x, box }) => h('label', { style: 'display:block;margin:6px 0' }, box, ' ', x.text, h('span', { class: 'faint small' }, `（${x.then}${c.accepted.includes(x.condId) ? '；已在監測' : ''}）`)))),
+        c.summary ? h('p', { class: 'small faint' }, c.summary) : null,
+        h(
+          'div',
+          { class: 'btn-row', style: 'margin-top:8px' },
+          h(
+            'button',
+            {
+              class: 'btn',
+              type: 'button',
+              onclick: async () => {
+                try {
+                  const ids = boxes.filter((b) => b.box.checked && !b.box.disabled).map((b) => b.x.condId);
+                  const r = await api.post('/ops/own-conditions', { ticker: d.ticker, runId: c.runId, ids });
+                  toast(`開始監測 ${r.added} 條`);
+                  ctx.refresh();
+                } catch (e) {
+                  msg.replaceChildren(h('p', { class: 'small', style: 'color:var(--hot)' }, e.message));
+                }
+              },
+            },
+            '開始監測勾選的條件',
+          ),
+        ),
+        msg,
+      );
+    }
+  }
+  return out;
+}
+
+/** 新增自選頁：請 AI 草擬前提，等結果（每 15 秒看一次，最多 20 分鐘）。onDrafts(drafts) 收到結果時呼叫。 */
+export async function requestDrafts(ticker, lines, onStatus) {
+  const r = await api.post('/ops/own-check', { ticker, lines });
+  for (let k = 0; k < 80; k++) {
+    await new Promise((res) => setTimeout(res, k ? 15000 : 3000));
+    const v = await api.get('/ai/own-check/' + encodeURIComponent(r.runId));
+    if (v.status === 'DONE') return v;
+    onStatus?.(`AI 還在想（${Math.round(((k + 1) * 15) / 60)} 分鐘）…`);
+  }
+  throw new Error('等太久了，AI 還沒有回來。之後可以到這檔的持股頁看結果。');
+}

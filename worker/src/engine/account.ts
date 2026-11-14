@@ -39,6 +39,8 @@ export interface OwnMeta {
   flags: string[];
   /** 每個月已發幾則 F25 當天通知。 */
   f25Sent: Record<string, number>;
+  /** 上一次 F24 之後已成立、還沒被新的審查處理的降級條件（F8 加回時註明）。 */
+  metConds?: string[];
 }
 
 export interface Lots {
@@ -146,6 +148,10 @@ export interface MonthlyContext {
   company?: Record<string, string>;
   /** 本月暫停換股的原因（成分股名單不一致、排名沒有產生）；order 這時是目前的動能名單，名單不變。 */
   paused?: string;
+  /** 任務 A 准許但觀察（ALLOW_WATCH）的代號 → 觀察理由（月報列出）。 */
+  watch?: Record<string, string>;
+  /** 附在月報的說明（任務 C：持股單月跌 > 20% 的原因）。 */
+  notes?: string[];
 }
 
 export interface SavedState {

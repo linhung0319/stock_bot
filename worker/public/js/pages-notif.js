@@ -1,6 +1,6 @@
 // 待辦與紀錄、通知頁（三步驟：看建議與理由 → 下單 → 填快照）、填快照。
 import { api, getMode } from './api.js';
-import { runRow, shadowLines } from './pages-ai.js';
+import { aiOverview, runRow, shadowLines } from './pages-ai.js';
 import { actionText, day, h, money, put, qty, toast } from './dom.js';
 import { consoleBox, glass, icon, longDay, menuList, page, tiles } from './layout.js';
 import { actParts, bucketTag, chevron, headline, orderRows, whyBlock } from './parts.js';
@@ -79,10 +79,11 @@ function records(hist, initial = 0) {
     ['全部', () => [...hist.notifs.map((n) => ({ date: n.date, el: () => historyRow(n) })), ...hist.events.filter((e) => !e.notif).map((e) => ({ date: e.date, el: () => eventRow(e) }))].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)), '還沒有紀錄。'],
     ['通知', () => hist.notifs.map((n) => ({ el: () => historyRow(n) })), '還沒有通知。'],
     ['帳本', () => hist.events.map((e) => ({ el: () => eventRow(e) })), '帳本還沒有變動。'],
-    ['AI 紀錄', () => (hist.runs ?? []).map((r) => ({ el: () => runRow(r) })), '還沒有 AI 紀錄。AI 層設定好之後，每一次審查、否決、檢視都會留在這裡：看了哪些資料、每一票怎麼判、哪些引用通過檢查。'],
+    ['AI 紀錄', () => (hist.runs ?? []).map((r) => ({ el: () => runRow(r) })), '還沒有 AI 紀錄。AI 層設定好之後，每一次審查、否決、檢視都會留在這裡：看了哪些資料、每一票怎麼判、哪些引用通過檢查。', aiOverview],
   ];
-  const showList = (rows, empty) => {
-    if (!rows.length) return box.replaceChildren(glass('empty', h('p', { class: 'dim' }, empty)));
+  const showList = (rows, empty, top) => {
+    const head = top ? top() : null;
+    if (!rows.length) return box.replaceChildren(...[head, glass('empty', h('p', { class: 'dim' }, empty))].filter(Boolean));
     let n = PAGE;
     const list = h('div', { class: 'glass rec' });
     const draw = () => {
@@ -104,7 +105,7 @@ function records(hist, initial = 0) {
         );
     };
     draw();
-    box.replaceChildren(list);
+    box.replaceChildren(...[head, list].filter(Boolean));
   };
   const shadow = () => {
     if (!hist.shadow.length) return box.replaceChildren(glass('empty', h('p', { class: 'dim' }, '還沒有。你每次都照規則做的話，這裡會是空的。')));
@@ -126,7 +127,7 @@ function records(hist, initial = 0) {
   const names = [...kinds.map((k) => k[0]), '沒照規則做的'];
   const pick = (i) => {
     [...chips.children].forEach((b, k) => b.setAttribute('aria-pressed', String(k === i)));
-    if (i < kinds.length) showList(kinds[i][1](), kinds[i][2]);
+    if (i < kinds.length) showList(kinds[i][1](), kinds[i][2], kinds[i][3]);
     else shadow();
   };
   names.forEach((n, i) => chips.append(h('button', { type: 'button', 'aria-pressed': 'false', onclick: () => pick(i) }, n)));

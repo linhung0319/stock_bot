@@ -4,6 +4,7 @@ import { actionText, day, h, money, pct, put, qty, toast } from './dom.js';
 import { consoleBox, glass, meterEl, menuList, page, tiles } from './layout.js';
 import { aiBlock, bucketTag, chart, fold, rankTable } from './parts.js';
 import { actionButton, errBox, linkButton, planBubble, slips, trayBody, trayTitle } from './pages-notif.js';
+import { ownMonitor, requestDrafts } from './pages-ai.js';
 import { say } from './slime.js';
 
 const em = (t) => ({ t, tone: 'em' });
@@ -134,6 +135,7 @@ export async function holdingPage(ctx, ticker) {
             h('ul', { class: 'prem' }, d.own.premises.map((p) => h('li', null, h('span', { class: 'st' }, p.origin), h('span', null, p.text)))),
             d.own.lastReview ? h('p', { class: 'small dim', style: 'margin-top:10px' }, 'AI 最近一次審查：' + d.own.lastReview) : h('p', { class: 'small faint', style: 'margin-top:10px' }, 'AI 還沒有審查過這一檔。'),
             aiBlock(d.ai),
+            ...ownMonitor(ctx, d),
             d.canRemove ? h('div', { class: 'btn-row', style: 'margin-top:14px' }, h('a', { class: 'btn', href: `#/do/remove/${encodeURIComponent(d.ticker)}` }, '移除自選')) : null,
           )
         : null,
@@ -343,9 +345,29 @@ export function addOwnPage(ctx) {
         return [];
       };
       const msg2 = h('div');
+      // 真實模式：請 AI 草擬前提（雲端排程要幾分鐘），回來之後變成可以勾選的選項
+      const aiDraftSlot = h('div', { class: 'small' }, h('button', { class: 'btn', type: 'button', onclick: async (ev) => {
+        ev.target.disabled = true;
+        const status = h('span', { class: 'faint', style: 'margin-left:8px' }, '已送出，AI 通常幾分鐘內回來…');
+        ev.target.after(status);
+        try {
+          const v = await requestDrafts(ticker, [], (t) => (status.textContent = t));
+          if (!v.drafts.length) throw new Error(v.summary || 'AI 沒有草擬出前提');
+          drafts.push(...v.drafts.map((d) => ({ ...d, box: h('input', { type: 'checkbox', checked: true }) })));
+          mode.v = 'AI';
+          aiDraftSlot.replaceChildren(radio('AI', 'AI 草擬，我勾選', h('span', null, drafts.map((d) => h('label', { style: 'display:block;margin:6px 0' }, d.box, ' ', d.text, h('span', { class: 'faint' }, `（不成立的訊號：${d.breaksIf}）`))))));
+          aiDraftSlot.querySelector('input[type=radio]').checked = true;
+        } catch (e) {
+          status.textContent = e.message;
+          ev.target.disabled = false;
+        }
+      } }, '請 AI 草擬前提'), h('span', { class: 'faint', style: 'margin-left:8px' }, 'AI 只草擬「現在的股價隱含了哪些前提」，不判斷該不該買。'));
       const confirm = async () => {
         try {
-          const done = await api.post('/ops/add-own', { ticker, premises: premises() });
+          const ps = premises();
+          const done = await api.post('/ops/add-own', { ticker, premises: ps });
+          // 你自己寫的：請 AI 把其中的出場條件改寫成可追蹤的格式（結果在持股頁，勾選後才開始監測；AI 層沒設定就略過）
+          if (mode.v === 'MINE') api.post('/ops/own-check', { ticker, lines: ps.map((x) => x.text) }).catch(() => {});
           toast(`${ticker} 已加入自選`);
           ctx.go(`#/n/${done.notifId}`);
         } catch (e) {
@@ -365,7 +387,7 @@ export function addOwnPage(ctx) {
           radio('MINE', '我自己寫', mine),
           drafts.length
             ? radio('AI', 'AI 草擬，我勾選', h('span', null, h('span', { class: 'fake' }, '示範用的假內容'), drafts.map((d) => h('label', { style: 'display:block;margin:6px 0' }, d.box, ' ', d.text, h('span', { class: 'faint' }, `（不成立的訊號：${d.breaksIf}）`)))))
-            : h('p', { class: 'small faint' }, 'AI 草擬前提要等 AI 層上線。'),
+            : aiDraftSlot,
           radio('DEFAULT', '用系統預設的前提', '沒有硬事件；營收年增率沒有連兩季轉負；稀釋 EPS 沒有連兩季年減；慢規則本身。'),
         ),
         msg2,

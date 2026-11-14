@@ -169,3 +169,18 @@ npx wrangler deploy
    `curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" "https://<網址>/admin/ai/review?ticker=MU"`
 2. 幾分鐘後看結果：`curl -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/ai/runs`，網站的「紀錄 → AI 紀錄」也看得到。
 3. 到 claude.ai 的用量頁記下這一次吃了多少 Max 用量（T10 要記錄）。
+
+## T11：其餘 AI 功能（每日事件掃描、硬事件、否決法庭、崩盤規則檢視等）
+
+部署時套用新的資料表（`0007`：申報事件、動能進場審查、總經儀表板）並部署：
+```
+npx wrangler d1 migrations apply stock-bot --remote
+npx wrangler deploy
+```
+不需要新的金鑰（FRED 用公開的 CSV、French 資料庫公開下載）。部署後可以先驗證規則段（不會觸發 AI）：
+1. F1 的規則偵測：`curl -H "Authorization: Bearer <ADMIN_TOKEN>" "https://<網址>/admin/ai/entry?ticker=MU"`（看 EDGAR、XBRL、價格都抓得到）。
+2. 總經儀表板：`curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/macro`（看 FRED 的 10 個序列從 Cloudflare 抓不抓得到）。
+3. 隔天看 `GET /admin/flow/status` 的 `ai.log`：每日掃描有沒有抓到 Nasdaq 新聞標題（本機連不上，要看 Cloudflare 能不能連）。
+
+雲端排程（T5）建好之後，月報前一天（當月倒數第二個交易日）會自動開：自選定期審查、動能新股進場審查（有命中才開法庭）、擬事件打分、崩盤規則檢視或每月評語；
+平常每天有新的 8-K 或新聞標題時開每日掃描（Haiku）。第一個月跑完後到 claude.ai 的用量頁看一下整體用量。

@@ -10,13 +10,16 @@ import { bearerOk, json, type Env, type Fetcher } from './app/env';
 import { getFlowState, ingest, pushPending, recentFlowRuns, runFlow, sendTestPush } from './app/flow';
 import { loadAccount, requiredTickers } from './app/ledgerStore';
 import { startOwnReview } from './app/ownAi';
+import { entryEvidence } from './app/momAi';
+import { buildSnapshot, saveSnapshot } from './app/crashAi';
+import { entryRuleVerdict } from './ai/momEntry';
 import { buildMarketView } from './data/marketView';
 import { lineConfigured } from './app/line';
 import { probeSummary, runProbe, saveProbe } from './app/probe';
 import { handleSite } from './app/site/api';
 import { loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 
 /** 每日流程（美股收盤後；UTC 23:30 = 美東 18:30 或 19:30 = 台灣早上 7:30）：抓資料、每日檢查、月報、LINE。 */
 export const INGEST_CRON = '30 23 * * 1-5';
@@ -111,6 +114,31 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
       const built = buildMarketView(series, session, loaded.acct.cfg.coreTicker);
       const run = await startOwnReview(env, fetcher, loaded.acct, built.view, built.axis, t, 'MANUAL', now);
       return json({ runId: run.runId, taskId: run.taskId, status: run.status, outcome: run.outcome, notes: run.packNotes, documents: run.pack.documents.map((d) => ({ source: d.source_id, title: d.title, chars: d.text.length })), dataQuality: run.pack.data_quality });
+    }
+    if (path === '/admin/ai/entry' && request.method === 'GET') {
+      // T11：對一檔股票跑 F1 的規則偵測（不開法庭、不寫任何東西），部署後驗證 EDGAR、XBRL 小檔、單日漲幅占比
+      const t = (url.searchParams.get('ticker') ?? '').toUpperCase();
+      const loaded = await loadAccount(env.DB);
+      if (!t || !loaded) return json({ error: '要有帳戶與 ?ticker=' }, 400);
+      const series = await loadSeries(env.DB, [...requiredTickers(loaded.acct), t]);
+      const session = series.get(loaded.acct.cfg.coreTicker)?.d.at(-1);
+      if (!session || !series.get(t)) return json({ error: `沒有 ${t} 的價格資料（只看股票池與持股）` }, 409);
+      const built = buildMarketView(series, session, loaded.acct.cfg.coreTicker);
+      const ev = await entryEvidence(env, fetcher, built.view, built.axis, t, loaded.acct.cfg.coreTicker, false);
+      return json({ ticker: t, asOf: session, rule: entryRuleVerdict(ev.hits), hits: ev.hits, notes: ev.notes, dataQuality: ev.dataQuality, docs: ev.docs.map((d) => ({ source: d.source_id, title: d.title, chars: d.text.length })) });
+    }
+    if (path === '/admin/macro' && request.method === 'POST') {
+      // T11：抓 FRED、算一次總經儀表板並存起來（每月的月報前一天會自動做）
+      const loaded = await loadAccount(env.DB);
+      if (!loaded) return json({ error: '還沒有帳戶' }, 400);
+      const ranking = await loadRanking(env.DB);
+      const series = await loadSeries(env.DB, [...requiredTickers(loaded.acct), ...(ranking?.order ?? [])]);
+      const session = series.get(loaded.acct.cfg.coreTicker)?.d.at(-1);
+      if (!session) return json({ error: '還沒有價格資料' }, 409);
+      const built = buildMarketView(series, session, loaded.acct.cfg.coreTicker);
+      const snap = await buildSnapshot(env.DB, fetcher, loaded.acct, built.view, session.slice(0, 7));
+      await saveSnapshot(env.DB, snap, now);
+      return json(snap);
     }
     if (path === '/admin/ai/runs') return json((await listRuns(env.DB, now, { limit: 30 })).map((r) => ({ runId: r.runId, fn: r.fn, ticker: r.ticker, asOf: r.asOf, status: r.status, outcome: r.outcome && { status: r.outcome.status, verdict: r.outcome.verdict, votes: r.outcome.votes, reason: r.outcome.reason } })));
     const task = /^\/admin\/ai\/task\/([0-9a-f]{32})$/.exec(path);

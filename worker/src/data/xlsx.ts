@@ -15,7 +15,8 @@ async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
 }
 
 /** 讀出 zip 裡指定路徑的檔案（文字）。找不到回傳 null。 */
-export async function unzipText(zip: Uint8Array, wanted: string[]): Promise<Record<string, string>> {
+export async function unzipText(zip: Uint8Array, wanted: string[] | ((name: string) => boolean)): Promise<Record<string, string>> {
+  const want = typeof wanted === 'function' ? wanted : (n: string) => wanted.includes(n);
   // End of central directory
   let eocd = -1;
   for (let i = zip.length - 22; i >= Math.max(0, zip.length - 22 - 65535); i--) {
@@ -38,7 +39,7 @@ export async function unzipText(zip: Uint8Array, wanted: string[]): Promise<Reco
     const commentLen = u16(zip, p + 32);
     const local = u32(zip, p + 42);
     const name = dec.decode(zip.subarray(p + 46, p + 46 + nameLen));
-    if (wanted.includes(name)) {
+    if (want(name)) {
       const lNameLen = u16(zip, local + 26);
       const lExtraLen = u16(zip, local + 28);
       const start = local + 30 + lNameLen + lExtraLen;

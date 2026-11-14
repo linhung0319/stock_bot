@@ -232,6 +232,9 @@ function reviewVote(pack: EvidencePack, verdict: string) {
   };
 }
 
+/** 某個功能的 AI 執行（新的在前）。 */
+const runsOf = async (db: D1Database, fn: string) => (await listRuns(db, new Date('2026-11-28T00:00:00Z'), { limit: 500 })).filter((r) => r.fn === fn);
+
 async function postResult(db: D1Database, runId: string, samples: unknown[], at: Date) {
   const run = (await getRun(db, runId))!;
   const task = await db.prepare('SELECT * FROM ai_tasks WHERE id = ?').bind(run.taskId).first();
@@ -301,12 +304,13 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       expect((await db.prepare("SELECT value FROM flow_state WHERE key = 'edgar:NVDA'").first<{ value: string }>())!.value).toBe(TENQ_FILING.acceptanceDateTime);
       expect(e.fired).toEqual([]);
       for (const d of ['2026-11-23', '2026-11-24', '2026-11-25']) await run(d);
-      expect(e.fired).toEqual([]);
+      // （T11 起每日掃描會因為新的新聞標題開執行；這裡只看自選的 F24）
+      expect(await runsOf(db, 'OWN_REVIEW')).toEqual([]);
 
       // 11-27（當月倒數第二個交易日）：開 F24
       await run('2026-11-27');
-      expect(e.fired).toHaveLength(1);
-      const [r1] = await listRuns(db, new Date('2026-11-28T00:00:00Z'));
+      expect(await runsOf(db, 'OWN_REVIEW')).toHaveLength(1);
+      const [r1] = await runsOf(db, 'OWN_REVIEW');
       expect(r1).toMatchObject({ fn: 'OWN_REVIEW', ticker: 'NVDA', asOf: '2026-11-27', status: 'PENDING' });
       expect(r1.pack.documents.map((d) => d.source_id)).toEqual(['price:NVDA', 'xbrl:NVDA', `edgar:${TENQ_FILING.accession}`, 'nasdaq-rss:NVDA']);
       expect(r1.pack.documents[2].title).toContain('MD&A');
@@ -341,10 +345,10 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
 
       // 12-01：公司送了一份 8-K（下修財測）→ 條件 C2 的確認來源 → 開 F25
       e.filings.push({ accession: '0001045810-26-000350', form: '8-K', items: '2.02,9.01', acceptanceDateTime: '2026-12-01T21:05:00.000Z', filingDate: '2026-12-01', primaryDocument: 'nvda-8k.htm', html: EIGHTK_GUIDE });
-      const firedBefore = e.fired.length;
       await run('2026-12-01');
       // F25（事件條件）＋ F24（新財報後的審查）
-      expect(e.fired.length - firedBefore).toBe(2);
+      expect(await runsOf(db, 'OWN_CONDITION')).toHaveLength(1);
+      expect((await runsOf(db, 'OWN_REVIEW')).filter((r) => r.asOf === '2026-12-01')).toHaveLength(1);
       const runs = await listRuns(db, new Date('2026-12-02T00:00:00Z'));
       const f25 = runs.find((r) => r.fn === 'OWN_CONDITION')!;
       expect(f25.pack.documents.map((d) => d.source_id)).toEqual(['edgar:0001045810-26-000350']);
