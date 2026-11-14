@@ -204,3 +204,12 @@ npx wrangler deploy
 3. **Messaging API** 分頁 → Webhook settings：Webhook URL 填 `https://stock-bot.linhung0319.workers.dev/line/webhook`、打開 **Use webhook**、按 **Verify**（要回 Success；部署之前按會是 404）。Webhook redelivery 不用開。
 4. LINE Official Account Manager → 設定 → 回應設定：聊天關閉、自動回應訊息關閉、Webhook 開啟（加入好友的歡迎訊息可關可不關）。
 5. 在 LINE 傳「狀態」：應該馬上收到帳戶與每日流程的狀況。別人傳的、群組裡的訊息不會回。
+
+## T14：復原上一份快照
+
+部署時套用新的資料表（`0009`，快照送出前的帳戶暫存）並部署：
+
+```
+npx wrangler d1 migrations apply stock-bot --remote
+npx wrangler deploy
+```

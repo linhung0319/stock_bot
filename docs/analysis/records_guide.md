@@ -21,7 +21,7 @@ uv run python scripts/export_records.py --out records/pre-launch --full   # T17 
 Worker 端是 `GET /admin/export`（`ADMIN_TOKEN` 的 Bearer；`worker/src/app/export.ts`）：
 - 不帶參數：Worker 版本、上線日、每張表的拉法、列數、最後 rowid、合併用的鍵、不匯出的欄位。
 - `?table=<表>&after=<rowid>`：rowid 大於 `after` 的列，照 rowid 排；一頁最多該表的列數上限（`price_series` 40 列）或約 4 MB，回 `next_after` 與 `done`。JSON 欄位已經解析。
-- 不匯出的表（`probe_runs`、`demo_state`）與不認得的表回 400。
+- 不匯出的表（`probe_runs`、`demo_state`、`snapshot_undo`）與不認得的表回 400。
 
 ## 2. 資料夾結構
 
@@ -89,6 +89,7 @@ records/                         ← .gitignore，不進 repo
 ### 不傳
 
 - `probe_runs`（T4 的實測）、`demo_state`（示範模式）：和真實帳戶無關。
+- `snapshot_undo`：最後一份快照送出前的帳戶，只用來復原（2026-11-15），復原過的快照不會留在任何表裡。
 - 金鑰、LINE token：不在 D1，也不會匯出。
 
 ## 4. 表之間怎麼接

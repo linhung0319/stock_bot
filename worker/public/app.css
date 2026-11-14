@@ -595,6 +595,10 @@ select option { background: #14162a; }
 .snap .num-in { width: 7.5em; }
 .snap tr.diff td { background: rgba(255, 192, 33, 0.06); }
 .snap .delta { font-size: 12.5px; color: var(--warn); white-space: nowrap; }
+/* 填快照：每一桶和帳戶頁一樣有自己的顏色 */
+.snap-group > .glass { border-top: 3px solid var(--b); }
+.snap-group > .group-name { margin-top: 6px; }
+.snap .cash-row td { background: rgba(255, 255, 255, 0.025); }
 .check-row { display: flex; gap: 10px; align-items: baseline; margin: 18px 0 6px; }
 .check-row input { width: 18px; height: 18px; accent-color: #5b6bff; translate: 0 3px; }
 @media (max-width: 640px) { .snap .wide { display: none; } }

@@ -597,6 +597,21 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect((await web.state()).todo).toEqual([]);
   });
 
+  it('示範模式也可以復原上一份快照（T14）', async () => {
+    simStart();
+    const before = (await demoAcct()).acct;
+    const f = await web.get<SnapshotForm>('/snapshot/form');
+    const lots = { own: Object.fromEntries(f.buckets.own.map((x) => [x.ticker, x.expected])), mom: Object.fromEntries(f.buckets.mom.map((x) => [x.ticker, x.expected])), core: Object.fromEntries(f.buckets.core.map((x) => [x.ticker, x.expected])) };
+    lots.own.MU = 0; // 不小心把自選填成 0 → 移出自選
+    const r = await web.post<{ removedOwn: string[] }>('/snapshot', { lots, cash: f.cashBook });
+    expect(r.removedOwn).toEqual(['MU']);
+    expect((await demoAcct()).acct.own.MU).toBeUndefined();
+    expect((await web.state()).undo).not.toBeNull();
+    await web.post('/snapshot/undo');
+    expect((await demoAcct()).acct).toEqual(before); // 前提、標準比重、規則狀態都回來
+    expect((await web.state()).undo).toBeNull();
+  });
+
   it('輸入檢查：金額、代號、股數不對都擋在外面，帳戶不變', async () => {
     const sim = simStart();
     for (const [path, b] of [
@@ -874,6 +889,43 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     const r2 = await web.post<{ removedOwn: string[] }>('/snapshot', { lots: { ...l2, own: { ...l2.own, ORCL: 0 } }, cash: f2.cashBook + 2 * pOR });
     expect(r2.removedOwn).toEqual(['ORCL']);
     expect((await loadAccount(db))!.acct.own.ORCL).toBeUndefined();
+  });
+
+  it('復原上一份快照（T14）：帳戶、通知、帳本事件、影子、快照原文一起退回；之後有其他操作就不能復原', async () => {
+    const count = async (t: string) => (await db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).first<{ n: number }>())!.n;
+    const lotsOf = (f: SnapshotForm) => ({ own: Object.fromEntries(f.buckets.own.map((x) => [x.ticker, x.expected])), mom: Object.fromEntries(f.buckets.mom.map((x) => [x.ticker, x.expected])), core: Object.fromEntries(f.buckets.core.map((x) => [x.ticker, x.expected])) });
+    // 帳戶頁的核心：VOO、SGOV（0 股也列）、現金三列
+    const core = (await web.state()).account!.holdings.filter((x) => x.bucket === 'core').map((x) => x.ticker);
+    expect(core).toEqual(['VOO', 'SGOV', '現金']);
+
+    const w = await web.post<{ notifId: number }>('/ops/deposit', { amount: 5000 });
+    await web.post(`/notif/${w.notifId}/respond`, { mode: 'DO' });
+    const mid = (await loadAccount(db))!;
+    const n0 = { ev: await count('ledger_events'), sh: await count('shadow_records'), snap: await count('snapshots') };
+    const form = await web.get<SnapshotForm>('/snapshot/form');
+    const lots = lotsOf(form);
+    lots.core.VOO -= 1; // 外加一筆清單外的賣出，現金也故意差 7 元
+    const r = await web.post<{ completed: number[]; undoable: boolean }>('/snapshot', { lots, cash: form.cashExpected + m.close.VOO[upTo] + 7, note: '填錯的' });
+    expect(r).toMatchObject({ completed: [w.notifId], undoable: true });
+    expect(await count('ledger_events')).toBeGreaterThan(n0.ev);
+    expect((await web.state()).undo).toEqual({ date: '2026-12-09', at: NOW.toISOString() });
+    await web.post('/snapshot/undo');
+    const back = (await loadAccount(db))!;
+    expect(back.rev).toBe(mid.rev + 2);
+    expect(back.acct.lots).toEqual(mid.acct.lots);
+    expect(back.acct.cash).toBe(mid.acct.cash);
+    expect(back.acct.notifs).toEqual(mid.acct.notifs); // 入金清單回到「等成交」
+    expect({ ev: await count('ledger_events'), sh: await count('shadow_records'), snap: await count('snapshots') }).toEqual(n0);
+    expect((await db.prepare('SELECT cause FROM account_history ORDER BY rev DESC LIMIT 1').first<{ cause: string }>())!.cause).toContain('復原快照');
+    expect((await web.state()).undo).toBeNull();
+    expect((await web.fail('/snapshot/undo')).status).toBe(409);
+    // 重填正確的；之後做了別的操作 → 不能復原
+    const r2 = await web.post<{ completed: number[] }>('/snapshot', { lots: lotsOf(form), cash: form.cashExpected });
+    expect(r2.completed).toEqual([w.notifId]);
+    expect((await web.state()).undo).not.toBeNull();
+    await web.post('/ops/std-weight', { ticker: 'MU', stdWeight: 0.05 });
+    expect((await web.state()).undo).toBeNull();
+    expect((await web.fail('/snapshot/undo')).error).toContain('不能復原');
   });
 
   it('價格不是最新的：畫面上有警告', async () => {

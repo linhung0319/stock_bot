@@ -91,3 +91,70 @@ export function requiredTickers(acct: Account | null, defaults: { core: string; 
   set.delete(CASH);
   return [...set];
 }
+
+// ---------------------------------------------------------------- 復原上一份快照（T14，設計 §10 第 39 點）
+
+export interface SnapshotUndoInfo {
+  rev: number;
+  date: string;
+  at: string;
+}
+
+/**
+ * 快照存檔後呼叫：留下送出前的帳戶，好讓使用者復原。只留最後一份（新的蓋掉舊的）。
+ * 通知只存這次有變的（送出前的內容）與這次新產生的編號，避免整份通知太大。
+ */
+export async function saveSnapshotUndo(db: D1Database, rev: number, before: Account, after: Account, date: string, now: Date): Promise<void> {
+  const prev = new Map(before.notifs.map((n) => [n.id, JSON.stringify(n)]));
+  const changed: Notif[] = [];
+  const created: number[] = [];
+  for (const n of after.notifs) {
+    const p = prev.get(n.id);
+    if (p === undefined) created.push(n.id);
+    else if (p !== JSON.stringify(n)) changed.push(JSON.parse(p) as Notif);
+  }
+  const { notifs: _n, events: _e, shadow: _s, ...state } = before;
+  await db
+    .prepare("INSERT INTO snapshot_undo (mode, rev, date, at, state, notifs) VALUES ('real', ?, ?, ?, ?, ?) ON CONFLICT(mode) DO UPDATE SET rev = excluded.rev, date = excluded.date, at = excluded.at, state = excluded.state, notifs = excluded.notifs")
+    .bind(rev, date, now.toISOString(), JSON.stringify(state), JSON.stringify({ changed, created }))
+    .run();
+}
+
+/** 現在可以復原的快照（帳戶版本還停在那份快照存檔後）；沒有就是 null。 */
+export async function snapshotUndoInfo(db: D1Database, currentRev: number | null): Promise<SnapshotUndoInfo | null> {
+  const row = await db.prepare("SELECT rev, date, at FROM snapshot_undo WHERE mode = 'real'").first<SnapshotUndoInfo>();
+  return row && currentRev !== null && row.rev === currentRev ? row : null;
+}
+
+/**
+ * 復原：帳戶回到快照送出前（狀態、通知），刪掉那次存檔寫進去的帳本事件、影子紀錄、快照原文。
+ * 帳戶版本已經不是那份快照存檔後的（之後有每日流程或其他操作）就拒絕。整批是一筆交易。
+ */
+export async function undoSnapshot(db: D1Database, now: Date): Promise<{ ok: true; date: string } | { ok: false; reason: string }> {
+  const row = await db.prepare("SELECT rev, date, state, notifs FROM snapshot_undo WHERE mode = 'real'").first<{ rev: number; date: string; state: string; notifs: string }>();
+  if (!row) return { ok: false, reason: '沒有可以復原的快照。' };
+  const cur = await db.prepare('SELECT rev FROM account_state WHERE id = 1').first<{ rev: number }>();
+  if (!cur || cur.rev !== row.rev) return { ok: false, reason: '這份快照之後帳戶已經有其他變動（每日流程或其他操作），不能復原了。請再填一次快照修正。' };
+  const at = now.toISOString();
+  const { changed, created } = JSON.parse(row.notifs) as { changed: Notif[]; created: number[] };
+  const upsert = db.prepare('INSERT INTO notifications (id, kind, date, status, updated_at, body) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, status = excluded.status, updated_at = excluded.updated_at, body = excluded.body');
+  const stmts: D1PreparedStatement[] = [
+    // 版本加 1（history 的主鍵擋住同時發生的存檔）
+    db.prepare('INSERT INTO account_history (rev, at, cause, state) VALUES (?, ?, ?, ?)').bind(row.rev + 1, at, `復原快照（${row.date}，版本 ${row.rev}）`, row.state),
+    db.prepare('UPDATE account_state SET rev = ?, updated_at = ?, state = ? WHERE id = 1 AND rev = ?').bind(row.rev + 1, at, row.state, row.rev),
+    ...changed.map((n) => upsert.bind(n.id, n.kind, n.date, n.status, at, JSON.stringify(n))),
+    ...created.map((id) => db.prepare('DELETE FROM notifications WHERE id = ?').bind(id)),
+    db.prepare('DELETE FROM ledger_events WHERE rev = ?').bind(row.rev),
+    db.prepare('DELETE FROM shadow_records WHERE rev = ?').bind(row.rev),
+    db.prepare('DELETE FROM snapshots WHERE rev = ?').bind(row.rev),
+    db.prepare("DELETE FROM snapshot_undo WHERE mode = 'real'"),
+  ];
+  try {
+    await db.batch(stmts);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/UNIQUE|constraint/i.test(msg)) return { ok: false, reason: '帳戶剛好被另一個操作更新，不能復原了。請重新整理。' };
+    throw e;
+  }
+  return { ok: true, date: row.date };
+}

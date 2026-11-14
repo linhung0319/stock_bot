@@ -287,7 +287,7 @@ describe('④ /admin/export', () => {
       expect(m.tables.rankings).toMatchObject({ mode: 'append', key: 'session' });
       expect(Object.keys(m.tables)).not.toContain('probe_runs');
       expect(Object.keys(m.tables)).not.toContain('demo_state');
-      expect(m.not_exported).toEqual(['probe_runs', 'demo_state']);
+      expect(m.not_exported).toEqual(['probe_runs', 'demo_state', 'snapshot_undo']);
       // 每張 migration 建的表都要決定匯不匯出
       const all = (await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%'").all<{ name: string }>()).results.map((r) => r.name);
       expect(all.filter((t) => !(t in m.tables) && !m.not_exported.includes(t))).toEqual([]);

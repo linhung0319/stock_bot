@@ -445,7 +445,9 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     // 現金可以是負的（融資帳戶，或示範裡買超過現金）；畫面上會提醒
     const note = text(b.note, '這次自己交易的原因', 300, false);
     const snap: Snapshot = { shares, cash: num(b.cash, '現金', -1e10, 1e10), ...(lots ? { lots } : {}), ...(note ? { note } : {}), ...(Object.keys(why).length ? { why } : {}) };
+    let before: Account | null = null;
     const r = await mutate(backend, '填快照', Object.keys(shares), (d) => {
+      before = d.acct;
       const noPrice = Object.keys(shares).filter((t) => !d.view.close[t] || !Number.isFinite(d.view.close[t][d.view.i]));
       if (noPrice.length) throw new SiteError(422, `抓不到 ${noPrice.join('、')} 在 ${d.view.date} 的收盤價。請確認代號有沒有打錯。`);
       const wasBlocked = d.acct.monthlyBlocked;
@@ -465,7 +467,14 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
         result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, bigCash: out.bigCash, removedOwn: out.removedOwn, monthlyId },
       };
     });
-    return json({ ok: true, ...r.result });
+    // 送出前的帳戶留下來，填錯了可以復原（只留最後一份；之後帳戶有變動就不能復原）
+    if (before) await backend.saveUndo(before, r.after.acct, r.after.view.date);
+    return json({ ok: true, ...r.result, undoable: true });
+  }
+  if (rest === 'snapshot/undo' && post) {
+    const out = await backend.undoSnapshot();
+    if (!out.ok) throw new SiteError(409, out.reason);
+    return json({ ok: true, date: out.date });
   }
 
   // ---- 持股頁：改標準比重、加前提（2026-11-15 起取代新增自選頁的這兩項）

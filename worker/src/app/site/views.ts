@@ -608,8 +608,10 @@ function crashMeter(acct: Account, rel: number): Meter | null {
 function coreHoldings(d: Ready, total: number): HoldingView[] {
   const { acct, view } = d;
   const out: HoldingView[] = [];
-  for (const [t, sh] of Object.entries(acct.lots.core)) {
-    if (!sh) continue;
+  // 核心 ETF、短債、現金三列一直都在（2026-11-15 使用者：帳戶也要看得到短債）
+  for (const t of new Set([acct.cfg.coreTicker, acct.bondTicker, ...Object.keys(acct.lots.core)])) {
+    const sh = acct.lots.core[t] ?? 0;
+    if (!sh && t !== acct.cfg.coreTicker && t !== acct.bondTicker) continue;
     const px = priceAt(view, t);
     const value = px === null ? 0 : sh * px;
     if (t === acct.cfg.coreTicker) {
@@ -635,7 +637,7 @@ function coreHoldings(d: Ready, total: number): HoldingView[] {
       out.push({ bucket: 'core', ticker: t, shares: sh, price: px, value, pct: value / total, state: '短債', detail: '崩盤規則啟動時，核心的一半放在這裡', tone: 'muted', gauge: null, meter: null, target: null });
     }
   }
-  if (Math.abs(acct.cash) >= 0.005) out.push({ bucket: 'core', ticker: '現金', shares: 0, price: null, value: acct.cash, pct: acct.cash / total, state: '帳上現金', detail: '股利與交易剩下的零頭；月報時交給核心', tone: 'muted', gauge: null, meter: null, target: null });
+  out.push({ bucket: 'core', ticker: '現金', shares: 0, price: null, value: acct.cash, pct: acct.cash / total, state: '帳上現金', detail: '股利與交易剩下的零頭；月報時交給核心', tone: 'muted', gauge: null, meter: null, target: null });
   return out;
 }
 
@@ -740,10 +742,12 @@ export interface StateView {
   recent: HistoryRow[];
   /** 史萊姆在待辦頁、帳戶頁說的話。 */
   bubble: { todo: Bubble; account: Bubble | null };
+  /** 可以復原的快照（設計 §10 第 39 點）。 */
+  undo: { date: string; at: string } | null;
 }
 
 export function stateView(d: SiteData): StateView {
-  const base = { mode: d.mode, demo: d.demo ?? null, today: d.today, priceDate: d.view?.date ?? null, rankDate: d.rankSession, warnings: d.warnings };
+  const base = { mode: d.mode, demo: d.demo ?? null, today: d.today, priceDate: d.view?.date ?? null, rankDate: d.rankSession, warnings: d.warnings, undo: d.undoable ? { date: d.undoable.date, at: d.undoable.at } : null };
   if (!d.acct || !d.view) return { ...base, hasAccount: !!d.acct, account: null, todo: [], recent: [], bubble: { todo: { k: '開始', say: [d.acct ? '帳戶在，但還沒有可用的價格資料。' : '還沒有帳戶。填一次券商裡現在的持股，我就從那裡開始記帳。'], mood: 'idle' }, account: null } };
   const r = d as Ready;
   const order = { ANSWER: 0, TRADE: 1, DECIDE: 2, INFO: 3 };

@@ -14,7 +14,7 @@ import { advanceDemo, demoAtEnd, demoFill, demoFilledSnapshot, demoMarket, demoV
 import { ranksAt } from '../../demo/market';
 import type { Env } from '../env';
 import { getRun, listRuns, type AiRun } from '../aiRuns';
-import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, saveAccount, saveSnapshot, shadowTickers, type LoadedAccount } from '../ledgerStore';
+import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, saveAccount, saveSnapshot, saveSnapshotUndo, shadowTickers, snapshotUndoInfo, undoSnapshot, type LoadedAccount, type SnapshotUndoInfo } from '../ledgerStore';
 import { noteOfRun } from './aiViews';
 import { loadSnapshot, type MacroSnapshot } from '../crashAi';
 import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
@@ -53,6 +53,8 @@ export interface SiteData {
   demo?: DemoInfo;
   /** 示範：照清單以開盤價成交後的數字（幫使用者填快照用）。 */
   autofill?: (extra?: Record<string, number>, exact?: boolean) => Snapshot;
+  /** 可以復原的快照（最後一份、之後帳戶還沒有變動）。 */
+  undoable?: SnapshotUndoInfo | null;
 }
 
 export interface SiteBackend {
@@ -64,6 +66,9 @@ export interface SiteBackend {
   load(extra?: string[]): Promise<SiteData>;
   save(acct: Account, cause: string): Promise<void>;
   recordSnapshot(date: string, snap: Snapshot): Promise<void>;
+  /** 快照存檔後：留下送出前的帳戶，好讓使用者復原（設計 §10 第 39 點）。 */
+  saveUndo(before: Account, after: Account, date: string): Promise<void>;
+  undoSnapshot(): Promise<{ ok: true; date: string } | { ok: false; reason: string }>;
   /** AI 層的網站操作（只有真實模式有）。 */
   ai?: SiteAi;
 }
@@ -141,7 +146,8 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const [events, shadow] = acct ? await Promise.all([loadEvents(env.DB, 300), loadShadow(env.DB, 300)]) : [[], []];
       // AI 紀錄 → 建議單上的 AI 說明
       const aiNotes = (await listRuns(env.DB, now, { limit: 200 })).map(noteOfRun).filter((n): n is AiNote => n !== null);
-      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), warnings };
+      const undoable = acct ? await snapshotUndoInfo(env.DB, loaded?.rev ?? null) : null;
+      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), warnings, undoable };
     },
     async save(acct, cause) {
       rev = await saveAccount(env.DB, acct, loaded, cause, now);
@@ -151,6 +157,10 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
     async recordSnapshot(date, snap) {
       await saveSnapshot(env.DB, date, snap, now, rev);
     },
+    async saveUndo(before, after, date) {
+      if (rev !== null) await saveSnapshotUndo(env.DB, rev, before, after, date, now);
+    },
+    undoSnapshot: () => undoSnapshot(env.DB, now),
     ai: {
       async ownCheck(ticker, lines) {
         const d = await self.load([ticker]);
@@ -218,6 +228,10 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
     st = next;
     rev += 1;
   };
+  const demoUndoable = async (): Promise<SnapshotUndoInfo | null> => {
+    const row = await env.DB.prepare("SELECT rev, date, at FROM snapshot_undo WHERE mode = 'demo'").first<SnapshotUndoInfo>();
+    return row && row.rev === rev ? row : null;
+  };
   const info = (s: DemoState): DemoInfo => {
     const sc = DEMO_SCRIPTS[s.scenario];
     return { scenario: s.scenario, title: sc.title, summary: sc.summary, tips: sc.tips, atEnd: demoAtEnd(s), scenarios: DEMO_IDS.map((id) => ({ id, title: DEMO_SCRIPTS[id].title })) };
@@ -248,6 +262,7 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
         today: m.days[s.d],
         warnings: [],
         demo: info(s),
+        undoable: await demoUndoable(),
         autofill: (extra, exact) => demoFilledSnapshot({ ...s, acct: st!.acct }, extra, exact),
       };
     },
@@ -257,6 +272,18 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
     },
     async recordSnapshot() {
       // 示範模式不另外留快照原文
+    },
+    async saveUndo(before, _after, date) {
+      await env.DB.prepare("INSERT INTO snapshot_undo (mode, rev, date, at, state, notifs) VALUES ('demo', ?, ?, ?, ?, '{}') ON CONFLICT(mode) DO UPDATE SET rev = excluded.rev, date = excluded.date, at = excluded.at, state = excluded.state").bind(rev, date, now.toISOString(), JSON.stringify(before)).run();
+    },
+    async undoSnapshot() {
+      await read();
+      const row = await env.DB.prepare("SELECT rev, date, state FROM snapshot_undo WHERE mode = 'demo'").first<{ rev: number; date: string; state: string }>();
+      if (!row || !st) return { ok: false as const, reason: '沒有可以復原的快照。' };
+      if (row.rev !== rev) return { ok: false as const, reason: '這份快照之後示範資料已經有其他變動，不能復原了。' };
+      await write({ ...st, acct: JSON.parse(row.state) as Account });
+      await env.DB.prepare("DELETE FROM snapshot_undo WHERE mode = 'demo'").run();
+      return { ok: true as const, date: row.date };
     },
     runs: async () => [],
     run: async () => null,

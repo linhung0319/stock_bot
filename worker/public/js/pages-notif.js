@@ -149,6 +149,9 @@ export async function homePage(ctx, opt = {}) {
       bubble: st.bubble.todo,
     },
     pane: [
+      st.undo
+        ? glass('pad', h('p', { class: 'small', style: 'margin:0 0 10px' }, `剛送出的快照（${day(st.undo.date)}）填錯了，可以復原：帳戶回到送出之前，再重填。今晚收盤後的每日流程跑過、或做了其他操作之後就不能復原。`), undoButton(ctx, '復原這份快照'))
+        : null,
       h(
         'div',
         { class: 'todo-area' },
@@ -218,6 +221,20 @@ const reopenAndGo = (ctx, id) => async () => {
     ctx.refresh();
   }
 };
+
+/** 復原最後一份快照：帳戶回到送出之前，再重填（設計 §10 第 39 點）。 */
+export function undoButton(ctx, label) {
+  return actionButton(label, '', async () => {
+    try {
+      const r = await api.post('/snapshot/undo', {});
+      toast(`已復原 ${day(r.date)} 的快照，帳戶回到送出之前`);
+      ctx.go('#/snapshot');
+    } catch (e) {
+      toast(e.message);
+      ctx.refresh();
+    }
+  });
+}
 
 // 建議單預設收合：收合時看得到「做什麼」、一句話的「為什麼」和目前的決定；點開才是完整的理由與選項。
 // 只有一項的清單直接打開。開過、關過的會記住，同一頁重畫時不會彈回去。
@@ -622,7 +639,7 @@ export async function snapshotPage(ctx) {
   const HINT = {
     own: '你自己選的股票。清單以外自己買的放這裡（新代號會加進自選、可以寫為什麼買）；股數改成 0 就移出自選。',
     mom: '照動能清單買的。清單以外的買進，只有那檔在這個月的動能名單上、那一格還沒買足時才能放這裡。',
-    core: `只放 ${f.coreTickers.join(' 和 ')}。`,
+    core: `${f.coreTickers.join('、')} 和現金。現金照券商畫面填就好，不用算成交價；和估計的差額會記成其他現金變動，不會問你。入金、出金請用「我要…」登記。`,
   };
   /** 每一列：{ bucket, ticker(), input, expected, why? } */
   const rows = [];
@@ -630,7 +647,7 @@ export async function snapshotPage(ctx) {
     const t = el.value.replace(/[,\s$]/g, '');
     return t === '' ? NaN : Number(t);
   };
-  const cash = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: `估計約 ${f.cashExpected.toLocaleString('en-US')}`, 'aria-label': '券商顯示的現金' });
+  const cash = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: `約 ${Math.round(f.cashExpected).toLocaleString('en-US')}`, 'aria-label': '券商顯示的現金' });
   const note = h('input', { type: 'text', maxlength: 300, placeholder: '例如：財報不如預期，先賣掉一半', 'aria-label': '這次自己交易的原因' });
   const summary = h('ul', { class: 'sum-list' });
   let lastSaid = '';
@@ -695,16 +712,53 @@ export async function snapshotPage(ctx) {
   };
   for (const b of ['own', 'mom', 'core']) f.buckets[b].forEach((r) => addRow(b, r));
   for (const t of f.coreTickers) if (!f.buckets.core.some((r) => r.ticker === t)) addRow('core', { ticker: t, book: 0, listed: 0, expected: 0 });
+  const cashDelta = Math.round((f.cashExpected - f.cashBook) * 100) / 100;
+  tbodies.core.append(
+    h(
+      'tr',
+      { class: 'cash-row' },
+      h('td', null, h('span', { class: 'tk' }, '現金'), f.withdraw ? h('div', { class: 'small faint' }, `清單做完要轉出 ${money(f.withdraw)}，填轉出之後的`) : null),
+      h('td', { class: 'r num wide' }, money(f.cashBook, 2)),
+      h('td', { class: 'r num wide' }, cashDelta ? `約 ${cashDelta > 0 ? '+' : '−'}${money(Math.abs(cashDelta))}` : ''),
+      h('td', { class: 'r' }, cash),
+      h('td', null),
+    ),
+  );
   // 改版前留下的未分類持股：先放進自選那一桶，你可以改放動能
   for (const u of f.unc) addRow('own', { ticker: u.ticker, book: 0, listed: 0, expected: u.shares }, true);
   cash.addEventListener('input', recount);
 
+  const fill = f.autofill
+    ? h(
+        'button',
+        {
+          class: 'btn',
+          type: 'button',
+          onclick: () => {
+            for (const r of rows) {
+              r.input.value = String(r.expected);
+              r.input.dispatchEvent(new Event('input'));
+            }
+            cash.value = String(f.autofill.cash);
+            recount();
+            toast('已填入「照清單、以開盤價成交」後的數字');
+          },
+        },
+        '示範：幫我填成交後的數字',
+      )
+    : null;
+  // 和帳戶頁一樣：每一桶有自己的記號與顏色
   const section = (b) =>
-    glass(
+    h(
+      'section',
+      { class: 'snap-group', 'data-b': b },
+      h('h2', { class: 'group-name', 'data-b': b }, h('i', { class: 'g' }), NAMES[b]),
+      h('p', { class: 'small group-who' }, HINT[b]),
+      glass(
       '',
-      h('div', { class: 'pad', style: 'padding-bottom:0' }, h('h2', { class: 'panel-h' }, NAMES[b]), h('p', { class: 'small dim', style: 'margin:4px 0 0' }, HINT[b])),
-      h('div', { class: 'scroll-x' }, h('table', { class: 'snap' }, h('thead', null, h('tr', null, h('th', null, '代號'), h('th', { class: 'r wide' }, '帳本'), h('th', { class: 'r wide' }, '清單'), h('th', { class: 'r' }, '券商現在的股數'), h('th', null, ''))), tbodies[b])),
-      b === 'core' ? null : h('div', { class: 'pad btn-row' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow(b, { ticker: '', book: 0, listed: 0, expected: 0 }, true) }, b === 'own' ? '加一檔到自選' : '加一檔到動能')),
+      h('div', { class: 'scroll-x' }, h('table', { class: 'snap' }, h('thead', null, h('tr', null, h('th', null, '代號'), h('th', { class: 'r wide' }, '帳本'), h('th', { class: 'r wide' }, '清單'), h('th', { class: 'r' }, b === 'core' ? '券商現在的股數／現金' : '券商現在的股數'), h('th', null, ''))), tbodies[b])),
+      b === 'core' ? (fill ? h('div', { class: 'pad btn-row' }, fill) : null) : h('div', { class: 'pad btn-row' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow(b, { ticker: '', book: 0, listed: 0, expected: 0 }, true) }, b === 'own' ? '加一檔到自選' : '加一檔到動能')),
+      ),
     );
 
   const msg = h('div');
@@ -750,31 +804,14 @@ export async function snapshotPage(ctx) {
           r.cashOther ? h('p', { class: 'small dim' }, `現金和估計的成交金額差 ${r.cashOther > 0 ? '+' : '−'}${money(Math.abs(r.cashOther), 2)}，記成其他現金變動（成交價、手續費、股利）。`) : null,
           r.bigCash ? h('p', { class: 'small', style: 'color:var(--warn)' }, '這個差額超過總資產 2%。如果其實是入金或出金，請到「我要…」登記，單位淨值才不會把它算成報酬。') : null,
           r.created.map((n) => h('p', null, n.title)),
+          h('div', { class: 'btn-row', style: 'margin-top:12px' }, undoButton(ctx, '填錯了？復原這份快照')),
+          h('p', { class: 'small faint' }, '復原會讓帳戶回到送出之前，再重填一次。今晚收盤後的每日流程跑過、或做了其他操作之後就不能復原。'),
         ),
       );
     } catch (e) {
       msg.replaceChildren(errBox(e));
     }
   });
-  const fill = f.autofill
-    ? h(
-        'button',
-        {
-          class: 'btn',
-          type: 'button',
-          onclick: () => {
-            for (const r of rows) {
-              r.input.value = String(r.expected);
-              r.input.dispatchEvent(new Event('input'));
-            }
-            cash.value = String(f.autofill.cash);
-            recount();
-            toast('已填入「照清單、以開盤價成交」後的數字');
-          },
-        },
-        '示範：幫我填成交後的數字',
-      )
-    : null;
   const form = h(
     'div',
     { class: 'stackv' },
@@ -785,12 +822,6 @@ export async function snapshotPage(ctx) {
     section('own'),
     section('mom'),
     section('core'),
-    glass(
-      'pad',
-      h('label', { class: 'field', style: 'margin:0' }, h('span', null, '券商現在顯示的現金'), h('div', { style: 'max-width:14em' }, cash), h('small', null, `帳本上是 ${money(f.cashBook, 2)}`, f.withdraw ? `；清單做完要轉出 ${money(f.withdraw)}，請填轉出之後的現金` : '', '。照券商畫面填就好，不用算成交價；和估計的差額會記成其他現金變動，不會問你。入金、出金請用「我要…」登記。')),
-      h('label', { class: 'field', style: 'margin:14px 0 0' }, h('span', null, '這次自己交易的原因（選填）'), note, h('small', null, '有清單以外的買賣（例如自己緊急賣出）時寫一句，會記在帳本那幾筆變動上。')),
-      fill ? h('div', { class: 'btn-row', style: 'margin-top:12px' }, fill) : null,
-    ),
     msg,
     f.lists.length ? h('p', { class: 'small faint' }, '送出之前都可以回上一步。送出之後帳本就照這份快照更新；填錯了再填一次快照就好。') : null,
   );
@@ -802,7 +833,7 @@ export async function snapshotPage(ctx) {
     view: 'flow',
     banner: { back: { href: '#/', label: '待辦與紀錄' }, title: '填快照', sub: '照券商現在的畫面，填每一桶每一檔的股數和現金。這份快照就是帳本新的起點。', steps, bubble: first },
     pane: [form, out],
-    rail: consoleBox('送出快照', summary, foot, '快照'),
+    rail: consoleBox('送出快照', h('div', null, summary, h('label', { class: 'field', style: 'margin:16px 0 0' }, h('span', null, '這次自己交易的原因（選填）'), note, h('small', null, '有清單以外的買賣時寫一句，記在帳本那幾筆變動上。'))), foot, '快照'),
     cta: h('div', { class: 'sticky-cta' }, h('div', { class: 'sum' }, '填好股數與現金'), h('button', { class: 'btn primary', type: 'button', onclick: () => send.click() }, '送出快照')),
   });
 }

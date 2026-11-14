@@ -47,7 +47,7 @@ export const EXPORT_TABLES: Record<string, ExportTable> = {
   flow_state: { mode: 'replace', json: ['value'], pageRows: 500 },
 };
 
-export const NOT_EXPORTED = ['probe_runs', 'demo_state'];
+export const NOT_EXPORTED = ['probe_runs', 'demo_state', 'snapshot_undo'];
 /** 一頁大約多大（JSON 位元組）。至少回一列，所以單列比這大時那一頁會超過。 */
 export const PAGE_BYTES = 4 * 1024 * 1024;
 export const LAUNCH_DATE_KEY = 'launch_date';
