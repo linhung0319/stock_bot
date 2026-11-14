@@ -44,6 +44,15 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - 資料表在 `migrations/0002_data_and_ledger.sql`；改了 migration 要 `npx wrangler d1 migrations apply stock-bot --remote` 再部署。
 - 當天其實休市（臨時休市）而被告警「價格不是最新的」：在 D1 的 `calendar_overrides` 補一筆（`open = 0`）。
 
+## 每日流程與 LINE（T7）
+
+- 程式：`src/app/flow.ts`（抓資料 → 每日檢查 → 月底出月報 → 寫理由 → 存檔 → 推播；漏掉的交易日照順序補做）、`src/app/line.ts`（LINE 的文字與送出）。
+- 排程：UTC 23:30 第一次、UTC 01:30 再試一次（沒跑完就重跑，還是不行就推告警）。同一個交易日只會處理一次。
+- 手動：`POST /admin/flow`；狀態：`GET /admin/flow/status`；測試推播：`POST /admin/line/test`、`POST /admin/alert/test`。
+- 用真實資料在本機預覽 LINE 會收到的文字（含一份假裝今天是月底的月報，不會真的送）：`npx tsx scripts/flow-local.ts`。
+- 新帳戶的依波動度減碼起始歷史：`src/engine/volSeed.ts`，由 `npx tsx scripts/vol-seed.ts` 從重放固定檔產生。
+- 設定 LINE：見 [`SETUP.md`](SETUP.md) 的 T7。
+
 ## 網站（T8）
 
 - 本機看網站：`npm run dev`，開 `http://127.0.0.1:8787/?demo=1`（示範資料）。第一次要先建本機的資料表：

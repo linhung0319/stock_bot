@@ -297,6 +297,8 @@ export interface MonthlyResult {
   plan: PlanResult | null;
 }
 
+const companyOfInput = (input: MonthlyContext) => (input.company ? (t: string) => input.company![t] ?? t : undefined);
+
 /** 目前的動能名單裡，哪些新進場的代號要先過任務 A（給 AI 層用；不改狀態）。 */
 export function monthlyCandidates(acct: Account, view: MarketView, input: MonthlyContext): string[] {
   const blocked = [...(input.vetoed ?? []), ...Object.keys(acct.mom.excluded), ...Object.keys(acct.mom.adopted)];
@@ -305,7 +307,7 @@ export function monthlyCandidates(acct: Account, view: MarketView, input: Monthl
     cfg: acct.cfg,
     values,
     state: acct.rule,
-    monthly: { order: input.order, excessVol: () => NaN, coreBelow200: acct.rule.crash, blocked, emptySlots: input.emptySlots },
+    monthly: { order: input.order, excessVol: () => NaN, coreBelow200: acct.rule.crash, blocked, emptySlots: input.emptySlots, companyOf: companyOfInput(input) },
   });
   return plan.selection?.added ?? [];
 }
@@ -316,6 +318,8 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     // 清單外的變動還沒分類 → 月報暫停（設計 §2.1.1）
     acct.monthlyBlocked = true;
     const notif = newNotif(acct, view, { kind: 'INFO', title: '月報暫停：有未分類的持股變動', text: '請先回答那筆變動是手動交易、新增自選還是轉入自選，屬於哪一桶。分類後會重算月報。', coreAbsorb: false });
+    // 留下這份月報的輸入（訊號日的排名），分類後用它重算（resumeMonthly）
+    notif.monthly = { input: clone(input), before: { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), cash: acct.cash } };
     return { acct, notif, plan: null };
   }
   acct.monthlyBlocked = false;
@@ -351,6 +355,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
       blocked,
       owed: Object.keys(acct.mom.owe),
       emptySlots: input.emptySlots,
+      companyOf: companyOfInput(input),
     },
   });
   acct.rule = plan.state;
@@ -397,7 +402,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     }
     if (old.items.every((i) => i.cancelled)) old.status = 'READ';
   }
-  const status = `崩盤規則：${acct.rule.crash ? '啟動中' : '未啟動'}；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}`;
+  const status = `崩盤規則：${acct.rule.crash ? '啟動中' : '未啟動'}；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '');
   const probe: Notif = { id: 0, kind: 'MONTHLY', date: view.date, seq: view.i, title: '', items, status: 'PENDING', coreAbsorb: true, reminded: false };
   const preview = composeNotif(acct, view, probe);
   if (!items.length && preview.lines.length) {
@@ -415,6 +420,24 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
   });
   notif.preview = composeNotif(acct, view, notif);
   return { acct, notif, plan };
+}
+
+/** 因為未分類的變動而暫停的月報（還沒處理的那一則）。 */
+export function blockedMonthly(acct: Account): Notif | null {
+  return acct.notifs.find((n) => n.kind === 'INFO' && n.status === 'PENDING' && !!n.monthly && n.title.startsWith('月報暫停')) ?? null;
+}
+
+/**
+ * 分類完之後重算暫停的月報：用暫停那一則留下的輸入（訊號日的排名），價格用現在的 view。
+ * 沒有留下輸入的舊通知用 fallback。暫停的那一則改成已讀。
+ */
+export function resumeMonthly(acct0: Account, view: MarketView, fallback?: MonthlyContext): { acct: Account; notif: Notif | null } {
+  const blocked = blockedMonthly(acct0);
+  const input = blocked?.monthly?.input ?? fallback;
+  if (!input) return { acct: acct0, notif: null };
+  const r = monthlyReport(acct0, view, input);
+  for (const x of r.acct.notifs) if (x.kind === 'INFO' && x.status === 'PENDING' && x.title.startsWith('月報暫停') && x.id !== r.notif.id) x.status = 'READ';
+  return { acct: r.acct, notif: r.notif };
 }
 
 function thirdLabel(w: number): string {

@@ -14,12 +14,12 @@ import {
   drawdownFromHigh,
   explainCash,
   itemAction,
-  monthlyReport,
   recommendStdWeights,
   removeOwn,
   reopen,
   resolveFollowUp,
   respond,
+  resumeMonthly,
   totalValue,
   unexclude,
   withdraw,
@@ -30,6 +30,7 @@ import {
   type Premise,
   type Snapshot,
 } from '../../engine';
+import { VOL_HIST_SEED } from '../../engine/volSeed';
 import { errText } from '../../data/util';
 import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
 import { json, type Env, type Fetcher } from '../env';
@@ -172,6 +173,8 @@ async function createFromSnapshot(backend: SiteBackend, b: Record<string, unknow
   const rec = own.length ? recommendStdWeights(view, own.map((x) => x.ticker), 0.2) : {};
   const init: InitialAccount = {
     paper: b.paper !== false,
+    // 依波動度減碼的起始歷史：接上回測重放到 2026-09 的每月 σ（design_v2 §10 第 31 點）；不補的話要等 24 個月才會開始減碼
+    volHist: [...VOL_HIST_SEED.values],
     cash,
     core: { ...(coreShares ? { [core]: coreShares } : {}), ...(bondShares ? { [bond]: bondShares } : {}) },
     mom: Object.fromEntries(mom.filter((x) => x.shares > 0).map((x) => [x.ticker, x.shares])),
@@ -292,13 +295,12 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
         if (out.error) throw new SiteError(422, out.error);
         let acct = out.acct;
         let monthlyId: number | null = null;
-        if (out.monthlyUnblocked && d.demo) {
-          // 分類完，暫停的月報要重算。真正的系統由月報流程做（T7）；示範模式在這裡補上
+        if (out.monthlyUnblocked) {
+          // 分類完，暫停的月報用暫停時留下的輸入（訊號日的排名）重算；舊的通知沒有留輸入時用目前的排名
           const month = d.today.slice(0, 7);
-          const m = monthlyReport(acct, d.view, { order: d.rankOrder, vetoed: DEMO_SCRIPTS[d.demo.scenario].vetoes?.[month], month });
+          const m = resumeMonthly(acct, d.view, { order: d.rankOrder, vetoed: d.demo ? DEMO_SCRIPTS[d.demo.scenario].vetoes?.[month] : undefined, month });
           acct = m.acct;
-          monthlyId = m.notif.id;
-          for (const x of acct.notifs) if (x.kind === 'INFO' && x.status === 'PENDING' && x.title.startsWith('月報暫停')) x.status = 'READ';
+          monthlyId = m.notif?.id ?? null;
         }
         return { acct, result: { monthlyUnblocked: out.monthlyUnblocked, notifId: monthlyId } };
       });

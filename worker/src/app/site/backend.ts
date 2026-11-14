@@ -73,7 +73,7 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const ranking = await loadRanking(env.DB);
       const core = acct?.cfg.coreTicker ?? 'VOO';
       const required = requiredTickers(acct);
-      const want = [...new Set([...required, BENCHMARK, ...(ranking?.order.slice(0, 20) ?? []), ...extra])];
+      const want = [...new Set([...required, BENCHMARK, ...(ranking?.order ?? []), ...extra])];
       let series = await loadSeries(env.DB, want);
       const session = series.get(core)?.d.at(-1) ?? null;
       // 這次操作要用、但沒有存或不是最新的代號：當場抓一次（新增自選、快照出現新代號、建立帳戶）
@@ -110,6 +110,10 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       } else {
         warnings.push('還沒有價格資料：每日抓取還沒有跑過。');
       }
+      // 最近 36 小時的告警（每日流程、資料抓取）也放在網站的警示列；已經解決的不放
+      const since = new Date(now.getTime() - 36 * 3600_000).toISOString();
+      const alerts = (await env.DB.prepare("SELECT message, MAX(id) AS id FROM alerts WHERE at >= ? AND (sent_at IS NULL OR sent_at NOT IN ('RESOLVED', 'SKIPPED_OLD')) GROUP BY message ORDER BY id DESC LIMIT 5").bind(since).all<{ message: string }>()).results;
+      for (const a of alerts) warnings.push(a.message);
       const [events, shadow] = acct ? await Promise.all([loadEvents(env.DB, 300), loadShadow(env.DB, 300)]) : [[], []];
       return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes: [], events, shadow, today: taipeiDate(now), warnings };
     },

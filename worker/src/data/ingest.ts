@@ -9,6 +9,7 @@ import {
   lastDate,
   loadCalendarOverrides,
   loadConstituents,
+  loadRanking,
   saveConstituents,
   saveRanking,
   saveRun,
@@ -101,10 +102,12 @@ export async function runIngest(db: D1Database, fetcher: Fetcher, opt: IngestOpt
   // 今天抓不到就用最近一份決定要追蹤哪些代號（只影響抓哪些價格，不會拿來換股）
   const members = snapshot ?? (await loadConstituents(db));
 
-  // 2. 價格：必要的代號＋基準＋市值前 N 名，各抓整段兩年日線
+  // 2. 價格：必要的代號＋基準＋市值前 N 名＋最近一次排名的股票池，各抓整段兩年日線
+  //    （股票池：月報因為未分類而暫停時，分類後重算要用新進場股票當天的價格；大多和市值前 N 名重疊）
   const required = [...new Set(opt.required)];
   const top = members ? [...members.holdings].sort((a, b) => b[1] - a[1]).slice(0, opt.topN ?? 80).map((h) => h[0]) : [];
-  const tracked = [...new Set([...required, BENCHMARK, ...top])];
+  const lastRanking = await loadRanking(db);
+  const tracked = [...new Set([...required, BENCHMARK, ...top, ...(lastRanking?.order ?? [])])];
   const got = await fetchBars(fetcher, tracked, '2y', session);
   const series = new Map<string, Series>();
   for (const g of got) if (g.bars.length) series.set(g.ticker, seriesFromBars(g.ticker, g.bars, at, session));

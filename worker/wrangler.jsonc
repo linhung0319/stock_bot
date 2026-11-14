@@ -8,6 +8,8 @@
   //   EDGAR_USER_AGENT   SEC 要求的 User-Agent（含聯絡方式）
   //   ACCESS_TEAM_DOMAIN Cloudflare Access 的團隊網域（xxx.cloudflareaccess.com）
   //   ACCESS_AUD         Access 應用程式的 AUD；這兩個都設了，網站（/api、/demo/api）才用 Access 驗證登入
+  //   LINE_CHANNEL_TOKEN LINE Messaging API 的 channel access token（long-lived）
+  //   LINE_USER_ID       收 LINE 訊息的 user ID（LINE Developers 後台的 Your user ID）
   "name": "stock-bot",
   "main": "src/worker.ts",
   "compatibility_date": "2026-11-01",
@@ -22,9 +24,13 @@
       "migrations_dir": "migrations"
     }
   ],
+  // 網站網址：LINE 訊息裡的連結用（T7）
+  "vars": { "SITE_URL": "https://stock-bot.linhung0319.workers.dev" },
   "triggers": {
-    // T4 實測：美股收盤後（UTC 23:05、23:10，週一到週五）各跑一半，避開免費方案每次 50 個對外請求的上限
-    // T6 每日資料抓取：UTC 23:30（美東 18:30 或 19:30，收盤後）
-    "crons": ["5,10 23 * * 1-5", "30 23 * * 1-5"]
+    // T7 每日流程（src/app/flow.ts）：
+    //   UTC 23:30（美東 18:30 或 19:30，收盤後；台灣早上 7:30）抓資料、每日檢查、月底出月報、LINE
+    //   UTC 01:30（兩小時後）沒跑完就再試一次，還是不行就告警
+    // T4 的實測排程（UTC 23:05、23:10）已經拿掉；/admin/probe 仍可手動跑
+    "crons": ["30 23 * * 1-5", "30 1 * * 2-6"]
   }
 }

@@ -2,6 +2,7 @@
 // 這裡每一步都走兩條路——一條直接呼叫引擎（和 test/scenarios.test.ts 相同的 Sim），
 // 一條只透過網站的 API——然後比對兩邊的帳戶狀態（各桶股數、現金、規則狀態、通知、事件、沒照做的紀錄）。
 // D1 用本機模擬器；對外請求全部用假的 fetcher。
+import { VOL_HIST_SEED } from '../src/engine/volSeed';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Env, Fetcher } from '../src/app/env';
 import { loadAccount } from '../src/app/ledgerStore';
@@ -748,6 +749,9 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     expect(loaded.acct.own.MU.premises[0]).toMatchObject({ text: 'HBM 長約有價格保護', origin: 'USER' });
     expect(loaded.acct.own.NVDA.premises.every((p) => p.origin === 'SYSTEM_DEFAULT')).toBe(true);
     expect(loaded.acct.rule.heldMom).toEqual(['PLTR', 'AVGO']);
+    // 依波動度減碼的起始歷史接上回測重放（不用等 24 個月）；比例由第一份月報決定
+    expect(loaded.acct.rule.volHist).toEqual([...VOL_HIST_SEED.values]);
+    expect(loaded.acct.rule.volW).toBeNull();
     const snaps = (await db.prepare('SELECT date, cash, positions FROM snapshots').all<{ date: string; cash: number; positions: string }>()).results;
     expect(snaps).toHaveLength(1);
     expect(JSON.parse(snaps[0].positions)).toMatchObject({ VOO: 64, MU: 56, PLTR: 33 });

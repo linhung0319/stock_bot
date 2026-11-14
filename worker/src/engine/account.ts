@@ -142,6 +142,10 @@ export interface MonthlyContext {
   month: string;
   /** 崩盤規則切換時 AI 檢視的一行意見（只顯示，設計 §4.4）。 */
   crashOpinion?: '照做' | '延後';
+  /** 同一家公司的不同類股：代號 → 公司（CIK）。同公司已經有一類在名單裡時，另一類不進場（設計 §2.4）。 */
+  company?: Record<string, string>;
+  /** 本月暫停換股的原因（成分股名單不一致、排名沒有產生）；order 這時是目前的動能名單，名單不變。 */
+  paused?: string;
 }
 
 export interface SavedState {

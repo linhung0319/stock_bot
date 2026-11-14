@@ -45,6 +45,8 @@ export interface ReplayResult {
   events: { date: string; kind: PlanEvent['kind']; ticker?: string; detail?: string }[];
   /** 每個換股日的波動度比例。 */
   volPath: number[];
+  /** 每個換股日記下的 σ（引擎的 volHist，依日期；新帳戶的起始歷史用它，見 volSeed.ts）。 */
+  volHist: { date: string; sigma: number }[];
   urgentDays: number;
 }
 
@@ -123,7 +125,7 @@ export function replay(data: ReplayData, opt: ReplayOptions): ReplayResult {
   for (const tk of opt.own) state.own[tk] = { applied: 'STD', stdWeight: cfg.ratio.own / opt.own.length };
   let lots: CellMap = {};
   const pending: Record<string, OwnAction> = {};
-  const out: ReplayResult = { dates: [], nav: [], orders: [], events: [], volPath: [], urgentDays: 0 };
+  const out: ReplayResult = { dates: [], nav: [], orders: [], events: [], volPath: [], volHist: [], urgentDays: 0 };
 
   for (let g = g0; g < hi; g++) {
     const date = allDays[g];
@@ -151,6 +153,7 @@ export function replay(data: ReplayData, opt: ReplayOptions): ReplayResult {
       });
       state = plan.state;
       if (isR && plan.vol && plan.vol.nextW !== null) out.volPath.push(plan.vol.w);
+      if (isR && cfg.volScale && plan.state.volHist.length) out.volHist.push({ date, sigma: plan.state.volHist[plan.state.volHist.length - 1] });
       for (const e of plan.events) out.events.push({ date, ...e });
       const s = summarizeOrders(cfg, values, plan);
       if (s.orders.length && !first) {

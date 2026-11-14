@@ -114,3 +114,36 @@
 Bypass 會讓那幾個路徑不經過 Access 也不留 Access 的紀錄；它們靠各自的 Bearer 金鑰保護。
 
 設好之後，網站右上角的「示範資料」可以隨時切換：示範模式用假價格與假的 AI 內容，存在另一張表，不會動到真正的帳本。
+
+## T7：每日流程、LINE 推播、缺席告警
+
+每天兩個排程（`wrangler.jsonc`）：UTC 23:30（台灣早上 7:30，美股收盤後）抓資料 → 每日檢查 → 月底那天出下個月的月報 → LINE；
+UTC 01:30 再檢查一次，沒跑完就重跑，還是不行就推一則告警。T4 的實測排程這次拿掉了（`/admin/probe` 仍可手動跑）。
+**月報要有帳戶才會出**：12 月的月報在 11/30 收盤後產生（台灣 12/1 早上 7:30 收到），在那之前要先照上面 T8 的步驟部署、在網站建立帳戶（預設紙上交易）。
+
+1. 建一個 LINE 官方帳號並開啟 Messaging API（2026-11 的官方流程；畫面名稱以後台為準）：
+   - 到 LINE Official Account Manager（`manager.line.biz`）建立一個官方帳號（名稱隨意，例如 stock bot）。
+   - 進那個帳號的「設定 → Messaging API」→ 啟用 Messaging API，選一個 provider（沒有就新建一個）。
+   - 「設定 → 回應設定」把自動回應訊息、加入好友的歡迎訊息關掉（不關也沒關係，只是會多收到罐頭訊息）。
+2. 到 LINE Developers（`developers.line.biz/console/`）→ 剛才的 provider → 那個 channel：
+   - **Messaging API** 分頁最下面 Channel access token（long-lived）→ Issue，複製。
+   - 同一頁有 QR code：**用你的 LINE 掃描加它為好友**（沒加好友收不到推播）。
+   - **Basic settings** 分頁最下面的 **Your user ID**（`U` 開頭），複製。
+3. 把兩個值交給 Worker，套用新的資料表（`0004`）並部署：
+   ```
+   npx wrangler secret put LINE_CHANNEL_TOKEN   # 貼 channel access token
+   npx wrangler secret put LINE_USER_ID         # 貼 Your user ID
+   npx wrangler d1 migrations apply stock-bot --remote
+   npx wrangler deploy
+   ```
+   網站網址（訊息裡的連結）寫在 `wrangler.jsonc` 的 `vars.SITE_URL`；網址不同的話改那裡。
+4. 確認（`<ADMIN_TOKEN>` 在 `worker/.secrets.json`）：
+   ```
+   curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/line/test    # 收到一則測試訊息
+   curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/alert/test   # 收到一則【告警】
+   curl -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/flow/status          # 最近幾次流程、推播紀錄、處理到哪一天
+   ```
+   手動跑一次每日流程：`curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/flow`（同一個交易日已經做過就只補推失敗的訊息，不會重做）。
+
+LINE 免費方案每月推播有則數上限（以 Official Account Manager 顯示的為準）。這個系統平常一個月約 1 則月報，加上偶爾的當天通知、提醒和告警，
+不會碰到上限；碰到時推播會失敗、記在 `/admin/flow/status`，網站的警示列仍看得到告警。

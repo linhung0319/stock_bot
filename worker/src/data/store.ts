@@ -144,7 +144,22 @@ export async function loadRanking(db: D1Database, session?: string): Promise<Ran
 
 // ---------------------------------------------------------------- 每日抓取紀錄與告警
 
-export type AlertKind = 'MEMBERSHIP_MISMATCH' | 'MEMBERSHIP_UNAVAILABLE' | 'PRICE_MISSING' | 'PRICE_STALE' | 'RANKING_FAILED' | 'INGEST_ERROR';
+export type AlertKind =
+  | 'MEMBERSHIP_MISMATCH'
+  | 'MEMBERSHIP_UNAVAILABLE'
+  | 'PRICE_MISSING'
+  | 'PRICE_STALE'
+  | 'RANKING_FAILED'
+  | 'INGEST_ERROR'
+  // T7：流程
+  | 'FLOW_MISSED' // 再試一次之後，今天的流程還是沒有跑完（沒有產生清單）
+  | 'FLOW_ERROR' // 流程出錯
+  | 'FLOW_GAP' // 漏掉太多個交易日，沒有補做
+  | 'MONTHLY_PAUSED' // 月報照出，但本月暫停換股
+  | 'AI_TIMEOUT' // AI 任務逾時（照規則）
+  | 'TEST'; // 手動測試告警的推播（/admin/alert/test）
+/** 只表示「今天沒有產生訊號」的告警：同一個交易日後來再試成功了，就不必推播。 */
+export const NO_SIGNAL_ALERTS: ReadonlySet<string> = new Set(['PRICE_MISSING', 'PRICE_STALE', 'INGEST_ERROR', 'FLOW_ERROR']);
 export interface Alert {
   kind: AlertKind;
   message: string;
@@ -170,6 +185,11 @@ export async function saveRun(db: D1Database, run: DataRun, alerts: Alert[]): Pr
     ...alerts.map((a) => db.prepare('INSERT INTO alerts (at, session, kind, message, detail) VALUES (?, ?, ?, ?, ?)').bind(run.at, run.session, a.kind, a.message, a.detail === undefined ? null : JSON.stringify(a.detail))),
   ];
   await db.batch(stmts);
+}
+
+export async function saveAlerts(db: D1Database, at: string, session: string | null, alerts: Alert[]): Promise<void> {
+  if (!alerts.length) return;
+  await db.batch(alerts.map((a) => db.prepare('INSERT INTO alerts (at, session, kind, message, detail) VALUES (?, ?, ?, ?, ?)').bind(at, session, a.kind, a.message, a.detail === undefined ? null : JSON.stringify(a.detail))));
 }
 
 interface RunRow {

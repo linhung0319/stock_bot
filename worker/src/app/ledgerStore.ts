@@ -29,10 +29,11 @@ export async function loadAccount(db: D1Database): Promise<LoadedAccount | null>
 
 /**
  * 存一版。prev = 載入時拿到的那份（第一次建立帳戶時是 null）。
+ * extra：要和帳戶一起寫進同一筆交易的其他語句。
  * 整批是一筆交易；如果這段時間有別的存檔先進來，account_history 的主鍵會撞到，整批取消並丟 ConflictError。
  * 回傳新的 rev。
  */
-export async function saveAccount(db: D1Database, acct: Account, prev: LoadedAccount | null, cause: string, now: Date): Promise<number> {
+export async function saveAccount(db: D1Database, acct: Account, prev: LoadedAccount | null, cause: string, now: Date, extra: D1PreparedStatement[] = []): Promise<number> {
   const rev = (prev?.rev ?? 0) + 1;
   const at = now.toISOString();
   const { notifs, events, shadow, ...state } = acct;
@@ -50,6 +51,8 @@ export async function saveAccount(db: D1Database, acct: Account, prev: LoadedAcc
   for (const e of events) stmts.push(ev.bind(rev, e.date, e.kind, e.ticker ?? null, e.bucket ?? null, e.shares ?? null, e.amount ?? null, e.reason ?? null, e.notif ?? null));
   const sh = db.prepare('INSERT INTO shadow_records (rev, date, f, ticker, body) VALUES (?, ?, ?, ?, ?)');
   for (const s of shadow) stmts.push(sh.bind(rev, s.date, s.f, s.ticker, JSON.stringify(s)));
+  // 和帳戶同一筆交易一起寫的（例如每日流程處理到哪一天）
+  stmts.push(...extra);
   try {
     await db.batch(stmts);
   } catch (e) {

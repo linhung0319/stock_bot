@@ -4,34 +4,25 @@
 //   /admin/*                     管理用，Bearer ADMIN_TOKEN
 //   /api/*、/demo/api/*          網站的 API（Cloudflare Access；src/app/site/）
 //   其他                         網站的靜態檔（public/，由 Cloudflare 直接回應，不會進到這裡）
-import { acceptResult, createTask, fireRoutine, getTask, readEvidence, sweepTimeouts, taskTimings } from './app/aiTasks';
+import { acceptResult, createTask, fireRoutine, getTask, readEvidence, taskTimings } from './app/aiTasks';
 import { bearerOk, json, type Env, type Fetcher } from './app/env';
-import { loadAccount, requiredTickers } from './app/ledgerStore';
+import { getFlowState, ingest, pushPending, recentFlowRuns, runFlow, sendTestPush } from './app/flow';
+import { loadAccount } from './app/ledgerStore';
+import { lineConfigured } from './app/line';
 import { probeSummary, runProbe, saveProbe } from './app/probe';
 import { handleSite } from './app/site/api';
-import { runIngest, type IngestResult } from './data/ingest';
-import { loadConstituents, loadRanking, recentAlerts, recentRuns, saveRun, seriesFreshness } from './data/store';
-import { errText } from './data/util';
+import { loadConstituents, loadRanking, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 
-/** 每日資料抓取的排程（美股收盤後；UTC 23:30 = 美東 18:30 或 19:30）。 */
+/** 每日流程（美股收盤後；UTC 23:30 = 美東 18:30 或 19:30 = 台灣早上 7:30）：抓資料、每日檢查、月報、LINE。 */
 export const INGEST_CRON = '30 23 * * 1-5';
+/** 兩小時後再試一次（UTC 01:30，週二到週六）：今天沒跑完就重跑，還是不行就告警；AI 任務逾時也在這裡查。 */
+export const FINAL_CRON = '30 1 * * 2-6';
 
 const realFetch: Fetcher = (url, init) => fetch(url, init);
 
-/** 每日資料抓取：必要的代號從帳戶讀（還沒建立帳戶時只有核心 ETF 與短債）。出錯也會留一筆紀錄與告警。 */
-export async function ingest(env: Env, fetcher: Fetcher, now: Date, forceRank = false): Promise<IngestResult | { error: string }> {
-  try {
-    const loaded = await loadAccount(env.DB);
-    return await runIngest(env.DB, fetcher, { now, required: requiredTickers(loaded?.acct ?? null), forceRank });
-  } catch (e) {
-    const error = errText(e);
-    console.error('每日資料抓取失敗', e);
-    await saveRun(env.DB, { session: '', at: now.toISOString(), status: 'FAILED', signalsOk: false, rebalanceOk: false, ranked: false, ms: 0, detail: { error } }, [{ kind: 'INGEST_ERROR', message: '每日資料抓取出錯，今天不產生訊號：' + error }]);
-    return { error };
-  }
-}
+export { ingest };
 
 async function dataStatus(db: D1Database) {
   const [runs, alerts, fresh, ranking, members] = await Promise.all([recentRuns(db, 5), recentAlerts(db, 20), seriesFreshness(db), loadRanking(db), loadConstituents(db)]);
@@ -75,6 +66,30 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
       return json({ ...rest, ranking: ranking && { session: ranking.session, order: ranking.order } });
     }
     if (path === '/admin/data/status') return json(await dataStatus(env.DB));
+    if (path === '/admin/flow' && request.method === 'POST') {
+      // 手動跑一次每日流程（同一個交易日已經做過就只補推失敗的訊息）
+      const r = await runFlow(env, fetcher, { now, attempt: 'MANUAL', forceRank: url.searchParams.get('rank') === '1' });
+      return json(r, r.status === 'ERROR' ? 500 : 200);
+    }
+    if (path === '/admin/flow/status') {
+      const [runs, last, pushes] = await Promise.all([
+        recentFlowRuns(env.DB, 10),
+        getFlowState(env.DB, 'lastSession'),
+        env.DB.prepare('SELECT at, kind, ref, ok, status, error FROM pushes ORDER BY id DESC LIMIT 20').all(),
+      ]);
+      return json({ lastSession: last, line: lineConfigured(env), siteUrl: env.SITE_URL ?? null, runs, pushes: pushes.results });
+    }
+    if (path === '/admin/alert/test' && request.method === 'POST') {
+      // 走告警的推播路徑：存一則測試告警，照每日流程的方式合成一則推出去
+      await saveAlerts(env.DB, now.toISOString(), null, [{ kind: 'TEST', message: '這是測試告警：收到表示告警的推播可以用。' }]);
+      const acct = (await loadAccount(env.DB))?.acct ?? null;
+      const push = await pushPending(env, fetcher, now, acct, [], true);
+      return json(push, push.failed || !push.configured ? 502 : 200);
+    }
+    if (path === '/admin/line/test' && request.method === 'POST') {
+      const r = await sendTestPush(env, fetcher, now, `stock bot 測試訊息（${now.toISOString()}）：收到這則表示 LINE 推播設定好了。`);
+      return json(r, r.ok ? 200 : 502);
+    }
     if (path === '/admin/ai/ping' && request.method === 'POST') {
       // T5：建一份假的證據包，觸發雲端排程，等它取回並送回結果
       const nonce = crypto.randomUUID();
@@ -107,16 +122,8 @@ export default {
   },
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const now = new Date(controller.scheduledTime);
-    if (controller.cron === INGEST_CRON) {
-      const r = await ingest(env, realFetch, now);
-      console.log(JSON.stringify('error' in r ? r : { ingest: r.session, status: r.status, signalsOk: r.signalsOk, rebalanceOk: r.rebalanceOk, ranked: r.ranked, alerts: r.alerts.length, ms: r.ms }));
-      return;
-    }
-    // T4 實測：每天兩次，各跑一半
-    const part = now.getUTCMinutes() < 8 ? 'A' : 'B';
-    const rows = await runProbe(env, part, realFetch);
-    await saveProbe(env.DB, now.toISOString(), rows);
-    const timedOut = await sweepTimeouts(env.DB, now);
-    console.log(JSON.stringify({ probe: part, n: rows.length, ok: rows.filter((r) => r.ok).length, timedOut }));
+    const attempt = controller.cron === FINAL_CRON ? 'FINAL' : 'FIRST';
+    const r = await runFlow(env, realFetch, { now, attempt });
+    console.log(JSON.stringify({ flow: r.session, attempt, status: r.status, processed: r.processed, created: r.created, monthly: r.monthly, alerts: r.alerts, push: r.push, error: r.error, ms: r.ms }));
   },
 } satisfies ExportedHandler<Env>;
