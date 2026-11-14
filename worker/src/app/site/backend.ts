@@ -134,9 +134,9 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       } else {
         warnings.push('還沒有價格資料：每日抓取還沒有跑過。');
       }
-      // 最近 36 小時的告警（每日流程、資料抓取）也放在網站的警示列；已經解決的不放
+      // 最近 36 小時的告警（每日流程、資料抓取）也放在網站的警示列；已經解決的、測試推播用的（/admin/alert/test）不放
       const since = new Date(now.getTime() - 36 * 3600_000).toISOString();
-      const alerts = (await env.DB.prepare("SELECT message, MAX(id) AS id FROM alerts WHERE at >= ? AND (sent_at IS NULL OR sent_at NOT IN ('RESOLVED', 'SKIPPED_OLD')) GROUP BY message ORDER BY id DESC LIMIT 5").bind(since).all<{ message: string }>()).results;
+      const alerts = (await env.DB.prepare("SELECT message, MAX(id) AS id FROM alerts WHERE at >= ? AND kind != 'TEST' AND (sent_at IS NULL OR sent_at NOT IN ('RESOLVED', 'SKIPPED_OLD')) GROUP BY message ORDER BY id DESC LIMIT 5").bind(since).all<{ message: string }>()).results;
       for (const a of alerts) warnings.push(a.message);
       const [events, shadow] = acct ? await Promise.all([loadEvents(env.DB, 300), loadShadow(env.DB, 300)]) : [[], []];
       // AI 紀錄 → 建議單上的 AI 說明

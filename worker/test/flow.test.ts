@@ -386,6 +386,9 @@ describe('端點與排程', () => {
       const a = await handle(req('/admin/alert/test'), env, f, cronTime('2026-11-20'));
       expect(a.status).toBe(200);
       expect(line.sent.at(-1)!.text).toBe('【紙上】【告警】stock bot\n・這是測試告警：收到表示告警的推播可以用。\n\nhttps://bot.example/');
+      // 測試告警只用來確認推播，不放進網站的警示列
+      const site = await realBackend(env, f, cronTime('2026-11-20')).load();
+      expect(site.warnings.some((x) => x.includes('測試告警'))).toBe(false);
       void db;
     });
   });
@@ -396,6 +399,9 @@ describe('端點與排程', () => {
     const { dirname, join } = await import('node:path');
     const cfg = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'wrangler.jsonc'), 'utf8');
     expect(cfg).toContain(`"crons": ["${INGEST_CRON}", "${FINAL_CRON}"]`);
+    // Cloudflare 的星期數字是 1 = 星期日：一律寫英文縮寫，週一到週五收盤後抓、隔天（週二到週六）UTC 早上重試
+    expect(INGEST_CRON).toBe('30 23 * * MON-FRI');
+    expect(FINAL_CRON).toBe('30 1 * * TUE-SAT');
     expect(cfg).toContain('"SITE_URL"');
   });
 });
