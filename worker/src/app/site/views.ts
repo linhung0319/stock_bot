@@ -164,7 +164,7 @@ export interface NotifView {
   /** 快照和清單不同，等你選補做或就這樣。 */
   followUp: { ticker: string; listed: number; done: number }[] | null;
   /** 清單外的變動（分類）或現金差額。 */
-  ask: { type: 'CLASSIFY'; ticker: string; quantity: number; canMom: boolean } | { type: 'CASH_DIFF'; amount: number } | null;
+  ask: { type: 'CLASSIFY'; ticker: string; quantity: number; canMom: boolean; canOwn: boolean; canRemoveOwn: boolean; note: string | null } | { type: 'CASH_DIFF'; amount: number } | null;
   respondedAt: string | null;
   /** 這則通知實際成交了什麼（帳本事件）。 */
   filled: { ticker: string; bucketName: string; shares: number; date: string }[];
@@ -400,7 +400,17 @@ export function notifView(d: Ready, n: Notif): NotifView {
   let ask: NotifView['ask'] = null;
   if (n.kind === 'CLASSIFY' && n.ticker) {
     const q = n.quantity ?? 0;
-    ask = { type: 'CLASSIFY', ticker: n.ticker, quantity: q, canMom: q < 0 ? (d.acct.lots.mom[n.ticker] ?? 0) >= -q : d.acct.rule.heldMom.includes(n.ticker) };
+    const ownSh = d.acct.lots.own[n.ticker] ?? 0;
+    ask = {
+      type: 'CLASSIFY',
+      ticker: n.ticker,
+      quantity: q,
+      canMom: q < 0 ? (d.acct.lots.mom[n.ticker] ?? 0) >= -q : d.acct.rule.heldMom.includes(n.ticker),
+      canOwn: q > 0 || ownSh >= -q,
+      // 自選賣到 0 股：可以同時移出自選
+      canRemoveOwn: q < 0 && !!d.acct.own[n.ticker] && ownSh + q === 0,
+      note: n.userNote ?? null,
+    };
   } else if (n.kind === 'CASH_DIFF') ask = { type: 'CASH_DIFF', amount: n.amount ?? 0 };
   const filled = [...d.events, ...d.acct.events].filter((e) => e.notif === n.id && e.ticker && e.shares).map((e) => ({ ticker: e.ticker!, bucketName: BUCKET_NAME[e.bucket ?? ''] ?? '', shares: e.shares!, date: e.date }));
   return {

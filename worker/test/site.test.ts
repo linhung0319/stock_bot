@@ -564,7 +564,7 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect(st.todo[0]).toMatchObject({ id: cid, type: 'ANSWER' });
     expect(st.account!.unclassified).toEqual([{ ticker: 'AAPL', shares: 10 }]);
     const ask = (await web.notif(cid)).ask;
-    expect(ask).toEqual({ type: 'CLASSIFY', ticker: 'AAPL', quantity: 10, canMom: false });
+    expect(ask).toEqual({ type: 'CLASSIFY', ticker: 'AAPL', quantity: 10, canMom: false, canOwn: true, canRemoveOwn: false, note: null });
 
     sim.runUntil('2027-01-04');
     sim.preOpen();
@@ -803,6 +803,34 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     expect(r.created.map((c) => c.kind)).toEqual(['CLASSIFY']);
     await web.post(`/notif/${r.created[0].id}/classify`, { bucket: 'own' });
     expect((await loadAccount(db))!.acct.lots.own.COST).toBe(2);
+  });
+
+  it('緊急賣（T14）：快照的原因帶進分類；自選賣光可以同時移出自選；核心賣出也記原因', async () => {
+    const form = await web.get<SnapshotForm>('/snapshot/form');
+    const shares = Object.fromEntries(form.rows.map((r) => [r.ticker, r.expected]));
+    const pc = m.close.COST[upTo];
+    const pv = m.close.VOO[upTo];
+    const r = await web.post<{ created: { id: number; kind: string }[] }>('/snapshot', { shares: { ...shares, COST: 0, VOO: shares.VOO - 1 }, cash: form.cashBook + 2 * pc + pv, note: '要用錢' });
+    expect(r.created.map((c) => c.kind)).toEqual(['CLASSIFY']);
+    const id = r.created[0].id;
+    expect((await web.notif(id)).ask).toEqual({ type: 'CLASSIFY', ticker: 'COST', quantity: -2, canMom: false, canOwn: true, canRemoveOwn: true, note: '要用錢' });
+    await web.post(`/notif/${id}/classify`, { bucket: 'own', reason: '要用錢', removeOwn: true });
+    const acct = (await loadAccount(db))!.acct;
+    expect(acct.own.COST).toBeUndefined();
+    expect(acct.rule.own.COST).toBeUndefined();
+    const hist = await web.get<HistoryView>('/history');
+    expect(hist.events.some((e) => e.text === '分類：自選 COST -2 股（要用錢（賣光並移出自選））')).toBe(true);
+    expect(hist.events.some((e) => e.text === '成交：核心 VOO -1 股（核心的手動交易：要用錢）')).toBe(true);
+    // 只賣一部分不能移出；理由太長擋下
+    const f2 = await web.get<SnapshotForm>('/snapshot/form');
+    const s2 = Object.fromEntries(f2.rows.map((x) => [x.ticker, x.expected]));
+    expect((await web.fail('/snapshot', { shares: s2, cash: f2.cashBook, note: 'x'.repeat(301) })).status).toBe(422);
+    const r2 = await web.post<{ created: { id: number }[] }>('/snapshot', { shares: { ...s2, MU: s2.MU - 1 }, cash: f2.cashBook + m.close.MU[upTo] });
+    const ask = (await web.notif(r2.created[0].id)).ask;
+    expect(ask).toMatchObject({ canOwn: true, canRemoveOwn: false, note: null });
+    expect((await web.fail(`/notif/${r2.created[0].id}/classify`, { bucket: 'own', removeOwn: true })).error).toContain('全部賣掉時');
+    await web.post(`/notif/${r2.created[0].id}/classify`, { bucket: 'own', reason: '先減一點' });
+    expect((await loadAccount(db))!.acct.own.MU).toBeDefined();
   });
 
   it('價格不是最新的：畫面上有警告', async () => {

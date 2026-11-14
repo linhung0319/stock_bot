@@ -186,6 +186,8 @@ export interface Snapshot {
   /** 每一檔的總股數（券商顯示的數字）。 */
   shares: Record<string, number>;
   cash: number;
+  /** 選填：這次自己交易（清單外的變動）的原因，記在那些事件上；核心的手動交易也記。 */
+  note?: string;
 }
 
 export interface SnapshotResult {
@@ -297,14 +299,16 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
     expectedCash -= d * px(t);
     traded += Math.abs(d * px(t));
     if (t === acct.cfg.coreTicker || t === acct.bondTicker) {
-      assign('core', t, d, '核心的手動交易');
+      assign('core', t, d, snap.note ? `核心的手動交易：${snap.note}` : '核心的手動交易');
       continue;
     }
     addLot(acct, 'unc', t, d);
-    acct.events.push({ date: view.date, kind: 'UNCLASSIFIED', ticker: t, shares: d });
+    acct.events.push({ date: view.date, kind: 'UNCLASSIFIED', ticker: t, shares: d, ...(snap.note ? { reason: snap.note } : {}) });
     const ex = acct.notifs.find((x) => x.kind === 'CLASSIFY' && x.status === 'PENDING' && x.ticker === t);
-    if (ex) ex.quantity = (ex.quantity ?? 0) + d;
-    else created.push(newNotif(acct, view, { kind: 'CLASSIFY', title: `快照出現清單外的變動：${t} ${d > 0 ? '+' : ''}${d} 股`, ticker: t, quantity: d, coreAbsorb: false, text: '這是手動交易、新增自選還是轉入自選？屬於哪一桶？分類之前月報不下單。' }));
+    if (ex) {
+      ex.quantity = (ex.quantity ?? 0) + d;
+      if (snap.note) ex.userNote = snap.note;
+    } else created.push(newNotif(acct, view, { kind: 'CLASSIFY', title: `快照出現清單外的變動：${t} ${d > 0 ? '+' : ''}${d} 股`, ticker: t, quantity: d, coreAbsorb: false, text: '這是手動交易、新增自選還是轉入自選？屬於哪一桶？分類之前月報不下單。', ...(snap.note ? { userNote: snap.note } : {}) }));
   }
 
   // 單位數：自選與動能桶的淨買進是從核心流過去的錢
@@ -603,8 +607,10 @@ export function unexclude(acct0: Account, ticker: string): Account {
 
 export interface ClassifyInput {
   bucket: 'own' | 'mom';
-  /** 歸自選時的一句理由（成為前提）；沒寫用系統預設前提。 */
+  /** 買進歸自選時的一句理由（成為前提，沒寫用系統預設前提）；賣出時是為什麼賣（記在事件與影子上）。 */
   reason?: string;
+  /** 自選賣到 0 股時，同時移出自選（同移除自選，不用下單；設計 §10 第 37 點）。 */
+  removeOwn?: boolean;
 }
 
 /**
@@ -629,6 +635,8 @@ export function classify(acct0: Account, view: MarketView, notifId: number, inpu
     if (held + q * px > slot * (1 + (acct.cfg.lazyBand ?? 0.5))) return { acct: acct0, error: `${tk} 的動能那一格已經買足，多買的部分只能歸自選`, monthlyUnblocked: false };
   }
   if (q < 0 && (acct.lots[input.bucket][tk] ?? 0) < -q) return { acct: acct0, error: `${input.bucket === 'own' ? '自選' : '動能'}桶沒有這麼多 ${tk} 可以賣`, monthlyUnblocked: false };
+  const removing = !!input.removeOwn;
+  if (removing && !(input.bucket === 'own' && q < 0 && acct.own[tk] && (acct.lots.own[tk] ?? 0) + q === 0)) return { acct: acct0, error: `只有把自選的 ${tk} 全部賣掉時，才能同時移出自選`, monthlyUnblocked: false };
   const vBefore = bucketValue(acct, view, input.bucket);
   const coreBefore = bucketValue(acct, view, 'core');
   delete acct.lots.unc[tk];
@@ -637,8 +645,10 @@ export function classify(acct0: Account, view: MarketView, notifId: number, inpu
   acct.units[input.bucket] = flowUnits(acct.units[input.bucket], vBefore, q * px);
   acct.units.core = flowUnits(acct.units.core, coreBefore + q * px, -q * px);
   if (input.bucket === 'mom') delete acct.mom.owe[tk];
-  acct.events.push({ date: view.date, kind: 'CLASSIFIED', ticker: tk, bucket: input.bucket, shares: q, reason: input.reason });
-  acct.shadow.push({ date: view.date, f: 'F17', ticker: tk, title: '手動交易', rule: 0, ai: null, actual: q, price: px, choice: 'MANUAL', note: input.reason });
+  if (removing) removeOwnPick(acct, tk);
+  const why = removing ? (input.reason ? `${input.reason}（賣光並移出自選）` : '賣光並移出自選') : input.reason;
+  acct.events.push({ date: view.date, kind: 'CLASSIFIED', ticker: tk, bucket: input.bucket, shares: q, reason: why });
+  acct.shadow.push({ date: view.date, f: 'F17', ticker: tk, title: removing ? '手動交易：賣光並移出自選（如果繼續持有）' : '手動交易', rule: 0, ai: null, actual: q, price: px, choice: 'MANUAL', note: why });
   n.status = 'DONE';
   n.note = input.bucket;
   const unblocked = acct.monthlyBlocked && !Object.values(acct.lots.unc).some((x) => x);

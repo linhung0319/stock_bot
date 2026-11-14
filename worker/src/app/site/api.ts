@@ -376,7 +376,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       const bucket = b.bucket === 'mom' ? 'mom' : 'own';
       const reason = text(b.reason, '理由', 300, false);
       const r = await mutate(backend, `通知 #${id}：分類到${bucket === 'own' ? '自選' : '動能'}`, [], (d) => {
-        const out = classify(d.acct, d.view, id, { bucket, reason: reason || undefined });
+        const out = classify(d.acct, d.view, id, { bucket, reason: reason || undefined, removeOwn: b.removeOwn === true });
         if (out.error) throw new SiteError(422, out.error);
         let acct = out.acct;
         let monthlyId: number | null = null;
@@ -416,7 +416,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       if (q > 0) shares[ticker(k)] = q;
     }
     // 現金可以是負的（融資帳戶，或示範裡買超過現金）；畫面上會提醒
-    const snap: Snapshot = { shares, cash: num(b.cash, '現金', -1e10, 1e10) };
+    const note = text(b.note, '這次自己交易的原因', 300, false);
+    const snap: Snapshot = { shares, cash: num(b.cash, '現金', -1e10, 1e10), ...(note ? { note } : {}) };
     const r = await mutate(backend, '填快照', Object.keys(shares), (d) => {
       const noPrice = Object.keys(shares).filter((t) => !d.view.close[t] || !Number.isFinite(d.view.close[t][d.view.i]));
       if (noPrice.length) throw new SiteError(422, `抓不到 ${noPrice.join('、')} 在 ${d.view.date} 的收盤價。請確認代號有沒有打錯。`);

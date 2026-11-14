@@ -132,6 +132,8 @@ export interface Notif {
   monthly?: { input: MonthlyContext; before: SavedState };
   ref?: number;
   note?: string;
+  /** CLASSIFY：填快照時寫的「這次自己交易的原因」，分類時預先帶進理由欄。 */
+  userNote?: string;
   /** 這則通知用到的所有 AI 執行（各項目的 runIds，加上不屬於任何項目的：F1 否決、F20 說明；T13 起）。 */
   runIds?: string[];
 }
@@ -340,9 +342,27 @@ export function flowUnits(units: number, valueBefore: number, amount: number): n
   return u < 1e-9 ? 0 : u;
 }
 
-/** 依波動度反比，在自選預算內推薦每檔的標準比重（設計 §2.2）。 */
+/** 推薦標準比重用的波動度：最多 126 天；上市不久的股票用現有的天數，至少 20 天，不夠回傳 NaN。 */
+export const STD_VOL_DAYS = 126;
+export const STD_VOL_MIN_DAYS = 20;
+export function recentVol(close: ArrayLike<number> | undefined, i: number): number {
+  if (!close) return NaN;
+  let n = 0;
+  while (n < STD_VOL_DAYS && i - n - 1 >= 0 && Number.isFinite(close[i - n]) && Number.isFinite(close[i - n - 1]) && close[i - n - 1] > 0) n++;
+  if (n < STD_VOL_MIN_DAYS) return NaN;
+  const v = annualizedVol(close, i, n);
+  return Number.isFinite(v) && v > 0 ? v : NaN;
+}
+
+/**
+ * 依波動度反比，在自選預算內推薦每檔的標準比重（設計 §2.2）。
+ * 歷史不到 126 天的用現有的天數；不到 20 天的用其他檔的平均波動度；全部都算不出來就平分（設計 §10 第 37 點）。
+ */
 export function recommendStdWeights(view: MarketView, tickers: string[], ownBudget: number): Record<string, number> {
-  const inv = tickers.map((t) => 1 / annualizedVol(view.close[t], view.i, 126));
+  const vols = tickers.map((t) => recentVol(view.close[t], view.i));
+  const known = vols.filter((v) => Number.isFinite(v));
+  const fallback = known.length ? known.reduce((a, b) => a + b, 0) / known.length : 1;
+  const inv = vols.map((v) => 1 / (Number.isFinite(v) ? v : fallback));
   const s = inv.reduce((a, b) => a + b, 0);
   const out: Record<string, number> = {};
   tickers.forEach((t, k) => {

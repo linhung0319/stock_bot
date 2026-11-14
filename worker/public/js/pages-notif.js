@@ -583,12 +583,16 @@ function askForm(v, ctx) {
       h('div', { class: 'btn-row' }, kinds.map((k) => actionButton(k, k === kinds[0] ? 'primary' : '', () => pick(k)))),
     );
   }
-  const { ticker, quantity, canMom } = v.ask;
+  const { ticker, quantity, canMom, canOwn, canRemoveOwn, note } = v.ask;
   const reason = h('textarea', { rows: 2 });
+  if (note) reason.value = note;
+  // 自選賣到 0 股：預設同時移出自選（不然之後加回或入金會把它買回來）
+  const remove = canRemoveOwn ? h('input', { type: 'checkbox', checked: true }) : null;
   const send = (bucket) => async () => {
     try {
-      const r = await api.post(`/notif/${v.id}/classify`, { bucket, reason: reason.value });
-      toast(`已歸到${bucket === 'own' ? '自選' : '動能'}`);
+      const removeOwn = bucket === 'own' && !!remove?.checked;
+      const r = await api.post(`/notif/${v.id}/classify`, { bucket, reason: reason.value, removeOwn });
+      toast(removeOwn ? `已從自選扣掉，${ticker} 移出自選` : `已歸到${bucket === 'own' ? '自選' : '動能'}`);
       ctx.go(r.notifId ? `#/n/${r.notifId}` : '#/');
     } catch (e) {
       msg.replaceChildren(errBox(e));
@@ -598,9 +602,14 @@ function askForm(v, ctx) {
     'pad',
     h('p', null, '快照裡 ', h('span', { class: 'tk' }, ticker), quantity > 0 ? ' 多了 ' : ' 少了 ', h('b', { class: 'num' }, qty(quantity)), ' 股，不在任何清單上。這筆要記在哪一桶？'),
     h('p', { class: 'small dim', style: 'margin:6px 0 14px' }, quantity > 0 ? '清單以外自己買的股票歸自選，之後由自選的慢規則管。只有它在這個月的動能名單上、而且那一格還沒買足時，才能歸動能。' : '賣出的部分從持有它的那一桶扣。', '回答之前，月報會暫停。'),
-    quantity > 0 ? h('label', { class: 'field' }, h('span', null, '為什麼買（選填，會成為這檔的前提）'), reason, h('small', null, '沒寫就用系統預設的前提。')) : null,
+    quantity > 0
+      ? h('label', { class: 'field' }, h('span', null, '為什麼買（選填，會成為這檔的前提）'), reason, h('small', null, '沒寫就用系統預設的前提。'))
+      : h('label', { class: 'field' }, h('span', null, '為什麼賣（選填）'), reason, h('small', null, '記在帳本與「沒照規則做的」紀錄上，之後回頭看這次自己的判斷。')),
+    remove
+      ? h('label', { class: 'check-row' }, remove, h('span', null, '自選的 ', h('span', { class: 'tk' }, ticker), ' 全部賣掉了：同時移出自選（之後不再追蹤，也不會被加回或入金買回來）'))
+      : null,
     msg,
-    h('div', { class: 'btn-row' }, actionButton('歸自選', 'primary', send('own')), canMom ? actionButton('歸動能', '', send('mom')) : null),
+    h('div', { class: 'btn-row' }, canOwn ? actionButton(quantity > 0 ? '歸自選' : '從自選扣', 'primary', send('own')) : null, canMom ? actionButton(quantity > 0 ? '歸動能' : '從動能扣', canOwn ? '' : 'primary', send('mom')) : null),
   );
 }
 
@@ -674,6 +683,7 @@ export async function snapshotPage(ctx) {
   };
   f.rows.forEach((r) => addRow(r));
   cash.addEventListener('input', recount);
+  const note = h('input', { type: 'text', maxlength: 300, placeholder: '例如：財報不如預期，先賣掉一半', 'aria-label': '這次自己交易的原因' });
   const msg = h('div');
   const out = h('div');
   const foot = h('div', { style: 'display:contents' });
@@ -693,7 +703,7 @@ export async function snapshotPage(ctx) {
       return msg.replaceChildren(errBox(new Error('請填券商現在顯示的現金（可用資金）。')));
     }
     try {
-      const r = await api.post('/snapshot', { shares, cash: c });
+      const r = await api.post('/snapshot', { shares, cash: c, note: note.value });
       msg.replaceChildren();
       await ctx.refresh(false);
       form.hidden = true;
@@ -747,7 +757,9 @@ export async function snapshotPage(ctx) {
       h('div', { class: 'scroll-x' }, h('table', { class: 'snap' }, h('thead', null, h('tr', null, h('th', null, '代號'), h('th', { class: 'r wide' }, '帳本'), h('th', { class: 'r wide' }, '清單'), h('th', { class: 'r' }, '券商現在的股數'), h('th', null, ''))), tbody)),
       h('div', { class: 'pad btn-row' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow({ ticker: '', book: 0, expected: 0, listed: 0, where: '' }, true) }, '加一檔清單外的股票'), fill),
     ),
-    glass('pad', h('label', { class: 'field', style: 'margin:0' }, h('span', null, '券商現在顯示的現金'), h('div', { style: 'max-width:14em' }, cash), h('small', null, `帳本上是 ${money(f.cashBook, 2)}`, f.withdraw ? `；清單做完要轉出 ${money(f.withdraw)}，請填轉出之後的現金` : '', '。不用填成交價，系統用現金的變化對帳；差太多會問你是入金、出金還是股利。'))),
+    glass('pad', h('label', { class: 'field', style: 'margin:0' }, h('span', null, '券商現在顯示的現金'), h('div', { style: 'max-width:14em' }, cash), h('small', null, `帳本上是 ${money(f.cashBook, 2)}`, f.withdraw ? `；清單做完要轉出 ${money(f.withdraw)}，請填轉出之後的現金` : '', '。不用填成交價，系統用現金的變化對帳；差太多會問你是入金、出金還是股利。')),
+      h('label', { class: 'field', style: 'margin:14px 0 0' }, h('span', null, '這次自己交易的原因（選填）'), note, h('small', null, '有清單以外的買賣（例如自己緊急賣出）時寫一句，會記在帳本那幾筆變動上；核心的 VOO／SGOV 也記。')),
+    ),
     msg,
     f.lists.length ? h('p', { class: 'small faint', style: 'margin-top:10px' }, '送出之前都可以回上一步。送出之後帳本就照這份快照更新；填錯了再填一次快照就好。') : null,
   );
