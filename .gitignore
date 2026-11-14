@@ -3,3 +3,6 @@ __pycache__/
 backtest/data/
 .env
 research/data_sources/raw/
+
+# 從 Worker 匯出的紀錄（含帳戶與持股；repo 是公開的，不能 commit）
+records/
