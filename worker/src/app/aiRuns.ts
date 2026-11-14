@@ -1,6 +1,7 @@
 // AI 執行（T9）：存證據包 → 建任務、觸發雲端排程 → 收到結果後檢查每一票、表決 → 存結論。
 // 沒有結果（觸發失敗、逾時、結果被退回）也存一份「照規則」的結論，所以每一次執行最後都有結論可以看。
 import { judge, noResult, packHash, type EvidencePack, type Outcome } from '../ai/check';
+import { PAYLOAD_HOOKS } from '../ai/hooks';
 import { TASK_TIMEOUT_MS, createTask, fireRoutine, type AiTaskRow } from './aiTasks';
 import type { Env, Fetcher } from './env';
 
@@ -88,7 +89,7 @@ export async function finalizeRun(db: D1Database, task: AiTaskRow, result: Recor
   const row = await db.prepare('SELECT * FROM ai_runs WHERE task_id = ?').bind(task.id).first<Row>();
   if (!row || row.status !== 'PENDING') return null;
   const run = toRun(row);
-  const outcome = judge(run.pack, result.samples as unknown[]);
+  const outcome = judge(run.pack, result.samples as unknown[], PAYLOAD_HOOKS[run.fn]);
   await close(db, run.runId, outcome, now, (result.process as ProcessStep[] | undefined) ?? []);
   return outcome;
 }

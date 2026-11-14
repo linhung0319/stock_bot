@@ -188,8 +188,11 @@ function checkConditions(list: unknown, from: CheckedCondition['from'], okIds: S
   });
 }
 
+/** 各功能自己的 payload 檢查（在通用檢查之後、證據條數降級之前呼叫；可以加 issues、把條件改標人工、改 verdict）。 */
+export type PayloadHook = (s: CheckedSample, pack: EvidencePack) => void;
+
 /** 檢查一票。 */
-export function checkSample(pack: EvidencePack, raw: unknown, index: number): CheckedSample {
+export function checkSample(pack: EvidencePack, raw: unknown, index: number, hook?: PayloadHook): CheckedSample {
   const pol = pack.policy;
   const out: CheckedSample = { index, valid: false, verdict: pol.abstain, rawVerdict: null, issues: [], evidence: [], premises: [], conditions: [], abstainReason: null, dataMissing: [], model: null, payload: null, report: null };
   if (!isObj(raw)) {
@@ -245,6 +248,7 @@ export function checkSample(pack: EvidencePack, raw: unknown, index: number): Ch
     .map(([k]) => k);
 
   out.verdict = out.rawVerdict!;
+  hook?.(out, pack);
   if (out.verdict !== pol.abstain && (pol.level === 'A3' || pol.level === 'A4') && okIds.size < pol.min_evidence) {
     out.issues.push(`通過檢查的證據只有 ${okIds.size} 條（需要 ${pol.min_evidence} 條），這一票改成 ${pol.abstain}`);
     out.verdict = pol.abstain;
@@ -301,10 +305,10 @@ export function decide(pack: EvidencePack, samples: CheckedSample[]): Outcome {
 }
 
 /** 送回的結果（多票）→ 檢查 → 結論。 */
-export function judge(pack: EvidencePack, rawSamples: unknown[]): Outcome {
+export function judge(pack: EvidencePack, rawSamples: unknown[], hook?: PayloadHook): Outcome {
   return decide(
     pack,
-    rawSamples.slice(0, 5).map((s, i) => checkSample(pack, s, i)),
+    rawSamples.slice(0, 5).map((s, i) => checkSample(pack, s, i, hook)),
   );
 }
 

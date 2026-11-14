@@ -5,14 +5,16 @@
 //   /api/*、/demo/api/*          網站的 API（Cloudflare Access；src/app/site/）
 //   其他                         網站的靜態檔（public/，由 Cloudflare 直接回應，不會進到這裡）
 import { acceptResult, createTask, fireRoutine, getTask, readEvidence, taskTimings } from './app/aiTasks';
-import { finalizeRun } from './app/aiRuns';
+import { finalizeRun, listRuns } from './app/aiRuns';
 import { bearerOk, json, type Env, type Fetcher } from './app/env';
 import { getFlowState, ingest, pushPending, recentFlowRuns, runFlow, sendTestPush } from './app/flow';
-import { loadAccount } from './app/ledgerStore';
+import { loadAccount, requiredTickers } from './app/ledgerStore';
+import { startOwnReview } from './app/ownAi';
+import { buildMarketView } from './data/marketView';
 import { lineConfigured } from './app/line';
 import { probeSummary, runProbe, saveProbe } from './app/probe';
 import { handleSite } from './app/site/api';
-import { loadConstituents, loadRanking, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
+import { loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
 export const VERSION = '0.5.0';
 
@@ -98,6 +100,19 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
       const fired = await fireRoutine(env, id, fetcher, now);
       return json({ id, fired }, fired.ok ? 200 : 502);
     }
+    if (path === '/admin/ai/review' && request.method === 'POST') {
+      // 手動開一次自選定期審查（F24），T10 實測與量 Max 用量用
+      const t = (url.searchParams.get('ticker') ?? '').toUpperCase();
+      const loaded = await loadAccount(env.DB);
+      if (!loaded?.acct.own[t]) return json({ error: `${t || '（沒有代號）'} 不是自選股` }, 400);
+      const series = await loadSeries(env.DB, requiredTickers(loaded.acct));
+      const session = series.get(loaded.acct.cfg.coreTicker)?.d.at(-1);
+      if (!session) return json({ error: '還沒有價格資料' }, 409);
+      const built = buildMarketView(series, session, loaded.acct.cfg.coreTicker);
+      const run = await startOwnReview(env, fetcher, loaded.acct, built.view, built.axis, t, 'MANUAL', now);
+      return json({ runId: run.runId, taskId: run.taskId, status: run.status, outcome: run.outcome, notes: run.packNotes, documents: run.pack.documents.map((d) => ({ source: d.source_id, title: d.title, chars: d.text.length })), dataQuality: run.pack.data_quality });
+    }
+    if (path === '/admin/ai/runs') return json((await listRuns(env.DB, now, { limit: 30 })).map((r) => ({ runId: r.runId, fn: r.fn, ticker: r.ticker, asOf: r.asOf, status: r.status, outcome: r.outcome && { status: r.outcome.status, verdict: r.outcome.verdict, votes: r.outcome.votes, reason: r.outcome.reason } })));
     const task = /^\/admin\/ai\/task\/([0-9a-f]{32})$/.exec(path);
     if (task) {
       const t = await getTask(env.DB, task[1]);

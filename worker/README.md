@@ -60,6 +60,13 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - 網站：紀錄區的「AI 紀錄」、`#/ai/<執行編號>`（`public/js/pages-ai.js`）、匯出 md（`/api/ai/run/<編號>/md`）。
 - 雲端排程的共用 prompt：`../ai/prompts/run.md`；各功能的 prompt 在 T10、T11 加上。
 
+## 自選審查與條件監測（T10）
+
+- `src/data/edgar.ts`：XBRL companyfacts（point-in-time 季度表、財報條件比對）、申報原文（MD&A、8-K 與 EX-99.1）、Nasdaq 新聞標題。
+- `src/ai/ownReview.ts`：F24／F25 的證據包、payload 檢查、結論怎麼變成引擎的輸入；`src/app/ownAi.ts`：接進每日流程（`aiStep`）。
+- 用真實資料看 F24 的證據長什麼樣（不觸發 AI）：`npx tsx scripts/own-evidence-local.ts MU 2026-11-13`。
+- prompt：`../ai/prompts/own_review_v1.md`、`own_condition_v1.md`。
+
 ## 網站（T8）
 
 - 本機看網站：`npm run dev`，開 `http://127.0.0.1:8787/?demo=1`（示範資料）。第一次要先建本機的資料表：

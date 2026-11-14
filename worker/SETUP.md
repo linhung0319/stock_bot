@@ -156,3 +156,16 @@ npx wrangler d1 migrations apply stock-bot --remote
 npx wrangler deploy
 ```
 T5 的雲端排程建好之後，排程的 Instructions 用 `ai/prompts/run.md` 的「排程的 prompt」（它也會把 PING 任務交給 `ping.md` 處理，所以同一個排程就夠）。
+
+## T10：自選定期審查（F24）、自選條件監測（F25）
+
+部署時套用新的資料表（`0006`，監測條件）並部署：
+```
+npx wrangler d1 migrations apply stock-bot --remote
+npx wrangler deploy
+```
+會用到已經設好的 `EDGAR_USER_AGENT`。雲端排程（T5）建好之後：
+1. 對一檔自選手動開一次審查，看雲端排程跑完、結果送回：
+   `curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" "https://<網址>/admin/ai/review?ticker=MU"`
+2. 幾分鐘後看結果：`curl -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/ai/runs`，網站的「紀錄 → AI 紀錄」也看得到。
+3. 到 claude.ai 的用量頁記下這一次吃了多少 Max 用量（T10 要記錄）。

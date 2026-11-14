@@ -13,7 +13,10 @@ import { runIngest, type IngestResult } from '../data/ingest';
 import { buildMarketView, rebaseNotifSeq } from '../data/marketView';
 import { NO_SIGNAL_ALERTS, loadCalendarOverrides, loadRanking, loadRun, loadSeries, saveAlerts, saveRun, type Alert, type DataRun, type Ranking } from '../data/store';
 import { errText } from '../data/util';
-import { closeStaleRuns } from './aiRuns';
+import { closeStaleRuns, listRuns } from './aiRuns';
+import { aiStep } from './ownAi';
+import { noteOfRun } from './site/aiViews';
+import type { AiNote } from './site/types';
 import { sweepTimeouts } from './aiTasks';
 import type { Env, Fetcher } from './env';
 import { ConflictError, loadAccount, requiredTickers, saveAccount, shadowTickers } from './ledgerStore';
@@ -105,7 +108,7 @@ export const monthlyMade = (acct: Account, month: string): boolean => acct.notif
  * 依序處理 sessions 這幾個交易日：每日檢查；當月最後一個交易日再出下個月的月報；新通知寫下理由。
  * 純粹讀 D1（價格、排名、抓取紀錄），不寫。
  */
-export async function processSessions(db: D1Database, acct0: Account, sessions: string[], ov: CalendarOverrides): Promise<Processed> {
+export async function processSessions(db: D1Database, acct0: Account, sessions: string[], ov: CalendarOverrides, aiNotes: AiNote[] = []): Promise<Processed> {
   let acct = acct0;
   const alerts: Alert[] = [];
   const done: string[] = [];
@@ -144,7 +147,7 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
         rankOrder = input.order;
       }
     }
-    annotate({ acct, view, axis: built.axis, rankOrder, aiNotes: [] }, (n) => !before.has(n.id));
+    annotate({ acct, view, axis: built.axis, rankOrder, aiNotes }, (n) => !before.has(n.id));
     done.push(s);
   }
   const created = acct.notifs.filter((n) => !start.has(n.id)).map((n) => n.id);
@@ -285,7 +288,8 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
             res.status = 'DONE';
             break;
           }
-          const p = await processSessions(db, loaded.acct, plan.sessions, ov);
+          const aiNotes = (await listRuns(db, opt.now, { limit: 200 })).map(noteOfRun).filter((n): n is AiNote => n !== null);
+          const p = await processSessions(db, loaded.acct, plan.sessions, ov, aiNotes);
           alerts.push(...p.alerts);
           try {
             await saveAccount(db, p.acct, loaded, `每日流程 ${session}${p.monthly !== null ? '（含月報）' : ''}`, opt.now, [setFlowStateStmt(db, 'lastSession', session, at)]);
@@ -307,6 +311,21 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
     acct = acct ?? (await loadAccount(db).catch(() => null))?.acct ?? null;
   }
 
+  // AI 那一段（F24、F25）：套用回來的結論、看新申報、開新的執行。資料不完整的日子不做
+  let aiLog: { log: string[]; started: string[] } | null = null;
+  if (res.status === 'DONE' || res.status === 'SKIPPED') {
+    try {
+      const a = await aiStep(env, fetcher, opt.now, session, ov, res.status === 'DONE' && res.processed.length > 0);
+      res.created.push(...a.created);
+      alerts.push(...a.alerts);
+      aiLog = { log: a.log, started: a.started };
+      if (a.created.length) acct = (await loadAccount(db))?.acct ?? acct;
+    } catch (e) {
+      console.error('AI 那一段出錯', e);
+      alerts.push({ kind: 'FLOW_ERROR', message: `AI 那一段（自選審查、條件監測）出錯：${errText(e)}；規則的部分已經照常做完。` });
+    }
+  }
+
   const ok = res.status === 'DONE' || res.status === 'NO_ACCOUNT' || res.status === 'SKIPPED';
   if (opt.attempt !== 'FIRST') {
     // 缺席告警：再試之後今天還是沒有跑完；AI 任務逾時
@@ -319,7 +338,7 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
   res.alerts = alerts.map((a) => a.kind);
 
   // 先記下這次的結果（推播時要知道今天做完了沒），推播完再補上推播結果
-  const detail = () => JSON.stringify({ processed: res.processed, created: res.created, monthly: res.monthly, alerts: res.alerts, push: res.push, error: res.error, blocked: acct ? blockedMonthly(acct)?.id ?? null : null });
+  const detail = () => JSON.stringify({ processed: res.processed, created: res.created, monthly: res.monthly, alerts: res.alerts, push: res.push, error: res.error, blocked: acct ? blockedMonthly(acct)?.id ?? null : null, ai: aiLog });
   const row = await db.prepare('INSERT INTO flow_runs (session, at, attempt, status, detail) VALUES (?, ?, ?, ?, ?) RETURNING id').bind(session, at, opt.attempt, res.status, detail()).first<{ id: number }>();
   // 第一次失敗先不推告警（兩小時後會再試）；成功了就把通知與告警都推出去
   res.push = await pushPending(env, fetcher, opt.now, acct, res.created, ok || opt.attempt !== 'FIRST');
