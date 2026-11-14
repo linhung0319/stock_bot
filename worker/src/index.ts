@@ -3,6 +3,7 @@
 //   /ai/task/:id/evidence|result 雲端排程用，Bearer AI_TASK_SECRET
 //   /admin/*                     管理用，Bearer ADMIN_TOKEN（/admin/export：紀錄匯出到本機，src/app/export.ts）
 //   /auth/line/login|callback    網站的 LINE 登入（src/app/site/lineLogin.ts）
+//   /line/webhook                LINE 關鍵字回覆，驗 X-Line-Signature（src/app/lineWebhook.ts）
 //   /api/*、/demo/api/*          網站的 API（LINE 登入的 cookie；src/app/site/）
 //   其他                         網站的靜態檔（public/，由 Cloudflare 直接回應，不會進到這裡）
 import { acceptResult, createTask, fireRoutine, getTask, readEvidence, taskTimings } from './app/aiTasks';
@@ -17,12 +18,13 @@ import { buildSnapshot, saveSnapshot } from './app/crashAi';
 import { entryRuleVerdict } from './ai/momEntry';
 import { buildMarketView } from './data/marketView';
 import { lineConfigured } from './app/line';
+import { handleLineWebhook } from './app/lineWebhook';
 import { probeSummary, runProbe, saveProbe } from './app/probe';
 import { handleSite } from './app/site/api';
 import { handleLineLogin } from './app/site/lineLogin';
 import { loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.0';
 
 /** 每日流程（美股收盤後；UTC 23:30 = 美東 18:30 或 19:30 = 台灣早上 7:30）：抓資料、每日檢查、月報、LINE。 */
 // 星期用英文縮寫：Cloudflare 的數字是 1 = 星期日（不是一般 cron 的 1 = 星期一），2026-11-13 因此漏跑過一次週五
@@ -51,6 +53,8 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
   const url = new URL(request.url);
   const path = url.pathname;
   if (path === '/health') return json({ ok: true, version: VERSION });
+
+  if (path === '/line/webhook') return handleLineWebhook(request, env, fetcher, now);
 
   const login = await handleLineLogin(request, env, fetcher, now);
   if (login) return login;

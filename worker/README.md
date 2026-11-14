@@ -59,6 +59,12 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - `src/app/aiRuns.ts`：一次 AI 執行的儲存、觸發、收結果後表決、逾時照規則（`migrations/0005_ai_runs.sql`）。
 - 網站：紀錄區的「AI 紀錄」、`#/ai/<執行編號>`（`public/js/pages-ai.js`）、匯出 md（`/api/ai/run/<編號>/md`）。
 
+## LINE 關鍵字回覆（T15）
+
+- `POST /line/webhook`（`src/app/lineWebhook.ts`）：驗 `X-Line-Signature`（`LINE_CHANNEL_SECRET`），只回 `LINE_USER_ID` 本人；用 reply API，不占推播額度。
+- 關鍵字：狀態、待辦、月報、告警、網址、說明（`KEYWORDS`）；不認得的回關鍵字列表。只讀 D1，不呼叫 AI、不改帳戶。回覆記在 `pushes`（`kind = 'REPLY'`）。
+- LINE 後台的設定：見 [`SETUP.md`](SETUP.md) 的 T15。
+
 ## 紀錄匯出到本機（T13）
 
 - `GET /admin/export`（`src/app/export.ts`）：每張表的拉法與列數；`?table=<表>&after=<rowid>` 照 rowid 分頁。不匯出 `probe_runs`、`demo_state`、`ai_tasks.evidence`。

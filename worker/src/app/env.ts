@@ -13,6 +13,8 @@ export interface Env {
   /** LINE Messaging API（T7）：channel access token 與收訊息的 user ID。都設了才會推播。 */
   LINE_CHANNEL_TOKEN?: string;
   LINE_USER_ID?: string;
+  /** Messaging API channel 的 Channel secret：驗 /line/webhook 的簽章（T15）。和 LINE_LOGIN_CHANNEL_SECRET 不同。 */
+  LINE_CHANNEL_SECRET?: string;
   /** 網站網址（LINE 訊息裡的連結），wrangler.jsonc 的 vars。 */
   SITE_URL?: string;
   /** 只給本機開發（.dev.vars）：'1' = 網站不驗證登入。部署的環境不要設。 */

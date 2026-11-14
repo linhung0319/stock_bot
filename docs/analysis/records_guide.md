@@ -82,7 +82,7 @@ records/                         ← .gitignore，不進 repo
 |---|---|---|
 | `data_runs` | 每次抓資料：OK／DEGRADED／FAILED、能不能出訊號與換股、耗時 | 只增加 |
 | `flow_runs` | 每次每日流程：FIRST／FINAL／MANUAL、DONE／ERROR…、處理了哪幾天 | 只增加 |
-| `pushes` | 每次 LINE 推播與結果 | 只增加 |
+| `pushes` | 每次 LINE 推播與結果（`kind`：NOTIF 通知、ALERT 告警、TEST 測試、REPLY 關鍵字回覆；REPLY 不算推播額度） | 只增加 |
 | `alerts` | 告警與推播時間 | 會改 |
 | `flow_state` | 流程進度（最後處理到的交易日、上線日…） | 會改 |
 

@@ -193,3 +193,14 @@ npx wrangler deploy
 
 雲端排程（T5）建好之後，月報前一天（當月倒數第二個交易日）會自動開：自選定期審查、動能新股進場審查（有命中才開法庭）、擬事件打分、崩盤規則檢視或每月評語；
 平常每天有新的 8-K 或新聞標題時開每日掃描（Haiku）。第一個月跑完後到 claude.ai 的用量頁看一下整體用量。
+
+## T15：LINE 關鍵字回覆
+
+在 LINE 傳固定的字給官方帳號（狀態、待辦、月報、告警、網址、說明），Worker 用 reply API 回現況（不占推播額度、不呼叫 AI、不改帳戶）。
+
+1. LINE Developers → Messaging API 那個 channel → **Basic settings** 的 Channel secret 加進 `worker/.secrets.json`（`LINE_CHANNEL_SECRET`；不是 LINE Login channel 的那個）。
+2. 用管線設進 Worker（值不會印出來）：
+   `uv run python -c "import json,sys;sys.stdout.write(json.load(open('.secrets.json',encoding='utf-8'))['LINE_CHANNEL_SECRET'].strip())" | npx wrangler secret put LINE_CHANNEL_SECRET`
+3. **Messaging API** 分頁 → Webhook settings：Webhook URL 填 `https://stock-bot.linhung0319.workers.dev/line/webhook`、打開 **Use webhook**、按 **Verify**（要回 Success；部署之前按會是 404）。Webhook redelivery 不用開。
+4. LINE Official Account Manager → 設定 → 回應設定：聊天關閉、自動回應訊息關閉、Webhook 開啟（加入好友的歡迎訊息可關可不關）。
+5. 在 LINE 傳「狀態」：應該馬上收到帳戶與每日流程的狀況。別人傳的、群組裡的訊息不會回。

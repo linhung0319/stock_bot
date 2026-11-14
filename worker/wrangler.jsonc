@@ -10,6 +10,7 @@
   //   SESSION_SECRET     簽登入 cookie 的亂碼；這三個加上 LINE_USER_ID 都設了，網站才開 LINE 登入
   //   LINE_CHANNEL_TOKEN LINE Messaging API 的 channel access token（long-lived）
   //   LINE_USER_ID       收 LINE 訊息的 user ID（LINE Developers 後台的 Your user ID）
+  //   LINE_CHANNEL_SECRET Messaging API channel 的 Channel secret（驗 /line/webhook 的簽章，T15）
   "name": "stock-bot",
   "main": "src/worker.ts",
   "compatibility_date": "2026-11-01",
