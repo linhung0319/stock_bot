@@ -1,8 +1,9 @@
-// 共用的畫面元件：門檻尺、走勢圖、AI 的說明、理由區、要下的單。
+// 共用的畫面元件：走勢圖、AI 的說明、理由區、要下的單。
 import { api } from './api.js';
 import { actionText, day, h, money, pct, put, qty, s, signedPct } from './dom.js';
+import { meterEl } from './layout.js';
 
-export const bucketTag = (bucket, name) => h('span', { class: 'tag', 'data-b': bucket }, name);
+export const bucketTag = (bucket, name) => h('span', { class: 'tag', 'data-b': bucket }, h('i', { class: 'g' }), name);
 
 /** 收合的箭頭（放在 summary 裡）。 */
 export const chevron = () => h('span', { class: 'chev', 'aria-hidden': 'true' });
@@ -19,8 +20,8 @@ function foldState() {
   }
 }
 /** id：記住開關用的名字。head：標題那一列的內容（永遠看得到）。body：收合時藏起來的內容。 */
-export function fold(id, head, body, cls = '') {
-  const el = h('details', { class: 'fold ' + cls, open: foldState()[id] !== false }, h('summary', null, head, chevron()), h('div', { class: 'fold-body' }, body));
+export function fold(id, head, body, cls = '', attrs = {}) {
+  const el = h('details', { ...attrs, class: 'fold ' + cls, open: foldState()[id] !== false }, h('summary', null, head, chevron()), h('div', { class: 'fold-body' }, body));
   el.addEventListener('toggle', () => {
     const st = foldState();
     st[id] = el.open;
@@ -36,38 +37,6 @@ export function fold(id, head, body, cls = '') {
 export function sideChip(shares) {
   if (shares === 0) return h('span', { class: 'side none' }, '搬');
   return h('span', { class: 'side ' + (shares < 0 ? 'sell' : 'buy') }, shares < 0 ? '賣' : '買');
-}
-
-// ---------------------------------------------------------------- 門檻尺
-// 一條刻度：圓點是現在，直線是規則的門檻，紅色底是會觸發的區間。
-
-export function ruler(g, mini = false) {
-  if (!g) return null;
-  const span = g.to - g.from || 1;
-  const x = (v) => Math.min(100, Math.max(0, ((v - g.from) / span) * 100));
-  const vx = x(g.value);
-  const hit = g.zones.some((z) => g.value >= Math.min(z.from, z.to) - 1e-9 && g.value <= Math.max(z.from, z.to) + 1e-9);
-  const track = h(
-    'div',
-    { class: 'ruler-track' },
-    g.zones.map((z) => h('div', { class: 'ruler-zone', style: { left: x(Math.min(z.from, z.to)) + '%', width: Math.abs(x(z.to) - x(z.from)) + '%' } })),
-    g.marks.map((m) => h('div', { class: 'ruler-mark', style: { left: x(m.at) + '%' } })),
-    h('div', { class: 'ruler-dot' + (hit ? ' hit' : ''), style: { left: vx + '%' } }),
-    mini ? null : h('div', { class: 'ruler-val' + (vx < 12 ? ' l' : vx > 88 ? ' r' : ''), style: { left: vx + '%' } }, g.valueLabel),
-  );
-  const near = (p) => g.marks.some((m) => Math.abs(x(m.at) - p) < 16);
-  const labels = h(
-    'div',
-    { class: 'ruler-labels' },
-    near(0) ? null : h('span', { class: 'end from' }, g.fromLabel),
-    near(100) ? null : h('span', { class: 'end to' }, g.toLabel),
-    g.marks.map((m) => {
-      const p = x(m.at);
-      return h('span', { style: p < 8 ? { left: '0', translate: '0 0' } : p > 92 ? { left: 'auto', right: '0', translate: '0 0' } : { left: p + '%' } }, m.label);
-    }),
-  );
-  const desc = `${g.caption}：現在 ${g.valueLabel}；門檻 ${g.marks.map((m) => m.label).join('、')}${hit ? '（在會觸發的區間內）' : ''}`;
-  return h('figure', { class: 'ruler' + (mini ? ' mini' : ''), role: 'img', 'aria-label': desc }, mini ? null : h('figcaption', { class: 'ruler-cap' }, g.caption), track, mini ? null : labels);
 }
 
 // ---------------------------------------------------------------- 走勢圖
@@ -228,8 +197,8 @@ export function rankTable(rows, focus) {
   );
 }
 
-/** 一項建議完整的「為什麼」（建議單展開後的右半邊）：理由和門檻尺；數字、算法、排名、規則原文、走勢圖再收一層。 */
-export function whyBlock(x, ticker) {
+/** 一項建議完整的「為什麼」（建議單展開後的右半邊）：理由和門檻條；數字、算法、排名、規則原文、走勢圖再收一層。 */
+export function whyBlock(x, ticker, meter = null) {
   const more = [];
   if (x.math?.length) more.push(h('div', null, h('h5', null, '股數怎麼算的'), h('ul', { class: 'math' }, x.math.map((m) => h('li', null, m)))));
   if (x.facts?.length) more.push(h('div', null, h('h5', null, '數字'), h('dl', { class: 'facts' }, x.facts.map((f) => [h('dt', null, f.label), h('dd', null, f.value ? h('span', { class: 'num' }, f.value) : null, f.note ? h('small', null, f.note) : null)]))));
@@ -245,7 +214,7 @@ export function whyBlock(x, ticker) {
       }
     });
   }
-  return h('div', { class: 'slip-why' }, h('p', { class: 'why' }, x.why), ruler(x.gauge), aiBlock(x.ai), x.aiMissing && !x.ai ? h('p', { class: 'small faint', style: { marginTop: '8px' } }, 'AI 的完整報告要等 AI 層上線後才會出現在這裡。') : null, det);
+  return h('div', { class: 'slip-why' }, h('p', { class: 'why' }, x.why), meterEl(meter, 'big'), aiBlock(x.ai), x.aiMissing && !x.ai ? h('p', { class: 'small faint', style: { marginTop: '8px' } }, 'AI 的完整報告要等 AI 層上線後才會出現在這裡。') : null, det);
 }
 
 // ---------------------------------------------------------------- 要下的單
@@ -263,17 +232,23 @@ export function orderRows(c, opt = {}) {
         opt.check ? h('td', { class: 'ck' }, h('input', { type: 'checkbox', 'aria-label': `${o.ticker} 已下單`, onchange: (ev) => ev.target.closest('tr').classList.toggle('done-row', ev.target.checked) })) : null,
         h('td', { class: 'sd' }, sideChip(o.shares)),
         h('td', null, h('span', { class: 'tk' }, o.ticker)),
-        h('td', { class: 'q' }, o.transfer ? '不用下單' : `${qty(o.shares)} 股`, o.amount !== null && !o.transfer ? h('div', { class: 'amt' }, '約 ' + money(Math.abs(o.amount))) : null),
+        h('td', { class: 'q' }, o.transfer ? h('small', null, '不用下單') : [qty(o.shares), h('small', null, '股')], o.amount !== null && !o.transfer ? h('div', { class: 'amt' }, '約 ' + money(Math.abs(o.amount))) : null),
       ),
       multi || o.transfer ? h('tr', { class: 'parts' }, h('td', { colspan: opt.check ? 4 : 3 }, o.parts.map((p) => h('div', null, `${p.bucketName} ${p.shares > 0 ? '+' : '−'}${qty(p.shares)}：${p.reason}`)))) : null,
     ];
   });
 }
 
+/** 「賣 ORCL 28 股（全部）」→ 賣的標記、代號、股數；結尾的括號用小字。 */
+export function actParts(text) {
+  const m = /^(.*?)（([^（）]*)）$/.exec(text);
+  const body = m ? m[1] : text;
+  const sb = /^(賣|買) (.*)$/.exec(body);
+  return [sb ? h('span', { class: 'side ' + (sb[1] === '賣' ? 'sell' : 'buy') }, sb[1]) : null, actionText(sb ? sb[2] : body), m ? h('small', null, m[2]) : null];
+}
+
 export function headline(text) {
-  // 結尾的括號（例如「（全部）」）用小字
-  const m = /^(.*?)(（[^（）]*）)$/.exec(text);
-  return h('h3', { class: 'act' }, actionText(m ? m[1] : text), m ? h('small', null, m[2]) : null);
+  return h('h3', { class: 'act' }, actParts(text));
 }
 
 export { pct };

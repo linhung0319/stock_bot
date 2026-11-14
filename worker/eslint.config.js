@@ -15,7 +15,7 @@ export default tseslint.config(
     files: ['public/**/*.js'],
     languageOptions: {
       globals: Object.fromEntries(
-        ['window', 'document', 'location', 'localStorage', 'sessionStorage', 'navigator', 'fetch', 'URLSearchParams', 'Node', 'Event', 'setTimeout', 'requestAnimationFrame', 'ResizeObserver', 'matchMedia'].map((g) => [g, 'readonly']),
+        ['window', 'document', 'location', 'localStorage', 'sessionStorage', 'navigator', 'fetch', 'URLSearchParams', 'Node', 'Event', 'setTimeout', 'clearTimeout', 'setInterval', 'requestAnimationFrame', 'ResizeObserver', 'matchMedia'].map((g) => [g, 'readonly']),
       ),
     },
   },

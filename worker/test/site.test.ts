@@ -11,6 +11,7 @@ import type { HistoryView, HoldingDetail } from '../src/app/site/views';
 import { saveRanking, saveSeries, type Series } from '../src/data/store';
 import { addOwn, changeRatio, classify, deposit, itemAction, liveShadow, recordAiTier, withdraw, type Account, type Notif } from '../src/engine';
 import { handle } from '../src/index';
+import { money } from '../src/app/site/bubble';
 import { freshDb } from './helpers/d1';
 import { ranksAt, type Market } from './helpers/market';
 import { scenarios } from './helpers/scenarios';
@@ -217,6 +218,52 @@ describe('情境 ① 平常的月報：用網站走完', () => {
     const done = await web.notif(n.id);
     expect(done).toMatchObject({ status: 'DONE', step: 0 });
     expect(done.filled.find((f) => f.ticker === 'ORCL')).toMatchObject({ shares: -28, bucketName: '動能' });
+  });
+
+  it('史萊姆的話：改一個選項只講那個選項的結果，數字和引擎前後兩次試算一致；待辦與帳戶頁也用真實數字', async () => {
+    const { sim, n } = simStart();
+    const v = await web.notif(n.id);
+    const orcl = itemOf(v, '動能出場', 'ORCL');
+    // 門檻條：排名掉出前 15 → 整條變紅，下面寫著這次賣出全部
+    expect(orcl.meter).toMatchObject({ s: 'hit', zone: '賣出', kind: 'stop' });
+    expect(orcl.meter!.v).toBeGreaterThan(orcl.meter!.t);
+    expect(orcl.meter!.say).toBe('已經掉出前 15 名 → 這次月報賣出全部 28 股');
+    expect(itemOf(v, '動能比例調回', 'PLTR').meter).toMatchObject({ s: 'hit', zone: '調回' });
+    expect(itemOf(v, '動能進場', 'GE').meter).toMatchObject({ s: 'hit', zone: '進場', kind: 'go' });
+    expect(itemOf(v, 'AI 建議提高比重', 'MSFT').meter).toMatchObject({ zone: '可提高', kind: 'go' });
+
+    type Pv = NonNullable<NotifView['composed']> & { effect?: import('../src/app/site/bubble').Bubble };
+    const before = await web.post<Pv>(`/notif/${n.id}/preview`, { choices: {} });
+    expect(before.effect).toBeUndefined(); // 沒說改了哪一個，就只回清單
+    const after = await web.post<Pv>(`/notif/${n.id}/preview`, { choices: { [orcl.key]: 'SKIP' }, changed: { key: orcl.key, from: 'DO' } });
+    const e = after.effect!;
+    const text = e.say.map((s) => (typeof s === 'string' ? s : s.t)).join('');
+    const count = (c: Pv) => c.orders.filter((o) => !o.transfer).length;
+    const diff = count(before) - count(after);
+    expect(e.k).toBe('ORCL：這次不做');
+    expect(text.startsWith('ORCL 這次不賣。')).toBe(true);
+    expect(text).toContain(`右邊少了 ${diff} 張單`);
+    expect(text).toContain(money(after.cashAfter));
+    expect(e.mood).toBe(after.cashAfter < -1 || text.includes('超過預算') ? 'worry' : 'watch');
+    if (after.cashAfter < -1) expect(text).toContain('會是負的');
+    // 改回照做：開心
+    const back = await web.post<Pv>(`/notif/${n.id}/preview`, { choices: { [orcl.key]: 'DO' }, changed: { key: orcl.key, from: 'SKIP' } });
+    expect(back.effect!.mood).toBe('happy');
+    expect(back.effect!.say.map((s) => (typeof s === 'string' ? s : s.t)).join('')).toContain('賣 ORCL 28 股');
+    await expectSame(sim); // 試算沒有改帳戶
+
+    // 待辦頁：照建議做完的結果，現金和右邊的清單相同
+    const st = await web.state();
+    const todoText = st.bubble.todo.say.map((s) => (typeof s === 'string' ? s : s.t)).join('');
+    expect(st.bubble.todo.k).toBe('照建議做完的話');
+    expect(todoText).toContain(`共 ${count(before)} 張單`);
+    expect(todoText).toContain(money(v.composed!.cashAfter));
+    expect(todoText).toContain('MSFT 的 AI 建議預設不做');
+    // 帳戶頁：現在的狀況，點名掉出名單的 ORCL
+    const acctText = st.bubble.account!.say.map((s) => (typeof s === 'string' ? s : s.t)).join('');
+    expect(acctText).toContain('ORCL');
+    expect(st.account!.holdings.find((h) => h.ticker === 'ORCL')!.meter).toMatchObject({ s: 'hit', zone: '賣出' });
+    expect(st.account!.status[0].meter).toMatchObject({ zone: '啟動', s: 'ok' });
   });
 
   it('照清單做完：帳本照清單分到各桶；1 月月報沒有規則單', async () => {

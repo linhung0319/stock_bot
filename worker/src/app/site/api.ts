@@ -35,6 +35,7 @@ import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
 import { json, type Env, type Fetcher } from '../env';
 import { siteAuth } from './access';
 import { ConflictError, demoBackend, realBackend, type DemoBackend, type SiteBackend, type SiteData } from './backend';
+import { choiceEffect } from './bubble';
 import { annotate } from './explain';
 import { accountView, composedView, ctxOf, historyView, holdingDetail, notifView, snapshotForm, stateView } from './views';
 
@@ -227,8 +228,20 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       const d = ready(await backend.load());
       const n = clone(findNotif(d.acct, id));
       const choices = (b.choices ?? {}) as Record<string, string>;
-      for (const it of n.items) if (choices[it.key] && it.choices.some((c) => c.id === choices[it.key])) it.choice = choices[it.key] as typeof it.choice;
-      return json(composedView(d, n, engine(() => composeNotif(d.acct, d.view, n))));
+      const pick = (nn: Notif, cs: Record<string, string>) => {
+        for (const it of nn.items) if (cs[it.key] && it.choices.some((c) => c.id === cs[it.key])) it.choice = cs[it.key] as typeof it.choice;
+      };
+      pick(n, choices);
+      const after = composedView(d, n, engine(() => composeNotif(d.acct, d.view, n)));
+      // 史萊姆那句話：只講剛剛改的那一個選項造成的結果（改之前也照樣算一次清單來比）
+      const ch = (b.changed ?? null) as { key?: unknown; from?: unknown } | null;
+      const it = ch ? n.items.find((x) => x.key === ch.key) : undefined;
+      if (!ch || !it || typeof ch.from !== 'string' || !it.choices.some((c) => c.id === ch.from)) return json(after);
+      const n0 = clone(findNotif(d.acct, id));
+      pick(n0, { ...choices, [it.key]: ch.from });
+      const before = composedView(d, n0, engine(() => composeNotif(d.acct, d.view, n0)));
+      const item = notifView(d, n).items.find((x) => x.key === it.key)!;
+      return json({ ...after, effect: choiceEffect({ item, from: ch.from, to: it.choice, before, after, account: accountView(d) }) });
     }
     if (act === 'respond') {
       const mode = b.mode === 'SKIP' ? 'SKIP' : 'DO';

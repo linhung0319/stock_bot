@@ -22,7 +22,9 @@ import {
   type Snapshot,
 } from '../../engine';
 import type { SiteData } from './backend';
+import { accountBubble, todoBubble, type Bubble } from './bubble';
 import { coreLineWhy, explainItem, findNote, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
+import { labelOf, meter, place, scaleOf, type Meter } from './meter';
 import { BUCKET_NAME, type AiNote, type Explain, type Gauge, type RankRow } from './types';
 
 type Ready = SiteData & { acct: Account; view: MarketView };
@@ -120,6 +122,8 @@ export interface ItemView {
   ruleChoice: string;
   actions: { id: string; label: string; hint: string; reasonLabel: string }[];
   explain: Explain;
+  /** 門檻條（沒有門檻的建議是 null）。 */
+  meter: Meter | null;
 }
 
 export interface OrderView {
@@ -185,6 +189,134 @@ const ACTIONS: Record<string, { label: string; hint: string; reasonLabel: string
   ADOPT: { label: '我也看好，認養到自選', hint: '照常買進，但記在自選桶。之後動能就算把它排除也不會叫你賣；動能那一格下個月再遞補。', reasonLabel: '為什麼看好（會成為這檔的前提）' },
 };
 
+// ---------------------------------------------------------------- 建議單上的門檻條
+
+const pctTxt = (x: number, dp = 1) => `${(Math.abs(x) * 100).toFixed(dp).replace(/\.0$/, '')}%`;
+
+/**
+ * 一項建議的門檻條：刻度和門檻用通知裡存著的數字（Gauge），下面那句白話結果用標題的股數。
+ * 沒有門檻的建議（入金、出金、硬事件…）回傳 null。
+ */
+export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: string): Meter | null {
+  const g = x.gauge;
+  if (!g || it.cancelled) return null;
+  const primary = it.choices.find((c) => c.id !== 'SKIP') ?? it.choices[0];
+  const total = primary.lines.reduce((a, l) => a + l.shares, 0);
+  const n0 = Math.abs(total);
+  const all = /（全部）/.test(headline);
+  const when = n.kind === 'MONTHLY' ? '這次月報' : '這次';
+  const act = total < 0 ? `${when}賣出${all ? '全部 ' : ' '}${n0} 股` : total > 0 ? `${when}買進 ${n0} 股` : '這次不用下單';
+  const cfg = d.acct.cfg;
+  let sc = scaleOf(g);
+  if (!sc) return null;
+  let zone = '觸發';
+  let kind: Meter['kind'] = 'stop';
+  let say: string | undefined;
+  let capText = g.caption;
+  switch (it.f) {
+    case 'F2': {
+      const th = sc.th;
+      sc = { ...sc, hit: g.value > th };
+      zone = '賣出';
+      capText = `一年報酬排名（共 ${Math.round(g.to)} 名，越左邊越強）`;
+      say = g.value > th ? `已經掉出前 ${th} 名 → ${act}` : `已不在動能名單上（上次沒賣）→ ${act}`;
+      break;
+    }
+    case 'F1': {
+      // 前面的股票不能買（已經持有、被否決、你排除）時，實際的門檻往後移到這一名
+      const rank = g.value;
+      const th = Math.max(cfg.momSlots, rank);
+      sc = { start: g.to, th, end: 1, value: rank, hit: true };
+      zone = '進場';
+      kind = 'go';
+      capText = `一年報酬排名（共 ${Math.round(g.to)} 名，越右邊越強）`;
+      say = rank <= cfg.momSlots ? `排第 ${rank} 名，在前 ${cfg.momSlots} 名內 → ${act}` : `排在前面的不能買，輪到第 ${rank} 名 → ${act}`;
+      break;
+    }
+    case 'F3': {
+      zone = '調回';
+      capText = '離每檔目標多遠（越左邊越接近目標）';
+      say = `${g.value > 1 ? '高出' : '低於'}目標 ${pctTxt(g.value - 1, 0)}，超過 ±${pctTxt(sc.th, 0)} → ${total < 0 ? `這次順便賣 ${n0} 股` : `這次順便買 ${n0} 股`}調回`;
+      break;
+    }
+    case 'F4': {
+      // 依波動度減碼：要多跨過遲滯（0.10）才換一格
+      const before = n.monthly?.before.rule.volW ?? 1;
+      const after = d.acct.rule.volW ?? before;
+      const m = /σ̃\/σ = ([\d.]+)/.exec(it.why ?? '');
+      const ratio = m ? Number(m[1]) : g.value;
+      const hyst = cfg.volHyst ?? 0.1;
+      const down = after < before;
+      const th = down ? before - hyst : before + 1 / 3 + hyst;
+      sc = down ? { start: th + 0.6, th, end: Math.max(0, th - 0.6), value: ratio, hit: true } : { start: th - 0.6, th, end: th + 0.6, value: ratio, hit: true };
+      zone = down ? '減碼' : '加回';
+      kind = down ? 'stop' : 'go';
+      capText = `平常的震盪 ÷ 最近的震盪（越右邊代表最近越${down ? '震盪' : '平靜'}）`;
+      say = `最近的震盪是平常的 ${(1 / ratio).toFixed(2)} 倍 → 動能部位從${thirdName(before)}${down ? '減' : '加'}到${thirdName(after)}`;
+      break;
+    }
+    case 'F5':
+    case 'F6': {
+      const on = it.f === 'F5';
+      zone = on ? '啟動' : '解除';
+      kind = on ? 'stop' : 'go';
+      sc = { ...sc, hit: on ? g.value < 0 : g.value > 0 };
+      capText = `${cfg.coreTicker} 收盤相對 200 日均線`;
+      say = on ? `${cfg.coreTicker} 跌破 200 日均線（${g.valueLabel}）→ 崩盤規則啟動：核心一半換短債、動能減半` : `${cfg.coreTicker} 回到 200 日均線之上（${g.valueLabel}）→ 崩盤規則解除：換回來`;
+      break;
+    }
+    case 'F7': {
+      zone = '減半';
+      capText = '收盤距 52 週高點（越右邊跌越多）';
+      say = `比高點低 ${pctTxt(g.value)}，超過 20% → 這次賣一半，${n0} 股`;
+      break;
+    }
+    case 'F8': {
+      zone = '買回';
+      kind = 'go';
+      sc = { ...sc, hit: g.value > 0 };
+      capText = `${it.ticker} 收盤相對 200 日均線`;
+      say = `站回 200 日均線之上連續 10 天 → 這次買回 ${n0} 股，回到標準比重`;
+      break;
+    }
+    case 'F10': {
+      zone = '減碼';
+      capText = '占總資產';
+      say = `占總資產 ${g.valueLabel}，超過 ${pctTxt(sc.th, 0)} 上限 → ${act}，減回 ${pctTxt(cfg.ownCapTo, 0)}`;
+      break;
+    }
+    case 'F14': {
+      zone = '減半';
+      capText = '收盤距 52 週高點（越右邊跌越多）';
+      const hit = g.value <= sc.th;
+      say = hit ? `已經比高點低 ${pctTxt(g.value)}（超過 20%）→ 先買標準比重的一半，${n0} 股` : `比高點低 ${pctTxt(g.value)}，還沒到減半的範圍 → 買到標準比重，${n0} 股`;
+      break;
+    }
+    case 'F23': {
+      zone = '可提高';
+      kind = 'go';
+      const months = Math.floor(g.value / 21);
+      capText = '連續站在 200 日均線之上的天數（滿 6 個月才可以提高）';
+      say = g.value >= sc.th ? `已連續站上 200 日均線約 ${months} 個月，滿 6 個月了 → AI 建議${total > 0 ? `買 ${n0} 股` : ''}（預設不做）` : `連續站上 200 日均線約 ${months} 個月，還不到 6 個月 → 這次不適合提高`;
+      break;
+    }
+    case 'F24':
+    case 'F25': {
+      zone = '減半';
+      capText = '規則這邊：收盤距 52 週高點';
+      const hit = g.value <= sc.th;
+      say = hit ? `規則也到了減半的範圍（比高點低 ${pctTxt(g.value)}）` : `規則沒有動作（比高點低 ${pctTxt(g.value)}，門檻 20%）→ 這是 AI 的建議，預設不做`;
+      break;
+    }
+    default:
+      if (g.marks[0]?.label.includes('減半')) zone = '減半';
+  }
+  const p = place(sc);
+  return meter(sc, { zone, kind, label: labelOf(g, zone, p.hit), cap: capText, say });
+}
+
+const thirdName = (w: number) => (w >= 0.999 ? '全額' : Math.abs(w - 2 / 3) < 0.01 ? '2/3' : Math.abs(w - 1 / 3) < 0.01 ? '1/3' : '0');
+
 function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   const it = it0 as ItemX;
   const x = it.x ?? explainItem(ctxOf(d), n, it);
@@ -231,6 +363,7 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
     ruleChoice: it.ruleChoice,
     actions: (it.actions ?? []).map((a) => ({ id: a, ...ACTIONS[a] })),
     explain: x,
+    meter: itemMeter(d, n, it, x, headline),
   };
 }
 
@@ -346,6 +479,8 @@ export interface HoldingView {
   detail: string;
   tone: 'ok' | 'warn' | 'alert' | 'muted';
   gauge: Gauge | null;
+  /** 帳戶頁每一檔下面的門檻條。 */
+  meter: Meter | null;
   /** 目標或標準比重的文字。 */
   target: string | null;
 }
@@ -357,7 +492,7 @@ export interface AccountView {
   snapshotDate: string | null;
   ratio: { own: number; strat: number; core: number };
   buckets: { id: string; name: string; value: number; pct: number; budget: number; who: string }[];
-  status: { label: string; value: string; tone: 'ok' | 'warn'; detail: string }[];
+  status: { label: string; value: string; tone: 'ok' | 'warn'; detail: string; meter?: Meter | null; cells?: number }[];
   holdings: HoldingView[];
   unclassified: { ticker: string; shares: number }[];
   excluded: { ticker: string; reason: string; date: string }[];
@@ -379,6 +514,7 @@ function ownHolding(d: Ready, t: string, total: number): HoldingView {
   let detail = '';
   let tone: HoldingView['tone'] = 'muted';
   let gauge: Gauge | null = null;
+  let met: Meter | null = null;
   if (meta && rule && px !== null && c) {
     const dd = drawdownFromHigh(c, view.i, SLOW.highDays);
     const ma = sma(c, view.i, SLOW.maDays);
@@ -404,8 +540,16 @@ function ownHolding(d: Ready, t: string, total: number): HoldingView {
       const from = Math.min(-0.4, Math.floor(dd * 10) / 10 - 0.05);
       gauge = { from, to: 0, fromLabel: fmtPct(from), toLabel: '高點', value: dd, valueLabel: fmtPct(dd, 1), marks: [{ at: SLOW.drawdown, label: '−20%' }], zones: [{ from, to: SLOW.drawdown }], caption: '距 52 週高點' };
     }
+    if (rule.applied === 'HALF' && !meta.pending) {
+      // 減半中：條改成「站上 200 日均線幾天了」，滿 10 天買回
+      const run = px > ma ? Math.min(meta.slow.aboveRun, SLOW.aboveRun) : 0;
+      met = meter({ start: 0, th: SLOW.aboveRun, end: SLOW.aboveRun * 1.5, value: run }, { zone: '買回', kind: 'go', label: `站上 200 日均線 ${run} 天；連續 ${SLOW.aboveRun} 天會買回標準比重` });
+    } else if (gauge) {
+      const hit = meta.pending ? meta.pending.action === 'REDUCE' : dd <= SLOW.drawdown;
+      met = meter({ ...scaleOf(gauge)!, hit }, { zone: '減半', label: `比 52 週高點低 ${fmtPct(-dd, 1)}；低 20% 會減半` });
+    }
   }
-  return { bucket: 'own', ticker: t, shares: sh, price: px, value, pct: value / total, state, detail, tone, gauge, target: rule ? `標準比重 ${fmtPct(rule.stdWeight, 1)}` : null };
+  return { bucket: 'own', ticker: t, shares: sh, price: px, value, pct: value / total, state, detail, tone, gauge, meter: met, target: rule ? `標準比重 ${fmtPct(rule.stdWeight, 1)}` : null };
 }
 
 function momHolding(d: Ready, t: string, total: number): HoldingView {
@@ -420,10 +564,12 @@ function momHolding(d: Ready, t: string, total: number): HoldingView {
   let detail: string;
   let tone: HoldingView['tone'];
   let gauge: Gauge | null = null;
+  let met: Meter | null = null;
   if (!inModel) {
     state = '不在動能名單';
     detail = acct.mom.owe[t] ? '上次的出場單沒做，下次月報會再列' : '下次月報會列出場';
     tone = 'alert';
+    met = { t: 0.75, v: 1, s: 'hit', zone: '賣出', kind: 'stop', label: `${t} 不在動能名單，${detail}` };
   } else if (idx < 0) {
     state = d.rankOrder.length ? '掉出股票池' : '在動能名單上';
     detail = d.rankOrder.length ? '下次月報會列出場' : '還沒有排名資料';
@@ -435,8 +581,18 @@ function momHolding(d: Ready, t: string, total: number): HoldingView {
     tone = rank > acct.cfg.exitRank ? 'alert' : rank > acct.cfg.exitRank - 3 ? 'warn' : 'ok';
     const to = Math.max(20, Math.min(50, rank + 3));
     gauge = { from: 1, to, fromLabel: '1', toLabel: String(to), value: rank, valueLabel: `第 ${rank}`, marks: [{ at: acct.cfg.exitRank, label: `前 ${acct.cfg.exitRank}` }], zones: [{ from: acct.cfg.exitRank, to }], caption: '一年報酬排名' };
+    met = meter({ start: 1, th: acct.cfg.exitRank, end: to, value: rank, hit: rank > acct.cfg.exitRank }, { zone: '賣出', label: `一年報酬排名第 ${rank}；${detail}` });
   }
-  return { bucket: 'mom', ticker: t, shares: sh, price: px, value, pct: value / total, state, detail, tone, gauge, target: inModel ? `每檔目標 ${fmtPct(slot / total, 1)}` : null };
+  return { bucket: 'mom', ticker: t, shares: sh, price: px, value, pct: value / total, state, detail, tone, gauge, meter: met, target: inModel ? `每檔目標 ${fmtPct(slot / total, 1)}` : null };
+}
+
+/** 崩盤規則的門檻條：沒啟動時看「跌破 200 日均線就啟動」，啟動中看「站回均線之上就解除」。 */
+function crashMeter(acct: Account, rel: number): Meter | null {
+  if (!Number.isFinite(rel)) return null;
+  const span = Math.max(0.1, Math.ceil(Math.abs(rel) * 20) / 20 + 0.05);
+  const core = acct.cfg.coreTicker;
+  if (acct.rule.crash) return meter({ start: -span, th: 0, end: span / 3, value: rel, hit: rel > 0 }, { zone: '解除', kind: 'go', label: `${core} 收盤${rel >= 0 ? '高於' : '低於'} 200 日均線 ${fmtPct(Math.abs(rel), 1)}；月報日站回均線之上會解除崩盤規則` });
+  return meter({ start: span, th: 0, end: -span / 3, value: rel, hit: rel < 0 }, { zone: '啟動', label: `${core} 收盤${rel >= 0 ? '高於' : '低於'} 200 日均線 ${fmtPct(Math.abs(rel), 1)}；月報日跌破均線會啟動崩盤規則` });
 }
 
 function coreHoldings(d: Ready, total: number): HoldingView[] {
@@ -462,13 +618,14 @@ function coreHoldings(d: Ready, total: number): HoldingView[] {
         detail: Number.isFinite(rel) ? `收盤${rel >= 0 ? '高於' : '低於'} 200 日均線 ${fmtPct(Math.abs(rel), 1)}；月報日低於均線會啟動崩盤規則` : '',
         tone: acct.rule.crash ? 'alert' : rel < 0.03 ? 'warn' : 'ok',
         gauge: Number.isFinite(rel) ? { from: -span, to: span, fromLabel: fmtSigned(-span), toLabel: fmtSigned(span), value: rel, valueLabel: fmtSigned(rel, 1), marks: [{ at: 0, label: '200 日均線' }], zones: [{ from: -span, to: 0 }], caption: '收盤相對 200 日均線' } : null,
+        meter: crashMeter(acct, rel),
         target: null,
       });
     } else {
-      out.push({ bucket: 'core', ticker: t, shares: sh, price: px, value, pct: value / total, state: '短債', detail: '崩盤規則啟動時，核心的一半放在這裡', tone: 'muted', gauge: null, target: null });
+      out.push({ bucket: 'core', ticker: t, shares: sh, price: px, value, pct: value / total, state: '短債', detail: '崩盤規則啟動時，核心的一半放在這裡', tone: 'muted', gauge: null, meter: null, target: null });
     }
   }
-  if (Math.abs(acct.cash) >= 0.005) out.push({ bucket: 'core', ticker: '現金', shares: 0, price: null, value: acct.cash, pct: acct.cash / total, state: '帳上現金', detail: '股利與交易剩下的零頭；月報時交給核心', tone: 'muted', gauge: null, target: null });
+  if (Math.abs(acct.cash) >= 0.005) out.push({ bucket: 'core', ticker: '現金', shares: 0, price: null, value: acct.cash, pct: acct.cash / total, state: '帳上現金', detail: '股利與交易剩下的零頭；月報時交給核心', tone: 'muted', gauge: null, meter: null, target: null });
   return out;
 }
 
@@ -513,12 +670,14 @@ export function accountView(d: Ready): AccountView {
         value: acct.rule.crash ? '啟動中' : '未啟動',
         tone: acct.rule.crash ? 'warn' : 'ok',
         detail: Number.isFinite(rel) ? `${acct.cfg.coreTicker} 收盤${rel >= 0 ? '高於' : '低於'} 200 日均線 ${fmtPct(Math.abs(rel), 1)}。每月第一個交易日判斷一次。` : '每月第一個交易日判斷一次。',
+        meter: crashMeter(acct, rel),
       },
       {
         label: '動能部位',
         value: w === null ? '全額（還沒開始減碼）' : w >= 0.999 ? '全額' : Math.abs(w - 2 / 3) < 0.01 ? '2/3' : Math.abs(w - 1 / 3) < 0.01 ? '1/3' : '0',
         tone: w !== null && w < 0.999 ? 'warn' : 'ok',
         detail: w === null ? '依波動度減碼需要 24 個月的紀錄，累積夠之前維持全額。' : '動能持股比平常震盪時，部位會以 1/3 為單位減少，錢交給核心。',
+        cells: w === null ? 3 : Math.round(w * 3),
       },
     ],
     holdings: [...own, ...mom, ...coreHoldings(d, total)],
@@ -569,11 +728,13 @@ export interface StateView {
   account: AccountView | null;
   todo: TodoView[];
   recent: HistoryRow[];
+  /** 史萊姆在待辦頁、帳戶頁說的話。 */
+  bubble: { todo: Bubble; account: Bubble | null };
 }
 
 export function stateView(d: SiteData): StateView {
   const base = { mode: d.mode, demo: d.demo ?? null, today: d.today, priceDate: d.view?.date ?? null, rankDate: d.rankSession, warnings: d.warnings };
-  if (!d.acct || !d.view) return { ...base, hasAccount: !!d.acct, account: null, todo: [], recent: [] };
+  if (!d.acct || !d.view) return { ...base, hasAccount: !!d.acct, account: null, todo: [], recent: [], bubble: { todo: { k: '開始', say: [d.acct ? '帳戶在，但還沒有可用的價格資料。' : '還沒有帳戶。填一次券商裡現在的持股，我就從那裡開始記帳。'], mood: 'idle' }, account: null } };
   const r = d as Ready;
   const order = { ANSWER: 0, TRADE: 1, DECIDE: 2, INFO: 3 };
   const todo = r.acct.notifs
@@ -586,7 +747,11 @@ export function stateView(d: SiteData): StateView {
     .slice(-5)
     .reverse()
     .map(historyRow);
-  return { ...base, hasAccount: true, account: accountView(r), todo, recent };
+  const account = accountView(r);
+  const first = todo[0];
+  const firstN = first?.type === 'DECIDE' ? r.acct.notifs.find((n) => n.id === first.id) : undefined;
+  const plan = firstN ? notifView(r, firstN) : null;
+  return { ...base, hasAccount: true, account, todo, recent, bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
 }
 
 // ---------------------------------------------------------------- 紀錄

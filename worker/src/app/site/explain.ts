@@ -146,6 +146,31 @@ function weightGauge(w: number, hi: number, to10: number): Gauge {
   };
 }
 
+/** 連續站在 200 日均線之上幾個交易日（到 i 為止）。 */
+export function daysAboveMa(c: ArrayLike<number>, i: number, cap = 400): number {
+  let run = 0;
+  for (let k = i; k >= 0 && run < cap; k--) {
+    const ma = sma(c, k, SLOW.maDays);
+    if (!(Number.isFinite(ma) && c[k] > ma)) break;
+    run++;
+  }
+  return run;
+}
+
+/** AI 想「提高到 125%」的前提：股價站在 200 日均線之上連續 6 個月（約 126 個交易日）以上。 */
+const RAISE_DAYS = 126;
+function aboveMaGauge(c: ArrayLike<number>, i: number): Gauge {
+  const run = daysAboveMa(c, i);
+  const to = Math.max(189, run + 21);
+  return { from: 0, to, fromLabel: '0', toLabel: `${to} 天`, value: run, valueLabel: `${run} 個交易日`, marks: [{ at: RAISE_DAYS, label: '6 個月' }], zones: [{ from: RAISE_DAYS, to }], caption: '連續站在 200 日均線之上' };
+}
+
+/** AI 的建議旁邊：規則（慢規則的減半門檻）現在在哪裡。 */
+function contextDrawdown(c: ArrayLike<number>, i: number): Gauge | undefined {
+  const dd = drawdownFromHigh(c, i, SLOW.highDays);
+  return Number.isFinite(dd) ? { ...drawdownGauge(dd), caption: '規則這邊：收盤距 52 週高點' } : undefined;
+}
+
 // ---------------------------------------------------------------- 排名表
 
 function rankingTable(ctx: ExplainContext, order: string[], n: Notif, focus: string[]): RankRow[] {
@@ -591,6 +616,7 @@ function aiOnly(ctx: ExplainContext, n: Notif, it: Item): Explain {
     const cond = /條件「(.+)」成立/.exec(it.title)?.[1] ?? '';
     const note = findNote(ctx.aiNotes, 'CONDITION', t, n.date);
     return {
+      gauge: c ? contextDrawdown(c, view.i) : undefined,
       short: `AI 之前寫下的條件成立：${cond}`,
       why: `規則沒有動作。這是 AI 的建議：之前審查 ${t} 時寫下的條件「${cond}」成立了，AI 建議${tier ? TIER_NAME[tier] : ''}（${sharesText(sh)}）。${note ? note.summary : ''}`,
       rule: RULE.ai,
@@ -604,6 +630,7 @@ function aiOnly(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const note = findNote(ctx.aiNotes, 'REVIEW', t, n.date);
   const raise = tier === 'RAISE';
   return {
+    gauge: c ? (raise ? aboveMaGauge(c, view.i) : contextDrawdown(c, view.i)) : undefined,
     short: raise ? 'AI 審查：前提都成立，可以提高比重' : `AI 審查的建議：${tier ? TIER_NAME[tier] : ''}`,
     why: `規則沒有動作。這是 AI 每月審查 ${t} 之後的建議：${tier ? TIER_NAME[tier] : ''}（${sharesText(sh)}）。${note ? note.summary : ''}`,
     rule: raise ? `${RULE.ai}「提高到 125%」只有在股價站在 200 日均線之上連續 6 個月以上、不在減半狀態時才能選，同一檔一年最多一次。` : RULE.ai,
