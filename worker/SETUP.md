@@ -137,6 +137,10 @@ UTC 01:30 再檢查一次，沒跑完就重跑，還是不行就推一則告警�
    npx wrangler deploy
    ```
    網站網址（訊息裡的連結）寫在 `wrangler.jsonc` 的 `vars.SITE_URL`；網址不同的話改那裡。
+   `secret put` 要在自己的終端機跑（會提示貼上值）。在 Claude Code 用 `!` 跑沒有提示，會直接上傳**空值**；
+   這時改用管線，例如 `node -e "process.stdout.write(require('./.secrets.json').LINE_USER_ID.trim())" | npx wrangler secret put LINE_USER_ID`。
+   找不到 **Your user ID**：表示登入 LINE Developers 用的是 email 註冊的商用帳號。到 Provider 的 Roles 用 email 邀請自己，
+   開邀請連結時改用 **LINE 帳號**登入接受，再用 LINE 帳號登入就看得到（user ID 每個 Provider 不同，要在同一個 Provider 底下看）。
 4. 確認（`<ADMIN_TOKEN>` 在 `worker/.secrets.json`）：
    ```
    curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/line/test    # 收到一則測試訊息
