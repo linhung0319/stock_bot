@@ -155,8 +155,8 @@ describe('當天通知', () => {
       const text = line.sent[0].text;
       expect(text.split('\n')[0]).toBe('【紙上】【當天】NVDA 慢規則減半');
       expect(text).toContain(`賣 NVDA ${-sell.shares} 股 · 自選訊號`);
-      expect(text).toContain(`https://bot.example/#/n/${n.id}`);
-      expect(text).toBe(notifText(acct, n, `https://bot.example/#/n/${n.id}`));
+      expect(text).toContain(`https://bot.example/?openExternalBrowser=1#/n/${n.id}`);
+      expect(text).toBe(notifText(acct, n, `https://bot.example/?openExternalBrowser=1#/n/${n.id}`));
 
       // 兩個交易日沒有回報 → 提醒（也推播）
       w.shock.NVDA = { from: '2026-11-24', factor: 0.7 };
@@ -201,7 +201,7 @@ describe('月報', () => {
         const text = line.sent[0].text;
         expect(text.split('\n')[0]).toBe('【月報】2026-12 月報');
         for (const t of acct.rule.heldMom) expect(text).toMatch(new RegExp(`買 ${t} \\d+ 股 · 動能換股`));
-        expect(text).toContain(`https://bot.example/#/n/${n.id}`);
+        expect(text).toContain(`https://bot.example/?openExternalBrowser=1#/n/${n.id}`);
         expect(monthlyMade(acct, '2026-12')).toBe(true);
 
         // 同一天再跑：不會再出一份
@@ -385,7 +385,7 @@ describe('端點與排程', () => {
       expect(line.sent.at(-1)!.text).toContain('測試訊息');
       const a = await handle(req('/admin/alert/test'), env, f, cronTime('2026-11-20'));
       expect(a.status).toBe(200);
-      expect(line.sent.at(-1)!.text).toBe('【紙上】【告警】stock bot\n・這是測試告警：收到表示告警的推播可以用。\n\nhttps://bot.example/');
+      expect(line.sent.at(-1)!.text).toBe('【紙上】【告警】stock bot\n・這是測試告警：收到表示告警的推播可以用。\n\nhttps://bot.example/?openExternalBrowser=1');
       // 測試告警只用來確認推播，不放進網站的警示列
       const site = await realBackend(env, f, cronTime('2026-11-20')).load();
       expect(site.warnings.some((x) => x.includes('測試告警'))).toBe(false);

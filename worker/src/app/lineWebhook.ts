@@ -9,7 +9,7 @@ import type { Notif } from '../engine';
 import type { Env, Fetcher } from './env';
 import { getFlowState } from './flow';
 import { loadAccount } from './ledgerStore';
-import { LINE_MAX_TEXT } from './line';
+import { LINE_MAX_TEXT, lineUrl } from './line';
 
 export const LINE_REPLY_URL = 'https://api.line.me/v2/bot/message/reply';
 
@@ -75,9 +75,8 @@ export interface ReplyContext {
   latestMonthly: Pick<Notif, 'id' | 'date' | 'title' | 'status'> | null;
 }
 
-const base = (u: string | null) => (u ?? '').replace(/\/+$/, '');
-/** 和推播的連結相同（line.ts 的 notifLink）。 */
-const link = (ctx: ReplyContext, id: number) => (ctx.siteUrl ? `${base(ctx.siteUrl)}/#/n/${id}` : null);
+/** 和推播的連結相同（line.ts 的 lineUrl：用手機的瀏覽器打開）。 */
+const link = (ctx: ReplyContext, id: number) => lineUrl(ctx.siteUrl, `#/n/${id}`);
 const tag = (ctx: ReplyContext) => (ctx.paper ? '【紙上】' : '');
 
 /** 美東日期 YYYY-MM-DD 的下一天（月報在美東訊號日收盤後的 UTC 23:30 出，台灣是隔天早上 7:30）。 */
@@ -91,7 +90,8 @@ function helpText(ctx: ReplyContext, unknown?: string): string {
   const out = [unknown !== undefined ? (unknown ? `不認得「${unknown.slice(0, 30)}」。可以傳這些字：` : '只看得懂文字。可以傳這些字：') : 'stock bot 可以回這些字：'];
   for (const [cmd, what] of HELP_LINES) out.push(`・${KEYWORDS[cmd][0]}：${what}`);
   out.push('', '這裡只回固定的內容，不會下單、也不會改帳戶。要操作請到網站。');
-  if (ctx.siteUrl) out.push(`${base(ctx.siteUrl)}/`);
+  const url = lineUrl(ctx.siteUrl);
+  if (url) out.push(url);
   return out.join('\n');
 }
 
@@ -113,10 +113,10 @@ function monthlyLine(ctx: ReplyContext): string {
 }
 
 export function replyText(cmd: Command | null, text: string | null, ctx: ReplyContext): string {
-  const site = ctx.siteUrl ? `${base(ctx.siteUrl)}/` : null;
+  const site = lineUrl(ctx.siteUrl);
   switch (cmd) {
     case 'SITE':
-      return site ? `網站：${site}\n（用 LINE 登入，只有你本人能進）` : '網站網址還沒設定（SITE_URL）。';
+      return site ? `網站：${site}\n（會用手機的瀏覽器打開；用 LINE 登入，只有你本人能進）` : '網站網址還沒設定（SITE_URL）。';
     case 'STATUS': {
       if (ctx.paper === null) return ['還沒有帳戶：請到網站建立帳戶（填第一份快照）。', ...(site ? [site] : [])].join('\n');
       const out = [`${tag(ctx)}【狀態】${ctx.paper ? '紙上交易' : '真實帳戶'}`, `每日流程處理到：${ctx.lastSession ?? '還沒跑過'}（美東交易日）`, ...todoLines(ctx, 3)];

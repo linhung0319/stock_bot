@@ -375,7 +375,7 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       const pushed = e.line.slice(lineBefore).find((t) => t.includes('NVDA 條件成立'))!;
       expect(pushed.split('\n')[0]).toBe('【紙上】【當天】NVDA 條件成立（F25）');
       expect(pushed).toContain('另有 1 項 AI 建議（預設不做），到網站決定。');
-      expect(pushed).toContain(`https://bot.example/#/n/${urgent.id}`);
+      expect(pushed).toContain(`https://bot.example/?openExternalBrowser=1#/n/${urgent.id}`);
     });
   });
 

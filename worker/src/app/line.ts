@@ -43,9 +43,17 @@ function clip(text: string): string {
 
 const money = (x: number) => (x < 0 ? '-$' : '$') + Math.abs(Math.round(x)).toLocaleString('en-US');
 
+/**
+ * LINE 訊息裡的網站連結：加 openExternalBrowser=1，點了用手機的瀏覽器開，不用 LINE 內建瀏覽器
+ * （2026-11-15 使用者決定：LINE 只回狀態，操作一律到網站；設計 §10 第 41 點）。hash 是網站裡的頁面，例如 #/n/12。
+ */
+export function lineUrl(siteUrl: string | null | undefined, hash = ''): string | null {
+  const base = (siteUrl ?? '').replace(/\/+$/, '');
+  return base ? `${base}/?openExternalBrowser=1${hash}` : null;
+}
+
 export function notifLink(env: Env, id: number): string | null {
-  const base = (env.SITE_URL ?? '').replace(/\/+$/, '');
-  return base ? `${base}/#/n/${id}` : null;
+  return lineUrl(env.SITE_URL, `#/n/${id}`);
 }
 
 /**
@@ -87,7 +95,7 @@ export interface AlertRow {
 export function alertText(alerts: AlertRow[], paper: boolean, siteUrl?: string): string {
   const out = [`${paper ? '【紙上】' : ''}【告警】stock bot`];
   for (const a of alerts) out.push(`・${a.session ? a.session + ' ' : ''}${a.message}`);
-  const base = (siteUrl ?? '').replace(/\/+$/, '');
-  if (base) out.push('', `${base}/`);
+  const url = lineUrl(siteUrl);
+  if (url) out.push('', url);
   return out.join('\n');
 }

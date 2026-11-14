@@ -104,7 +104,7 @@ describe('只回本人', () => {
       expect(text).toContain('【紙上】【狀態】紙上交易');
       expect(text).toContain('每日流程處理到：2026-11-13');
       expect(text).toContain('#7 ZZZ 慢規則減半');
-      expect(text).toContain('https://bot.example/#/n/7');
+      expect(text).toContain('https://bot.example/?openExternalBrowser=1#/n/7');
       expect(text).toContain('最近 36 小時的告警：1 則'); // 測試告警不算
       expect(text).toContain('12 月月報，2026-11-30 美股收盤後出（台灣 12/1 早上 7:30 左右）');
       const row = await db.prepare("SELECT kind, ok, status, text FROM pushes WHERE kind = 'REPLY'").first<{ ok: number; status: number; text: string }>();
@@ -148,10 +148,11 @@ describe('關鍵字', () => {
     latestMonthly: { id: 3, date: '2026-10-30', title: '2026-11 月報', status: 'DONE' },
   };
   it('各關鍵字的內容；真實帳戶不標紙上', () => {
-    expect(replyText('SITE', '網址', ctx)).toBe('網站：https://bot.example/\n（用 LINE 登入，只有你本人能進）');
+    // LINE 裡的連結一律用手機的瀏覽器打開（openExternalBrowser=1，2026-11-15）
+    expect(replyText('SITE', '網址', ctx)).toBe('網站：https://bot.example/?openExternalBrowser=1\n（會用手機的瀏覽器打開；用 LINE 登入，只有你本人能進）');
     expect(replyText('STATUS', '狀態', ctx)).toMatch(/^【狀態】真實帳戶\n/);
-    expect(replyText('TODO', '待辦', ctx)).toBe('待辦：沒有\n\nhttps://bot.example/');
-    expect(replyText('MONTHLY', '月報', ctx)).toContain('最近一份：2026-11 月報（2026-10-30，已處理）\nhttps://bot.example/#/n/3');
+    expect(replyText('TODO', '待辦', ctx)).toBe('待辦：沒有\n\nhttps://bot.example/?openExternalBrowser=1');
+    expect(replyText('MONTHLY', '月報', ctx)).toContain('最近一份：2026-11 月報（2026-10-30，已處理）\nhttps://bot.example/?openExternalBrowser=1#/n/3');
     expect(replyText('ALERTS', '告警', ctx)).toBe('最近 36 小時沒有告警。');
     const many = { ...ctx, pending: Array.from({ length: 7 }, (_, i) => ({ id: i + 1, kind: 'URGENT' as const, date: '2026-11-13', title: `通知 ${i + 1}` })) };
     const todo = replyText('TODO', '待辦', many);
