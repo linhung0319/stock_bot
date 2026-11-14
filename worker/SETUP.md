@@ -86,38 +86,37 @@
 
 每個排程任務每小時最多觸發 30 次（官方文件，研究預覽階段可能會變）。
 
-## T8：網站與登入（Cloudflare Access）
+## T8：網站與登入（LINE 登入）
 
 網站的靜態檔在 `public/`，API 在 `/api/*`（真實帳本）與 `/demo/api/*`（示範資料）。
-**還沒設定 Access 之前，API 預設是關的**（回 401）；網頁本身打得開，但只會看到「還沒設定登入」。
-這時可以在那個畫面貼 `ADMIN_TOKEN` 暫時進去看；Access 設好之後這條路會自動失效。
+登入由 Worker 自己做 LINE Login（2026-11-14 取代原本規劃的 Cloudflare Access，程式在 `src/app/site/lineLogin.ts`、`auth.ts`），
+**只有 `LINE_USER_ID` 那一個 LINE 帳號能登入**；登入一次 30 天有效。
+**還沒設定之前，API 預設是關的**（回 401），可以在登入畫面貼 `ADMIN_TOKEN` 進去；設好之後這個方式仍保留當備用。
+`/ai/*`、`/admin/*`、`/health` 不經過 LINE 登入，各用各的金鑰。
 
-1. 建資料表並部署（這次多一張 `demo_state`，只給示範模式用）：
+1. 建 LINE Login channel（LINE Developers，`developers.line.biz/console/`）：
+   - 進**放 Messaging API 的那個 Provider**（同一個 Provider 的 user ID 才會等於 `LINE_USER_ID`）→ Create a new channel → **LINE Login**，
+     App type 選 **Web app**。
+   - **LINE Login** 分頁的 Callback URL 填 `https://<網址>/auth/line/callback`。
+   - **Basic settings** 的 Channel ID、Channel secret 加進 `worker/.secrets.json`（`LINE_LOGIN_CHANNEL_ID`、`LINE_LOGIN_CHANNEL_SECRET`）。
+     channel 停在 Developing 就好（你是管理員，本來就能登入）。
+2. 簽登入 cookie 用的亂碼 `SESSION_SECRET` 也放進 `.secrets.json`（例如 `openssl rand -hex 32`）。換掉它會讓所有登入失效。
+3. 把三個值交給 Worker 並部署（用管線，理由見 T7）：
    ```
-   npx wrangler d1 migrations apply stock-bot --remote
+   for k in LINE_LOGIN_CHANNEL_ID LINE_LOGIN_CHANNEL_SECRET SESSION_SECRET; do
+     node -e "process.stdout.write(require('./.secrets.json').$k.trim())" | npx wrangler secret put $k
+   done
    npx wrangler deploy
    ```
-2. 開啟 Access：Cloudflare 後台 → Workers & Pages → `stock-bot` → Settings → Domains & Routes →
-   `workers.dev` 那一列按 **Enable Cloudflare Access**。跳出來的視窗會顯示兩個值：`POLICY_AUD` 與 `TEAM_DOMAIN`，先複製下來。
-   再按 **Manage Cloudflare Access**，把允許登入的 email 改成只有你自己。
-3. 把那兩個值交給 Worker（Worker 會自己再驗一次 Access 簽的權杖，Access 設定被改壞時 API 也不會打開）：
-   ```
-   npx wrangler secret put ACCESS_AUD           # 貼 POLICY_AUD
-   npx wrangler secret put ACCESS_TEAM_DOMAIN   # 貼 TEAM_DOMAIN（https://xxx.cloudflareaccess.com 或 xxx.cloudflareaccess.com 都可以）
-   ```
-4. 讓機器用的端點略過 Access。`/ai/*`（雲端排程）、`/admin/*`（你用 curl）、`/health` 各有自己的金鑰或不需要登入，
-   但 Access 開在整個網域上會把它們也擋住。到 Zero Trust → Access → Applications，各加一個 Self-hosted 應用程式：
-   網域填同一個 `stock-bot.<子網域>.workers.dev`，路徑分別填 `ai`、`admin`、`health`，政策選 **Bypass**、對象 Everyone。
-   路徑比較明確的應用程式會優先於整個網域的那一個。
-5. 確認：
-   - 用瀏覽器開網站 → 先看到 Access 的登入畫面 → 登入後看到 stock bot。
-   - `curl https://<網址>/health` 仍然回 `{"ok":true,…}`。
-   - `curl -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/data/status` 仍然可用。
-   - 沒登入時 `curl https://<網址>/api/state` 回 401 或被導到登入頁。
+4. 確認：
+   - 用瀏覽器開網站 → 自動導到 LINE → 登入後回到 stock bot。在 LINE 裡點訊息的連結通常會直接登入。
+   - `curl https://<網址>/health` 仍然回 `{"ok":true,…}`；`/admin/*` 仍然用 `ADMIN_TOKEN`。
+   - 沒登入時 `curl https://<網址>/api/state` 回 401（`reason` 是 `NO_SESSION`）。
+   - 登出：開 `https://<網址>/auth/logout`。
 
-第 2、4 步的後台操作是照 2026-11-12 查到的官方文件寫的（`developers.cloudflare.com/workers/configuration/cloudflare-access/`、
-`…/cloudflare-one/access-controls/policies/app-paths/`），沒有實際在後台做過；畫面上的名稱如果不一樣，以後台為準。
-Bypass 會讓那幾個路徑不經過 Access 也不留 Access 的紀錄；它們靠各自的 Bearer 金鑰保護。
+登入的檢查：state（擋偽造的登入請求）、PKCE、nonce（擋重送）、ID token 的簽章（HS256 用 Channel secret，或 ES256 用 LINE 的公鑰）、
+iss、aud、期限，最後 `sub` 必須等於 `LINE_USER_ID`。登入 cookie 是 `__Host-sb_session`（HttpOnly、Secure、SameSite=Lax），
+內容簽過名、每次請求都再比對一次 `LINE_USER_ID`。會改帳戶的請求另外只收 JSON、來源必須是網站自己。
 
 設好之後，網站右上角的「示範資料」可以隨時切換：示範模式用假價格與假的 AI 內容，存在另一張表，不會動到真正的帳本。
 

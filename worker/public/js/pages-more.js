@@ -482,25 +482,52 @@ export function setupPage(ctx) {
 
 // ---------------------------------------------------------------- 登入
 
-export function authPage(reason, retry) {
-  if (reason !== 'NOT_CONFIGURED') {
-    return page({ banner: { title: '需要重新登入', sub: '登入已經過期，或這個瀏覽器還沒通過 Cloudflare Access。', bubble: { k: '登入', say: ['重新整理頁面，就會回到登入畫面。'], mood: 'idle' } }, pane: h('button', { class: 'btn primary', type: 'button', onclick: () => location.reload() }, '重新整理') });
+const KEY_AUTO_LOGIN = 'stockbot.autoLogin';
+
+/** 401 時的畫面。設好 LINE 登入（data.login 有值）：沒登入過就直接導去 LINE（兩分鐘內最多自動一次，避免 cookie 被擋時繞圈），
+ *  否則顯示「用 LINE 登入」按鈕。管理金鑰（ADMIN_TOKEN）一直留著當備用。 */
+export function authPage(reason, retry, data = {}) {
+  const loginHref = data.login ? `${data.login}?next=${encodeURIComponent(location.hash || '#/')}` : null;
+  if (loginHref && reason === 'NO_SESSION') {
+    let last = 0;
+    try {
+      last = Number(sessionStorage.getItem(KEY_AUTO_LOGIN)) || 0;
+    } catch {
+      /* 讀不到就當作沒試過 */
+    }
+    if (Date.now() - last > 120000) {
+      try {
+        sessionStorage.setItem(KEY_AUTO_LOGIN, String(Date.now()));
+      } catch {
+        /* 存不了：最多多導一次 */
+      }
+      location.replace(loginHref);
+    }
   }
   const key = h('input', { type: 'password', autocomplete: 'off' });
-  return page({
-    banner: { title: '還沒設定登入', sub: '這個網站要用 Cloudflare Access 限制誰能登入。設定步驟在 worker/SETUP.md。', bubble: { k: '登入', say: ['設定好 Access 之前，可以先用', em('管理金鑰'), '進來。'], mood: 'idle' } },
-    pane: h(
-      'form',
-      {
-        class: 'glass pad narrow-sm',
-        onsubmit: (ev) => {
-          ev.preventDefault();
-          setToken(key.value.trim());
-          retry();
-        },
+  const keyForm = h(
+    'form',
+    {
+      class: 'glass pad narrow-sm',
+      style: loginHref ? 'margin-top:16px' : null,
+      onsubmit: (ev) => {
+        ev.preventDefault();
+        setToken(key.value.trim());
+        retry();
       },
-      h('label', { class: 'field' }, h('span', null, '管理金鑰（ADMIN_TOKEN）'), key, h('small', null, '只留在這個分頁，關掉就沒了。Access 設好之後這個方式會自動失效。')),
-      h('button', { class: 'btn primary', type: 'submit' }, '進入'),
-    ),
+    },
+    h('label', { class: 'field' }, h('span', null, loginHref ? '備用：管理金鑰（ADMIN_TOKEN）' : '管理金鑰（ADMIN_TOKEN）'), key, h('small', null, '只留在這個分頁，關掉就沒了。')),
+    h('button', { class: 'btn' + (loginHref ? '' : ' primary'), type: 'submit' }, '進入'),
+  );
+  if (loginHref) {
+    const expired = reason === 'BAD_SESSION';
+    return page({
+      banner: { title: expired ? '需要重新登入' : '登入', sub: expired ? '登入已經過期（30 天）。用 LINE 再登入一次就好。' : '這個網站只給你自己的 LINE 帳號使用。', bubble: { k: '登入', say: ['在 LINE 裡打開的話，通常會', em('自動登入'), '。'], mood: 'idle' } },
+      pane: [h('a', { class: 'btn primary', href: loginHref }, '用 LINE 登入'), keyForm],
+    });
+  }
+  return page({
+    banner: { title: '還沒設定登入', sub: '這個網站用 LINE 登入，Worker 還沒設定好。設定步驟在 worker/SETUP.md。', bubble: { k: '登入', say: ['設定好 LINE 登入之前，可以先用', em('管理金鑰'), '進來。'], mood: 'idle' } },
+    pane: keyForm,
   });
 }

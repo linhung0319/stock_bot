@@ -91,9 +91,9 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
   其他字照 Google Fonts 的切法分成 `tc-00`～`tc-94`，畫面上出現那一片的字才下載（`public/fonts/fonts.css` 的 unicode-range）。
   畫面的固定文字用了新的字之後重做一次：`uv run scripts/build-font.py`（第一次會下載原始字型到 `.font-cache/`，不進 git）。沒重做也不會壞，只是多下載一片。
 - API：`/api/*`（真實帳本）與 `/demo/api/*`（示範）是同一組端點，程式在 `src/app/site/`：
-  `api.ts`（路由）、`backend.ts`（資料來源）、`views.ts`（組成畫面要的資料）、`explain.ts`（每一項建議的理由）、`access.ts`（Cloudflare Access 的權杖驗證）。
+  `api.ts`（路由）、`backend.ts`（資料來源）、`views.ts`（組成畫面要的資料）、`explain.ts`（每一項建議的理由）、`auth.ts`（登入 cookie 的驗證）、`lineLogin.ts`（LINE 登入）。
 - 驗收：`test/site.test.ts` 用網站 API 走情境 ① 與 ⑤，每一步和直接呼叫引擎的結果比對。
-- 部署與 Access 設定：見 [`SETUP.md`](SETUP.md) 的 T8。
+- 部署與 LINE 登入設定：見 [`SETUP.md`](SETUP.md) 的 T8。
 
 ## 目錄
 

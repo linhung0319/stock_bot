@@ -2,7 +2,8 @@
 //   /health                      不需要驗證
 //   /ai/task/:id/evidence|result 雲端排程用，Bearer AI_TASK_SECRET
 //   /admin/*                     管理用，Bearer ADMIN_TOKEN
-//   /api/*、/demo/api/*          網站的 API（Cloudflare Access；src/app/site/）
+//   /auth/line/login|callback    網站的 LINE 登入（src/app/site/lineLogin.ts）
+//   /api/*、/demo/api/*          網站的 API（LINE 登入的 cookie；src/app/site/）
 //   其他                         網站的靜態檔（public/，由 Cloudflare 直接回應，不會進到這裡）
 import { acceptResult, createTask, fireRoutine, getTask, readEvidence, taskTimings } from './app/aiTasks';
 import { finalizeRun, listRuns } from './app/aiRuns';
@@ -17,9 +18,10 @@ import { buildMarketView } from './data/marketView';
 import { lineConfigured } from './app/line';
 import { probeSummary, runProbe, saveProbe } from './app/probe';
 import { handleSite } from './app/site/api';
+import { handleLineLogin } from './app/site/lineLogin';
 import { loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 
 /** 每日流程（美股收盤後；UTC 23:30 = 美東 18:30 或 19:30 = 台灣早上 7:30）：抓資料、每日檢查、月報、LINE。 */
 export const INGEST_CRON = '30 23 * * 1-5';
@@ -47,6 +49,9 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
   const url = new URL(request.url);
   const path = url.pathname;
   if (path === '/health') return json({ ok: true, version: VERSION });
+
+  const login = await handleLineLogin(request, env, fetcher, now);
+  if (login) return login;
 
   const ai = /^\/ai\/task\/([0-9a-f]{32})\/(evidence|result)$/.exec(path);
   if (ai) {

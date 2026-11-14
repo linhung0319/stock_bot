@@ -35,7 +35,7 @@ import { VOL_HIST_SEED } from '../../engine/volSeed';
 import { errText } from '../../data/util';
 import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
 import { json, type Env, type Fetcher } from '../env';
-import { siteAuth } from './access';
+import { LOGIN_PATH, lineLoginConfigured, siteAuth } from './auth';
 import { ConflictError, demoBackend, realBackend, type DemoBackend, type SiteBackend, type SiteData } from './backend';
 import { bookFromView, followUp, shadowSummary } from '../../ai/shadow';
 import { BENCHMARK } from '../../data/ingest';
@@ -524,8 +524,8 @@ export async function handleSite(req: Request, env: Env, fetcher: Fetcher, now: 
   const url = new URL(req.url);
   const m = /^\/(demo\/)?api\/(.*)$/.exec(url.pathname);
   if (!m) return null;
-  const auth = await siteAuth(req, env, fetcher, now);
-  if (!auth.ok) return json({ error: 'unauthorized', reason: auth.reason }, 401);
+  const auth = await siteAuth(req, env, now);
+  if (!auth.ok) return json({ error: 'unauthorized', reason: auth.reason, ...(lineLoginConfigured(env) ? { login: LOGIN_PATH } : {}) }, 401);
   if (req.method !== 'GET') {
     // 登入是靠瀏覽器自動帶的 cookie，所以要擋別的網站偷偷送出的請求：
     // 只收 JSON（別的網站要送 JSON 會先被瀏覽器的跨來源檢查擋下），而且來源必須是這個網站自己

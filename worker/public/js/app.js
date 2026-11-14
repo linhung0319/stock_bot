@@ -148,7 +148,7 @@ async function render() {
     if (my !== seq) return;
     if (e instanceof ApiError && e.status === 401) {
       demoBar.hidden = true;
-      show(authPage(e.data.reason, render));
+      show(authPage(e.data.reason, render, e.data));
     } else {
       show(page({ banner: { title: '這一頁打不開', bubble: { k: '出錯了', say: [e.message], mood: 'worry' } }, pane: h('div', { class: 'btn-row' }, h('button', { class: 'btn primary', type: 'button', onclick: render }, '再試一次'), h('a', { class: 'btn', href: '#/' }, '回待辦')) }));
     }

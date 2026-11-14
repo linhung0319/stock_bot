@@ -1,13 +1,13 @@
 {
   // stock bot：規則引擎、排程、網站、LINE（design_v2 §2.7）
   // 金鑰一律用 `wrangler secret put`，不寫在這裡：
-  //   ADMIN_TOKEN        管理端點（/admin/*）的 Bearer token（在 Cloudflare Access 設好之前用）
+  //   ADMIN_TOKEN        管理端點（/admin/*）的 Bearer token；網站登入壞掉時的備用
   //   AI_TASK_SECRET     雲端排程取證據包、送回結果用的 Bearer token（和 claude.ai 雲端環境的 network secret 相同）
   //   ROUTINE_FIRE_URL   雲端排程的 /fire 網址
   //   ROUTINE_TOKEN      雲端排程的 API token
   //   EDGAR_USER_AGENT   SEC 要求的 User-Agent（含聯絡方式）
-  //   ACCESS_TEAM_DOMAIN Cloudflare Access 的團隊網域（xxx.cloudflareaccess.com）
-  //   ACCESS_AUD         Access 應用程式的 AUD；這兩個都設了，網站（/api、/demo/api）才用 Access 驗證登入
+  //   LINE_LOGIN_CHANNEL_ID / LINE_LOGIN_CHANNEL_SECRET  網站的 LINE 登入（LINE Login channel）
+  //   SESSION_SECRET     簽登入 cookie 的亂碼；這三個加上 LINE_USER_ID 都設了，網站才開 LINE 登入
   //   LINE_CHANNEL_TOKEN LINE Messaging API 的 channel access token（long-lived）
   //   LINE_USER_ID       收 LINE 訊息的 user ID（LINE Developers 後台的 Your user ID）
   "name": "stock-bot",

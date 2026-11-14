@@ -26,7 +26,7 @@ export function setMode(m) {
   write(localStorage, KEY_MODE, m);
 }
 
-/** 還沒設定 Cloudflare Access 的時候，可以暫時用管理金鑰（只留在這個分頁）。 */
+/** 備用登入：管理金鑰（只留在這個分頁）。平常用 LINE 登入的 cookie。 */
 export const setToken = (t) => write(sessionStorage, KEY_TOKEN, t || null);
 
 export class ApiError extends Error {

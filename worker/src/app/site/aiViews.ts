@@ -1,6 +1,6 @@
 // 網站的 AI 紀錄（T9；design_v2 §6.6）：每一次 AI 執行一頁（輸入、每一票、檢查、結論、過程），「匯出 md 拿去問 AI」，
 // 以及把 AI 紀錄轉成建議單上的 AI 說明（AiNote）。
-import type { CheckedSample, Outcome } from '../../ai/check';
+import { keptByChoice, type CheckedSample, type Outcome } from '../../ai/check';
 import { fnInfo, verdictText } from '../../ai/functions';
 import type { AiRun } from '../aiRuns';
 import type { AiNote } from './types';
@@ -73,6 +73,10 @@ function pick(o: Outcome): CheckedSample | undefined {
   return o.samples.find((s) => s.valid && s.verdict === o.verdict) ?? o.samples.find((s) => s.valid);
 }
 
+/** 一致選了「預設值」，而那個預設值是真的判斷（例如 F24 的 HOLD），不是字面上的證據不足。 */
+const keptState = (o: Outcome): boolean => o.status === 'INSUFFICIENT' && !!o.verdict && keptByChoice(o.verdict, o.samples, Object.values(o.votes).reduce((a, b) => a + b, 0));
+const outcomeLabel = (o: Outcome): string => (keptState(o) ? '一致：維持現狀' : OUTCOME_LABEL[o.status]);
+
 export function runRow(run: AiRun): RunRow {
   const o = run.outcome;
   const status = o?.status ?? 'PENDING';
@@ -82,9 +86,9 @@ export function runRow(run: AiRun): RunRow {
     label: fnInfo(run.fn).label,
     ticker: run.ticker,
     // 沒有一致的結論時，標題寫「照規則」，最多票的判斷只放在票數裡（避免被看成 AI 的結論）
-    verdict: !o ? '等結果中' : o.status === 'AGREED' ? verdictText(run.fn, o.verdict) : '照規則',
+    verdict: !o ? '等結果中' : o.status === 'AGREED' || keptState(o) ? verdictText(run.fn, o.verdict) : '照規則',
     status,
-    statusLabel: OUTCOME_LABEL[status],
+    statusLabel: o ? outcomeLabel(o) : OUTCOME_LABEL.PENDING,
     followRule: o ? o.followRule : true,
     summary: summaryOf(run),
     fake: false,
@@ -180,7 +184,7 @@ export function noteOfRun(run: AiRun): AiNote | null {
     kind: info.note,
     ticker: run.ticker ?? undefined,
     date: run.asOf,
-    verdict: verdictText(run.fn, o.verdict) + (o.followRule && o.status !== 'AGREED' ? `（${OUTCOME_LABEL[o.status]}，照規則）` : ''),
+    verdict: verdictText(run.fn, o.verdict) + (keptState(o) ? '（票數一致，維持現狀）' : o.followRule && o.status !== 'AGREED' ? `（${OUTCOME_LABEL[o.status]}，照規則）` : ''),
     votes: voteText,
     summary: summaryOf(run),
     premises: run.pack.premises.map((p) => {

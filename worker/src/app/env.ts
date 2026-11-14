@@ -5,9 +5,11 @@ export interface Env {
   ROUTINE_FIRE_URL?: string;
   ROUTINE_TOKEN?: string;
   EDGAR_USER_AGENT?: string;
-  /** Cloudflare Access：團隊網域（例如 xxx.cloudflareaccess.com）與這個應用程式的 AUD。兩個都設了，網站才用 Access 驗證。 */
-  ACCESS_TEAM_DOMAIN?: string;
-  ACCESS_AUD?: string;
+  /** 網站的 LINE 登入（src/app/site/lineLogin.ts）：LINE Login channel 的 ID 與 secret、簽登入 cookie 的亂碼。
+   *  這三個加上 LINE_USER_ID 都設了才會開；只有 LINE_USER_ID 那個帳號能登入。 */
+  LINE_LOGIN_CHANNEL_ID?: string;
+  LINE_LOGIN_CHANNEL_SECRET?: string;
+  SESSION_SECRET?: string;
   /** LINE Messaging API（T7）：channel access token 與收訊息的 user ID。都設了才會推播。 */
   LINE_CHANNEL_TOKEN?: string;
   LINE_USER_ID?: string;

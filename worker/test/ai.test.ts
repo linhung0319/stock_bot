@@ -79,6 +79,13 @@ function sample(verdict: string, over: Record<string, unknown> = {}) {
 // ---------------------------------------------------------------- 四種情況
 
 describe('完成條件：四種情況', () => {
+  it('3 票都是自己選 HOLD（預設值本身是真的判斷）→ 說成維持現狀，不說證據不足；少送一票就照舊說證據不足', () => {
+    const o = judge(testPack(), [sample('HOLD'), sample('HOLD'), sample('HOLD')]);
+    expect(o).toMatchObject({ status: 'INSUFFICIENT', verdict: 'HOLD', actionable: false, followRule: true, reason: '3 票一致：HOLD（維持現狀，照規則）。' });
+    const short = judge(testPack(), [sample('HOLD'), sample('HOLD')]);
+    expect(short.reason).toBe('3 票都認為證據不足，照規則。');
+  });
+
   it('合格：3 票一致、引用都通過 → 可以採用（A3 月報並列）', () => {
     const o = judge(testPack(), [sample('STANDARD'), sample('STANDARD'), sample('STANDARD')]);
     expect(o).toMatchObject({ status: 'AGREED', verdict: 'STANDARD', votes: { STANDARD: 3 }, actionable: true, followRule: false });
@@ -105,6 +112,7 @@ describe('完成條件：四種情況', () => {
     });
     const o = judge(testPack(), [fake, fake, fake]);
     expect(o).toMatchObject({ status: 'INSUFFICIENT', verdict: 'HOLD', actionable: false, followRule: true });
+    expect(o.reason).toBe('3 票都認為證據不足，照規則。'); // 被降級成 HOLD 的票不能說成「維持現狀」
     const s = o.samples[0];
     expect(s.rawVerdict).toBe('EXIT');
     expect(s.evidence[0]).toMatchObject({ ok: false, why: '引用不是原文的子字串' });

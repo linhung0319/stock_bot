@@ -18,7 +18,7 @@
 
 - 新程式放在 `worker/`：TypeScript、Cloudflare Workers、D1（帳本與紀錄）、R2 或 KV（價格與快照）、Vitest。
 - `worker/src/engine/`：規則引擎（純函式）。`worker/src/data/`：資料抓取。`worker/src/app/`：排程、網站、LINE、AI 任務端點。
-- 網站由同一個 Worker 提供，畫面以 `prototype/` 為參考；用 Cloudflare Access 限制登入。
+- 網站由同一個 Worker 提供，畫面以 `prototype/` 為參考；用 LINE 登入限制只有使用者本人能進（2026-11-14 由 Cloudflare Access 改成 Worker 自己做的 LINE Login）。
 - AI 的 prompt 與子代理定義放 `ai/`（雲端排程會 clone 這個 repo）。
 
 ---
@@ -87,8 +87,8 @@
 ### [x] T8 網站
 - 輸入：填快照、回覆清單（照規則／照 AI／部分完成／這次不做）、入金出金、改比例、新增／移除自選、排除、轉入自選。
 - 顯示：帳戶三桶、每檔屬於哪一桶與規則狀態、通知紀錄、每一項「為什麼」。
-- Cloudflare Access 限制登入。
-- 需要使用者：設定 Access（誰能登入）。
+- ~~Cloudflare Access 限制登入。~~ LINE 登入（2026-11-14 改）。
+- 需要使用者：建 LINE Login channel（Channel ID、secret）。
 - 完成條件：用網站走完情境 ① 與 ⑤（平常的月報、自己的操作），結果和 T3 的測試一致。
 
 **到這裡可以開始紙上交易。**
@@ -101,7 +101,7 @@
 - 影子組合：照規則、照 AI、使用者實際三條線（§2.3.1、§6.5）。
 - 完成條件：用假的 AI 回覆測過合格、不合格、逾時、票數不一致四種情況。
 
-### [ ] T10 F24 自選定期審查、F25 條件監測
+### [x] T10 F24 自選定期審查、F25 條件監測
 - 照 `ai_layer` 的 F24、F25 卡片。檔位換算成股數，和規則清單並列。
 - F25 的事件條件只有能由 8-K／10-Q／SEC 公告原文證實的才發通知。
 - 跑一次完整 F24，記錄吃了多少 Max 用量。

@@ -281,6 +281,11 @@ export interface Outcome {
 
 const LEVEL_CAN_ACT = (l: Level) => l === 'A3' || l === 'A4';
 
+/** 一致選了預設值，而且那是 AI 自己的判斷：預設值不是字面上的 INSUFFICIENT、票數到齊、每一票都合格且沒被降級。 */
+export function keptByChoice(abstain: string, samples: CheckedSample[], wanted: number): boolean {
+  return abstain !== 'INSUFFICIENT' && samples.length >= wanted && samples.every((s) => s.valid && s.rawVerdict === abstain && s.verdict === abstain);
+}
+
 /** 票數與結論。samples：檢查過的每一票；少送的票算成 abstain。 */
 export function decide(pack: EvidencePack, samples: CheckedSample[]): Outcome {
   const pol = pack.policy;
@@ -297,7 +302,9 @@ export function decide(pack: EvidencePack, samples: CheckedSample[]): Outcome {
   if (!samples.some((s) => s.valid)) return { ...base, status: 'INVALID', actionable: false, followRule: true, reason: `${samples.length ? '送回的' + samples.length + ' 票格式都不合格' : '沒有送回任何一票'}，照規則。` };
   const unanimous = Object.keys(votes).length === 1 && verdicts.length === n;
   if (!unanimous) return { ...base, status: 'SPLIT', actionable: false, followRule: true, reason: `${n} 票不一致（${voteText}），照規則並記錄。` };
-  if (plurality === pol.abstain) return { ...base, status: 'INSUFFICIENT', actionable: false, followRule: true, reason: `${n} 票都認為證據不足，照規則。` };
+  // 有些功能「證據不足」時的預設值本身就是一個真的判斷（F24 的 HOLD = 維持現狀）：每一票都是自己選的（沒有被降級、沒有少送），
+  // 才說成維持現狀；有任何一票是被檢查降級或補上的，照舊說證據不足
+  if (plurality === pol.abstain) return { ...base, status: 'INSUFFICIENT', actionable: false, followRule: true, reason: keptByChoice(pol.abstain, samples, pol.samples) ? `${n} 票一致：${plurality}（維持現狀，照規則）。` : `${n} 票都認為證據不足，照規則。` };
   const missing = [...new Set(samples.flatMap((s) => s.dataMissing))];
   if (missing.length && LEVEL_CAN_ACT(pol.level)) return { ...base, status: 'DATA_MISSING', actionable: false, followRule: true, reason: `${n} 票一致是 ${plurality}，但資料有缺漏（${missing.join('、')}），不能改變下單，照規則並記錄。` };
   const act = LEVEL_CAN_ACT(pol.level);

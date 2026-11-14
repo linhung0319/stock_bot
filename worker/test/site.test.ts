@@ -6,7 +6,8 @@ import { VOL_HIST_SEED } from '../src/engine/volSeed';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Env, Fetcher } from '../src/app/env';
 import { loadAccount } from '../src/app/ledgerStore';
-import { resetAccessCache } from '../src/app/site/access';
+import { SESSION_COOKIE } from '../src/app/site/auth';
+import { LINE_CERTS_URL, LINE_TOKEN_URL, LOGIN_COOKIE, resetLineCertsCache, safeNext } from '../src/app/site/lineLogin';
 import type { ItemView, NotifView, SnapshotForm, StateView } from '../src/app/site/views';
 import type { HistoryView, HoldingDetail } from '../src/app/site/views';
 import { saveRanking, saveSeries, type Series } from '../src/data/store';
@@ -823,106 +824,232 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
 
 // ================================================================ 登入
 
-describe('登入：Cloudflare Access', () => {
-  const b64 = (x: ArrayBuffer | string) => Buffer.from(typeof x === 'string' ? x : new Uint8Array(x)).toString('base64url');
-  const TEAM = 'myteam.cloudflareaccess.com';
-  const AUD = 'aud-tag-0123456789';
-  let pair: CryptoKeyPair;
-  let jwk: JsonWebKey;
-  let certCalls = 0;
-  const certs: Fetcher = async (url) => {
-    if (url !== `https://${TEAM}/cdn-cgi/access/certs`) throw new Error('測試不應該連網：' + url);
-    certCalls++;
-    return Response.json({ keys: [{ kid: 'k1', kty: 'RSA', alg: 'RS256', n: jwk.n, e: jwk.e }] });
-  };
-  async function token(claims: Record<string, unknown>, opt: { kid?: string; key?: CryptoKey; alg?: string } = {}) {
-    const head = b64(JSON.stringify({ alg: opt.alg ?? 'RS256', kid: opt.kid ?? 'k1', typ: 'JWT' }));
-    const payload = b64(JSON.stringify(claims));
-    const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', opt.key ?? pair.privateKey, new TextEncoder().encode(`${head}.${payload}`));
-    return `${head}.${payload}.${b64(sig)}`;
-  }
+describe('登入：LINE Login（Worker 自己做）', () => {
+  const b64 = (x: ArrayBuffer | Uint8Array | string) => Buffer.from(typeof x === 'string' ? x : x instanceof Uint8Array ? x : new Uint8Array(x)).toString('base64url');
+  const CH_ID = '2001234567';
+  const CH_SECRET = 'line-channel-secret-0123456789abcdef';
+  const USER = 'U0123456789abcdef0123456789abcdef';
+  const ORIGIN = 'https://bot.example';
   const sec = Math.floor(NOW.getTime() / 1000);
-  const good = { aud: [AUD], iss: `https://${TEAM}`, exp: sec + 600, iat: sec - 10, email: 'someone@example.com' };
-  const call = (e: Env, headers: Record<string, string> = {}, path = '/demo/api/state') => handle(new Request('https://bot.example' + path, { headers }), e, certs, NOW);
+  const noNet: Fetcher = async (u) => {
+    throw new Error('測試不應該連網：' + u);
+  };
+  let conf: Env;
+  let ec: CryptoKeyPair;
+  let ecJwk: JsonWebKey;
+
+  function cookieOf(res: Response, name: string): string | null {
+    for (const c of res.headers.getSetCookie()) if (c.startsWith(name + '=')) return c.slice(name.length + 1).split(';')[0];
+    return null;
+  }
+
+  /** 假的 LINE：token 端點檢查 code、code_verifier、client_secret、redirect_uri，回傳 make() 產生的 ID token。 */
+  function fakeLine(make: (nonce: string) => Promise<string>, opt: { tokenStatus?: number } = {}) {
+    const calls = { token: 0, certs: 0 };
+    let nonce = '';
+    let challenge = '';
+    const fetcher: Fetcher = async (url, init) => {
+      if (url === LINE_CERTS_URL) {
+        calls.certs++;
+        return Response.json({ keys: [{ kid: 'ec1', kty: 'EC', alg: 'ES256', crv: 'P-256', x: ecJwk.x, y: ecJwk.y, use: 'sig' }] });
+      }
+      if (url === LINE_TOKEN_URL) {
+        calls.token++;
+        const body = new URLSearchParams(String(init?.body));
+        expect(init?.method).toBe('POST');
+        expect(body.get('grant_type')).toBe('authorization_code');
+        expect(body.get('code')).toBe('the-code');
+        expect(body.get('client_id')).toBe(CH_ID);
+        expect(body.get('client_secret')).toBe(CH_SECRET);
+        expect(body.get('redirect_uri')).toBe(`${ORIGIN}/auth/line/callback`);
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body.get('code_verifier') ?? ''));
+        expect(b64(digest)).toBe(challenge); // PKCE：送回的 verifier 要對得上一開始的 challenge
+        if (opt.tokenStatus) return new Response('nope', { status: opt.tokenStatus });
+        return Response.json({ access_token: 'at', token_type: 'Bearer', expires_in: 2592000, id_token: await make(nonce) });
+      }
+      throw new Error('測試不應該連網：' + url);
+    };
+    return {
+      calls,
+      fetcher,
+      /** 走一次「按登入 → LINE 導回來」，回傳 callback 的回應與一開始的登入 cookie。 */
+      async run(e: Env = conf, tweak: (q: URLSearchParams) => void = () => {}, next = '#/account', at: Date = NOW) {
+        const start = await handle(new Request(`${ORIGIN}/auth/line/login?next=${encodeURIComponent(next)}`), e, fetcher, NOW);
+        expect(start.status).toBe(302);
+        const loc = new URL(start.headers.get('Location')!);
+        expect(loc.origin + loc.pathname).toBe('https://access.line.me/oauth2/v2.1/authorize');
+        nonce = loc.searchParams.get('nonce')!;
+        challenge = loc.searchParams.get('code_challenge')!;
+        const loginCookie = cookieOf(start, LOGIN_COOKIE)!;
+        const q = new URLSearchParams({ code: 'the-code', state: loc.searchParams.get('state')! });
+        tweak(q);
+        const cb = await handle(new Request(`${ORIGIN}/auth/line/callback?${q}`, { headers: { Cookie: `${LOGIN_COOKIE}=${loginCookie}` } }), e, fetcher, at);
+        return { start, loc, cb, loginCookie };
+      },
+    };
+  }
+  const hs256 = async (claims: Record<string, unknown>, secret = CH_SECRET) => {
+    const head = b64(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+    const body = b64(JSON.stringify(claims));
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return `${head}.${body}.${b64(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${head}.${body}`)))}`;
+  };
+  const es256 = async (claims: Record<string, unknown>, key: CryptoKey = ec.privateKey, kid = 'ec1') => {
+    const head = b64(JSON.stringify({ alg: 'ES256', typ: 'JWT', kid }));
+    const body = b64(JSON.stringify(claims));
+    return `${head}.${body}.${b64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(`${head}.${body}`)))}`;
+  };
+  const idClaims = (nonce: string, o: Record<string, unknown> = {}) => ({ iss: 'https://access.line.me', sub: USER, aud: CH_ID, exp: sec + 3600, iat: sec, nonce, name: 'me', ...o });
+  const api = (e: Env, headers: Record<string, string> = {}, path = '/demo/api/state', at: Date = NOW) => handle(new Request(ORIGIN + path, { headers }), e, noNet, at);
+  const loggedIn = async () => {
+    const { cb } = await fakeLine((n) => hs256(idClaims(n))).run();
+    return `${SESSION_COOKIE}=${cookieOf(cb, SESSION_COOKIE)}`;
+  };
 
   beforeAll(async () => {
-    pair = (await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify'])) as CryptoKeyPair;
-    jwk = (await crypto.subtle.exportKey('jwk', pair.publicKey)) as JsonWebKey;
+    conf = { DB: db, LINE_LOGIN_CHANNEL_ID: CH_ID, LINE_LOGIN_CHANNEL_SECRET: CH_SECRET, SESSION_SECRET: 'session-secret-xyz', LINE_USER_ID: USER, ADMIN_TOKEN: 'admin-secret', AI_TASK_SECRET: 'task-secret' };
+    ec = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+    ecJwk = (await crypto.subtle.exportKey('jwk', ec.publicKey)) as JsonWebKey;
   });
-  beforeEach(() => {
-    resetAccessCache();
-    certCalls = 0;
-  });
+  beforeEach(() => resetLineCertsCache());
 
-  it('還沒設定 Access：預設關閉；/admin 的金鑰可以暫時用；本機開發可以略過', async () => {
-    const closed = await call({ DB: db });
+  it('還沒設定 LINE 登入：API 預設關閉；管理金鑰可以用；本機開發可以略過；登入網址說明還沒設定', async () => {
+    const closed = await api({ DB: db });
     expect(closed.status).toBe(401);
     expect(await closed.json()).toEqual({ error: 'unauthorized', reason: 'NOT_CONFIGURED' });
-    expect((await call({ DB: db, ADMIN_TOKEN: 'admin-secret' })).status).toBe(401);
-    expect((await call({ DB: db, ADMIN_TOKEN: 'admin-secret' }, { Authorization: 'Bearer wrong' })).status).toBe(401);
-    expect((await call({ DB: db, ADMIN_TOKEN: 'admin-secret' }, { Authorization: 'Bearer admin-secret' })).status).toBe(200);
-    expect((await call({ DB: db, DEV_NO_AUTH: '1' })).status).toBe(200);
-    expect((await call({ DB: db }, {}, '/api/state')).status).toBe(401);
+    expect((await api({ DB: db, ADMIN_TOKEN: 'admin-secret' }, { Authorization: 'Bearer wrong' })).status).toBe(401);
+    expect((await api({ DB: db, ADMIN_TOKEN: 'admin-secret' }, { Authorization: 'Bearer admin-secret' })).status).toBe(200);
+    expect((await api({ DB: db, DEV_NO_AUTH: '1' })).status).toBe(200);
+    expect((await api({ DB: db }, {}, '/api/state')).status).toBe(401);
+    const page = await handle(new Request(`${ORIGIN}/auth/line/login`), { DB: db, LINE_USER_ID: USER }, noNet, NOW);
+    expect(page.status).toBe(503);
+    expect(await page.text()).toContain('還沒設定 LINE 登入');
   });
 
-  it('設定 Access 之後：只認 Access 簽的權杖（header 或 cookie）；金鑰與本機略過都不再有效', async () => {
-    const e: Env = { DB: db, ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD, ADMIN_TOKEN: 'admin-secret', DEV_NO_AUTH: '1' };
-    const none = await call(e);
-    expect(none.status).toBe(401);
-    expect(await none.json()).toMatchObject({ reason: 'NO_TOKEN' });
-    expect((await call(e, { Authorization: 'Bearer admin-secret' })).status).toBe(401);
-    const t = await token(good);
-    expect((await call(e, { 'Cf-Access-Jwt-Assertion': t })).status).toBe(200);
-    expect((await call(e, { Cookie: `other=1; CF_Authorization=${t}` })).status).toBe(200);
-    expect((await call(e, { 'Cf-Access-Jwt-Assertion': t }, '/api/state')).status).toBe(200);
-    expect(certCalls).toBe(1); // 公鑰有快取
-    // 團隊網域寫成網址也可以
-    expect((await call({ ...e, ACCESS_TEAM_DOMAIN: `https://${TEAM}/` }, { 'Cf-Access-Jwt-Assertion': t })).status).toBe(200);
+  it('整趟登入（HS256）：導去 LINE 時帶 state、nonce、PKCE；回來後發 30 天的登入 cookie、回到原本的頁面；之後 API 用 cookie 就能用', async () => {
+    const line = fakeLine((n) => hs256(idClaims(n)));
+    const { loc, cb } = await line.run();
+    expect(Object.fromEntries(loc.searchParams)).toMatchObject({ response_type: 'code', client_id: CH_ID, redirect_uri: `${ORIGIN}/auth/line/callback`, scope: 'openid profile', code_challenge_method: 'S256' });
+    expect(loc.searchParams.get('state')!.length).toBeGreaterThanOrEqual(40);
+    expect(cb.status).toBe(302);
+    expect(cb.headers.get('Location')).toBe('/#/account');
+    const set = cb.headers.getSetCookie();
+    expect(set.find((c) => c.startsWith(SESSION_COOKIE + '='))).toMatch(/Path=\/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax/);
+    expect(set.find((c) => c.startsWith(LOGIN_COOKIE + '='))).toMatch(/^__Host-sb_login=; .*Max-Age=0/); // 一次性的登入 cookie 清掉
+    const cookie = `${SESSION_COOKIE}=${cookieOf(cb, SESSION_COOKIE)}`;
+    expect((await api(conf, { Cookie: `other=1; ${cookie}` })).status).toBe(200);
+    expect((await api(conf, { Cookie: cookie }, '/api/state')).status).toBe(200);
+    expect(line.calls.token).toBe(1);
   });
 
-  it('權杖不對一律拒絕：過期、別的應用程式、別的團隊、簽章不符、演算法不對、亂碼', async () => {
-    const e: Env = { DB: db, ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD };
-    const other = (await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify'])) as CryptoKeyPair;
-    const ok = await token(good);
-    const [h, p, s] = ok.split('.');
+  it('ES256 的 ID token 也驗得過（公鑰從 LINE 抓、有快取）', async () => {
+    const line = fakeLine((n) => es256(idClaims(n)));
+    expect((await line.run()).cb.status).toBe(302);
+    expect((await line.run()).cb.status).toBe(302);
+    expect(line.calls.certs).toBe(1);
+  });
+
+  it('LINE 導回來的請求不對一律不接受、也不發登入 cookie：state 不符、沒有登入 cookie、超過 10 分鐘、取消登入、沒有 code、LINE 不發憑證', async () => {
+    const line = fakeLine((n) => hs256(idClaims(n)));
     const bad = [
-      await token({ ...good, exp: sec - 1 }),
-      await token({ ...good, aud: ['someone-else'] }),
-      await token({ ...good, iss: 'https://evil.cloudflareaccess.com' }),
-      await token(good, { key: other.privateKey }),
-      await token(good, { kid: 'unknown' }),
-      await token(good, { alg: 'none' }),
-      `${h}.${b64(JSON.stringify({ ...good, email: 'attacker@example.com' }))}.${s}`,
-      `${h}.${p}.`,
-      'not-a-jwt',
-      '',
+      (await line.run(conf, (q) => q.set('state', 'forged'))).cb,
+      (await line.run(conf, () => {}, '#/', new Date(NOW.getTime() + 601_000))).cb,
+      (
+        await line.run(conf, (q) => {
+          q.delete('code');
+          q.set('error', 'access_denied');
+        })
+      ).cb,
+      (await line.run(conf, (q) => q.delete('code'))).cb,
+      (await fakeLine((n) => hs256(idClaims(n)), { tokenStatus: 400 }).run()).cb,
     ];
-    for (const t of bad) {
-      const r = await call(e, { 'Cf-Access-Jwt-Assertion': t });
-      expect(r.status).toBe(401);
+    const { loc } = await line.run();
+    bad.push(await handle(new Request(`${ORIGIN}/auth/line/callback?code=the-code&state=${loc.searchParams.get('state')}`), conf, line.fetcher, NOW)); // 別的瀏覽器（沒有登入 cookie）
+    for (const r of bad) {
+      expect(r.status).toBeGreaterThanOrEqual(400);
+      expect(cookieOf(r, SESSION_COOKIE)).toBeNull();
     }
-    expect((await call(e, { 'Cf-Access-Jwt-Assertion': ok })).status).toBe(200);
+    expect(await bad[2].text()).toContain('取消了登入');
+  });
+
+  it('ID token 不對一律拒絕：nonce、aud、iss、過期、簽章不符、演算法 none、竄改內容、別的 LINE 帳號（403）', async () => {
+    const other = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+    const makers: ((n: string) => Promise<string>)[] = [
+      (n) => hs256(idClaims('x' + n)),
+      (n) => hs256(idClaims(n, { aud: '1999999999' })),
+      (n) => hs256(idClaims(n, { iss: 'https://evil.example' })),
+      (n) => hs256(idClaims(n, { exp: sec - 1 })),
+      (n) => hs256(idClaims(n), 'wrong-secret'),
+      (n) => es256(idClaims(n), other.privateKey),
+      (n) => es256(idClaims(n), ec.privateKey, 'unknown-kid'),
+      async (n) => `${b64(JSON.stringify({ alg: 'none' }))}.${b64(JSON.stringify(idClaims(n)))}.`,
+      async (n) => {
+        const [h, , s] = (await hs256(idClaims(n, { sub: 'Uother' }))).split('.');
+        return `${h}.${b64(JSON.stringify(idClaims(n)))}.${s}`;
+      },
+      async () => 'not-a-jwt',
+    ];
+    for (const m of makers) {
+      const { cb } = await fakeLine(m).run();
+      expect(cb.status).toBe(502);
+      expect(cookieOf(cb, SESSION_COOKIE)).toBeNull();
+    }
+    const stranger = (await fakeLine((n) => hs256(idClaims(n, { sub: 'Ustranger' }))).run()).cb;
+    expect(stranger.status).toBe(403);
+    expect(cookieOf(stranger, SESSION_COOKIE)).toBeNull();
+  });
+
+  it('登入 cookie：過期、竄改、拿一次性的登入 cookie 冒充、換了 LINE_USER_ID 或 SESSION_SECRET 都失效；沒登入時告訴網頁去哪裡登入', async () => {
+    const { cb, loginCookie } = await fakeLine((n) => hs256(idClaims(n))).run();
+    const val = cookieOf(cb, SESSION_COOKIE)!;
+    const cookie = { Cookie: `${SESSION_COOKIE}=${val}` };
+    const none = await api(conf);
+    expect(none.status).toBe(401);
+    expect(await none.json()).toEqual({ error: 'unauthorized', reason: 'NO_SESSION', login: '/auth/line/login' });
+    expect((await api(conf, cookie, '/demo/api/state', new Date(NOW.getTime() + 29 * 86400_000))).status).toBe(200);
+    const expired = await api(conf, cookie, '/demo/api/state', new Date(NOW.getTime() + 30 * 86400_000 + 1000));
+    expect(await expired.json()).toMatchObject({ reason: 'BAD_SESSION' });
+    const [body, sig] = val.split('.');
+    const forged = b64(JSON.stringify({ kind: 'session', sub: USER, exp: sec + 999 * 86400 }));
+    for (const c of [`${forged}.${sig}`, `${body}.`, body, loginCookie, 'garbage']) expect((await api(conf, { Cookie: `${SESSION_COOKIE}=${c}` })).status).toBe(401);
+    expect((await api({ ...conf, LINE_USER_ID: 'Unew' }, cookie)).status).toBe(401);
+    expect((await api({ ...conf, SESSION_SECRET: 'rotated' }, cookie)).status).toBe(401);
+    // 設好 LINE 登入之後，本機略過不再有效；管理金鑰仍是備用
+    expect((await api({ ...conf, DEV_NO_AUTH: '1' })).status).toBe(401);
+    expect((await api(conf, { Authorization: 'Bearer admin-secret' })).status).toBe(200);
+    // 登出清掉 cookie
+    const out = await handle(new Request(`${ORIGIN}/auth/logout`), conf, noNet, NOW);
+    expect(out.status).toBe(302);
+    expect(out.headers.getSetCookie()[0]).toMatch(/^__Host-sb_session=; .*Max-Age=0/);
+  });
+
+  it('登入後要回去的頁面只收網站自己的 #/…', async () => {
+    expect(safeNext('#/h/MU')).toBe('#/h/MU');
+    for (const n of ['https://evil.example', '//evil.example', '/#/x', '#/<script>', 'javascript:alert(1)', null, '#/' + 'a'.repeat(300)]) expect(safeNext(n)).toBe('');
+    const { cb } = await fakeLine((n) => hs256(idClaims(n))).run(conf, () => {}, 'https://evil.example');
+    expect(cb.headers.get('Location')).toBe('/');
   });
 
   it('別的網站不能替你送出操作：來源不是這個網站、或不是 JSON 的請求一律拒絕', async () => {
-    const e: Env = { DB: db, ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD };
-    const t = await token(good);
+    const cookie = await loggedIn();
     const post = (headers: Record<string, string>, body = '{"amount":100,"dry":true}') =>
-      handle(new Request('https://bot.example/demo/api/ops/deposit', { method: 'POST', headers: { 'Cf-Access-Jwt-Assertion': t, ...headers }, body }), e, certs, NOW);
-    expect((await post({ 'Content-Type': 'application/json', Origin: 'https://bot.example' })).status).toBe(200);
+      handle(new Request(`${ORIGIN}/demo/api/ops/deposit`, { method: 'POST', headers: { Cookie: cookie, ...headers }, body }), conf, noNet, NOW);
+    expect((await post({ 'Content-Type': 'application/json', Origin: ORIGIN })).status).toBe(200);
     expect((await post({ 'Content-Type': 'application/json' })).status).toBe(200); // 沒有 Origin（例如 curl）
     expect((await post({ 'Content-Type': 'application/json', Origin: 'https://evil.example' })).status).toBe(403);
     // 表單可以不經過跨來源檢查就送出 text/plain：內容再像 JSON 也不收
-    expect((await post({ 'Content-Type': 'text/plain', Origin: 'https://bot.example' })).status).toBe(415);
+    expect((await post({ 'Content-Type': 'text/plain', Origin: ORIGIN })).status).toBe(415);
     expect((await post({})).status).toBe(415);
   });
 
-  it('其他端點不受影響：/health 不用登入；/admin 與 /ai 仍然各用各的金鑰', async () => {
-    const e: Env = { DB: db, ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD, ADMIN_TOKEN: 'admin-secret', AI_TASK_SECRET: 'task-secret' };
-    expect((await call(e, {}, '/health')).status).toBe(200);
-    expect((await call(e, {}, '/admin/data/status')).status).toBe(401);
-    expect((await call(e, { Authorization: 'Bearer admin-secret' }, '/admin/data/status')).status).toBe(200);
-    expect((await call(e, { 'Cf-Access-Jwt-Assertion': await token(good) }, '/admin/data/status')).status).toBe(401);
-    expect((await call(e, {}, '/nothing-here')).status).toBe(404);
+  it('其他端點不受影響：/health 不用登入；/admin 與 /ai 仍然各用各的金鑰，登入 cookie 進不去', async () => {
+    const cookie = { Cookie: await loggedIn() };
+    expect((await api(conf, {}, '/health')).status).toBe(200);
+    expect((await api(conf, {}, '/admin/data/status')).status).toBe(401);
+    expect((await api(conf, { Authorization: 'Bearer admin-secret' }, '/admin/data/status')).status).toBe(200);
+    expect((await api(conf, cookie, '/admin/data/status')).status).toBe(401);
+    expect((await api(conf, cookie, '/ai/task/00000000000000000000000000000000/evidence')).status).toBe(401);
+    expect((await api(conf, {}, '/auth/nothing')).status).toBe(404);
+    expect((await api(conf, {}, '/nothing-here')).status).toBe(404);
   });
 });
