@@ -57,15 +57,21 @@
    - Network access 選 **Limited**，Allowed domains 加上 Worker 的主機名稱（`stock-bot.<子網域>.workers.dev`）。
    - **Network secrets** → Add secret：Allowed websites 填同一個主機名稱；Header name `Authorization`、Prefix `Bearer`、
      Value 填和 `AI_TASK_SECRET` 相同的值。
-3. 在 claude.ai/code/routines 建立排程任務：
-   - Instructions：貼 `ai/prompts/ping.md` 裡「排程的 prompt」那一段，把 `WORKER_URL` 換成實際網址。
-   - Repository 選這個 repo；Environment 選上一步的環境；Trigger 選 **API**。
-   - 建立後會顯示一次 API token，還有這個任務的 `/fire` 網址，兩個都複製下來。
-4. 把觸發用的網址與 token 放進 Worker：
+3. 在 claude.ai/code/routines 建立排程任務（官方現在叫 scheduled task，網址還是 routines）：
+   - Instructions：貼 `ai/prompts/run.md` 裡「排程的 prompt」那一段（PING 任務它會轉給 `ping.md`，所以一個排程就夠），
+     網址已經填好，直接複製。
+   - 同一個輸入框裡選：模型 **Opus**（法官、經理要用 Opus；Sonnet、Haiku 由子代理指定）、Repository 選這個 repo、
+     Environment 選上一步的環境。Connectors 全部移除（用不到）。
+   - Trigger 選 **API**，按 Create 之後跳出的 **API token** 只顯示一次，先複製。
+     **Fire URL** 在任務的 Edit 視窗 → Trigger 那一列的 API 面板裡（那裡也可以 Generate／Regenerate token）。
+4. 把觸發用的網址與 token 放進 Worker。在 Claude Code 用 `!` 跑 `secret put` 會上傳空值，所以先把兩個值加進
+   `worker/.secrets.json`（`ROUTINE_FIRE_URL`、`ROUTINE_TOKEN`），再用管線送：
    ```
-   npx wrangler secret put ROUTINE_FIRE_URL   # https://api.anthropic.com/v1/claude_code/routines/trig_…/fire
-   npx wrangler secret put ROUTINE_TOKEN      # sk-ant-oat01-…
+   node -e "process.stdout.write(require('./.secrets.json').ROUTINE_FIRE_URL.trim())" | npx wrangler secret put ROUTINE_FIRE_URL
+   node -e "process.stdout.write(require('./.secrets.json').ROUTINE_TOKEN.trim())" | npx wrangler secret put ROUTINE_TOKEN
    ```
+   `ROUTINE_FIRE_URL` 長得像 `https://api.anthropic.com/v1/claude_code/routines/trig_…/fire`，`ROUTINE_TOKEN` 是 `sk-ant-oat01-…`。
+   自己的終端機直接跑 `npx wrangler secret put ROUTINE_TOKEN` 貼上也可以。
 5. 觸發一次：
    ```
    curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" "https://<網址>/admin/ai/ping"
