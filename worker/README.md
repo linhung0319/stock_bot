@@ -1,7 +1,7 @@
 # stock bot worker
 
 Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站、LINE 推播。
-設計依據：`../docs/design/design_v2_momentum_2026-11-07.md`（系統架構 §2.7）；任務順序：`../docs/plan/implementation_plan_2026-11-11.md`。
+設計依據：`../docs/design/design_v2_momentum_2026-11-07.md`（系統架構 §2.7）；任務順序：`../docs/plan/implementation_plan_2026-11-11.md`（進度紀錄在 `../docs/plan/progress_log.md`）。
 
 ## 需求
 
