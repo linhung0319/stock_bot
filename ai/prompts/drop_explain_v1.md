@@ -1,6 +1,6 @@
 # drop_explain_v1：持股單月跌 > 20% 的原因說明（F20，任務 C）
 
-共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`ai_layer_design_2026-11-08.md` 的 F20 卡片、`design_v2_momentum_2026-11-07.md` §6.4。
+共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`docs/design/ai_layer_design_2026-11-08.md` 的 F20 卡片、`docs/design/design_v2_momentum_2026-11-07.md` §6.4。
 
 ## 你在做什麼
 

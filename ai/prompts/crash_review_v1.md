@@ -1,6 +1,6 @@
 # crash_review_v1：崩盤規則的 AI 檢視（F5／F6）與每月總經評語
 
-共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`design_v2_momentum_2026-11-07.md` §4.4、`ai_layer_design_2026-11-08.md` 的 F5／F6 卡片、§3.3、§8.1、§9.2。
+共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`docs/design/design_v2_momentum_2026-11-07.md` §4.4、`docs/design/ai_layer_design_2026-11-08.md` 的 F5／F6 卡片、§3.3、§8.1、§9.2。
 
 ## 你在做什麼
 

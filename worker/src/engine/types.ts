@@ -1,5 +1,5 @@
 // 規則引擎的共用型別與設定。引擎是純函式：不讀網路、不讀時鐘、不碰儲存。
-// 依據：design_v2_momentum_2026-11-07.md（以下稱「設計」）。
+// 依據：docs/design/design_v2_momentum_2026-11-07.md（以下稱「設計」）。
 
 export type Bucket = 'own' | 'mom' | 'core';
 

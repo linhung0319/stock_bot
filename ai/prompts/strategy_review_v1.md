@@ -1,6 +1,6 @@
 # strategy_review_v1：策略檢討說明（F21）
 
-共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`design_v2_momentum_2026-11-07.md` §5、§7、`ai_layer_design_2026-11-08.md` 的 F21 卡片、§8.3。
+共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`docs/design/design_v2_momentum_2026-11-07.md` §5、§7、`docs/design/ai_layer_design_2026-11-08.md` 的 F21 卡片、§8.3。
 
 ## 你在做什麼
 
