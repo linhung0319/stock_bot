@@ -88,7 +88,7 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - `src/data/edgar.ts`：XBRL companyfacts（point-in-time 季度表、財報條件比對）、申報原文（MD&A、8-K 與 EX-99.1）、Nasdaq 新聞標題。
 - `src/ai/ownReview.ts`：F24／F25 的證據包、payload 檢查、結論怎麼變成引擎的輸入；`src/app/ownAi.ts`：接進每日流程（`aiStep`）。
 - 用真實資料看 F24 的證據長什麼樣（不觸發 AI）：`npx tsx scripts/own-evidence-local.ts MU 2026-11-13`。
-- prompt：`../ai/prompts/own_review_v1.md`、`own_condition_v1.md`。
+- prompt：`../ai/prompts/own_review_v2.md`（T26 起；`own_review_v1` 不再使用）、`own_condition_v1.md`。
 
 ## 其餘 AI 功能（T11）
 
@@ -99,8 +99,21 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - 規則偵測（不用 LLM）：`src/data/secEvents.ts`（申報分類，移植自 B-9）、`src/ai/detect.ts`（單日漲幅占比、盈餘背離、股數、資料可疑、跌幅拆解、SIC → 產業 ETF）、`src/data/fred.ts`（總經儀表板，fredgraph CSV 不需要金鑰）。
 - 各功能：F18／F19 `src/ai/events.ts`＋`src/app/events.ts`；F1 `src/ai/momEntry.ts`＋`src/app/momAi.ts`；F7 `src/ai/drops.ts`＋`src/app/dropAi.ts`；F5／F6 `src/ai/crash.ts`＋`src/app/crashAi.ts`；F21 `src/ai/strategy.ts`＋`src/app/strategyAi.ts`；F14 `src/ai/ownCheck.ts`＋`src/app/ownCheckAi.ts`。資料表 `migrations/0007_events_entry.sql`。
 - 用真實資料看規則段（不觸發 AI）：`npx tsx scripts/t11-local.ts MU NVDA`（F1 規則偵測、FRED 儀表板、French 動能因子回撤）。
-- 網站：「紀錄 → AI 紀錄」上方有本月動能進場審查、總經儀表板、最近的申報事件；持股頁有監測中的條件與 AI 改寫的出場條件；新增自選可以請 AI 草擬前提。
-- prompt：`../ai/prompts/` 的 `event_scan_v1`、`hard_event_v1`、`mom_entry_v2`（T32b 起；`mom_entry_v1` 不再使用）、`own_drop_v2`（T31b 起；`own_drop_v1` 不再使用）、`crash_review_v2`（T33d 起；`crash_review_v1` 不再使用）、`strategy_review_v1`、`own_check_v2`（T27 起；`own_check_v1` 不再使用）。`mom_score_v1`、`drop_explain_v1` T32d 起不再使用。
+- 網站：「紀錄 → AI 紀錄」上方有本月動能進場審查、總經儀表板、最近的申報事件；持股頁見下面「自選股的論點與三層配合」；新增自選不再請 AI 草擬前提（T27 拿掉，論點改在 claude.ai 討論）。
+- prompt：`../ai/prompts/` 的 `event_scan_v2`（T28 起；`event_scan_v1` 不再使用）、`hard_event_v1`、`own_earnings_v1`（T29c）、`mom_entry_v2`（T32b 起；`mom_entry_v1` 不再使用）、`own_drop_v2`（T31b 起；`own_drop_v1` 不再使用）、`crash_review_v2`（T33d 起；`crash_review_v1` 不再使用）、`strategy_review_v1`、`own_check_v2`（T27 起；`own_check_v1` 不再使用）。`mom_score_v1`、`drop_explain_v1` T32d 起不再使用。
+
+## 自選股的論點與三層配合（階段八，2026-11-16）
+
+設計：`../docs/design/own_thesis_design_2026-11-15.md`（自選）、`momentum_ai_design_2026-11-15.md`（動能）、`core_ai_design_2026-11-15.md`（核心）；
+每個任務做了什麼、執行中做的決定：`../docs/plan/thesis_plan_2026-11-15.md` 的階段八與 `../docs/plan/stage8_run_log.md`。
+
+- 論點檔（T25）：`src/app/thesis.ts`（`thesisFile` 從帳戶狀態、`own_conditions`、`own_thesis_log`、`sec_events`、`ai_runs` 組出一檔的論點檔；`ownAttention` 是自選股的「要看的事」，種類見 `own_thesis` §3.6.6）。
+- 條件的所有權（T26）：`src/app/ownConds.ts`。AI 審查只寫建議（`PROPOSED`），你在持股頁勾選才監測，成立時做什麼由你選。
+- 討論包、貼回、編輯論點（T27）：`src/ai/discussion.ts`（純函式：組包、解析貼回的區塊）、`src/app/discussion.ts`（讀 D1 與 EDGAR）、`public/js/pages-thesis.js`。在 claude.ai 怎麼用見 [`SETUP.md`](SETUP.md) 的 T27。
+- 審查與通知：定期審查與條件成立後的審查 `src/app/ownAi.ts`（甲類、乙類兩種失效通知，T29a；提前審查 T29b）；財報新聞稿當天確認 `src/app/earningsAi.ts`（T29c）；減半之後的 AI 論點檢查 `src/app/dropAi.ts`（T31b）；審查連續沒有結論的計數 `src/app/reviewHealth.ts`（T31a）；規則的通知等到 01:30 再推 `src/app/pushHold.ts`（T31b）。
+- 持股頁（T34）：`public/js/pages-holding.js`；論點那一塊的白話由 `src/app/site/thesisView.ts` 組；事件的白話 `src/app/eventText.ts`（持股頁與討論包共用）。
+- 幾份清單同時還沒填快照（T38）：入金、出金、改比例先把還沒填快照的清單當成做完再算（`src/engine/report.ts` 的 `afterOpenLists`）；填快照時同一桶同一檔照各清單列的股數分；上一份月報一整個月沒回覆，新月報出來時舊的策略項目取消。
+- 使用者角度走一遍的紀錄：`../docs/test-records/t34_walkthrough_2026-11-16.md`（自選）、`t38_walkthrough_2026-11-16.md`（動能、核心、入金出金、改比例與交錯）。三次排程與月報整個跑一遍的測試：`test/t38-flow-smoke.test.ts`。
 
 ## 網站（T8）
 
@@ -119,7 +132,7 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - API：`/api/*`（真實帳本）與 `/demo/api/*`（示範）是同一組端點，程式在 `src/app/site/`：
   `api.ts`（路由）、`backend.ts`（資料來源）、`views.ts`（組成畫面要的資料）、`explain.ts`（每一項建議的理由）、`auth.ts`（登入 cookie 的驗證）、`lineLogin.ts`（LINE 登入）。
 - 驗收：`test/site.test.ts` 用網站 API 走情境 ① 與 ⑤，每一步和直接呼叫引擎的結果比對。
-- 填快照照三桶分開填（2026-11-15，設計 §10 第 38 點）：`POST /api/snapshot` 送 `lots: { own, mom, core }`，變動放哪一桶由使用者決定，不再問分類與現金差額（差額記成其他現金變動）。自選加新代號＝新增自選、股數改 0＝移出自選；標準比重與前提在持股頁改（`/api/ops/std-weight`、`/api/ops/own-premises`）。只送總股數 `shares` 的舊格式仍收（示範與驗收測試用）。
+- 填快照照三桶分開填（2026-11-15，設計 §10 第 38 點）：`POST /api/snapshot` 送 `lots: { own, mom, core }`，變動放哪一桶由使用者決定，不再問分類與現金差額（差額記成其他現金變動）。自選加新代號＝新增自選、股數改 0＝移出自選；標準比重在持股頁改（`/api/ops/std-weight`），論點與前提在「編輯論點」頁改（`/api/ops/own-thesis`，T27 起取代 `own-premises`）。只送總股數 `shares` 的舊格式仍收（示範與驗收測試用）。
 - 部署與 LINE 登入設定：見 [`SETUP.md`](SETUP.md) 的 T8。
 
 ## 目錄

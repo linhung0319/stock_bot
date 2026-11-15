@@ -122,8 +122,8 @@ iss、aud、期限，最後 `sub` 必須等於 `LINE_USER_ID`。登入 cookie �
 
 ## T7：每日流程、LINE 推播、缺席告警
 
-每天兩個排程（`wrangler.jsonc`）：UTC 23:30（台灣早上 7:30，美股收盤後）抓資料 → 每日檢查 → 月底那天出下個月的月報 → LINE；
-UTC 01:30 再檢查一次，沒跑完就重跑，還是不行就推一則告警。T4 的實測排程這次拿掉了（`/admin/probe` 仍可手動跑）。
+每天三個排程（`wrangler.jsonc`；各做什麼見 `README.md` 的 T7）：UTC 23:30（台灣早上 7:30，美股收盤後）抓資料 → 每日檢查 → 月底那天出下個月的月報 → LINE；
+UTC 01:30 再檢查一次，沒跑完就重跑，還是不行就推一則告警；UTC 03:30 只套用回來的 AI 結論、補推。T4 的實測排程這次拿掉了（`/admin/probe` 仍可手動跑）。
 **月報要有帳戶才會出**：12 月的月報在 11/30 收盤後產生（台灣 12/1 早上 7:30 收到），在那之前要先照上面 T8 的步驟部署、在網站建立帳戶（預設紙上交易）。
 
 1. 建一個 LINE 官方帳號並開啟 Messaging API（2026-11 的官方流程；畫面名稱以後台為準）：
@@ -191,7 +191,7 @@ npx wrangler deploy
 2. 總經儀表板：`curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/macro`（看 FRED 的 10 個序列從 Cloudflare 抓不抓得到）。
 3. 隔天看 `GET /admin/flow/status` 的 `ai.log`：每日掃描有沒有抓到 Nasdaq 新聞標題（本機連不上，要看 Cloudflare 能不能連）。
 
-雲端排程（T5）建好之後，月報前一天（當月倒數第二個交易日）會自動開：自選定期審查、動能新股進場審查（有命中才開法庭）、擬事件打分、崩盤規則檢視（預估會切換時才開；不會切換的月份不開，每月評語 2026-11-15 拿掉）；
+雲端排程（T5）建好之後，月報前一天（當月倒數第二個交易日）會自動開：自選定期審查、動能新股進場審查（有命中才開法庭）、崩盤規則檢視（預估會切換時才開；不會切換的月份不開，每月評語 2026-11-15 拿掉）；
 平常每天有新的 8-K 或新聞標題時開每日掃描（Haiku）。第一個月跑完後到 claude.ai 的用量頁看一下整體用量。
 
 ## T15：LINE 關鍵字回覆
@@ -226,3 +226,13 @@ npx wrangler deploy
 - 流程：持股頁按「複製討論包」→ 貼到 claude.ai 的新對話 → 討論 → 說「收尾」→ 複製它輸出的整個區塊（`===STOCKBOT 論點 v1 <代號>===` 到 `===END===`）→ 持股頁「編輯論點」→ 貼上、按「解析」→ 看左右預覽、需要的話手改 → 確認。
 - 確認後論點與前提馬上存好；出場條件送去 AI 改寫（要雲端排程設定好），回來後在持股頁勾選才開始監測。送不出去時頁面會寫「出場條件還沒送去改寫」並有「重送」。
 - 前提有增減時，隔天的每日流程會開一次審查（每檔 30 天最多 1 次）。
+
+## 階段八（2026-11-16）：部署
+
+階段八（`docs/plan/thesis_plan_2026-11-15.md`）改了資料表、排程與 prompt。照順序：
+
+1. `git push`：雲端排程從 repo 讀 prompt（`own_review_v2`、`event_scan_v2`、`own_check_v2`、`own_earnings_v1`、`own_drop_v2`、`mom_entry_v2`、`crash_review_v2`），push 之後才用新版。
+2. 資料表：套用新的 migration `0010`～`0014`（`npx wrangler d1 migrations apply stock-bot --remote`），或照 T17 清掉帳戶與 AI 的資料、重建資料庫（上線前本來就要做）。
+3. `npx wrangler deploy`：新的 03:30 排程（`30 3 * * TUE-SAT`）部署之後才生效。
+4. 把 `ai/prompts/run.md`、`ai/prompts/ping.md` 的「排程的 prompt」重新貼到 claude.ai 的雲端排程（T36 改過）。
+5. 部署後第一個交易日看 `GET /admin/flow/status`：三次排程都有紀錄、沒有 `ERROR`。
