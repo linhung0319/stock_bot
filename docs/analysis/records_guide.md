@@ -38,6 +38,7 @@ Worker 端是 `GET /admin/export`（`ADMIN_TOKEN` 的 Bearer；`worker/src/app/e
 | `ai_rejections` | 被退回（REJECTED）或逾時才送到（LATE）的輸出 |
 | `checkpoints` | 月底檢查點（自選定期審查，T31a）：每個月審了幾檔（`reviewed`，有新證據）、跳過幾檔（`skipped`，沒有新證據）、有新證據但沒開成（`not_started`）、`skip_ratio`；`never`／`filing`／`event`／`thesis`／`stale`／`unknown` = 開了審查的那幾檔各有幾檔帶這個原因。資料在 `flow_state` 的 `review:checkpoint:<年月>` |
 | `crash_reviews` | 崩盤規則的切換與 AI 檢視（T33b）：期間內每一次切換一列（月報訊號日在期間內；重列的那一項不算）——`month`、`direction`（ON 啟動／OFF 解除）、`notif`、`state`（月報那一項現在的檢視狀態：OPINION 有意見、NO_OPINION 沒有意見、PENDING、FAILED、NO_DATA 總經資料不足、OFF）、`kind`（PREVIEW 月報前一天預估、MAKEUP 月報之後補開）、`runs`（這個月份＋方向開了幾次）、`no_conclusion`（沒有結論幾次）、`followups`（03:30 補推幾次）。合計列多一欄 `switches`（切換次數） |
+| `mom_entry` | 動能新股進場審查的 F1 法庭（T32d）：每列 `{ item, code, n, note }`——`courts`（期間內開了幾次法庭）、`courts_by_code`（依規則偵測命中的代碼，一次法庭兩個代碼各算一次，新聞標題來的不算）、`vetoes`（新的 AI 否決，不含沿用）、`carried`（沿用上一次的結論；`code` 是沿用的結論）、`no_conclusion`（跑完了但沒有結論）、`late`（月報之後才回來的否決）、`veto_total`（到期間結束累積的否決次數，連續沿用算同一次；跨過 5 的倍數時 `note` 提示看一次否決的紀錄）。資料在 `ai_runs`（`MOM_ENTRY`）與 `mom_reviews`（建立時間在期間內） |
 
 每段最後一列的第一欄是「合計」；比例是 0～1 的小數、分母是 0 時是 null。
 
@@ -128,7 +129,7 @@ records/                         ← .gitignore，不進 repo
 - **被作廢的回覆**：影子紀錄裡 `f = 'REOPEN'` 是「改決定」的作廢記號，它之前同一則通知的紀錄不算（網站用 `liveShadow()` 濾掉，分析時照同樣的規則）。
 - **上線日**：`manifest.json` 的 `launch_date`（T17 寫進 `flow_state`）。之前的資料只在 `pre-launch/`。
 
-功能代號對照（`ai_runs.fn`）：`OWN_REVIEW`（F24）、`OWN_CONDITION`（F25）、`OWN_CHECK`（F14 出場條件改寫；T27 之前叫新增自選健檢）、`OWN_DROP`（F7）、`DROP_EXPLAIN`（F20）、`MOM_ENTRY`／`MOM_SCORE`（F1）、`HARD_EVENT`（F19）、`EVENT_SCAN`（F18）、`CRASH_REVIEW`（F5／F6）、`STRATEGY_REVIEW`（F21）。prompt 檔在 `ai/prompts/<prompt_version>.md`；同一個版本號的內容如果改過，用 `meta.json` 的 `repo_commit` 回 git 找當時的檔案（`git show <commit>:ai/prompts/<prompt_version>.md`）。`repo_commit` 是雲端排程在 clone 下來的 repo 跑 `git rev-parse HEAD` 回報的（`ai/prompts/run.md` 第 1 步）；沒回報或格式不像 commit 的存 null。
+功能代號對照（`ai_runs.fn`）：`OWN_REVIEW`（F24）、`OWN_CONDITION`（F25）、`OWN_CHECK`（F14 出場條件改寫；T27 之前叫新增自選健檢）、`OWN_DROP`（F7）、`DROP_EXPLAIN`（F20；T32d 起不再開）、`MOM_ENTRY`／`MOM_SCORE`（F1；`MOM_SCORE` 擬事件打分 T32d 起不再開）、`HARD_EVENT`（F19）、`EVENT_SCAN`（F18）、`CRASH_REVIEW`（F5／F6）、`STRATEGY_REVIEW`（F21）。prompt 檔在 `ai/prompts/<prompt_version>.md`；同一個版本號的內容如果改過，用 `meta.json` 的 `repo_commit` 回 git 找當時的檔案（`git show <commit>:ai/prompts/<prompt_version>.md`）。`repo_commit` 是雲端排程在 clone 下來的 repo 跑 `git rev-parse HEAD` 回報的（`ai/prompts/run.md` 第 1 步）；沒回報或格式不像 commit 的存 null。
 
 ## 5. 範例分析問題
 

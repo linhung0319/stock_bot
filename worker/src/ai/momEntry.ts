@@ -1,5 +1,5 @@
-// T11：F1 動能新股進場（任務 A：否決法庭）與擬事件打分（ai_layer_design F1 卡片、§2.5；design_v2 §6.2、§2.4；B-9 §7.4）。
-// 純函式：候選順序與遞補、規則偵測的結論、法庭的證據包與檢查、擬事件打分。資料抓取與排程在 src/app/momAi.ts。
+// T11：F1 動能新股進場（任務 A：否決法庭）（ai_layer_design F1 卡片；design_v2 §6.2、§2.4；B-9 §7.4）。擬事件打分 T32d 拿掉（momentum_ai §3.7）。
+// 純函式：候選順序與遞補、規則偵測的結論、法庭的證據包與檢查。資料抓取與排程在 src/app/momAi.ts。
 //
 // 規則偵測（不用 LLM）：
 //   被收購方（PREM14A／DEFM14A／SC TO-T／SC 14D9 的被收購方）、NT 10-K／10-Q → 規則直接否決
@@ -17,8 +17,6 @@ import type { MarketView } from '../engine';
 export const MOM_ENTRY = 'MOM_ENTRY';
 /** v2（T32b）：否決要有申報、XBRL 或價格表的引用；財測下修來自掃描時要讀那份 8-K；拿掉 lift_condition；「准許，附註」。 */
 export const MOM_ENTRY_PROMPT = 'mom_entry_v2';
-export const MOM_SCORE = 'MOM_SCORE';
-export const MOM_SCORE_PROMPT = 'mom_score_v1';
 
 /** 可以否決的代碼（DILUTION 2026-11-11 起只顯示）。估值、情緒、漲太多都不算。 */
 export const VETO_CODES = ['EARNINGS_DIVERGENCE', 'ONE_OFF_JUMP', 'PENDING_MA', 'ACCOUNTING', 'REGULATORY'] as const;
@@ -302,8 +300,6 @@ export function momEntryPack(inp: MomEntryInput) {
   });
 }
 
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-
 /** 否決的那一票至少要有一條通過檢查的引用來自這幾種文件（momentum_ai §3.3，使用者 2026-11-15 決定；修 Q10）。 */
 const VETO_DOC_KINDS = ['filing', 'xbrl', 'price'];
 /** 只有新聞標題的否決改成准許、附註時補的理由。 */
@@ -386,48 +382,3 @@ export function courtFailWhy(o: Outcome | null | undefined): string {
   return o.status;
 }
 
-// ---------------------------------------------------------------- 擬事件打分（每月對前 15 名，§2.5）
-
-export interface ScoreRow {
-  ticker: string;
-  rank: number;
-  r12: number;
-  hits: EntryHit[];
-}
-
-/** 每月一份：前 15 名每一檔的規則偵測結果 → AI 打「前提失效機率」（只記錄，往前驗證 AI 的鑑別力）。 */
-export function momScorePack(inp: { runId: string; asOf: string; rows: ScoreRow[]; docs: PackDoc[]; now: Date }) {
-  const table = inp.rows
-    .map((r) => `#${r.rank} ${r.ticker} 12m ${(r.r12 * 100).toFixed(1)}% | ${r.hits.length ? r.hits.map((h) => `${h.code}: ${h.detail}`).join(' / ') : 'no rule hits'}`)
-    .join('\n');
-  return buildPack({
-    runId: inp.runId,
-    fn: MOM_SCORE,
-    promptVersion: MOM_SCORE_PROMPT,
-    asOf: inp.asOf,
-    subject: { name: `動能前 ${inp.rows.length} 名的擬事件打分` },
-    question: '對每一檔打「前提失效機率」（premise_risk，0～1），並列出可能的失效代碼。這份分數只記錄、不影響下單，用來事後檢查 AI 分不分得出好壞。沒有證據的就給低分，不要因為漲多就給高分。',
-    policy: { level: 'A2', verdicts: ['SCORED', 'INSUFFICIENT'], abstain: 'INSUFFICIENT', min_evidence: 0, samples: 1 },
-    rule: { action: '規則照排名，不受這份分數影響', detail: { tickers: inp.rows.map((r) => r.ticker) } },
-    facts: inp.rows.map((r, k) => ({ id: `S${k + 1}`, label: `#${r.rank} ${r.ticker}`, value: `12 個月 ${(r.r12 * 100).toFixed(1)}%`, note: r.hits.length ? r.hits.map((h) => h.code).join('、') : '沒有命中' })),
-    documents: [{ id: 'T-RULES', source_id: `rules:${inp.asOf}`, kind: 'table', date: inp.asOf, title: `前 ${inp.rows.length} 名的規則偵測結果`, text: table }, ...inp.docs],
-    now: inp.now,
-  });
-}
-
-/** 擬事件 payload：每一檔一筆，代號要在名單內、分數在 0～1、代碼在列舉內。 */
-export function checkMomScorePayload(s: CheckedSample, pack: EvidencePack): void {
-  const names = new Set((pack.rule.detail as { tickers?: string[] })?.tickers ?? []);
-  const raw = Array.isArray(s.payload?.scores) ? (s.payload!.scores as unknown[]) : [];
-  const kept: unknown[] = [];
-  for (const r of raw.slice(0, 30)) {
-    if (!isObj(r) || typeof r.ticker !== 'string' || !names.has(r.ticker) || typeof r.premise_risk !== 'number' || r.premise_risk < 0 || r.premise_risk > 1) {
-      s.issues.push(`分數格式不對，拿掉：${JSON.stringify(r).slice(0, 100)}`);
-      continue;
-    }
-    const codes = (Array.isArray(r.codes) ? r.codes : []).filter((c): c is string => ALL_CODES.includes(c as never));
-    kept.push({ ticker: r.ticker, premise_risk: r.premise_risk, codes });
-  }
-  s.payload = { ...(s.payload ?? {}), scores: kept };
-  if (s.verdict === 'SCORED' && !kept.length) s.verdict = 'INSUFFICIENT';
-}

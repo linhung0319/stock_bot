@@ -28,6 +28,7 @@
 | T33c | 完成 | （見 git log） | 586 通過、1 略過 |
 | T33b | 完成 | （見 git log） | 602 通過、1 略過 |
 | T33d | 完成 | （見 git log） | 617 通過、1 略過 |
+| T32d | 完成 | （見 git log） | 636 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -207,6 +208,15 @@
 - T33d｜改比例的影子紀錄：股數 0 的劃撥行不記；`note` 取標題裡的「X → Y」。
 - T33d｜測試輔助的假市場改成 SPY 用 VOO 的價格（真實兩者追蹤同一個指數）。
 - T33d｜**範圍外的邏輯缺口（建議 T34 或使用者角度走一遍時處理）**：另一份清單已經回覆、還沒填快照時，入金、出金、改比例的清單與「做完之後」都用還沒成交的持股算，會把月報已經要賣、要買的再列一次。這是 `changeRatio`／`deposit` 原本的行為，網站也沒擋。
+- T32d｜單月大跌那一行：已經在 15 名外時寫「目前第 N 名，已經掉出前 15 名，月報會列出場」，不在股票池時寫「目前不在排名的股票池內」，不照字面寫「掉出前 15 名才賣」。
+- T32d｜「每 30 天」改成每 1 個月（照 T37 的建議）；單月大跌的 `since` 用月報那天，事件取 21 個交易日區間內的。
+- T32d｜晚到的否決只在第三種月報狀態列（沒補推過 LINE、還有動能部位），前兩種已補推過不再列。
+- T32d｜進場時的附註取這一檔最新一次「准許，附註」而且還在名單上的審查，只在持股頁顯示、不進月報。
+- T32d｜否決紀錄只列 AI 法庭的否決（含晚到的），沿用指到同一次法庭的算同一次；之後的報酬只用已存的價格，沒有就顯示「—」。
+- T32d｜運作統計 `mom_entry`：累積否決跨過 5 的倍數那一段期間才提示；完全沒資料時回空列。
+- T32d｜策略檢討的歷史對照：AI 段套用之前抓一次 French，不管雲端排程有沒有設定都接進提醒；通知頁沒有清單時顯示連到報告或「AI 說明沒有回來」。
+- T32d｜持股頁的事件只顯示日期、類別中文、來源，不顯示說明文字（T28 的說明裡還有英文代碼）。
+- T32d｜**範圍外的缺口（建議 T34 或使用者角度走一遍時處理）**：晚到否決那一行照設計寫「不想留可以在帳戶頁排除」，但帳戶頁沒有排除持有中動能股的功能（排除只在月報項目上）——補功能或改文字。
 
 ## 要使用者親手做的事
 
@@ -228,6 +238,7 @@
 - T33b｜部署後才生效：01:30 會重抓 FRED、重開崩盤檢視；月報補開檢視時 LINE 等 01:30 才推、03:30 可能補推一行；新告警 `CRASH_REVIEW_FAILED`、`MACRO_MISSING`。
 - T33b｜（T33b 的意外）如果 Chrome 有分頁或擴充功能顯示當掉，重新整理或重開即可。
 - T33d｜`crash_review_v2.md` 由雲端排程從 repo 讀，push 之後生效。部署後才生效：不會切換的月份不再開每月評語；每天多了核心 ETF 的資料檢查與告警 `CORE_PRICE_SUSPECT`。
+- T32d｜push 之後雲端排程不會再遇到擬事件打分與單月大跌說明的任務；部署後候選股不再每日掃描、月報多出動能的「要看的事」。沒有 migration。
 
 ## 畫面截圖
 
@@ -270,6 +281,10 @@
 | T33d | 有資料檢查那一行的月報（桌機／手機） | `records/stage8/screens/T33d/monthly-check-desktop.png、monthly-check-phone.png` |
 | T33d | 入金清單的「做完之後」（桌機／手機） | `records/stage8/screens/T33d/deposit-desktop.png、deposit-phone.png` |
 | T33d | 改比例的那一列：做完之後、動能相對大盤（桌機／手機） | `records/stage8/screens/T33d/ratio-desktop.png、ratio-phone.png` |
+| T32d | 動能持股頁：單月大跌那一行、最近 90 天的事件（桌機／手機） | `records/stage8/screens/T32d/holding-mom-drop-desktop.png、holding-mom-drop-phone.png` |
+| T32d | 動能持股頁：進場時的附註、13D 事件（桌機／手機） | `records/stage8/screens/T32d/holding-mom-note-desktop.png、holding-mom-note-phone.png` |
+| T32d | 月報的「要看的事」兩段（桌機／手機） | `records/stage8/screens/T32d/monthly-desktop.png、monthly-phone.png` |
+| T32d | AI 紀錄頁的「AI 否決的紀錄」（桌機／手機） | `records/stage8/screens/T32d/ai-vetoes-desktop.png、ai-vetoes-phone.png` |
 
 ## 卡住的任務
 

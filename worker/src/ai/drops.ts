@@ -1,10 +1,9 @@
-// T11：F7 自選慢規則減半的 AI 檢視、F20 持股單月跌 > 20%（任務 C）（ai_layer_design 的 F7、F20 卡片；design_v2 §6.4）。
+// T11：F7 自選慢規則減半的 AI 檢視（ai_layer_design 的 F7 卡片）。F20（持股單月跌 > 20% 的 AI 說明）T32d 拿掉（momentum_ai §3.6）。
 // 純函式：證據包、payload 檢查、結論。資料抓取與排程在 src/app/dropAi.ts。
 //
 // F7：以最近一次 F24 為底，補上之後的新證據；程式先算好跌幅拆解（大盤、產業、個股）。
 //     AI 把跌幅歸類、逐條對照前提、選一個檔位（EXIT／HALF／HOLD；HALF 就是照規則）。只有預設前提的股票只能選 EXIT 或 HALF。
 //     結論是五種之一（own_thesis §3.3）：建議出清、建議不動、同意減半、沒有可用的結論、還沒有結果；寫進帳戶狀態的 dropReview。
-// F20：只說明（A1、一票）：跌幅拆解＋原因；找到硬事件就轉交 F19。說明附在下一次月報。
 import { DROP_CAUSE_TEXT, type Account, type DropStatus, type MarketView } from '../engine';
 import { keptByChoice, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
 import { attributionText, type Attribution } from './detect';
@@ -15,13 +14,11 @@ export const OWN_DROP = 'OWN_DROP';
 export const OWN_DROP_PROMPT = 'own_drop_v2';
 /** F7 獨立跑幾次。 */
 export const OWN_DROP_SAMPLES = 3;
-export const DROP_EXPLAIN = 'DROP_EXPLAIN';
-export const DROP_EXPLAIN_PROMPT = 'drop_explain_v1';
 
 export const CAUSE_CLASSES = ['MARKET', 'SECTOR', 'FUNDAMENTAL', 'ONE_OFF', 'UNKNOWN'] as const;
 export const CAUSE_TEXT: Record<string, string> = DROP_CAUSE_TEXT;
 
-/** 跌幅拆解的數字 A1～A5（F7、F20、價格類的提前審查共用）。 */
+/** 跌幅拆解的數字 A1～A5（F7、價格類的提前審查共用）。 */
 export const attrFacts = (a: Attribution | null): EvidencePack['facts'] =>
   a
     ? [
@@ -86,7 +83,7 @@ export function ownDropPack(inp: OwnDropInput) {
   });
 }
 
-/** F7、F20 共用：cause_class 在列舉內；F7 的 tier 和 verdict 一致。 */
+/** F7：cause_class 在列舉內；tier 和 verdict 一致。 */
 export function checkDropPayload(s: CheckedSample, pack: EvidencePack): void {
   const p = s.payload ?? {};
   if (!CAUSE_CLASSES.includes(p.cause_class as never)) {
@@ -147,50 +144,4 @@ export function dropDecision(outcome: Outcome, pack: Pick<EvidencePack, 'documen
     return out('HOLD', `${wanted} 票都選不動：跌幅主要是${cause === 'MARKET' ? '大盤' : '產業'}一起跌，沒有前提被判不成立。`);
   }
   return out('NONE', outcome.reason);
-}
-
-// ---------------------------------------------------------------- F20
-
-export interface DropExplainInput {
-  view: MarketView;
-  axis: string[];
-  ticker: string;
-  role: 'OWN' | 'MOM';
-  runId: string;
-  ret21: number;
-  attr: Attribution | null;
-  docs: PackDoc[];
-  dataQuality: EvidencePack['data_quality'];
-  now: Date;
-}
-
-export const MONTH_DROP = -0.2;
-
-export function dropExplainPack(inp: DropExplainInput) {
-  const { view, ticker } = inp;
-  return buildPack({
-    runId: inp.runId,
-    fn: DROP_EXPLAIN,
-    promptVersion: DROP_EXPLAIN_PROMPT,
-    asOf: view.date,
-    subject: { ticker },
-    question:
-      `${ticker}（${inp.role === 'OWN' ? '自選' : '動能'}持股）最近 21 個交易日跌 ${(inp.ret21 * -100).toFixed(1)}%。` +
-      '請用兩三句話說明原因：先看程式算好的跌幅拆解，再看申報與新聞標題。只寫證據包裡有的事，不寫該不該賣。' +
-      '如果原文顯示有被收購、會計問題或重大監管事件，payload.escalate_to_F19 = true 並寫 escalate_code。',
-    policy: { level: 'A1', verdicts: ['EXPLAINED', 'INSUFFICIENT'], abstain: 'INSUFFICIENT', min_evidence: 0, samples: 1 },
-    rule: { action: '規則沒有動作（只說明，附在下一次月報）', detail: { ret21: inp.ret21, role: inp.role } },
-    facts: [...priceFacts(view, ticker), { id: 'D1', label: '最近 21 個交易日', value: `${(inp.ret21 * 100).toFixed(1)}%` }, ...attrFacts(inp.attr)],
-    documents: [...inp.docs, priceDoc(view, inp.axis, ticker, 60)].filter((d): d is PackDoc => !!d),
-    dataQuality: inp.dataQuality,
-    now: inp.now,
-  });
-}
-
-/** F20 的一句話說明（附在月報）。 */
-export function explainLine(ticker: string, ret21: number, outcome: Outcome | null): string {
-  const s = outcome?.samples.find((x) => x.valid);
-  const cause = s?.payload?.cause_class ? CAUSE_TEXT[String(s.payload.cause_class)] : null;
-  const summary = s?.payload?.summary && typeof s.payload.summary === 'string' ? s.payload.summary.slice(0, 160) : null;
-  return `${ticker} 最近一個月跌 ${(ret21 * -100).toFixed(0)}%${cause ? `：${cause}` : ''}${summary ? `。${summary}` : ''}（AI 說明，詳見網站）`;
 }

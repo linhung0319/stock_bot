@@ -1,9 +1,9 @@
 // T11：F18 每日事件掃描、F19 持股硬事件（每日流程的 AI 段，src/app/aiStep.ts 呼叫）。
 //
-// 規則段（每個新的交易日，不用 LLM）：持股與排名 6～10 的候選股的新申報 → 分類（src/data/secEvents.ts）→ sec_events
+// 規則段（每個新的交易日，不用 LLM）：持股的新申報 → 分類（src/data/secEvents.ts）→ sec_events（T32d 起候選股不掃，momentum_ai §3.2）
 //   動能持股是被收購方、持股的 NT 10-K／10-Q → 規則直接提出提早出場（當天通知，使用者確認；不跑法庭）
 //   4.02、會計師辭任、自選股是被收購方 → 等著開法庭（F19）
-//   候選股的命中 → 只記錄（下一次 F1 審查會自己重新分類）
+//   候選股的命中（舊資料）→ 只記錄（F1 審查會自己重新分類）
 //   事件的類別與細項（T28，own_thesis §2.2、§2.3）：8-K 的 Item 編號、13D、5.02 的執行長與財務長離任；
 //     自選股、細項可提前審查 → NEW（等提前審查，T29b）；其餘 → INFO
 // LLM 段（雲端排程設定好才開）：
@@ -18,7 +18,7 @@ import { hardEvent, hardToldDays } from '../engine';
 import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlines, quarterTable } from '../data/edgar';
 import { SCAN_ITEMS, classifyFilings, fetchPrimaryText, isAdvanceable, type FilingHit } from '../data/secEvents';
 import type { Filing } from '../data/sources';
-import { loadRanking, type Alert } from '../data/store';
+import type { Alert } from '../data/store';
 import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
 import { closeStaleRuns, getRun, startRun, type AiRun } from './aiRuns';
@@ -29,13 +29,14 @@ import { NOT_LOOKBACK_SQL, applyLookback } from './momLookback';
 import { docOf, newsDoc, xbrlDoc } from './ownAi';
 import { fileConditions, filePremises, thesisFile } from './thesis';
 
-/** 每日掃描的對象：自選、動能持股、排名 6～10 的候選（還沒持有的）。 */
-export async function scanTargets(db: D1Database, acct: { own: Record<string, unknown>; rule: { heldMom: string[] }; lots: { mom: Record<string, number> } }): Promise<ScanTarget[]> {
+/**
+ * 每日掃描與規則分類的對象：自選、動能持股（momentum_ai §3.2，T32d 起不再掃排名 6～10 的候選股，改由月報前一天的進場前回看看要進場的那幾檔）。
+ * 角色 CAND 留在型別裡給舊資料；資料庫參數留著（呼叫端不用改）。
+ */
+export async function scanTargets(_db: D1Database, acct: { own: Record<string, unknown>; rule: { heldMom: string[] }; lots: { mom: Record<string, number> } }): Promise<ScanTarget[]> {
   const out = new Map<string, ScanTarget>();
   for (const t of Object.keys(acct.own)) out.set(t, { ticker: t, role: 'OWN' });
   for (const t of new Set([...acct.rule.heldMom, ...Object.keys(acct.lots.mom).filter((t) => acct.lots.mom[t] > 0)])) if (!out.has(t)) out.set(t, { ticker: t, role: 'MOM' });
-  const r = await loadRanking(db);
-  for (const t of r?.order.slice(5, 10) ?? []) if (!out.has(t)) out.set(t, { ticker: t, role: 'CAND' });
   return [...out.values()];
 }
 

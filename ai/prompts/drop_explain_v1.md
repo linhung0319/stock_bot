@@ -1,3 +1,5 @@
+> 不再使用（2026-11-16）：T32d 拿掉（momentum_ai_design_2026-11-15 §3.6、§3.7），不再開這個執行；舊紀錄照樣看得到。
+
 # drop_explain_v1：持股單月跌 > 20% 的原因說明（F20，任務 C）
 
 共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`docs/design/ai_layer_design_2026-11-08.md` 的 F20 卡片、`docs/design/design_v2_momentum_2026-11-07.md` §6.4。

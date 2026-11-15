@@ -812,7 +812,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
     }
     if (old.items.every((i) => i.cancelled)) old.status = 'READ';
   }
-  const status = `崩盤規則：${acct.rule.crash ? '啟動中' : '未啟動'}${relisted ? '（上次沒做，這份再列）' : ''}；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '') + (input.notes?.length ? `\n${input.notes.join('\n')}` : '');
+  const status = `崩盤規則：${acct.rule.crash ? '啟動中' : '未啟動'}${relisted ? '（上次沒做，這份再列）' : ''}；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '');
   const probe: Notif = { id: 0, kind: 'MONTHLY', date: view.date, seq: view.i, title: '', items, status: 'PENDING', coreAbsorb: true, reminded: false };
   const preview = composeNotif(acct, view, probe);
   if (!items.length && preview.lines.length) {
@@ -830,8 +830,8 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
     // 「要看的事」：「本月不用動」的月報也列（own_thesis §3.6.6）
     ...(input.attention?.length ? { attention: clone(input.attention) } : {}),
   });
-  // 不屬於任何項目的 AI 執行：被否決的代號（F1）、月報的說明（F20）
-  syncRunIds(notif, [...(input.vetoed ?? []).map((t) => input.runIds?.entry?.[t]), ...(input.runIds?.notes ?? [])]);
+  // 不屬於任何項目的 AI 執行：被否決的代號（F1）。F20 的說明 T32d 拿掉（momentum_ai §3.6），不再接在狀態文字後面
+  syncRunIds(notif, (input.vetoed ?? []).map((t) => input.runIds?.entry?.[t]));
   notif.preview = composeNotif(acct, view, notif);
   return { acct, notif, plan };
 }

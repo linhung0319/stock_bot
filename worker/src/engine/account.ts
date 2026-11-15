@@ -300,7 +300,7 @@ export interface Notif {
   note?: string;
   /** CLASSIFY：填快照時寫的「這次自己交易的原因」，分類時預先帶進理由欄。 */
   userNote?: string;
-  /** 這則通知用到的所有 AI 執行（各項目的 runIds，加上不屬於任何項目的：F1 否決、F20 說明；T13 起）。 */
+  /** 這則通知用到的所有 AI 執行（各項目的 runIds，加上不屬於任何項目的：F1 否決；T13 起）。 */
   runIds?: string[];
   /** 月報：這個月該列的「要看的事」（own_thesis §3.6.6）；沒有就不留這個欄位。 */
   attention?: Attention[];
@@ -330,10 +330,8 @@ export interface MonthlyContext {
   watch?: Record<string, string>;
   /** 本月的否決是沿用之前的審查（momentum_ai §3.4）：代號 → 沿用的月份。 */
   vetoCarried?: Record<string, string>;
-  /** 附在月報的說明（任務 C：持股單月跌 > 20% 的原因）。 */
-  notes?: string[];
-  /** 這份月報用到的 AI 執行（ai_runs.run_id，T13）：崩盤規則檢視、F1 每檔的審查、F20 說明。 */
-  runIds?: { crash?: string; entry?: Record<string, string>; notes?: string[] };
+  /** 這份月報用到的 AI 執行（ai_runs.run_id，T13）：崩盤規則檢視、F1 每檔的審查。（F20 說明附在月報的 notes T32d 拿掉，momentum_ai §3.6；舊月報的這兩個欄位不再讀。） */
+  runIds?: { crash?: string; entry?: Record<string, string> };
   /**
    * 訊號日的超額波動（依波動度減碼用；momentum_ai §3.11）。第一次產生月報時算好寫進來；之後的重算（暫停後、入金合併、排除）用它。
    * null = 算不出來；沒有這個欄位（舊月報）= 當場算。
@@ -457,6 +455,11 @@ export interface Account {
      * 同一檔同一類 180 天（被收購 365 天）內不再通知；那一檔動能部位賣光時清掉（addLot）。沒有這個欄位的舊帳戶當成空的。
      */
     hardTold?: Record<string, Record<string, string>>;
+    /**
+     * 動能的「要看的事」上次列進月報的訊號日（momentum_ai §3.6）：代號 → 那一件事的鍵（`DROP_21D`、`LATE_VETO@<月份>`）→ 訊號日。
+     * 由 `app/momNotes.ts` 用和自選股相同的 dueAttention 決定多久再列。沒有這個欄位的舊帳戶當成空的。
+     */
+    attnShown?: Record<string, Record<string, string>>;
   };
   /** 崩盤項目選了「這次不做」之後欠的核心的單（core_ai §3.6）；沒有這個欄位的舊帳戶當成沒有。 */
   coreOwe?: CoreOwe;

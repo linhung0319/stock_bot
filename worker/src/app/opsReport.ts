@@ -374,8 +374,65 @@ export const crashSection: SectionFn = async (db, p) => {
   return { id: 'crash_reviews', title: '崩盤規則的切換與 AI 檢視（每次切換一列；state：OPINION 有意見、NO_OPINION 沒有意見、PENDING、FAILED、NO_DATA、OFF）', rows: total };
 };
 
-/** 報表的各段，照這個順序輸出。T32d 要加段就在這裡加一個函式（T31a 加了月底檢查點、T33b 加了崩盤規則）。 */
-export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection];
+/** 累積幾次否決提示一次「看一次否決的紀錄」（momentum_ai §3.7：滿 5 次，之後每滿 5 次）。 */
+export const VETO_HINT_EVERY = 5;
+/** 新的 AI 否決（不是沿用的）：法庭三票否決、或月報之後才回來的否決。 */
+const NEW_VETO = "source = 'AI' AND carried_from IS NULL AND (decision = 'VETO' OR late_verdict = 'VETO')";
+
+/**
+ * 動能新股進場審查（F1）的法庭（T32d，momentum_ai §3.7）。每一列 { item, code, n, note }：
+ *   courts          期間內開了幾次法庭（ai_runs 的 MOM_ENTRY，建立時間在期間內）
+ *   courts_by_code  依規則偵測命中的代碼分（一次法庭有兩個代碼就各算一次；新聞標題來的命中不算）
+ *   vetoes          新的 AI 否決（法庭三票否決，不含沿用；mom_reviews 建立時間在期間內）
+ *   carried         沿用上一次法庭的結論（不開法庭）；code = 沿用的結論
+ *   no_conclusion   法庭跑完了但沒有結論（逾時、沒觸發成功、被退回、格式都不合格、資料缺漏；票數不一致算有跑完）
+ *   late            月報之後才回來的否決
+ *   veto_total      到期間結束為止累積的否決次數（連續沿用算同一次）；跨過 5 的倍數時 note 提示看一次否決的紀錄
+ * 期間內沒有法庭、沒有否決與沿用、累積也是 0 時是空的。
+ */
+export const momEntrySection: SectionFn = async (db, p) => {
+  const runAt = atCond(p, 'created_at');
+  const runs = await query(db, `SELECT json_extract(pack, '$.rule.detail.hits') AS hits, status, json_extract(outcome, '$.status') AS st FROM ai_runs WHERE fn = 'MOM_ENTRY' AND ${runAt.sql}`, runAt.args);
+  const byCode = new Map<string, number>();
+  let noConclusion = 0;
+  for (const r of runs) {
+    const hits = (r.hits ? JSON.parse(String(r.hits)) : []) as { code: string; byRule?: boolean; displayOnly?: boolean; basis?: string }[];
+    for (const c of new Set(hits.filter((h) => !h.byRule && !h.displayOnly && h.basis !== 'NEWS').map((h) => h.code))) byCode.set(c, (byCode.get(c) ?? 0) + 1);
+    if (r.status === 'DONE' && !['AGREED', 'INSUFFICIENT', 'SPLIT'].includes(String(r.st ?? ''))) noConclusion++;
+  }
+  const revAt = atCond(p, 'created_at');
+  const [cnt] = await query(
+    db,
+    `SELECT COALESCE(SUM(source = 'AI' AND carried_from IS NULL AND decision = 'VETO'), 0) AS vetoes,
+       COALESCE(SUM(carried_from IS NOT NULL), 0) AS carried,
+       COALESCE(SUM(late_verdict = 'VETO'), 0) AS late
+     FROM mom_reviews WHERE ${revAt.sql}`,
+    revAt.args,
+  );
+  const carried = await query(db, `SELECT decision AS code, COUNT(*) AS n FROM mom_reviews WHERE carried_from IS NOT NULL AND ${revAt.sql} GROUP BY decision ORDER BY decision`, revAt.args);
+  const upTo = `${nextDay(p.to)}T00:00:00.000Z`;
+  const [tot] = await query(db, `SELECT COUNT(*) AS n FROM mom_reviews WHERE ${NEW_VETO} AND created_at < ?`, [upTo]);
+  const [before] = p.from ? await query(db, `SELECT COUNT(*) AS n FROM mom_reviews WHERE ${NEW_VETO} AND created_at < ?`, [`${p.from}T00:00:00.000Z`]) : [{ n: 0 }];
+  const total = n(tot?.n);
+  // 還沒有任何進場審查（法庭、否決都沒有）：空的
+  if (!runs.length && !n(cnt?.vetoes) && !n(cnt?.carried) && !n(cnt?.late) && !total) return { id: 'mom_entry', title: MOM_ENTRY_TITLE, rows: [] };
+  const crossed = Math.floor(total / VETO_HINT_EVERY) > Math.floor(n(before?.n) / VETO_HINT_EVERY);
+  const rows: Row[] = [
+    { item: 'courts', code: null, n: runs.length, note: null },
+    ...[...byCode.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([code, k]) => ({ item: 'courts_by_code', code, n: k, note: null })),
+    { item: 'vetoes', code: null, n: n(cnt?.vetoes), note: null },
+    { item: 'carried', code: null, n: n(cnt?.carried), note: null },
+    ...carried.map((r) => ({ item: 'carried', code: r.code, n: n(r.n), note: null })),
+    { item: 'no_conclusion', code: null, n: noConclusion, note: null },
+    { item: 'late', code: null, n: n(cnt?.late), note: null },
+    { item: 'veto_total', code: null, n: total, note: crossed ? `累積 ${total} 次否決：看一次否決的紀錄（網站「AI 紀錄」上方的「AI 否決的紀錄」），決定要不要留著 AI 的否決權` : null },
+  ];
+  return { id: 'mom_entry', title: MOM_ENTRY_TITLE, rows };
+};
+const MOM_ENTRY_TITLE = '動能新股進場審查（F1 法庭）：開了幾次、依代碼、否決、沿用、沒有結論、晚到；累積否決';
+
+/** 報表的各段，照這個順序輸出。要加段就在這裡加一個函式（T31a 加了月底檢查點、T33b 加了崩盤規則、T32d 加了動能進場審查）。 */
+export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, momEntrySection];
 
 export interface OpsReport {
   generated_at: string;

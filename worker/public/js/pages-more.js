@@ -142,10 +142,28 @@ export async function holdingPage(ctx, ticker) {
             ...ownEdit(ctx, d),
           )
         : null,
+      d.mom ? momPanel(d.mom) : null,
       d.history.length ? [h('h2', { class: 'sec', style: 'margin:24px 0 0' }, '這檔的紀錄'), h('div', { class: 'glass rec' }, d.history.map((x) => (x.notif ? h('a', { class: 'rowlink', href: `#/n/${x.notif}` }, h('span', { class: 'd num' }, day(x.date)), h('span', null, x.text), h('span')) : h('div', { class: 'rowlink' }, h('span', { class: 'd num' }, day(x.date)), h('span', null, x.text), h('span')))))] : null,
     ),
     rail: tiles(st),
   });
+}
+
+/**
+ * 動能持股的事件與附註（momentum_ai §3.6）：事件只記錄、不發通知；「要看的事」含單月大跌那一行、晚到的否決、進場時的附註。
+ * 只求能用（版面在 T34 整理）。
+ */
+function momPanel(m) {
+  return glass(
+    'pad',
+    h('h2', { class: 'panel-h' }, '動能持股：要看的事與事件'),
+    m.attention.length ? [h('h5', { style: 'margin-top:4px' }, `要看的事（${m.attention.length} 件，不用下單）`), attentionList(m.attention, { link: false })] : h('p', { class: 'small faint' }, '目前沒有要看的事。'),
+    h('h5', { style: 'margin-top:14px' }, `最近 90 天記到的事件（${m.events.length} 件）`),
+    m.events.length
+      ? h('ul', { style: 'list-style:none;margin:6px 0 0;padding:0' }, m.events.map((e) => h('li', { style: 'padding:6px 0;border-top:1px solid var(--line);display:flex;gap:12px' }, h('span', { class: 'num dim', style: 'white-space:nowrap' }, day(e.date)), h('span', null, e.label, h('span', { class: 'small faint', style: 'margin-left:8px' }, e.source)))))
+      : h('p', { class: 'small faint' }, '最近 90 天沒有記到事件。'),
+    h('p', { class: 'small faint', style: 'margin-top:10px' }, '動能持股的事件只記錄、不發通知，也不會叫 AI 來看；出場只看排名。被收購、會計問題、重大監管這三種另外由 AI 審查，建議出場時才會通知你。'),
+  );
 }
 
 // ---------------------------------------------------------------- 我要…

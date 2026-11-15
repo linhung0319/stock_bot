@@ -1,11 +1,12 @@
-// T11：F7 自選減半的 AI 檢視、F20 動能持股單月跌 > 20% 的說明（每日流程的 AI 段，src/app/aiStep.ts 呼叫）。
+// T11：F7 自選減半的 AI 檢視（每日流程的 AI 段，src/app/aiStep.ts 呼叫）。
 // T29b：自選股不再跑 F20，改成個股自身大跌（PRICE_DROP 事件，own_thesis §3.6.1），由提前審查決定開不開。
+// T32d：動能持股的 F20 也拿掉（momentum_ai §3.6）：不再開 DROP_EXPLAIN，改成「要看的事」的一行（src/app/momNotes.ts 的 DROP_21D，不呼叫 AI）。
 // T31b：減半檢視的結果寫進帳戶狀態的 dropReview（own_thesis §3.3）：開的時候 PENDING（沒開成、AI 層沒設定是 NONE），套用時改成
 //       建議不動／建議出清／同意減半／沒有可用的結論，慢規則通知上 AI 的那一行跟著重算（§3.4）。使用者先回覆、結果才回來的照 §3.5。
 import { verdictText } from '../ai/functions';
 import type { PackDoc } from '../ai/check';
 import { attribution, highIndex, idioDrop, idioDropText } from '../ai/detect';
-import { DROP_EXPLAIN, MONTH_DROP, OWN_DROP, dropDecision, dropExplainPack, explainLine, ownDropPack } from '../ai/drops';
+import { OWN_DROP, dropDecision, ownDropPack } from '../ai/drops';
 import { newRunId } from '../ai/pack';
 import { clone, newNotif, recordAiTier, refreshOwnAiChoice, routeReview, type Account, type DropReview, type MarketView, type Notif } from '../engine';
 import { fetchCompanyFacts, fetchFilingDoc, quarterTable, type QuarterRow } from '../data/edgar';
@@ -17,11 +18,6 @@ import { insertHitStmts, sectorEtfs } from './filings';
 import { patchAccount } from './ledgerStore';
 import { citedDoc, docOf, lastReview, newsDoc } from './ownAi';
 import { condFacts, defaultFacts, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote } from './thesis';
-
-const ret = (view: MarketView, t: string, n: number) => {
-  const c = view.close[t];
-  return c && Number.isFinite(c[view.i]) && Number.isFinite(c[view.i - n]) ? c[view.i] / c[view.i - n] - 1 : NaN;
-};
 
 /** 最近一次 F24 的摘要（F7 的底）。 */
 function baseDoc(run: AiRun | null, ticker: string): PackDoc | null {
@@ -40,8 +36,7 @@ async function recentRun(db: D1Database, fn: string, ticker: string, since: stri
 export async function startDropRuns(sc: StartCtx): Promise<void> {
   const { env, fetcher, acct, view, axis, session, now, res } = sc;
   const core = acct.cfg.coreTicker;
-  const holdings = [...new Set([...Object.keys(acct.own), ...Object.keys(acct.lots.mom).filter((t) => (acct.lots.mom[t] ?? 0) > 0)])];
-  const sectors = await sectorEtfs(env.DB, holdings);
+  const sectors = await sectorEtfs(env.DB, Object.keys(acct.own));
   /** since 之後的 8-K、10-Q、10-K 最多 n 份。flagged：給了就照論點檔的順序挑（最新的 2.02、有標記的、其餘；own_thesis §3.3），否則新到舊。 */
   const filingDocs = async (t: string, since: string, n: number, flagged?: Set<string>): Promise<PackDoc[]> => {
     const c = sc.checks.find((x) => x.ticker === t);
@@ -100,22 +95,6 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
   await markDropReviews(env.DB, now, view, marks, res.log);
   // 個股自身大跌（own_thesis §3.6.1，取代自選股的 F20）：寫一筆 PRICE_DROP，由提前審查（startEarlyReviews）決定開不開
   await priceDrops(sc, sectors).catch((e) => void res.log.push(`個股自身大跌沒有算成：${errText(e)}`));
-  // F20：最近 21 個交易日跌超過 20% 的動能持股（同一檔 30 天內只說明一次）。自選股不再跑（own_thesis §2.8；動能的在 T32d 拿掉）
-  const since30 = new Date(Date.parse(session) - 30 * 86400_000).toISOString().slice(0, 10);
-  for (const t of holdings.filter((x) => !acct.own[x])) {
-    const r21 = ret(view, t, 21);
-    if (!(r21 <= MONTH_DROP) || (await recentRun(env.DB, DROP_EXPLAIN, t, since30))) continue;
-    try {
-      const attr = attribution(axis, view.close, t, core, sectors[t] ?? null, view.i - 21, view.i);
-      const docs = await filingDocs(t, since30, 2);
-      const news = await newsDoc(fetcher, t, session).catch(() => null);
-      if (news) docs.push(news);
-      const { pack, notes } = dropExplainPack({ view, axis, ticker: t, role: 'MOM', runId: newRunId(session, DROP_EXPLAIN, t), ret21: r21, attr, docs, dataQuality: { news: 'partial' }, now });
-      res.started.push((await startRun(env, fetcher, pack, now, notes)).runId);
-    } catch (e) {
-      res.log.push(`${t} 的跌幅說明沒有開成：${errText(e)}`);
-    }
-  }
 }
 
 /** 同一檔最近幾個日曆天內已經有一筆 PRICE_DROP 就不再寫。 */
@@ -144,7 +123,7 @@ export async function priceDrops(sc: StartCtx, sectors: Record<string, string>):
   }
 }
 
-const escalateHit = (run: AiRun, code: string): FilingHit => ({ code, sub: `AI_${run.fn}`, accession: run.runId, form: 'AI', date: run.asOf, acceptedAt: '', byRule: false, detail: `${run.fn === OWN_DROP ? '減半檢視' : '跌幅說明'}的 AI 認為有硬事件，轉交法庭` });
+const escalateHit = (run: AiRun, code: string): FilingHit => ({ code, sub: `AI_${run.fn}`, accession: run.runId, form: 'AI', date: run.asOf, acceptedAt: '', byRule: false, detail: '減半檢視的 AI 認為有硬事件，轉交法庭' });
 
 /**
  * 這幾檔這一次減半的論點檢查狀態寫進帳戶（PENDING 或 NONE），還沒回覆的減半通知上 AI 的那一行跟著重算（own_thesis §3.3、§3.4）。
@@ -229,17 +208,4 @@ export async function applyOwnDrop(ctx: ApplyCtx, run: AiRun): Promise<void> {
     return void ctx.log.push(`${run.runId}：${t} 的論點檢查建議不動，通知 #${answered.id} 已經選了照規則、還沒填快照 → 提醒 #${n.id}`);
   }
   ctx.log.push(`${run.runId}：${t} 的論點檢查：${DROP_TEXT[d.status]}；通知 #${answered.id} 已經回覆，只放網站`);
-}
-
-/** F20：找到硬事件 → 轉交法庭；說明本身由月報讀（monthNotes）。 */
-export async function applyDropExplain(ctx: ApplyCtx, run: AiRun): Promise<void> {
-  const t = run.ticker ?? '';
-  const s = run.outcome?.samples.find((x) => x.valid);
-  if (s?.payload?.escalate_to_F19 === true) ctx.stmts.push(...insertHitStmts(ctx.db, t, [escalateHit(run, String(s.payload.escalate_code))], 'AI', ctx.now.toISOString(), () => 'NEW'));
-}
-
-/** 這個月份的 F20 說明（附在月報），連同是哪一次執行。 */
-export async function monthNotes(db: D1Database, since: string, until: string): Promise<{ text: string; runId: string }[]> {
-  const rows = (await db.prepare("SELECT run_id, ticker, pack, outcome FROM ai_runs WHERE fn = ? AND status = 'DONE' AND as_of > ? AND as_of <= ? ORDER BY as_of").bind(DROP_EXPLAIN, since, until).all<{ run_id: string; ticker: string; pack: string; outcome: string | null }>()).results;
-  return rows.map((r) => ({ text: explainLine(r.ticker, (JSON.parse(r.pack).rule.detail as { ret21: number }).ret21, r.outcome ? JSON.parse(r.outcome) : null), runId: r.run_id }));
 }

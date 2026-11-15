@@ -18,7 +18,7 @@ import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, sa
 import { noteOfRun } from './aiViews';
 import { loadSnapshot, type MacroSnapshot } from '../crashAi';
 import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
-import { loadReviews, type MomReview } from '../momAi';
+import { loadReviews, loadVetoReviews, type MomReview } from '../momAi';
 import { loadStrategyState } from '../strategyAi';
 import { acceptOwnConditions, monitorView, ownCheckView, rewriteView, startOwnCheck, type OwnCheckView, type RewriteView } from '../ownCheckAi';
 import type { ExitLine } from '../../ai/ownCheck';
@@ -26,6 +26,7 @@ import type { DiscussionMode } from '../../ai/discussion';
 import { realDiscussion } from '../discussion';
 import { conditionOp, type CondOp } from '../ownConds';
 import { holdingAttention } from '../thesis';
+import { holdingMom, vetoEpisodes, type HoldingMom, type VetoEpisode } from '../momNotes';
 import { annotate } from './explain';
 import type { AiNote } from './types';
 
@@ -96,8 +97,10 @@ export interface SiteAi {
   monitor(ticker: string): Promise<Awaited<ReturnType<typeof monitorView>>>;
   /** 持股頁：這檔現在成立的「要看的事」（全部，不看頻率；own_thesis §3.6.6）。 */
   attention(ticker: string, acct: Account, view: MarketView): Promise<Attention[]>;
-  /** AI 紀錄頁上方：最新的總經儀表板、最近一個月的動能進場審查、最近的申報事件。 */
-  overview(): Promise<{ macro: MacroSnapshot | null; reviews: MomReview[]; events: SecEventRow[] }>;
+  /** 持股頁的動能那一塊（momentum_ai §3.6）：最近 90 天的事件、現在成立的「要看的事」（含進場時的附註）。不是動能持股是 null。 */
+  mom(ticker: string, acct: Account, view: MarketView, rankOrder: string[]): Promise<HoldingMom | null>;
+  /** AI 紀錄頁上方：最新的總經儀表板、最近一個月的動能進場審查、歷次 AI 否決（§3.7）、最近的申報事件。 */
+  overview(): Promise<{ macro: MacroSnapshot | null; reviews: MomReview[]; vetoes: VetoEpisode[]; events: SecEventRow[] }>;
 }
 
 const taipeiDate = (now: Date): string => new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
@@ -199,11 +202,12 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       },
       monitor: (ticker) => monitorView(env, ticker),
       attention: (ticker, acct, view) => holdingAttention(env.DB, acct, view, ticker),
+      mom: (ticker, acct, view, rankOrder) => holdingMom(env.DB, acct, view, ticker, rankOrder),
       async overview() {
         const macro = await loadSnapshot(env.DB);
         const all = await loadReviews(env.DB);
         const month = all[0]?.month;
-        return { macro, reviews: month ? all.filter((r) => r.month === month) : [], events: (await loadSecEvents(env.DB)).filter((e) => e.status !== 'INFO' || e.display_only === 0).slice(0, 30) };
+        return { macro, reviews: month ? all.filter((r) => r.month === month) : [], vetoes: vetoEpisodes(await loadVetoReviews(env.DB)), events: (await loadSecEvents(env.DB)).filter((e) => e.status !== 'INFO' || e.display_only === 0).slice(0, 30) };
       },
     },
   };

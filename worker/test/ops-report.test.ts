@@ -302,7 +302,7 @@ describe('T16 運作統計：結構', () => {
   it('空的資料庫：每一段都有、列是空的、沒有錯誤', async () => {
     await withDb(async (_db, env) => {
       const r = await report(env);
-      expect(r.sections.map((s) => s.id)).toEqual(['notifications', 'choices', 'shadow', 'data_runs', 'flow_runs', 'alerts', 'pushes', 'ai_runs', 'ai_votes', 'ai_tasks', 'ai_rejections', 'checkpoints', 'crash_reviews']);
+      expect(r.sections.map((s) => s.id)).toEqual(['notifications', 'choices', 'shadow', 'data_runs', 'flow_runs', 'alerts', 'pushes', 'ai_runs', 'ai_votes', 'ai_tasks', 'ai_rejections', 'checkpoints', 'crash_reviews', 'mom_entry']);
       for (const s of r.sections) {
         expect(s.error, s.id).toBeUndefined();
         expect(s.rows, s.id).toEqual([]);

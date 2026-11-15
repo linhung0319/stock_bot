@@ -226,7 +226,8 @@ describe('③ AI 建議產生的通知項目、通知、影子紀錄帶 run_id',
     expect(liveShadow(sim.acct.shadow).find((s) => s.f === 'F7' && s.ticker === 'MU')!.runIds).toEqual(['run-f24-mu']);
   });
 
-  it('月報：F24／F23 建議、F1 進場帶各自的 run_id；被否決的代號與 F20 說明的 run_id 掛在通知上', () => {
+  // T32d：F20 說明拿掉（momentum_ai §3.6），月報的輸入沒有 notes，通知上不再掛 F20 的 run_id
+  it('月報：F24／F23 建議、F1 進場帶各自的 run_id；被否決的代號的 run_id 掛在通知上', () => {
     const sc = scenarios.s1();
     const sim = new Sim(sc.market, sc.init);
     sim.runUntil('2026-12-01');
@@ -235,13 +236,12 @@ describe('③ AI 建議產生的通知項目、通知、影子紀錄帶 run_id',
       order: ranksAt(sim.market, sim.d - 1),
       vetoed: ['APP'],
       month: '2026-12',
-      notes: ['假的說明'],
-      runIds: { entry: { APP: 'run-f1-app', GE: 'run-f1-ge' }, notes: ['run-f20'] },
+      runIds: { entry: { APP: 'run-f1-app', GE: 'run-f1-ge' } },
     });
     expect(item(r.notif, 'F23', 'MSFT').runIds).toEqual(['run-f24-msft']);
     expect(item(r.notif, 'F1', 'GE').runIds).toEqual(['run-f1-ge']);
     expect(item(r.notif, 'F2', 'ORCL').runIds).toBeUndefined(); // 純規則的項目沒有
-    expect(new Set(r.notif.runIds)).toEqual(new Set(['run-f24-msft', 'run-f1-ge', 'run-f1-app', 'run-f20']));
+    expect(new Set(r.notif.runIds)).toEqual(new Set(['run-f24-msft', 'run-f1-ge', 'run-f1-app']));
   });
 
   it('F5／F6：崩盤規則項目帶檢視的 run_id', () => {

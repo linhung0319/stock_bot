@@ -3,7 +3,7 @@
 //
 //   月報前一天（UTC 23:30，momPreview）：用當天的排名找出這個月會進場的股票（加上「被否決時的遞補者」），
 //     逐檔跑 momEvidence 的規則偵測 → 照 §3.3 的表下結論；要法庭的先看能不能沿用上一次有結論的法庭（§3.4，有新證據才重開），
-//     不能沿用就開 MOM_ENTRY（3 票）。同一批對象開一份進場前回看（src/app/momLookback.ts）。擬事件打分照舊（T32d 拿掉）。
+//     不能沿用就開 MOM_ENTRY（3 票）。同一批對象開一份進場前回看（src/app/momLookback.ts）。擬事件打分 T32d 拿掉（momentum_ai §3.7）。
 //   01:30（momRecheck，掛在 schedule.ts 的 finalStarts）：重開沒有結論的法庭（最多 2 次）、回看帶來新命中的開法庭、
 //     重跑抓不到申報的；回看沒有合格結論就重開一次。01:30 開的法庭在 03:30 套用。
 //   月報當天（prepareEntries，在出月報之前）：先套用已經完成的法庭結論；還在等的照規則准許（2 次都沒有結論 → F1_COURT_FAILED）；
@@ -15,7 +15,6 @@ import type { PackDoc } from '../ai/check';
 import {
   ENTRY_CODE_TEXT,
   MOM_ENTRY,
-  MOM_SCORE,
   NEW_EVIDENCE_TEXT,
   courtConcluded,
   courtFailWhy,
@@ -27,13 +26,11 @@ import {
   evidenceKey,
   hitsText,
   momEntryPack,
-  momScorePack,
   previewOrder,
   resolveEntries,
   type EntryDecision,
   type EntryHit,
   type PrevCourt,
-  type ScoreRow,
 } from '../ai/momEntry';
 import { newRunId } from '../ai/pack';
 import { monthlyCandidates, type Account, type Item, type MarketView, type MonthlyContext, type Notif } from '../engine';
@@ -130,6 +127,18 @@ const toReview = (r: Row): MomReview => ({
 export async function loadReviews(db: D1Database, month?: string): Promise<MomReview[]> {
   const q = month ? db.prepare('SELECT * FROM mom_reviews WHERE month = ? ORDER BY rank').bind(month) : db.prepare('SELECT * FROM mom_reviews ORDER BY month DESC, rank LIMIT 200');
   return (await q.all<Row>()).results.map(toReview);
+}
+
+/** 這幾檔的全部審查（新到舊；「要看的事」與持股頁用，不受 loadReviews 的 200 列限制）。 */
+export async function loadReviewsFor(db: D1Database, tickers: string[]): Promise<MomReview[]> {
+  if (!tickers.length) return [];
+  const q = db.prepare(`SELECT * FROM mom_reviews WHERE ticker IN (${tickers.map(() => '?').join(',')}) ORDER BY month DESC, rank`).bind(...tickers);
+  return (await q.all<Row>()).results.map(toReview);
+}
+
+/** AI 法庭的否決（含沿用的與月報之後才回來的），舊到新：否決紀錄（momentum_ai §3.7）用。 */
+export async function loadVetoReviews(db: D1Database): Promise<MomReview[]> {
+  return (await db.prepare("SELECT * FROM mom_reviews WHERE source = 'AI' AND (decision = 'VETO' OR late_verdict = 'VETO') ORDER BY month, ticker").all<Row>()).results.map(toReview);
 }
 
 type ReviewRow = Omit<MomReview, 'replacedBy'>;
@@ -321,7 +330,7 @@ async function review(rc: ReviewCtx, tickers: string[], existing: Map<string, Mo
 
 const selectorOf = (acct: Account, view: MarketView, ranking: Ranking, month: string) => (vetoed: string[], emptySlots: number) => monthlyCandidates(acct, view, { order: ranking.order, month, company: ranking.detail.company, vetoed, emptySlots } satisfies MonthlyContext);
 
-/** 月報前一天：先審這個月會進場的（加遞補者），開法庭（先看能不能沿用）；開進場前回看；開擬事件打分。 */
+/** 月報前一天：先審這個月會進場的（加遞補者），開法庭（先看能不能沿用）；開進場前回看。擬事件打分 T32d 拿掉（momentum_ai §3.7）。 */
 export async function momPreview(sc: StartCtx): Promise<void> {
   const { env, fetcher, acct, view, axis, session, ov, now, res } = sc;
   const signal = nextTradingDay(session, ov);
@@ -343,20 +352,6 @@ export async function momPreview(sc: StartCtx): Promise<void> {
     await startLookback(sc, month, order);
   } catch (e) {
     res.log.push(`進場前回看沒有開成：${errText(e)}`);
-  }
-  // 擬事件打分：前 15 名（只記錄；T32d 拿掉）
-  try {
-    const rows: ScoreRow[] = [];
-    for (const t of ranking.order.slice(0, 15)) {
-      const r = existing.get(t);
-      const hits = r?.hits ?? (await momEvidence(env, fetcher, view, axis, t, acct.cfg.coreTicker, { docs: false, xbrlTable: false })).hits;
-      const c = view.close[t];
-      rows.push({ ticker: t, rank: ranking.order.indexOf(t) + 1, r12: c && Number.isFinite(c[view.i - 252]) ? c[view.i] / c[view.i - 252] - 1 : NaN, hits });
-    }
-    const { pack, notes } = momScorePack({ runId: newRunId(session, MOM_SCORE), asOf: session, rows, docs: [], now });
-    res.started.push((await startRun(env, fetcher, pack, now, notes)).runId);
-  } catch (e) {
-    res.log.push(`擬事件打分沒有開成：${errText(e)}`);
   }
 }
 
@@ -560,7 +555,6 @@ export interface MonthInputs {
   vetoCarried?: Record<string, string>;
   /** 崩盤規則檢視的狀態（core_ai §3.2，T33b 起取代 crashOpinion）。 */
   crashReview?: MonthlyContext['crashReview'];
-  notes?: string[];
   /** 這些輸入來自哪幾次 AI 執行（T13：月報的項目與通知帶 run_id）。 */
   runIds?: MonthlyContext['runIds'];
 }

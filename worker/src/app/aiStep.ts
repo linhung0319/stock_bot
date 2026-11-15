@@ -1,20 +1,21 @@
 // 每日流程的 AI 段（T10、T11）。每次每日流程（src/app/flow.ts）都會呼叫：
-//   1. 這次有處理新的交易日（startNew）：持股、候選股的新申報 → 規則分類（F18 規則段）；自選股的新財報 → XBRL
+//   1. 這次有處理新的交易日（startNew）：持股的新申報 → 規則分類（F18 規則段；候選股 T32d 起不掃，momentum_ai §3.2）；自選股的新財報 → XBRL
 //   2. 套用（和帳戶同一筆存檔，和網站同時存檔時重來）：
 //        新的財報類申報結束靜默期（own_thesis §1.10，T30）
 //        已經有結論、還沒套用的 AI 執行（各功能的 applier）
 //        財報條件（程式比對 XBRL）、規則直接提出的硬事件（動能持股被收購、持股的 NT 10-K／10-Q）
 //   3. startNew 而且雲端排程設定好了：開新的執行
-//        F25／F24（自選）、財報新聞稿的數字擷取（OWN_EARNINGS，T29c）、F19 法庭與 F18 掃描、F1 否決法庭、進場前回看與擬事件打分（月報前一天；
+//        F25／F24（自選）、財報新聞稿的數字擷取（OWN_EARNINGS，T29c）、F19 法庭與 F18 掃描、F1 否決法庭、進場前回看（月報前一天；
 //        月報當天才進榜的在月報之後開，T32b）、
-//        F5／F6 崩盤規則檢視（月報前一天；切換了卻沒預估到時補開）、F7 減半檢視、自選的個股自身大跌（PRICE_DROP）與動能的 F20 大跌說明、
-//        F21 策略檢討說明、提前審查（T29b）
+//        F5／F6 崩盤規則檢視（月報前一天；切換了卻沒預估到時補開）、F7 減半檢視、自選的個股自身大跌（PRICE_DROP）、
+//        F21 策略檢討說明、提前審查（T29b）。擬事件打分與動能的 F20 大跌說明 T32d 拿掉（momentum_ai §3.6、§3.7）
 //      沒有 startNew 時只開 afterApply 的那幾種（01:30 的 finalStarts，src/app/schedule.ts）；03:30 兩者都沒有，只套用
+//   策略檢討的提醒（startNew 才有）：套用之前抓 French 動能因子，歷史對照接在提醒的文字後面（momentum_ai §3.8），開 AI 時沿用
 // 每一段出錯只記在紀錄裡，不擋其他段；規則的部分在這之前已經照常做完。
 import { buildMarketView, rebaseNotifSeq } from '../data/marketView';
 import type { CalendarOverrides } from '../data/calendar';
 import { loadRanking, loadSeries } from '../data/store';
-import { DROP_EXPLAIN, OWN_DROP } from '../ai/drops';
+import { OWN_DROP } from '../ai/drops';
 import { EVENT_SCAN, HARD_EVENT, type ScanTarget } from '../ai/events';
 import { MOM_ENTRY } from '../ai/momEntry';
 import { OWN_EARNINGS } from '../ai/earnings';
@@ -23,7 +24,7 @@ import { OWN_CONDITION, OWN_REVIEW } from '../ai/ownReview';
 import { guard, type Applier, type ApplyCtx, type FlowExtras, type StartCtx, type StepResult } from './aiCtx';
 import { closeStaleRuns, getRun, listRuns } from './aiRuns';
 import { applyCrashReview, startCrashRuns } from './crashAi';
-import { applyDropExplain, applyOwnDrop, markDropNone, startDropRuns } from './dropAi';
+import { applyOwnDrop, markDropNone, startDropRuns } from './dropAi';
 import { applyOwnEarnings, startOwnEarnings } from './earningsAi';
 import type { Env, Fetcher } from './env';
 import { applyEventScan, applyHardEvent, applyRuleEvents, classifyFresh, scanTargets, startEventRuns, type Classified } from './events';
@@ -34,13 +35,14 @@ import { applyOwnCondition, applyOwnReview, ownFacts, ownXbrlConditions, routine
 import { noteOfRun } from './site/aiViews';
 import { annotate } from './site/explain';
 import type { AiNote } from './site/types';
-import { startStrategyRun } from './strategyAi';
+import { STRATEGY_REVIEW } from '../ai/strategy';
+import { applyStrategyReview, loadStrategyState, startStrategyRun, strategyHistory, withHistory } from './strategyAi';
 import { breakLogs, ruleBreakLogs, withRuleKeys } from './thesis';
 import { endDisputes } from '../engine';
 
 export type { StepResult as AiStepResult } from './aiCtx';
 
-/** 各功能的結論怎麼套用（沒有登記的功能只標成已套用：擬事件打分、策略檢討、健檢只記錄或由別處讀）。 */
+/** 各功能的結論怎麼套用（沒有登記的功能只標成已套用：健檢只記錄或由別處讀；舊的擬事件打分、單月大跌說明）。 */
 export const APPLIERS: Record<string, Applier> = {
   [OWN_REVIEW]: applyOwnReview,
   [OWN_CONDITION]: applyOwnCondition,
@@ -49,9 +51,10 @@ export const APPLIERS: Record<string, Applier> = {
   [EVENT_SCAN]: applyEventScan,
   [MOM_ENTRY]: applyMomEntry,
   [OWN_DROP]: applyOwnDrop,
-  [DROP_EXPLAIN]: applyDropExplain,
   // 崩盤規則檢視：月報之後才回來的結果更新那一項、連續沒有結論的告警（core_ai §3.2、§3.1）
   [CRASH_REVIEW]: applyCrashReview,
+  // 策略檢討說明：沒有結論時提醒通知註明「AI 說明沒有回來」（momentum_ai §3.8）
+  [STRATEGY_REVIEW]: applyStrategyReview,
 };
 
 /** 套用之後、沒有 startNew 時另外開的執行（01:30 的 finalStarts）。 */
@@ -86,6 +89,15 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
     });
   }
 
+  // 策略檢討的提醒：歷史對照由程式放在提醒上（momentum_ai §3.8；不管雲端排程有沒有設定），開 AI 時沿用同一份
+  const reminders = (extras.strategyAlerts ?? []).map((a) => a.notif).filter((x): x is number => x !== undefined);
+  if (startNew && reminders.length) {
+    await guard(res, '策略檢討的歷史對照', async () => {
+      const st = await loadStrategyState(db);
+      extras.strategyHistory = await strategyHistory(fetcher, st.rel / st.peak - 1, session);
+    });
+  }
+
   // 2. 套用（和網站的操作同時存檔時重來，最多 3 次；抓到的資料沿用）
   // 已經超過時限、還在等結果的執行先照規則結束，這一次就套用（01:30 才知道 23:30 的掃描沒有結論、要不要重掃）
   await closeStaleRuns(db, now);
@@ -114,6 +126,7 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
     }
     await ownXbrlConditions(ctx, facts);
     await applyRuleEvents(ctx, classified);
+    if (extras.strategyHistory) ctx.acct = withHistory(ctx.acct, reminders, extras.strategyHistory.line) ?? ctx.acct;
     // 新的失效通知（甲類、乙類）→ 論點檔的 BREAK_NOTICE（own_thesis §1.10），和帳戶同一筆存
     ctx.stmts.push(...breakLogs(ctx.acct, ctx.acct.notifs.filter((n) => !before.has(n.id))).map((l) => thesisLogStmt(db, l, null, now.toISOString())));
     // 既有的慢規則通知這次更新成「AI 建議出清」（own_thesis §3.4）→ 一樣寫 BREAK_NOTICE（withRule）

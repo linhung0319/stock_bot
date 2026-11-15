@@ -94,11 +94,12 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 
 - 每日流程的 AI 段：`src/app/aiStep.ts`（看新申報 → 套用 AI 結論、財報條件、規則直接提出的硬事件 → 開新的執行），各功能的套用登記在 `APPLIERS`。
 - 動能進場審查（T32b，`momentum_ai_design_2026-11-15.md` §3.1～§3.4）：證據由 `src/app/momEvidence.ts` 組（F1 與動能持股的 F19 共用，一份最多 6 份申報原文）；進場前回看在 `src/app/momLookback.ts`（月報前一天的 23:30 開、01:30 沒有結論重開一次）；有新證據才重開法庭（沿用上一次的結論）、01:30 的 `momRecheck`、月報之後才回來的否決在 `src/app/momAi.ts`。
+- 動能持股的事件與「要看的事」（T32d，`momentum_ai_design_2026-11-15.md` §3.6～§3.8）：`src/app/momNotes.ts`（單月大跌那一行 `momDropLine` 在 `src/ai/detect.ts`，不呼叫 AI；晚到的否決、進場時的附註；否決紀錄）。擬事件打分、動能的 F20 大跌說明、候選股的每日掃描已拿掉。運作統計多一段 `mom_entry`（F1 法庭的次數、否決、沿用、累積滿 5 次提示看否決紀錄）。策略檢討的提醒直接附 French 動能因子的歷史對照（`src/app/strategyAi.ts`）。
 - 規則偵測（不用 LLM）：`src/data/secEvents.ts`（申報分類，移植自 B-9）、`src/ai/detect.ts`（單日漲幅占比、盈餘背離、股數、資料可疑、跌幅拆解、SIC → 產業 ETF）、`src/data/fred.ts`（總經儀表板，fredgraph CSV 不需要金鑰）。
-- 各功能：F18／F19 `src/ai/events.ts`＋`src/app/events.ts`；F1 `src/ai/momEntry.ts`＋`src/app/momAi.ts`；F7／F20 `src/ai/drops.ts`＋`src/app/dropAi.ts`；F5／F6 `src/ai/crash.ts`＋`src/app/crashAi.ts`；F21 `src/ai/strategy.ts`＋`src/app/strategyAi.ts`；F14 `src/ai/ownCheck.ts`＋`src/app/ownCheckAi.ts`。資料表 `migrations/0007_events_entry.sql`。
+- 各功能：F18／F19 `src/ai/events.ts`＋`src/app/events.ts`；F1 `src/ai/momEntry.ts`＋`src/app/momAi.ts`；F7 `src/ai/drops.ts`＋`src/app/dropAi.ts`；F5／F6 `src/ai/crash.ts`＋`src/app/crashAi.ts`；F21 `src/ai/strategy.ts`＋`src/app/strategyAi.ts`；F14 `src/ai/ownCheck.ts`＋`src/app/ownCheckAi.ts`。資料表 `migrations/0007_events_entry.sql`。
 - 用真實資料看規則段（不觸發 AI）：`npx tsx scripts/t11-local.ts MU NVDA`（F1 規則偵測、FRED 儀表板、French 動能因子回撤）。
 - 網站：「紀錄 → AI 紀錄」上方有本月動能進場審查、總經儀表板、最近的申報事件；持股頁有監測中的條件與 AI 改寫的出場條件；新增自選可以請 AI 草擬前提。
-- prompt：`../ai/prompts/` 的 `event_scan_v1`、`hard_event_v1`、`mom_entry_v1`、`mom_score_v1`、`own_drop_v2`（T31b 起；`own_drop_v1` 不再使用）、`drop_explain_v1`、`crash_review_v2`（T33d 起；`crash_review_v1` 不再使用）、`strategy_review_v1`、`own_check_v2`（T27 起；`own_check_v1` 不再使用）。
+- prompt：`../ai/prompts/` 的 `event_scan_v1`、`hard_event_v1`、`mom_entry_v2`（T32b 起；`mom_entry_v1` 不再使用）、`own_drop_v2`（T31b 起；`own_drop_v1` 不再使用）、`crash_review_v2`（T33d 起；`crash_review_v1` 不再使用）、`strategy_review_v1`、`own_check_v2`（T27 起；`own_check_v1` 不再使用）。`mom_score_v1`、`drop_explain_v1` T32d 起不再使用。
 
 ## 網站（T8）
 

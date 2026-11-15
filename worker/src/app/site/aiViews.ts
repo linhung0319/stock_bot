@@ -4,7 +4,10 @@ import { keptByChoice, type CheckedSample, type Outcome } from '../../ai/check';
 import { CRASH_REVIEW } from '../../ai/crash';
 import { EVENT_SCAN, scanQualified } from '../../ai/events';
 import { fnInfo, verdictText } from '../../ai/functions';
+import { ENTRY_CODE_TEXT } from '../../ai/momEntry';
+import { followUp, type PriceBook } from '../../ai/shadow';
 import type { AiRun } from '../aiRuns';
+import type { VetoEpisode } from '../momNotes';
 import type { AiNote } from './types';
 
 export const OUTCOME_LABEL: Record<Outcome['status'] | 'PENDING', string> = {
@@ -19,6 +22,25 @@ export const OUTCOME_LABEL: Record<Outcome['status'] | 'PENDING', string> = {
 };
 
 const PREMISE_LABEL: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
+
+// ---------------------------------------------------------------- 否決紀錄（momentum_ai §3.7）
+
+/** 網站的否決紀錄一列：被否決者與遞補者之後 3、6 個月相對基準的超額報酬（還沒到或沒有價格是 null）。 */
+export interface VetoRowView extends VetoEpisode {
+  codeText: string;
+  vetoed: { m3: number | null; m6: number | null };
+  replacement: { m3: number | null; m6: number | null } | null;
+}
+
+/** book：已經存的價格（沒有就全部 null）；決策日起算（ai/shadow 的 followUp）。 */
+export function vetoView(book: PriceBook | null, e: VetoEpisode, benchmark: string): VetoRowView {
+  const after = (t: string) => {
+    if (!book) return { m3: null, m6: null };
+    const f = followUp(book, t, e.date, benchmark);
+    return { m3: f['3m']?.excess ?? null, m6: f['6m']?.excess ?? null };
+  };
+  return { ...e, codeText: (e.code && ENTRY_CODE_TEXT[e.code]) || '進場審查的理由', vetoed: after(e.ticker), replacement: e.replacedBy ? after(e.replacedBy) : null };
+}
 
 export interface RunRow {
   id: string;

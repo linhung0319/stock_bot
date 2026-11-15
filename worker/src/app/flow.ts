@@ -21,7 +21,6 @@ import { closeStaleRuns, listRuns } from './aiRuns';
 import { aiStep } from './aiStep';
 import { crashDirection, crashReviewFor } from './crashAi';
 import { routineReady } from './ownAi';
-import { monthNotes } from './dropAi';
 import { sectorEtfs } from './filings';
 import { monthOfSignal, prepareEntries, recordReplacements, signalsIn, type MonthInputs } from './momAi';
 import { STRATEGY_STATE_KEY, loadStrategyState } from './strategyAi';
@@ -29,6 +28,7 @@ import { noteOfRun } from './site/aiViews';
 import type { AiNote } from './site/types';
 import { sweepTimeoutTasks, timeoutAlert } from './aiTasks';
 import { breakLogs, monthOwnAttention } from './thesis';
+import { momHoldings, monthMomAttention } from './momNotes';
 import type { Env, Fetcher } from './env';
 import { ConflictError, loadAccount, patchAccount, requiredTickers, saveAccount, shadowTickers, thesisLogStmt } from './ledgerStore';
 import { alertText, lineConfigured, notifLink, notifText, pushLine, type AlertRow } from './line';
@@ -73,9 +73,9 @@ export interface FlowResult {
 export async function ingest(env: Env, fetcher: Fetcher, now: Date, forceRank = false): Promise<IngestResult | { error: string }> {
   try {
     const loaded = await loadAccount(env.DB);
-    // 影子組合要用最近 7 個月內影子紀錄裡的代號（觀察期最長 6 個月）；自選股的產業 ETF（F7、F20 的跌幅拆解）
+    // 影子組合要用最近 7 個月內影子紀錄裡的代號（觀察期最長 6 個月）；自選股與動能持股的產業 ETF（F7、個股自身大跌、動能單月大跌那一行的跌幅拆解）
     const since = new Date(now.getTime() - 213 * 86400_000).toISOString().slice(0, 10);
-    const track = loaded ? [...(await shadowTickers(env.DB, since)), ...Object.values(await sectorEtfs(env.DB, Object.keys(loaded.acct.own)))] : [];
+    const track = loaded ? [...(await shadowTickers(env.DB, since)), ...Object.values(await sectorEtfs(env.DB, [...new Set([...Object.keys(loaded.acct.own), ...momHoldings(loaded.acct)])]))] : [];
     return await runIngest(env.DB, fetcher, { now, required: requiredTickers(loaded?.acct ?? null), forceRank, track });
   } catch (e) {
     const error = errText(e);
@@ -163,8 +163,9 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
       const st = stepStrategyReview(strategy, s, mr, bench[view.i] / bench[view.i - 1] - 1);
       strategy = st.state;
       for (const text of st.alerts) {
-        acct = strategyReminder(acct, view, text).acct;
-        extras.strategyAlerts!.push({ session: s, text });
+        const r = strategyReminder(acct, view, text);
+        acct = r.acct;
+        extras.strategyAlerts!.push({ session: s, text, notif: r.notif.id });
       }
     }
     acct = dailyCheck(acct, view).acct;
@@ -189,15 +190,14 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
         const ranking = rankings.get(s) ?? null;
         const run = await loadRun(db, s);
         let input: MonthlyContext;
-        // AI 層給的輸入（月報之前在 runFlow 準備好）：任務 A 的否決與遞補、觀察理由、崩盤規則檢視的意見、任務 C 的說明
+        // AI 層給的輸入（月報之前在 runFlow 準備好）：任務 A 的否決與遞補、附註、崩盤規則檢視的意見
         const ai = monthInputs.get(s) ?? {};
         if (ranking && run?.rebalanceOk) {
           input = { order: ranking.order, month, company: ranking.detail.company, ...ai };
         } else {
           const why = pauseReason(run, !!ranking);
-          // 暫停換股：否決與遞補用不到，崩盤規則檢視與說明照樣附上（連同它們的 run_id）
-          const runIds = { ...(ai.runIds?.crash ? { crash: ai.runIds.crash } : {}), ...(ai.runIds?.notes ? { notes: ai.runIds.notes } : {}) };
-          input = { order: [...acct.rule.heldMom], month, paused: why, ...(ai.crashReview ? { crashReview: ai.crashReview } : {}), ...(ai.notes ? { notes: ai.notes } : {}), ...(Object.keys(runIds).length ? { runIds } : {}) };
+          // 暫停換股：否決與遞補用不到，崩盤規則檢視照樣附上（連同它的 run_id）
+          input = { order: [...acct.rule.heldMom], month, paused: why, ...(ai.crashReview ? { crashReview: ai.crashReview } : {}), ...(ai.runIds?.crash ? { runIds: { crash: ai.runIds.crash } } : {}) };
           alerts.push({ kind: 'MONTHLY_PAUSED', message: `${month} 月報照出，但本月暫停換股（${why}），動能名單不變。` });
         }
         // 訊號日的資料檢查結果跟著月報存（core_ai §3.10）；重算沿用
@@ -213,6 +213,14 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
         } catch (e) {
           // 讀不到論點檔不擋月報：這個月不列，頻率也不記，下個月再算
           console.error('要看的事算不出來', e);
+        }
+        // 動能持股的「要看的事」（momentum_ai §3.6）：單月大跌那一行、買進之後才回來的否決；排名用這份月報的
+        try {
+          const att = await monthMomAttention(db, acct, view, ranking?.order ?? latest?.order ?? []);
+          acct = att.acct;
+          if (att.items.length) input = { ...input, attention: [...(input.attention ?? []), ...att.items] };
+        } catch (e) {
+          console.error('動能的要看的事算不出來', e);
         }
         const m = monthlyReport(acct, view, input);
         acct = m.acct;
@@ -370,8 +378,8 @@ export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: A
 // ---------------------------------------------------------------- 月報的 AI 輸入
 
 /**
- * 月報訊號日、出月報之前：任務 A 的否決與遞補（還沒審過的跑規則偵測）、崩盤規則檢視的狀態（同月份＋方向，crashReviewFor）、
- * 這個月任務 C 的說明。出錯只記下來，月報照規則出（預設准許、沒有 AI 那一行）。
+ * 月報訊號日、出月報之前：任務 A 的否決與遞補（還沒審過的跑規則偵測）、崩盤規則檢視的狀態（同月份＋方向，crashReviewFor）。
+ * 出錯只記下來，月報照規則出（預設准許、沒有 AI 那一行）。任務 C（F20）的說明 T32d 拿掉（momentum_ai §3.6）。
  */
 async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal: string, ov: CalendarOverrides, now: Date, log: string[], alerts: Alert[]): Promise<MonthInputs> {
   const out: MonthInputs = {};
@@ -390,13 +398,8 @@ async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal:
       out.crashReview = cr;
       if (cr.runId) out.runIds = { ...out.runIds, crash: cr.runId };
     }
-    const notes = await monthNotes(env.DB, `${signal.slice(0, 7)}-00`, signal);
-    if (notes.length) {
-      out.notes = notes.map((n) => n.text);
-      out.runIds = { ...out.runIds, notes: notes.map((n) => n.runId) };
-    }
   } catch (e) {
-    log.push(`崩盤規則檢視與任務 C 的月報輸入出錯：${errText(e)}`);
+    log.push(`崩盤規則檢視的月報輸入出錯：${errText(e)}`);
   }
   return out;
 }

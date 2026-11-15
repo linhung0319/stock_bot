@@ -54,7 +54,7 @@ import { LOGIN_PATH, lineLoginConfigured, siteAuth } from './auth';
 import { ConflictError, demoBackend, realBackend, type DemoBackend, type SiteBackend, type SiteData } from './backend';
 import { bookFromView, followUp, shadowSummary } from '../../ai/shadow';
 import { BENCHMARK } from '../../data/ingest';
-import { exportMd, rowOfNote, runDetail, runRow } from './aiViews';
+import { exportMd, rowOfNote, runDetail, runRow, vetoView } from './aiViews';
 import { choiceEffect } from './bubble';
 import { annotate } from './explain';
 import { accountView, composedView, crashLogView, ctxOf, historyView, withPreviewNote, holdingDetail, notifView, snapshotForm, stateView } from './views';
@@ -402,7 +402,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const d = ready(await backend.load());
     const hd = holdingDetail(d, tk);
     // 真實模式：這檔監測中的條件（AI 寫的、你寫的）、最近 30 天還沒勾的改寫結果、要看的事
-    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), rewrites: await backend.ai.rewrites(tk), attention: await backend.ai.attention(tk, d.acct, d.view).catch(() => []) });
+    // 動能持股：最近 90 天的事件與動能的「要看的事」（含進場時的附註；momentum_ai §3.6）
+    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), rewrites: await backend.ai.rewrites(tk), attention: await backend.ai.attention(tk, d.acct, d.view).catch(() => []), mom: await backend.ai.mom(tk, d.acct, d.view, d.rankOrder).catch(() => null) });
     return json(hd);
   }
 
@@ -429,7 +430,17 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
   if (rest === 'ops/own-thesis' && post) return saveThesis(backend, await body(req));
 
   // ---- AI 層（F14 改寫、F1／F5／F18 的總覽）：只有真實模式
-  if (rest === 'ai/overview' && get) return json(backend.ai ? await backend.ai.overview() : { macro: null, reviews: [], events: [] });
+  if (rest === 'ai/overview' && get) {
+    if (!backend.ai) return json({ macro: null, reviews: [], vetoes: [], events: [] });
+    const o = await backend.ai.overview();
+    // 歷次否決：被否決者與遞補者之後 3、6 個月相對基準的報酬（momentum_ai §3.7；只用已經存的價格，不當場抓）
+    let book: ReturnType<typeof bookFromView> | null = null;
+    if (o.vetoes.length) {
+      const d = await backend.load().catch(() => null);
+      if (d?.view) book = bookFromView(d.axis, d.view.close);
+    }
+    return json({ ...o, vetoes: o.vetoes.map((v) => vetoView(book, v, BENCHMARK)) });
+  }
   if (rest === 'ops/own-check' && post) {
     // 重送出場條件去改寫（編輯論點頁送出失敗、或改寫沒有結果時）
     if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI，出場條件沒有辦法送去改寫。');

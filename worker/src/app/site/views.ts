@@ -205,6 +205,8 @@ export interface NotifView {
   withdraw: number | null;
   /** 月報：這個月該列的「要看的事」（own_thesis §3.6.6；src 分自選股與動能持股兩段）。 */
   attention: { ticker: string; kind: string; text: string; since: string; src: 'own' | 'mom' }[];
+  /** 沒有清單的通知（策略檢討提醒）用到的 AI 執行：通知頁連到報告（momentum_ai §3.8）。沒有是 null。 */
+  aiRun: string | null;
 }
 
 function lineView(view: MarketView, l: OrderLine, acct: Account): LineView {
@@ -498,6 +500,7 @@ export function notifView(d: Ready, n: Notif): NotifView {
     deposit: n.deposit ?? null,
     withdraw: n.withdraw ?? null,
     attention: (n.attention ?? []).map((x) => ({ ticker: x.ticker, kind: x.kind, text: x.text, since: x.since, src: x.src ?? 'own' })),
+    aiRun: !n.items.length ? (n.runIds?.[0] ?? null) : null,
   };
 }
 

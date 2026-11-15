@@ -144,7 +144,7 @@ export function suspectMoves(close: ArrayLike<number>, axis: string[], i: number
   return out;
 }
 
-// ---------------------------------------------------------------- 跌幅拆解（F7、F20）
+// ---------------------------------------------------------------- 跌幅拆解（F7、動能持股單月大跌的一行）
 
 export interface Attribution {
   from: string;
@@ -194,6 +194,37 @@ export function idioDropText(a: Attribution, market: string): string {
   const p = (v: number) => `${(v * 100).toFixed(1)}%`;
   const ref = a.sector === null ? `大盤（${market}）${p(a.market)}` : `產業（${a.sectorTicker}）${p(a.sector + a.market)}`;
   return `最近 ${IDIO_DROP.days} 個交易日：個股 ${p(a.stock)}，${ref}，個股自身 ${p(a.idio)}`;
+}
+
+// ---------------------------------------------------------------- 動能持股單月大跌的一行（momentum_ai §3.6，取代動能的 F20；不呼叫 AI）
+
+/** 最近 21 個交易日報酬 ≤ -20% 算單月大跌。 */
+export const MONTH_DROP = -0.2;
+
+/** 這段期間記到的一件事件（日期、類別的中文、來源：申報的表單名稱或「新聞標題」）。 */
+export interface DropEvent {
+  date: string;
+  label: string;
+  source: string;
+}
+
+/**
+ * 動能持股單月大跌的一行（momentum_ai §3.6）：位置 i 往前 21 個交易日報酬 ≤ -20% 時成立，用 attribution 拆成大盤、產業、個股自身。
+ * events：這一檔的事件（只取這 21 個交易日內的）；rank：目前的排名（null = 不在股票池）。不成立或算不出來回傳 null。
+ *   `MU 最近 21 個交易日跌 23.4%：大盤 -4.1%、產業（SOXX）比大盤 -6.0%、個股自身 -13.3%。這段期間記到的事件：11-03 財測下修（8-K）。動能的出場只看排名（目前第 7 名，掉出前 15 名才賣）。`
+ */
+export function momDropLine(inp: { axis: string[]; close: Record<string, ArrayLike<number>>; ticker: string; market: string; sector: string | null; i: number; events: DropEvent[]; rank: number | null; exitRank: number }): { text: string; attr: Attribution } | null {
+  const { axis, i, ticker } = inp;
+  if (i - 21 < 0) return null;
+  const attr = attribution(axis, inp.close, ticker, inp.market, inp.sector, i - 21, i);
+  if (!attr || !(attr.stock <= MONTH_DROP + 1e-9)) return null;
+  const p = (v: number) => `${v >= 0 ? '+' : '-'}${Math.abs(v * 100).toFixed(1)}%`;
+  const parts = [`大盤 ${p(attr.market)}`, ...(attr.sector === null ? [] : [`產業（${attr.sectorTicker}）比大盤 ${p(attr.sector)}`]), `個股自身 ${p(attr.idio)}`];
+  const evs = inp.events.filter((e) => e.date > attr.from && e.date <= attr.to).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const evText = evs.length ? `這段期間記到的事件：${evs.map((e) => `${e.date.slice(5)} ${e.label}（${e.source}）`).join('、')}。` : '這段期間沒有記到申報事件。';
+  // 已經掉出前 N 名（月報會列出場）時，不寫「掉出前 N 名才賣」（讀起來像還沒到）
+  const rankText = inp.rank === null ? '目前不在排名的股票池內，月報會列出場' : inp.rank > inp.exitRank ? `目前第 ${inp.rank} 名，已經掉出前 ${inp.exitRank} 名，月報會列出場` : `目前第 ${inp.rank} 名，掉出前 ${inp.exitRank} 名才賣`;
+  return { text: `${ticker} 最近 21 個交易日跌 ${(-attr.stock * 100).toFixed(1)}%：${parts.join('、')}。${evText}動能的出場只看排名（${rankText}）。`, attr };
 }
 
 /** 52 週高點在哪一天（F7 的跌幅從那天算）。 */

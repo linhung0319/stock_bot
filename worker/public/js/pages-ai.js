@@ -245,6 +245,34 @@ const plain = (t) => String(t ?? '')
   .replace(/\d{4}-\d{2}-\d{2}_[A-Z_]+_[0-9a-f]{6}/g, 'AI 紀錄').replace(/(PENDING_MA|ACCOUNTING|REGULATORY)_CANDIDATE/g, (_, c) => `${CODE[c]}候選`).replace(/\b(PENDING_MA|ACCOUNTING|REGULATORY|EARNINGS_DIVERGENCE|ONE_OFF_JUMP|DILUTION|DATA_SUSPECT|ALLOW_WATCH|ALLOW|VETO|INSUFFICIENT|EXIT|HOLD)\b/g, (m) => CODE[m]);
 const fnum = (x, d = 2) => (x === null || x === undefined || !Number.isFinite(x) ? '—' : x.toFixed(d));
 
+const spct = (x) => (x === null || x === undefined || !Number.isFinite(x) ? '—' : `${x >= 0 ? '+' : '−'}${Math.abs(x * 100).toFixed(1)}%`);
+
+/**
+ * 動能新股進場審查的否決紀錄（momentum_ai §3.7）：每一次否決一塊（連續沿用的月份算同一次），之後 3、6 個月被否決者與遞補者各自相對基準的報酬。
+ * 只求能用（版面在 T34 整理）。
+ */
+function vetoList(vs) {
+  const after = (label, v) => h('div', { class: 'small' }, `${label}：`, `${v.ticker} ${spct(v.vetoed.m3)}`, v.replacement ? `、遞補的 ${v.replacedBy} ${spct(v.replacement.m3)}` : '', `（3 個月）；${v.ticker} ${spct(v.vetoed.m6)}`, v.replacement ? `、${v.replacedBy} ${spct(v.replacement.m6)}` : '', '（6 個月）');
+  return h(
+    'div',
+    null,
+    h(
+      'ul',
+      { style: 'list-style:none;margin:0;padding:0' },
+      vs.map((v) =>
+        h(
+          'li',
+          { style: 'padding:8px 0;border-top:1px solid var(--line)' },
+          h('div', null, h('span', { class: 'num dim', style: 'margin-right:10px' }, day(v.date)), h('span', { class: 'tk' }, v.ticker), h('span', { class: 'chip hot', style: 'margin-left:10px' }, v.late ? `月報之後回來：否決（${v.codeText}）` : `否決：${v.codeText}`), v.runId ? h('a', { href: `#/ai/${v.runId}`, class: 'small', style: 'margin-left:10px' }, 'AI 紀錄') : null),
+          h('div', { class: 'small dim' }, v.late ? '月報已經出了，只是建議，照規則買進了' : `由 ${v.replacedBy ?? '（沒有遞補，留在核心）'} 遞補`, v.months.length > 1 ? `；沿用到 ${v.months.at(-1)}（共 ${v.months.length} 個月）` : ''),
+          after('之後相對大盤', v),
+        ),
+      ),
+    ),
+    h('p', { class: 'small faint', style: 'margin-top:8px' }, '從決策日的收盤起算、相對大盤（SPY）的超額報酬；還沒滿 3 或 6 個月的是「—」。被否決的那一檔之後比遞補的差，否決才算幫上忙。一年不到一次，統計上驗證不了，請逐次看；要不要收回 AI 的否決權由你決定。'),
+  );
+}
+
 /** 總經儀表板（每月都算）、本月動能新股進場審查、最近的申報事件。真實模式才有內容；載入失敗就不顯示。 */
 export function aiOverview() {
   const box = h('div', { class: 'stackv', style: 'margin-bottom:14px' });
@@ -259,6 +287,7 @@ export function aiOverview() {
             h('table', { class: 'plain' }, h('tbody', null, o.reviews.map((r) => h('tr', null, h('td', { style: 'white-space:nowrap' }, h('span', { class: 'tk' }, r.ticker), r.rank ? h('div', { class: 'small faint' }, `第 ${r.rank} 名`) : null), h('td', null, h('span', { class: 'chip ' + (r.decision === 'VETO' || r.decision === 'BLOCK' ? 'hot' : r.decision === 'ALLOW_WATCH' ? 'warn' : 'ok') }, DECISION[r.decision] ?? r.decision), r.lateVerdict === 'VETO' ? h('div', null, h('span', { class: 'chip hot' }, '月報之後回來：否決')) : null), h('td', { class: 'small' }, `${r.carriedFrom ? `沿用 ${r.carriedFrom} 的 AI 法庭` : (SOURCE[r.source] ?? r.source)}${r.reasonCode ? ` · ${CODE[r.reasonCode] ?? r.reasonCode}` : ''}${r.replacedBy ? ` · 由 ${r.replacedBy} 遞補` : ''}`, r.watchReason ? h('div', { class: 'faint' }, '附註：' + plain(r.watchReason)) : null, r.note ? h('div', { class: 'faint' }, plain(r.note)) : null))))),
           ),
         );
+      if (o.vetoes?.length) parts.push(details(`AI 否決的紀錄（${o.vetoes.length} 次）`, vetoList(o.vetoes)));
       if (o.macro) {
         // 可用 = 有值而且沒過期（core_ai §3.5）
         const usable = o.macro.rows.filter((r) => r.value !== null && !r.stale).length;

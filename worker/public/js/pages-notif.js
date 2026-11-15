@@ -503,7 +503,9 @@ export async function notifPage(ctx, id) {
   if (!v.items.length) {
     const body = glass(
       'pad narrow',
-      v.text ? h('p', null, v.text) : null,
+      v.text ? h('p', { style: 'white-space:pre-line' }, v.text) : null,
+      // 策略檢討提醒：AI 的正反證據報告（沒有回來時文字已經寫明，不給連結）
+      v.aiRun && !/AI 說明沒有回來/.test(v.text ?? '') ? h('p', { style: 'margin-top:8px' }, h('a', { href: `#/ai/${v.aiRun}` }, 'AI 列出的正反證據（報告）')) : null,
       v.note ? h('p', { class: 'dim' }, '你的回答：' + ({ own: '歸自選', mom: '歸動能' }[v.note] ?? v.note)) : null,
       v.ref ? h('p', { style: 'margin-top:8px' }, h('a', { href: `#/n/${v.ref}` }, `打開通知 #${v.ref}`)) : null,
       v.status === 'PENDING'

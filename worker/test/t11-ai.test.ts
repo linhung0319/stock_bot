@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { judge, type EvidencePack } from '../src/ai/check';
 import { checkCrashPayload, crashOpinionOf, macroDashboard } from '../src/ai/crash';
 import { attribution, earningsDivergence, epsQuarters, jumpMetrics, oneOffJump, shareGrowth, sicToEtf, suspectMoves } from '../src/ai/detect';
-import { dropDecision, explainLine } from '../src/ai/drops';
+import { dropDecision } from '../src/ai/drops';
 import { hardDecision, scanEvents } from '../src/ai/events';
 import { PAYLOAD_HOOKS } from '../src/ai/hooks';
 import { courtVerdict, entryRuleVerdict, previewOrder, resolveEntries, type EntryDecision } from '../src/ai/momEntry';
@@ -265,15 +265,14 @@ describe('F18／F19：payload 檢查與結論', () => {
 
 describe('F7／F20／F5／F6／F21／F14：檢查與結論', () => {
   // T31b 改了 dropDecision（own_thesis §3.3，修 K4）：結果是五種之一，「不動」多了程式核對（跌幅拆解在證據包的 rule.detail.attr）。
-  // 各種結果的條件在 test/t31b-drop.test.ts；這裡留原本的兩個斷言（三票不動、三票減半）與轉交、F20
-  it('F7：3 票一致而且和規則（減半）不同才給「照 AI」；轉交 F19 要寫代碼；F20 的一句話', () => {
+  // 各種結果的條件在 test/t31b-drop.test.ts；這裡留原本的兩個斷言（三票不動、三票減半）與轉交。F20 的一句話 T32d 拿掉（momentum_ai §3.6）
+  it('F7：3 票一致而且和規則（減半）不同才給「照 AI」；轉交 F19 要寫代碼', () => {
     const pack = { run_id: 'r', function: 'OWN_DROP', as_of: '2026-11-23', policy: { level: 'A3', verdicts: ['EXIT', 'HALF', 'HOLD'], abstain: 'HALF', min_evidence: 1, samples: 3 }, premises: [], condition_types: [], data_quality: {}, facts: [], rule: { action: '', detail: { attr: { stock: -0.25, market: -0.2, sector: null, idio: -0.05 } } }, documents: [{ id: 'P', source_id: 'price:MU', kind: 'price', date: '2026-11-23', title: 'p', text: '2026-11-23 MU close 70.00' }] } as unknown as EvidencePack;
     const v = (verdict: string, extra: Record<string, unknown> = {}) => ({ verdict, evidence: [{ id: 'E1', source_id: 'price:MU', date: '2026-11-23', quote: '2026-11-23 MU close 70.00', claim: 'x' }], payload: { tier: verdict, cause_class: 'MARKET', ...extra } });
     expect(dropDecision(judge(pack, [v('HOLD'), v('HOLD'), v('HOLD')], PAYLOAD_HOOKS.OWN_DROP), pack)).toMatchObject({ status: 'HOLD', cause: 'MARKET' });
     expect(dropDecision(judge(pack, [v('HALF'), v('HALF'), v('HALF')], PAYLOAD_HOOKS.OWN_DROP), pack).status).toBe('AGREE');
     const bad = judge(pack, [v('HOLD', { cause_class: 'VIBES', escalate_to_F19: true })], PAYLOAD_HOOKS.OWN_DROP);
     expect(bad.samples[0].payload).toMatchObject({ cause_class: 'UNKNOWN', escalate_to_F19: false });
-    expect(explainLine('MU', -0.27, { samples: [{ valid: true, payload: { cause_class: 'SECTOR', summary: '記憶體類股一起跌。' } }] } as never)).toBe('MU 最近一個月跌 27%：產業一起跌。記憶體類股一起跌。（AI 說明，詳見網站）');
   });
 
   it('F5／F6：FRED CSV、儀表板（倒掛天數、年增、真空頭開始時的值）、意見只有 3 票一致才寫', () => {
@@ -557,7 +556,7 @@ describe('整條流程：F1 否決法庭', () => {
         expect(court.pack.policy).toMatchObject({ level: 'A4', samples: 3, abstain: 'INSUFFICIENT' });
         const doc = court.pack.documents.find((x) => x.kind === 'filing')!;
         expect(doc.text).toContain('should no longer be relied upon');
-        expect(await runsOf(db, 'MOM_SCORE')).toHaveLength(1);
+        expect(await runsOf(db, 'MOM_SCORE')).toEqual([]); // T32d：擬事件打分拿掉（momentum_ai §3.7）
 
         const veto = { run_id: court.pack.run_id, verdict: 'VETO', premise_checks: [{ premise_id: 'P2', status: 'BROKEN', evidence_ids: ['E1'] }], evidence: [{ id: 'E1', source_id: doc.source_id, date: doc.date, quote: 'revenue of $40 million was recognized prematurely', claim: '營收提前認列' }], payload: { decision: 'VETO', reason_code: 'ACCOUNTING', lift_condition: { type: 'filing_event', text: '重編完成' } }, report: '財報不可信。' };
         await postResult(db, court.runId, [veto, veto, veto], new Date('2026-11-28T00:10:00Z'));
@@ -789,11 +788,11 @@ describe('T33a：崩盤規則檢視什麼時候開（core_ai §3.1 的 crashNeed
   });
 });
 
-describe('整條流程：F7 減半檢視、F20 大跌說明', () => {
-  // T29b：自選股不再跑 F20（own_thesis §2.8），F20 改用動能持股（AAPL）驗；動能的 F20 在 T32d 拿掉
+describe('整條流程：F7 減半檢視、動能持股單月大跌', () => {
+  // T29b：自選股不再跑 F20（own_thesis §2.8）；T32d：動能的 F20 也拿掉（momentum_ai §3.6），改成「要看的事」的一行（不開 AI、不進月報的狀態文字）
   // T31b 改了這個行為（own_thesis §3.3，修 K4）：這裡三票「不動」的歸類是一次性事件、而且只有 NVDA 自己跌（個股自身的跌幅超過整段的一半），
   // 過不了「不動」的條件 → 沒有可用的結論，通知上不會出現「照 AI：不動」，也不動 aiTier。過得了的情況在 test/t31b-drop.test.ts
-  it('自選暴跌 → 當天減半通知；F7 三票「不動」但只有個股自己跌 → 沒有可用的結論、照規則；動能持股的 F20 說明附在月報（自選股不再開 F20）', async () => {
+  it('自選暴跌 → 當天減半通知；F7 三票「不動」但只有個股自己跌 → 沒有可用的結論、照規則；動能持股大跌不開 AI、列在月報的「要看的事」', async () => {
     await withWorld(async ({ db, w, run }) => {
       await run('2026-11-20');
       w.shock.NVDA = { from: '2026-11-23', factor: 0.7 };
@@ -805,14 +804,11 @@ describe('整條流程：F7 減半檢視、F20 大跌說明', () => {
       expect(drop).toMatchObject({ ticker: 'NVDA', status: 'PENDING' });
       expect(drop.pack.rule.detail).toMatchObject({ urgent: true });
       expect(drop.pack.facts.find((f) => f.id === 'A2')!.value).toMatch(/^-/);
-      const [expl, ...more] = await runsOf(db, 'DROP_EXPLAIN');
-      expect(expl.ticker).toBe('AAPL');
-      expect(more).toEqual([]);
+      expect(await runsOf(db, 'DROP_EXPLAIN')).toEqual([]);
       const price = drop.pack.documents.find((d) => d.source_id === 'price:NVDA')!;
       const quote = price.text.split('\n').at(-1)!;
       const hold = { run_id: drop.pack.run_id, verdict: 'HOLD', premise_checks: [{ premise_id: 'P1', status: 'HOLDS', evidence_ids: ['E1'] }], evidence: [{ id: 'E1', source_id: 'price:NVDA', date: price.date, quote, claim: '一天跌 30%，沒有申報' }], payload: { tier: 'HOLD', cause_class: 'ONE_OFF' }, report: '一次性下跌。' };
       await postResult(db, drop.runId, [hold, hold, hold], new Date('2026-11-24T00:10:00Z'));
-      await postResult(db, expl.runId, [{ run_id: expl.pack.run_id, verdict: 'EXPLAINED', evidence: [], payload: { cause_class: 'ONE_OFF', summary: '一天跌了三成，沒有相關申報。' } }], new Date('2026-11-24T00:11:00Z'));
       await run('2026-11-23', 'FINAL');
       acct = (await loadAccount(db))!.acct;
       const it = acct.notifs.find((n) => n.id === urgent.id)!.items.find((i) => i.f === 'F7')!;
@@ -823,8 +819,8 @@ describe('整條流程：F7 減半檢視、F20 大跌說明', () => {
       for (const d of ['2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
       const m = await run('2026-11-30');
       const monthly = (await loadAccount(db))!.acct.notifs.find((n) => n.id === m.monthly)!;
-      expect(monthly.text).toContain('AAPL 最近一個月跌');
-      expect(monthly.text).toContain('一天跌了三成');
+      expect(monthly.text).not.toContain('AAPL 最近');
+      expect(monthly.attention?.find((x) => x.ticker === 'AAPL')).toMatchObject({ kind: 'DROP_21D', src: 'mom' });
     }, { mom: ['AAPL'] });
   });
 });
@@ -962,12 +958,13 @@ describe('引擎的 T11 部分', () => {
     });
   });
 
-  it('月報：准許但觀察的進場項目註明理由；任務 C 的說明接在狀態後面；F21 提醒不附清單', async () => {
+  // T32d：任務 C（F20）的說明不再接在月報的狀態文字後面（momentum_ai §3.6，修 Q15）；舊月報留下的 notes 欄位不再讀
+  it('月報：准許但觀察的進場項目註明理由；狀態文字沒有大跌說明；F21 提醒不附清單', async () => {
     await base((acct, view) => {
-      const m = monthlyReport(acct, view, { order: ['AAPL', 'NVDA'], month: '2026-12', watch: { AAPL: '增資（只顯示）' }, notes: ['MU 最近一個月跌 25%：產業一起跌'] });
+      const m = monthlyReport(acct, view, { order: ['AAPL', 'NVDA'], month: '2026-12', watch: { AAPL: '增資（只顯示）' }, ...({ notes: ['MU 最近一個月跌 25%：產業一起跌'] } as object) });
       const it = m.notif.items.find((i) => i.f === 'F1' && i.ticker === 'AAPL');
       if (it) expect(it.note).toBe('准許，附註：增資（只顯示）'); // T32b：「准許但觀察」改叫「准許，附註」（舊月報只有 watch 時照樣顯示）
-      expect(m.notif.text).toContain('\nMU 最近一個月跌 25%：產業一起跌');
+      expect(m.notif.text).not.toContain('MU 最近一個月跌 25%');
       const s = strategyReminder(acct, view, '動能相對基準落後超過 20%');
       expect(s.notif).toMatchObject({ kind: 'INFO', title: '策略檢討提醒', items: [] });
       expect(s.acct.notifs.at(-1)!.id).toBe(s.notif.id);

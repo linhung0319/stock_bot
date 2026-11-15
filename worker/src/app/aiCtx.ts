@@ -1,4 +1,5 @@
 // 每日流程 AI 段的共用型別與小工具（避免模組互相 import）。
+import type { PackDoc } from '../ai/check';
 import type { CalendarOverrides } from '../data/calendar';
 import type { Alert } from '../data/store';
 import { errText } from '../data/util';
@@ -62,6 +63,15 @@ export async function guard(res: StepResult, label: string, fn: () => Promise<vo
 export interface FlowExtras {
   /** 這次處理的交易日裡，慢規則新觸發減半的自選股。 */
   reduced?: { ticker: string; session: string }[];
-  /** 這次處理的交易日裡，策略檢討的提醒。 */
-  strategyAlerts?: { session: string; text: string }[];
+  /** 這次處理的交易日裡，策略檢討的提醒（notif：那則提醒通知的編號）。 */
+  strategyAlerts?: { session: string; text: string; notif?: number }[];
+  /** 策略檢討的歷史對照（momentum_ai §3.8）：AI 段套用時抓一次、寫進提醒，開 AI 時沿用（不重抓）。 */
+  strategyHistory?: StrategyHistory;
+}
+
+/** French 動能因子的歷史回撤對照（momentum_ai §3.8）：doc 給 AI 的證據包；line 接在提醒通知的文字後面。抓不到時 doc 是 null。 */
+export interface StrategyHistory {
+  doc: PackDoc | null;
+  line: string;
+  error?: string;
 }
