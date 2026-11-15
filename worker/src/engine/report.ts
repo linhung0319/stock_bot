@@ -1014,8 +1014,25 @@ export function routeReview(acct0: Account, view: MarketView, ticker: string, r:
  * F19 硬事件：建議提早出場，使用者確認才做（設計 §6.2）。
  * byRule = true：動能持股被收購（PENDING_MA）或 NT 10-K／10-Q，由規則直接提出，不需要 AI。
  */
-export function hardEvent(acct0: Account, view: MarketView, ticker: string, code: 'PENDING_MA' | 'ACCOUNTING' | 'REGULATORY', byRule: boolean, runIds?: string[]): { acct: Account; notif: Notif | null } {
+/** 硬事件法庭對動能持股的出場建議：同一檔同一類多少個日曆天內只通知一次（momentum_ai §3.5；和規則直接提出的一致）。 */
+export const HARD_TOLD_DAYS: Record<string, number> = { PENDING_MA: 365 };
+export const hardToldDays = (code: string) => HARD_TOLD_DAYS[code] ?? 180;
+
+/** 這一檔這一類在 date 之前的期間內已經通知過 → 那一次的訊號日；沒有 → null。 */
+export function hardToldWithin(acct: Pick<Account, 'mom'>, ticker: string, code: string, date: string): string | null {
+  const told = acct.mom?.hardTold?.[ticker]?.[code];
+  if (!told) return null;
+  return (Date.parse(date) - Date.parse(told)) / 86400_000 < hardToldDays(code) ? told : null;
+}
+
+/**
+ * 硬事件的通知（F19）。byRule = 規則直接提出；否則是法庭的建議（runIds）。
+ * 動能持股的法庭建議：同一檔同一類 180 天（被收購 365 天）內已經通知過就不再列那一項（momToldOn = 上次的訊號日），
+ * 通知了就記進 acct.mom.hardTold；自選那一項不受這個上限影響（own_thesis §1.9：硬事件照舊）。
+ */
+export function hardEvent(acct0: Account, view: MarketView, ticker: string, code: 'PENDING_MA' | 'ACCOUNTING' | 'REGULATORY', byRule: boolean, runIds?: string[]): { acct: Account; notif: Notif | null; momToldOn?: string } {
   const acct = clone(acct0);
+  let momToldOn: string | undefined;
   const items: Item[] = [];
   const ai = runIds?.length ? { runIds: [...runIds] } : {};
   const ownSh = acct.lots.own[ticker] ?? 0;
@@ -1036,7 +1053,10 @@ export function hardEvent(acct0: Account, view: MarketView, ticker: string, code
       }),
     );
   }
-  if (momSh > 0) {
+  const told = momSh > 0 && !byRule ? hardToldWithin(acct, ticker, code, view.date) : null;
+  if (told) momToldOn = told;
+  else if (momSh > 0) {
+    if (!byRule) ((acct.mom.hardTold ??= {})[ticker] ??= {})[code] = view.date;
     items.push(
       makeItem({
         f: 'F19',
@@ -1053,10 +1073,11 @@ export function hardEvent(acct0: Account, view: MarketView, ticker: string, code
     // 規則直接提出：名單拿掉這一檔，下個月照排名遞補；沒確認出場的話，下個月月報會再列一次
     if (byRule) acct.rule.heldMom = acct.rule.heldMom.filter((t) => t !== ticker);
   }
-  if (!items.length) return { acct, notif: null };
+  const told2 = momToldOn ? { momToldOn } : {};
+  if (!items.length) return { acct, notif: null, ...told2 };
   const notif = newNotif(acct, view, { kind: 'URGENT', title: `${ticker} 硬事件（${code}）`, items });
   notif.preview = composeNotif(acct, view, notif);
-  return { acct, notif };
+  return { acct, notif, ...told2 };
 }
 
 // ---------------------------------------------------------------- 策略檢討（設計 §7）

@@ -102,7 +102,7 @@ describe('T32a：動能持股的 AI 出場建議不先改名單（§3.5，修 Q1
     const sim = start();
     const r = hardEvent(sim.acct, sim.pre, 'ORCL', 'ACCOUNTING', false, ['run-f19']);
     const ex = explainItem({ acct: r.acct, view: sim.pre, axis: [], rankOrder: [], aiNotes: [] } as never, r.notif!, item(r.notif!, 'F19', 'ORCL'));
-    expect(ex.choiceNotes?.SKIP).toBe('不做：這一檔留在動能名單，之後照排名進出。');
+    expect(ex.choiceNotes?.SKIP).toBe('不做：這一檔留在動能名單，之後照排名進出。同一類事件 180 天內不再通知。'); // T32c 補上後半句
     expect(ex.choiceNotes?.AI).toContain('離開動能名單');
   });
 });

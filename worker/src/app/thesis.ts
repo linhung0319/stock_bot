@@ -496,7 +496,7 @@ export function filePremises(tf: Pick<ThesisFile, 'premises'>): PackPremise[] {
 // ---------------------------------------------------------------- 證據包要的部分（純函式）
 
 const SOURCE_TEXT: Record<string, string> = { EDGAR: '申報分類', SCAN: '每日掃描', AI: 'AI 轉交', PRICE: '價格規則' };
-const STATUS_TEXT: Record<string, string> = { NEW: '待處理', HANDLED: '已處理', INFO: '只記錄' };
+const STATUS_TEXT: Record<string, string> = { NEW: '待處理', HANDLED: '已處理', INFO: '只記錄', IN_COURT: '法庭審查中' };
 /** 證據包最多放幾筆事件（own_thesis §1.6）。 */
 export const MAX_V = 15;
 /** F24 最多放幾份 8-K 原文（own_thesis §1.6）。 */

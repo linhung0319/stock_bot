@@ -10,17 +10,18 @@
 //   F18 掃描（Haiku，一票）：規則分不出輕重的 8-K 與新聞標題 → 事件類別與細項；持股的 _CANDIDATE → 開法庭；候選股的 → 下一次 F1 看得到
 //     標記分開（scan8k、news 記時間）、有合格結論才往前推、沒有結論時 01:30 重掃、連續 2 次失敗告警（own_thesis §2.6）
 //   F19 法庭（3 票）：一致建議出場 → 當天通知（只限 PENDING_MA、ACCOUNTING、REGULATORY）
+//     什麼時候開、IN_COURT、沒有結論時重開與告警（HARD_COURT_FAILED）、轉交事件的原文、動能持股 180 天只通知一次（momentum_ai §3.5，T32c）
 import { CANDIDATE_CODE, EVENT_SCAN, HARD_EVENT, eventScanPack, hardDecision, hardEventPack, scanEvents, scanQualified, type HardCode, type HardEventRef, type ScanBatchItem, type ScanCondition, type ScanCursors, type ScanTarget } from '../ai/events';
-import type { PackDoc } from '../ai/check';
+import type { EvidencePack, PackDoc } from '../ai/check';
 import { newRunId } from '../ai/pack';
-import { hardEvent } from '../engine';
+import { hardEvent, hardToldDays } from '../engine';
 import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlines, quarterTable } from '../data/edgar';
 import { SCAN_ITEMS, classifyFilings, fetchPrimaryText, isAdvanceable, type FilingHit } from '../data/secEvents';
 import type { Filing } from '../data/sources';
 import { loadRanking, type Alert } from '../data/store';
 import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
-import { closeStaleRuns, startRun, type AiRun } from './aiRuns';
+import { closeStaleRuns, getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { accOf, fetchFilingChecks, handledStmt, insertHitStmts, loadEvents, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { docOf, newsDoc, xbrlDoc } from './ownAi';
@@ -89,17 +90,105 @@ export async function applyRuleEvents(ctx: ApplyCtx, classified: Classified[]): 
 
 // ---------------------------------------------------------------- 套用 LLM 的結論
 
-/** F19 法庭：3 票一致建議出場 → 當天通知（自選加上硬事件標記，動能從名單拿掉）。 */
+/**
+ * F19 法庭的結論（momentum_ai §3.5「法庭沒有結論時」，自選與動能共用；closeStaleRuns 關掉的執行也會進來）：
+ *   有結論（三票一致：AGREED、INSUFFICIENT）→ 那批 IN_COURT 的事件標 HANDLED（「法庭 <run_id>：EXIT／HOLD／INSUFFICIENT」），失敗次數歸零
+ *   票數不一致 → 算跑完了，不重開（HANDLED：「法庭 <run_id>：票數不一致，照規則」），失敗次數歸零
+ *   沒有結論（逾時、沒觸發成功、整份退回、三票格式都不合格、資料缺漏）→ 事件標回 NEW（下一次 startCourts 重開）、
+ *     court:fails:<代號> 加 1，連續 2 次起每次推 HARD_COURT_FAILED
+ *   3 票一致建議出場 → 當天通知（自選加上硬事件標記；動能持股同一檔同一類 180 天內只通知一次，被收購 365 天）
+ */
 export async function applyHardEvent(ctx: ApplyCtx, run: AiRun): Promise<void> {
   const t = run.ticker ?? '';
-  if (!run.outcome) return;
-  const d = hardDecision(run.outcome);
+  const o = run.outcome;
+  const status = o?.status ?? 'NO_RESULT';
+  const evs = (await ctx.db.prepare("SELECT * FROM sec_events WHERE status = 'IN_COURT' AND handled_note = ? ORDER BY event_date, id").bind(run.runId).all<SecEventRow>()).results;
+  const ids = evs.map((e) => e.id);
+  if (status !== 'AGREED' && status !== 'INSUFFICIENT' && status !== 'SPLIT') {
+    const why = courtFailWhy(o);
+    if (ids.length) ctx.stmts.push(ctx.db.prepare(`UPDATE sec_events SET status = 'NEW', handled_note = ? WHERE id IN (${ids.map(() => '?').join(',')})`).bind(`法庭 ${run.runId} 沒有結論（${why}），等重開`, ...ids));
+    const n = await courtFailStmts(ctx, t, evs, run.runId, why);
+    ctx.log.push(`${run.runId}：${t} 的硬事件法庭沒有結論（${why}）；事件回到待處理，下一次流程重開（連續第 ${n} 次）`);
+    return;
+  }
+  if (ids.length) ctx.stmts.push(handledStmt(ctx.db, ids, status === 'SPLIT' ? `法庭 ${run.runId}：票數不一致，照規則` : `法庭 ${run.runId}：${o!.verdict ?? status}`));
+  courtFailsClear(ctx, t);
+  const d = hardDecision(o!);
   if (!d.exit || !d.code) return void ctx.log.push(`${run.runId}：${t} 不建議出場（${d.why}）`);
   const held = (ctx.acct.lots.own[t] ?? 0) > 0 || (ctx.acct.lots.mom[t] ?? 0) > 0;
   if (!held) return void ctx.log.push(`${run.runId}：${t} 已經沒有持股，不通知`);
   const r = hardEvent(ctx.acct, ctx.view, t, d.code, false, [run.runId]);
   ctx.acct = r.acct;
-  ctx.log.push(`${run.runId}：${t} ${d.code} → AI 建議提早出場${r.notif ? `，當天通知 #${r.notif.id}` : ''}`);
+  if (r.momToldOn) ctx.log.push(`${t} ${d.code}：${r.momToldOn.slice(5)} 已經通知過，${hardToldDays(d.code)} 天內不再通知（結論在 AI 紀錄）`);
+  if (r.notif) ctx.log.push(`${run.runId}：${t} ${d.code} → AI 建議提早出場，當天通知 #${r.notif.id}${r.momToldOn ? '（只有自選那一項）' : ''}`);
+}
+
+// ---------------------------------------------------------------- 硬事件法庭的失敗次數（momentum_ai §3.5）
+
+/** flow_state 的鍵：這一檔的硬事件法庭連續沒有結論的次數與每次的執行編號、原因。 */
+export const courtFailsKey = (ticker: string) => `court:fails:${ticker}`;
+/** 連續幾次沒有結論開始推告警。 */
+export const COURT_ALERT_AFTER = 2;
+
+export interface CourtFails {
+  count: number;
+  fails: { runId: string; why: string; at: string }[];
+  /** 最近一次失敗時那批事件的說明（「8-K 2027-01-06 Item 4.02」）。 */
+  events: string[];
+}
+
+export async function loadCourtFails(db: D1Database, ticker: string): Promise<CourtFails | null> {
+  const v = await stateOf(db, courtFailsKey(ticker));
+  if (!v) return null;
+  try {
+    const j = JSON.parse(v) as Partial<CourtFails>;
+    return { count: Number(j.count) || 0, fails: Array.isArray(j.fails) ? j.fails : [], events: Array.isArray(j.events) ? j.events : [] };
+  } catch {
+    return null;
+  }
+}
+
+/** 一件事件給人讀的樣子：申報「8-K 2027-01-06 Item 4.02」、新聞標題「新聞標題 2027-01-06」、轉交的「AI 轉交 2027-01-06」。 */
+export function courtEventLabel(e: Pick<SecEventRow, 'form' | 'event_date' | 'sub' | 'accession'>): string {
+  if (accOf(e.accession).kind === 'NEWS' || e.form === 'NEWS') return `新聞標題 ${e.event_date}`;
+  if (e.form === 'AI') return `AI 轉交 ${e.event_date}`;
+  const item = /8K_(\d\.\d\d)/.exec(e.sub)?.[1];
+  return `${e.form} ${e.event_date}${item ? ` Item ${item}` : ''}`;
+}
+
+/** HARD_COURT_FAILED 的文字。expired：事件超過 10 天、停止重試時的那一則。 */
+export function courtFailText(ticker: string, n: number, events: string[], expired = false): string {
+  const what = events.length ? `（${events.join('、')}）` : '';
+  if (expired) return `${ticker} 的硬事件法庭連續 ${n} 次沒有結論${what}，事件建立已經超過 ${EVENT_EXPIRE_DAYS} 天，已經停止重試。規則沒有動作，這件事沒有被 AI 看過。`;
+  return `${ticker} 的硬事件法庭連續 ${n} 次沒有結論${what}。規則沒有動作，這件事還沒有被 AI 看過；下一次流程會重開。`;
+}
+
+const courtFailWhy = (o: AiRun['outcome']): string => {
+  if (!o) return '沒有結果';
+  const label: Record<string, string> = { TIMEOUT: '逾時', NO_RESULT: '沒有結果', INVALID: '三票格式都不合格', DATA_MISSING: '資料缺漏' };
+  return o.status === 'NO_RESULT' && /觸發/.test(o.reason) ? '沒觸發成功' : o.status === 'NO_RESULT' && /退回/.test(o.reason) ? '結果被退回' : (label[o.status] ?? o.status);
+};
+
+/** 同一次套用裡已經算過的失敗次數（同一檔兩次結論在同一次套用時不重讀資料庫）。 */
+const courtSeen = new WeakMap<object, Map<string, CourtFails | null>>();
+
+async function courtFailStmts(ctx: ApplyCtx, ticker: string, evs: SecEventRow[], runId: string, why: string): Promise<number> {
+  const seen = courtSeen.get(ctx) ?? new Map<string, CourtFails | null>();
+  courtSeen.set(ctx, seen);
+  const prev = seen.has(ticker) ? seen.get(ticker)! : await loadCourtFails(ctx.db, ticker);
+  const events = evs.length ? evs.map(courtEventLabel) : (prev?.events ?? []);
+  const next: CourtFails = { count: (prev?.count ?? 0) + 1, fails: [...(prev?.fails ?? []), { runId, why, at: ctx.now.toISOString() }].slice(-10), events };
+  seen.set(ticker, next);
+  ctx.stmts.push(setStateStmt(ctx.db, courtFailsKey(ticker), JSON.stringify(next), ctx.now.toISOString()));
+  if (next.count >= COURT_ALERT_AFTER) (ctx.alerts ??= []).push({ kind: 'HARD_COURT_FAILED', message: courtFailText(ticker, next.count, events), detail: { ticker, count: next.count, runId, fails: next.fails } });
+  return next.count;
+}
+
+function courtFailsClear(ctx: ApplyCtx, ticker: string): void {
+  const seen = courtSeen.get(ctx) ?? new Map<string, CourtFails | null>();
+  courtSeen.set(ctx, seen);
+  seen.set(ticker, null);
+  ctx.stmts.push(ctx.db.prepare('DELETE FROM flow_state WHERE key = ?').bind(courtFailsKey(ticker)));
 }
 
 /**
@@ -229,10 +318,46 @@ const HARD_CODES = ['PENDING_MA', 'ACCOUNTING', 'REGULATORY'];
 /** 待處理的事件建立超過這麼多個日曆天就不開法庭，標成已處理（momentum_ai §3.5）。 */
 export const EVENT_EXPIRE_DAYS = 10;
 
+/** 這一檔有結論的硬事件法庭（三票一致：AGREED、INSUFFICIENT），新到舊：代碼與證據包裡的申報原文。 */
+interface PriorCourt {
+  runId: string;
+  codes: string[];
+  filings: Set<string>;
+}
+async function priorCourts(db: D1Database, ticker: string): Promise<PriorCourt[]> {
+  const rows = (await db.prepare("SELECT run_id, pack, outcome FROM ai_runs WHERE fn = ? AND ticker = ? AND status = 'DONE' ORDER BY created_at DESC LIMIT 50").bind(HARD_EVENT, ticker).all<{ run_id: string; pack: string; outcome: string | null }>()).results;
+  const out: PriorCourt[] = [];
+  for (const r of rows) {
+    try {
+      const o = r.outcome ? (JSON.parse(r.outcome) as { status?: string }) : null;
+      if (o?.status !== 'AGREED' && o?.status !== 'INSUFFICIENT') continue;
+      const pack = JSON.parse(r.pack) as EvidencePack;
+      out.push({ runId: r.run_id, codes: ((pack.rule.detail as { codes?: string[] } | undefined)?.codes ?? []).map(String), filings: new Set(pack.documents.filter((d) => d.kind === 'filing').map((d) => d.source_id)) });
+    } catch {
+      // 讀不懂的舊紀錄當成沒有
+    }
+  }
+  return out;
+}
+
+/** 轉交來的事件（form = 'AI'，accession 是那次執行的編號）：原文取自那次執行的證據包裡 kind 是 filing 的文件（修 Q14）。 */
+async function forwardedDocs(db: D1Database, e: SecEventRow): Promise<PackDoc[]> {
+  if (e.form !== 'AI') return [];
+  const run = await getRun(db, e.accession).catch(() => null);
+  return (run?.pack.documents ?? []).filter((d) => d.kind === 'filing');
+}
+
 /**
- * 持股的待處理事件 → 開 F19 法庭（同一檔一次一個）。
+ * 持股的待處理事件 → 開 F19 法庭（momentum_ai §3.5「法庭什麼時候開」，自選與動能共用）。對每一檔的 NEW 事件照順序：
+ *   建立超過 10 個日曆天 → 不開，標 HANDLED（過期）；這一檔有失敗紀錄的再推一次 HARD_COURT_FAILED（已經停止重試）
+ *   這一檔同一個代碼已經有一次有結論的法庭，而且事件只來自新聞標題 → 不開，標 HANDLED（「已有 <run_id> 的結論，新聞標題不重開」）
+ *     申報已經在上次法庭的證據包裡 → 同樣不開
+ *   有申報來的、而且那份申報不在上次法庭的證據包裡；或從來沒有過有結論的法庭 → 開。事件標 IN_COURT、handled_note 寫 <run_id>
+ * 同一檔一次一個法庭：還有一次在等結果（或結果還沒套用）就先不開，事件留著 NEW。
+ * 轉交來的事件（form = 'AI'）：原文取自那次執行的證據包裡的申報。
  * fetchChecks：這次流程沒有看新申報（01:30 的 finalStarts，sc.checks 是空的）時，有申報類事件的那幾檔另外抓申報清單來取原文；
  * 只抓清單、不推「看過」的標記。
+ * 動能持股的證據之後改用 momEvidence（T32b 才有）；這裡照舊用 accOf 取申報原文。
  */
 export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fetchChecks?: boolean } = {}): Promise<void> {
   const { env, fetcher, acct, view, axis, session, now, res } = sc;
@@ -243,15 +368,58 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
   if (expired.length) {
     await handledStmt(env.DB, expired.map((e) => e.id), `過期：建立超過 ${EVENT_EXPIRE_DAYS} 天沒有處理`).run();
     res.log.push(`待處理的事件過期（建立超過 ${EVENT_EXPIRE_DAYS} 天）：${expired.map((e) => `${e.ticker} ${e.sub}`).join('、')}`);
+    // 法庭一直沒有結論、事件過期了：再推一次告警（已經停止重試）；這一檔沒有別的待處理事件就清掉失敗次數
+    for (const t of new Set(expired.map((e) => e.ticker))) {
+      const f = await loadCourtFails(env.DB, t);
+      if (!f || f.count < 1) continue;
+      const evs = expired.filter((e) => e.ticker === t).map(courtEventLabel);
+      res.alerts.push({ kind: 'HARD_COURT_FAILED', message: courtFailText(t, f.count, evs, true), detail: { ticker: t, count: f.count, expired: true, fails: f.fails } });
+      if (!fresh.some((e) => e.ticker === t)) await env.DB.prepare('DELETE FROM flow_state WHERE key = ?').bind(courtFailsKey(t)).run();
+    }
   }
   const pending = fresh.filter((e) => role.get(e.ticker) && role.get(e.ticker) !== 'CAND');
   const byTicker = new Map<string, SecEventRow[]>();
   for (const e of pending) byTicker.set(e.ticker, [...(byTicker.get(e.ticker) ?? []), e]);
-  for (const [t, evs] of byTicker) {
+  const busy = new Set((await env.DB.prepare("SELECT DISTINCT ticker FROM ai_runs WHERE fn = ? AND (status = 'PENDING' OR applied_at IS NULL)").bind(HARD_EVENT).all<{ ticker: string | null }>()).results.map((r) => r.ticker));
+  for (const [t, all] of byTicker) {
+    if (busy.has(t)) {
+      res.log.push(`${t} 的硬事件法庭還在等結果，新的事件留到下一次（${all.map((e) => e.sub).join('、')}）`);
+      continue;
+    }
+    // 開不開（有結論之後只有新的申報才重開）
+    const prior = await priorCourts(env.DB, t);
+    const fwd = new Map<number, PackDoc[]>();
+    const skip = new Map<string, number[]>();
+    const evs: SecEventRow[] = [];
+    for (const e of all) {
+      const fd = e.form === 'AI' ? await forwardedDocs(env.DB, e) : [];
+      if (fd.length) fwd.set(e.id, fd);
+      const prev = prior.find((p) => p.codes.includes(e.code));
+      if (!prev) {
+        evs.push(e);
+        continue;
+      }
+      const ref = accOf(e.accession);
+      const sources = ref.kind === 'FILING' ? [`edgar:${ref.acc}`] : fd.map((d) => d.source_id);
+      if (sources.some((x) => !prev.filings.has(x))) {
+        evs.push(e);
+        continue;
+      }
+      const note = sources.length ? `已有 ${prev.runId} 的結論，申報已經看過，不重開` : isNewsEvent(e) ? `已有 ${prev.runId} 的結論，新聞標題不重開` : `已有 ${prev.runId} 的結論，沒有新的申報，不重開`;
+      skip.set(note, [...(skip.get(note) ?? []), e.id]);
+    }
+    for (const [note, ids] of skip) {
+      await handledStmt(env.DB, ids, note).run();
+      res.log.push(`${t}：${note}`);
+    }
+    if (!evs.length) continue;
+
     let check = sc.checks.find((c) => c.ticker === t);
     if (!check && opt.fetchChecks && env.EDGAR_USER_AGENT && evs.some((e) => accOf(e.accession).kind === 'FILING')) check = (await fetchFilingChecks(env, fetcher, [t], session, res.log))[0];
     const docs: PackDoc[] = [];
     const dq: Record<string, 'ok' | 'partial' | 'missing'> = {};
+    // 有要讀申報原文的事件（申報、轉交）時才記申報有沒有缺；只有新聞標題的不算缺漏（否則三票一致「不動」會變成資料缺漏、一直重開）
+    let wantFiling = false;
     try {
       for (const e of evs) {
         if (isNewsEvent(e)) {
@@ -260,8 +428,14 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
           dq.news = 'partial';
           continue;
         }
+        if (e.form === 'AI') {
+          wantFiling = true;
+          for (const d of fwd.get(e.id) ?? []) if (!docs.some((x) => x.source_id === d.source_id || x.id === d.id)) docs.push(d);
+          continue;
+        }
         const ref = accOf(e.accession);
         if (ref.kind !== 'FILING') continue;
+        wantFiling = true;
         const acc = ref.acc;
         const f = check?.all.find((x) => x.accession === acc);
         if (!f || !check) continue;
@@ -272,7 +446,7 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
           docs.push({ id: `F-${acc}`, source_id: `edgar:${acc}`, kind: 'filing', date: f.filingDate, title: `${f.form} ${f.filingDate}（開頭）`, url: p.url, text: p.text });
         }
       }
-      dq.filings = docs.some((d) => d.kind === 'filing') ? 'ok' : 'missing';
+      if (wantFiling || docs.some((d) => d.kind === 'filing')) dq.filings = docs.some((d) => d.kind === 'filing') ? 'ok' : 'missing';
       let xbrl: PackDoc | null = null;
       if (check) {
         try {
@@ -291,12 +465,15 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
       const { pack, notes } = hardEventPack({ acct, view, axis, ticker: t, runId: newRunId(session, HARD_EVENT, t), role: own ? 'OWN' : 'MOM', events: refs, docs, xbrl, dataQuality: dq, ...(ownPremises ? { ownPremises } : {}), now });
       const run = await startRun(env, fetcher, pack, now, notes);
       res.started.push(run.runId);
-      await handledStmt(env.DB, evs.map((e) => e.id), `開法庭 ${run.runId}`).run();
+      await inCourtStmt(env.DB, evs.map((e) => e.id), run.runId).run();
     } catch (e) {
       res.log.push(`${t} 的硬事件法庭沒有開成：${errText(e)}`);
     }
   }
 }
+
+/** 交給法庭的事件：IN_COURT，handled_note 寫執行編號（applyHardEvent 用它找回這批事件）。 */
+const inCourtStmt = (db: D1Database, ids: number[], runId: string) => db.prepare(`UPDATE sec_events SET status = 'IN_COURT', handled_note = ? WHERE id IN (${ids.map(() => '?').join(',')})`).bind(runId, ...ids);
 
 const msOf = (iso: string | null | undefined) => {
   const t = iso ? Date.parse(iso) : NaN;

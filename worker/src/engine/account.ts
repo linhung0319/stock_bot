@@ -389,6 +389,11 @@ export interface Account {
     adopted: Record<string, { reason: string; date: string }>;
     /** 策略單沒照做，下個月要再列（設計 §2.3.1）。 */
     owe: Record<string, { since: string; notif: number }>;
+    /**
+     * 硬事件法庭（F19）對動能持股建議出場、已經通知過的：代號 → 代碼 → 訊號日（momentum_ai §3.5）。
+     * 同一檔同一類 180 天（被收購 365 天）內不再通知；那一檔動能部位賣光時清掉（addLot）。沒有這個欄位的舊帳戶當成空的。
+     */
+    hardTold?: Record<string, Record<string, string>>;
   };
   notifs: Notif[];
   nextId: number;
@@ -477,8 +482,11 @@ export function bookShares(acct: Account): Record<string, number> {
 
 export function addLot(acct: Account, bucket: keyof Lots, ticker: string, n: number): void {
   const v = (acct.lots[bucket][ticker] ?? 0) + n;
-  if (Math.abs(v) < 1e-9) delete acct.lots[bucket][ticker];
-  else acct.lots[bucket][ticker] = v;
+  if (Math.abs(v) < 1e-9) {
+    delete acct.lots[bucket][ticker];
+    // 動能部位出場：硬事件的 180 天上限跟著清掉（momentum_ai §3.5）
+    if (bucket === 'mom' && acct.mom?.hardTold?.[ticker]) delete acct.mom.hardTold[ticker];
+  } else acct.lots[bucket][ticker] = v;
 }
 
 export function newNotif(acct: Account, view: MarketView, o: Partial<Notif> & Pick<Notif, 'kind' | 'title'>): Notif {

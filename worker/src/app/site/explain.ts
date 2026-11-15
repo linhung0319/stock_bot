@@ -6,6 +6,7 @@ import {
   TIER_NAME,
   annualizedVol,
   drawdownFromHigh,
+  hardToldDays,
   momSlotTarget,
   rollingMax,
   sma,
@@ -723,8 +724,8 @@ function hard(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const note = findNote(ctx.aiNotes, 'HARD', t, n.date, it.runIds);
   const byRule = it.choices.some((c) => c.id === 'DO');
   const mom = it.choices.some((c) => c.lines.some((l) => l.bucket === 'mom'));
-  // 動能持股的 AI 建議：不做 = 名單不變（momentum_ai §3.5）
-  const aiNotes = mom ? { AI: '照 AI 出場：這一檔離開動能名單，空出來的位置下個月照排名遞補。', SKIP: '不做：這一檔留在動能名單，之後照排名進出。' } : { AI: '照 AI 出場。', SKIP: SKIP.ai };
+  // 動能持股的 AI 建議：不做 = 名單不變；同一類事件在期間內不再通知（momentum_ai §3.5）
+  const aiNotes = mom ? { AI: '照 AI 出場：這一檔離開動能名單，空出來的位置下個月照排名遞補。', SKIP: `不做：這一檔留在動能名單，之後照排名進出。同一類事件 ${hardToldDays(code)} 天內不再通知。` } : { AI: '照 AI 出場。', SKIP: SKIP.ai };
   return {
     short: `硬事件：${name.split('（')[0]}`,
     why: `${t} 出現硬事件：${name}。${byRule ? '這一類由規則直接提出' : 'AI 讀過申報原文後建議提早出場'}，要你確認才會做。${note ? note.summary : ''}`,

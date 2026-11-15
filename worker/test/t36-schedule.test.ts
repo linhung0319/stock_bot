@@ -188,7 +188,7 @@ describe('三次排程集中在 schedule.ts', () => {
 // ---------------------------------------------------------------- ① ② 01:30 開法庭、03:30 只套用
 
 describe('01:30 與 03:30', () => {
-  it('掃描標到硬事件候選 → 同一次 01:30 就開法庭（申報原文另外抓）；23:30 的流程不會再開一次', async () => {
+  it('掃描標到硬事件候選 → 同一次 01:30 就開法庭（申報原文另外抓）；法庭到隔天還沒回來 → 隔天的流程重開（T32c）', async () => {
     await withWorld(async (c) => {
       await scanFlagsHardCandidate(c);
       c.net.calls.length = 0;
@@ -204,9 +204,12 @@ describe('01:30 與 03:30', () => {
       expect(court.pack.documents.find((x) => x.source_id === `edgar:${ACC}`)!.text).toContain('received a subpoena');
       expect(c.net.fired.length).toBe(firedBefore + 1);
       expect((await loadEvents(c.db, { ticker: 'NVDA', status: 'NEW' })).length).toBe(0);
-      // 隔天的流程：事件已經交給法庭，不再開
-      await c.run('2026-11-24');
-      expect((await runsOf(c.db, 'HARD_EVENT')).filter((r) => r.ticker === 'NVDA')).toHaveLength(1);
+      expect((await loadEvents(c.db, { ticker: 'NVDA', status: 'IN_COURT' })).map((e) => e.handled_note)).toEqual([court.runId]);
+      await c.run('2026-11-24', 'FIRST');
+      // T32c 之前這裡斷言隔天不再開；現在法庭到隔天還沒回來 = 逾時沒有結論 → 事件回到待處理、同一次就重開（修 Q12）
+      const courts = (await runsOf(c.db, 'HARD_EVENT')).filter((r) => r.ticker === 'NVDA');
+      expect(courts).toHaveLength(2);
+      expect((await getRun(c.db, court.runId))!.outcome!.status).toBe('TIMEOUT');
     });
   });
 

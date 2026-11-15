@@ -490,7 +490,7 @@ describe('整條流程：F18 → F19', () => {
         expect(acct.rule.heldMom).not.toContain('AAPL');
         expect(acct.notifs.filter((n) => n.id === nt.id)).toHaveLength(1); // 同一則通知只出現一次（T10 的 push 兩次已修）
         const evs = await loadEvents(db);
-        expect(evs.map((e) => [e.ticker, e.sub, e.status])).toEqual(expect.arrayContaining([['AAPL', 'NT_10-Q', 'HANDLED'], ['NVDA', '8K_4.02', 'HANDLED']]));
+        expect(evs.map((e) => [e.ticker, e.sub, e.status])).toEqual(expect.arrayContaining([['AAPL', 'NT_10-Q', 'HANDLED'], ['NVDA', '8K_4.02', 'IN_COURT']])); // T32c：交給法庭的事件是 IN_COURT
 
         const [court] = await runsOf(db, 'HARD_EVENT');
         expect(court).toMatchObject({ ticker: 'NVDA', status: 'PENDING' });
@@ -517,15 +517,19 @@ describe('整條流程：F18 → F19', () => {
         expect(sec.line.slice(lineBefore).find((t) => t.includes('NVDA 硬事件'))).toContain('另有 1 項 AI 建議（預設不做）');
         // 每日掃描標記的監管候選 → 同一次 01:30 套用之後就對動能持股（還沒賣）開法庭，不等到隔天（T36，own_thesis §2.7）
         expect((await loadEvents(db, { ticker: 'AAPL', status: 'NEW' })).map((e) => e.sub)).toEqual([]);
-        expect((await loadEvents(db, { ticker: 'AAPL', status: 'HANDLED' })).map((e) => e.sub)).toContain('SCAN_REGULATORY_CANDIDATE');
+        expect((await loadEvents(db, { ticker: 'AAPL', status: 'IN_COURT' })).map((e) => e.sub)).toContain('SCAN_REGULATORY_CANDIDATE');
+        // NVDA 的法庭有結論 → 事件標 HANDLED、寫結論（T32c）
+        expect((await loadEvents(db, { ticker: 'NVDA' })).find((e) => e.sub === '8K_4.02')).toMatchObject({ status: 'HANDLED', handled_note: `法庭 ${court.runId}：EXIT` });
         const courts = await runsOf(db, 'HARD_EVENT');
         const aapl = courts.find((r) => r.ticker === 'AAPL')!;
         expect(aapl.createdAt).toBe('2026-11-24T01:30:00.000Z');
         expect(aapl.pack.rule.detail).toMatchObject({ codes: ['REGULATORY'], role: 'MOM' });
         expect(aapl.pack.premises.map((p) => p.id)).toEqual(['P2', 'P4']);
-        // 隔天的流程不會再開一次
+        // AAPL 的法庭一直沒有回來：隔天的流程照規則結束（逾時）→ 事件回到待處理 → 重開一次（T32c，修 Q12；以前是不再開）
         await run('2026-11-24');
-        expect((await runsOf(db, 'HARD_EVENT')).filter((r) => r.ticker === 'AAPL')).toHaveLength(1);
+        const again = (await runsOf(db, 'HARD_EVENT')).filter((r) => r.ticker === 'AAPL');
+        expect(again).toHaveLength(2);
+        expect((await loadEvents(db, { ticker: 'AAPL', status: 'IN_COURT' })).map((e) => e.handled_note)).toEqual([again.find((r) => r.runId !== aapl.runId)!.runId]);
       },
       { mom: ['AAPL'] },
     );
@@ -667,10 +671,10 @@ describe('T32a：硬事件的待處理事件 10 天過期（§3.5）', () => {
         const evs = new Map((await loadEvents(db, { ticker: 'AAPL' })).map((e) => [e.accession, e]));
         expect(evs.get('nasdaq-rss:AAPL:2026-11-09')).toMatchObject({ status: 'HANDLED', handled_note: '過期：建立超過 10 天沒有處理' });
         const fresh = evs.get('nasdaq-rss:AAPL:2026-11-18')!;
-        expect(fresh.status).toBe('HANDLED');
-        expect(fresh.handled_note).toMatch(/^開法庭 /);
         const courts = (await runsOf(db, 'HARD_EVENT')).filter((r) => r.ticker === 'AAPL');
         expect(courts).toHaveLength(1);
+        // T32c：交給法庭的事件標 IN_COURT、handled_note 是執行編號（以前是 HANDLED「開法庭 …」）
+        expect(fresh).toMatchObject({ status: 'IN_COURT', handled_note: courts[0].runId });
         expect((courts[0].pack.rule.detail as { events: { date: string }[] }).events.map((e) => e.date)).toEqual(['2026-11-18']);
       },
       { mom: ['AAPL'] },
