@@ -1,6 +1,6 @@
 // T11：F14 新增自選股的健檢（網站觸發）。
 //   請 AI 草擬前提（使用者沒寫理由）／把使用者寫的出場條件改寫成可追蹤的格式 → 網站等結果、讓使用者勾選。
-//   使用者確認的出場條件 → own_conditions（origin = USER，不會被之後的 F24 換掉），由 F25 監測。
+//   使用者確認的出場條件 → own_conditions（origin = USER、有勾選時間與成立時的動作，是「你定的條件」；審查換不掉），由 F25 監測。
 import type { PackDoc } from '../ai/check';
 import { OWN_CHECK, ownCheckPack, ownCheckResult, type OwnCheckResult } from '../ai/ownCheck';
 import { newRunId, priceDoc, priceFacts } from '../ai/pack';
@@ -9,9 +9,10 @@ import { errText } from '../data/util';
 import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { entryEvidence } from './momAi';
-import { loadAccount } from './ledgerStore';
+import { loadAccount, thesisLogStmt } from './ledgerStore';
 import { gatherOwnEvidence, insertConditionStmts, routineReady } from './ownAi';
-import { fileConditions } from './thesis';
+import { checkCap } from './ownConds';
+import { ACTION_TEXT, COND_ACTIONS, acceptStatus, confirmText, defaultAction, fileConditions, isOwned, ownerText, progressText, type CondAction } from './thesis';
 
 /** 這檔現在的論點檔編號（帳戶沒有、不是自選、T25 之前的自選 → null）。 */
 async function currentFileId(db: D1Database, ticker: string): Promise<string | null> {
@@ -97,23 +98,92 @@ export async function latestOwnCheck(env: Env, ticker: string, now: Date): Promi
   return r ? ownCheckView(env, r.run_id, now) : null;
 }
 
-/** 使用者勾選的出場條件 → 開始監測（origin = USER）。回傳寫入幾條。 */
-export async function acceptOwnConditions(env: Env, ticker: string, runId: string, ids: string[], now: Date): Promise<number> {
+/**
+ * 使用者勾選的出場條件 → 你定的條件（origin = USER，帶勾選時間與成立時的動作；T26）。回傳寫入幾條。
+ * actions：每一條成立時做什麼（沒給就帶 AI 改寫時的檔位）。會自己發通知的你定的條件一檔最多 8 條。
+ */
+export async function acceptOwnConditions(env: Env, ticker: string, runId: string, ids: string[], now: Date, actions: Record<string, unknown> = {}, session?: string): Promise<number> {
   const v = await ownCheckView(env, runId, now);
   if (!v || v.status !== 'DONE') throw new Error('這次健檢還沒有結果');
-  const pick = v.conditions.filter((c) => ids.includes(c.condId) && !v.accepted.includes(c.condId));
+  const pick = v.conditions
+    .filter((c) => ids.includes(c.condId) && !v.accepted.includes(c.condId))
+    .map((c) => ({ ...c, action: COND_ACTIONS.includes(actions[c.condId] as CondAction) ? (actions[c.condId] as CondAction) : defaultAction(c) }));
   if (!pick.length) return 0;
-  const stmts = insertConditionStmts(env.DB, ticker, runId, pick, now.toISOString(), 'USER', await currentFileId(env.DB, ticker));
-  await env.DB.batch(stmts);
+  const acct = (await loadAccount(env.DB))?.acct;
+  if (!acct?.own[ticker]) throw new Error(`${ticker} 不是自選股`);
+  const fileId = acct.own[ticker].fileId ?? null;
+  checkCap(await fileConditions(env.DB, acct, ticker), pick.filter((c) => acceptStatus({ kind: c.kind, check: c.check, auto: !c.manual, status: 'PROPOSED' }) !== 'MANUAL').length);
+  const at = now.toISOString();
+  const res = await env.DB.batch(insertConditionStmts(env.DB, ticker, runId, pick, at, 'USER', fileId));
+  // log 寫 CONDITION（列編號要等寫入之後才知道）
+  if (fileId) await env.DB.batch(res.map((r, k) => thesisLogStmt(env.DB, { ticker, fileId, session: session ?? at.slice(0, 10), kind: 'CONDITION', ref: String(r.meta.last_row_id), body: { id: r.meta.last_row_id, change: 'ACCEPTED', action: pick[k].action, by: 'USER' } }, null, at)));
   return pick.length;
 }
 
-/** 持股頁要顯示的監測條件。 */
-export async function monitorView(env: Env, ticker: string): Promise<{ text: string; kind: string; origin: string; status: string; note: string | null }[]> {
+export interface MonitorRow {
+  id: number;
+  text: string;
+  kind: string;
+  /** 誰定的、哪一天（「你寫的，11/20 定」「AI 建議，你在 11/20 勾選」「AI 建議，11/20 的審查寫的」）。 */
+  origin: string;
+  /** 狀態的白話（監測中、只在定期審查時檢查、只記錄、已成立、建議中）。 */
+  status: string;
+  /** 狀態代號（畫面判斷能做什麼用，不顯示）。 */
+  code: string;
+  /** 你定的條件（勾選過、或你自己寫的）。 */
+  owned: boolean;
+  /** 你定的：成立時做什麼；建議中的：勾選時預設的動作（AI 建議的檔位）。 */
+  action: CondAction | null;
+  actionText: string | null;
+  /** 怎麼確認。 */
+  confirm: string;
+  /** 財報類條件的進度（§3.6.2）。 */
+  progress: string | null;
+  /** 只記錄、不會通知（價格條件、沒通過格式檢查的）：畫面不給選成立時的動作。 */
+  recordOnly: boolean;
+  /** 說明（已成立的寫怎麼確認成立的；其他是寫入時的原因）。 */
+  note: string | null;
+}
+
+const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '');
+/** 已成立的條件怎麼確認的（白話，不放執行編號）。 */
+function metNote(c: { metAt: string | null; metBasis: string | null }): string {
+  const d = md(c.metAt);
+  if (c.metBasis === 'XBRL') return `${d} 新財報出來，程式比對成立`;
+  if (c.metBasis === 'FILING_VOTE') return `${d} 新申報的原文，AI 3 票確認成立`;
+  if (c.metBasis === 'REVIEW_VOTE') return `${d} 的定期審查，AI 3 票確認成立`;
+  if (c.metBasis === 'PRESS') return `${d} 依財報新聞稿成立（10-Q 出來後再核對）`;
+  return `${d} 成立`;
+}
+
+const STATUS_TEXT: Record<string, string> = { ACTIVE: '監測中', MET: '已成立', MANUAL: '只記錄', REVIEW_ONLY: '只在定期審查時檢查', PROPOSED: '建議中', RETIRED: '已撤下', EXPIRED: '已過期', REPLACED: '已替換' };
+
+/** 持股頁要顯示的條件：你定的（監測中、只在審查時檢查、只記錄、已成立）與 AI 建議、你還沒勾選的；撤下與過期的不列。 */
+export async function monitorView(env: Env, ticker: string): Promise<MonitorRow[]> {
   try {
     const acct = (await loadAccount(env.DB))?.acct;
-    return (acct ? await fileConditions(env.DB, acct, ticker) : []).map((c) => ({ text: c.text, kind: { XBRL: '財報', EVENT: '事件', PRICE: '價格' }[c.kind] ?? c.kind, origin: c.origin === 'USER' ? '你寫的' : 'AI 寫的', status: { ACTIVE: '監測中', MET: '已成立', MANUAL: '只記錄', REVIEW_ONLY: '只在定期審查時檢查', REPLACED: '已替換' }[c.status] ?? c.status, note: c.note }));
+    return (acct ? await fileConditions(env.DB, acct, ticker) : [])
+      .filter((c) => c.status !== 'RETIRED' && c.status !== 'EXPIRED')
+      .map((c) => {
+        const owned = isOwned(c) && c.status !== 'PROPOSED';
+        const action = owned ? c.action : defaultAction(c);
+        return {
+          id: c.id,
+          text: c.text,
+          kind: { XBRL: '財報', EVENT: '事件', PRICE: '價格' }[c.kind] ?? c.kind,
+          origin: ownerText(c),
+          status: STATUS_TEXT[c.status] ?? c.status,
+          code: c.status,
+          owned,
+          action,
+          actionText: action ? ACTION_TEXT[action] : null,
+          confirm: confirmText(c),
+          progress: progressText(c),
+          recordOnly: acceptStatus(c) === 'MANUAL',
+          note: c.status === 'MET' ? metNote(c) : c.note,
+        };
+      });
   } catch (e) {
-    return [{ text: `讀不到：${errText(e)}`, kind: '', origin: '', status: '', note: null }];
+    return [{ id: 0, text: `讀不到：${errText(e)}`, kind: '', origin: '', status: '', code: '', owned: false, action: null, actionText: null, confirm: '', progress: null, recordOnly: false, note: null }];
   }
 }

@@ -24,7 +24,7 @@ export const EXPORT_TABLES: Record<string, ExportTable> = {
   ai_tasks: { mode: 'replace', json: ['result'], omit: ['evidence'], pageRows: 50 },
   ai_rejections: { mode: 'append', json: [], pageRows: 20 },
   mom_reviews: { mode: 'replace', json: ['hits'], pageRows: 500 },
-  own_conditions: { mode: 'replace', json: ['check_json'], pageRows: 500 },
+  own_conditions: { mode: 'replace', json: ['check_json', 'progress_json'], pageRows: 500 },
   own_thesis_log: { mode: 'append', json: ['body'], pageRows: 500 },
   sec_events: { mode: 'replace', json: [], pageRows: 500 },
   macro_snapshots: { mode: 'replace', json: ['data'], pageRows: 50 },

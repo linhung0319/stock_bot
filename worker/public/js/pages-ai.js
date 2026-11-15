@@ -241,11 +241,82 @@ export function aiOverview() {
 
 // ---------------------------------------------------------------- 持股頁：監測條件與新增自選健檢（T11，F14／F25）
 
-/** 這檔監測中的條件，與最近一次健檢 AI 改寫的出場條件（勾選後開始監測）。 */
+const COND_ACTIONS = [
+  ['EXIT', '出清'],
+  ['HALF', '減半'],
+  ['REVIEW', '重新審查'],
+];
+const MAX_OWNED = 8;
+
+/** 成立時做什麼的下拉選單。 */
+function actionSelect(value, onchange) {
+  return h('select', { style: 'width:auto;min-height:36px;padding:4px 10px', onchange }, COND_ACTIONS.map(([v, t]) => h('option', { value: v, selected: v === value }, t)));
+}
+
+/** 一條條件：文字與狀態、誰定的與怎麼確認、進度、說明；controls 是這一條能做的事。 */
+function condRow(c, controls) {
+  const tone = c.code === 'MET' ? 'hot' : c.code === 'ACTIVE' ? 'ok' : c.code === 'PROPOSED' ? 'now' : '';
+  return h(
+    'div',
+    { style: 'padding:10px 0;border-top:1px solid var(--line)' },
+    h('div', { style: 'display:flex;gap:10px;align-items:flex-start;justify-content:space-between' }, h('b', { style: 'font-weight:500' }, c.text), h('span', { class: 'chip ' + tone }, c.status)),
+    h('div', { class: 'small dim', style: 'margin-top:4px' }, [c.origin, c.kind, c.confirm].filter(Boolean).join(' · ')),
+    c.progress ? h('div', { class: 'small', style: 'margin-top:2px' }, c.progress) : null,
+    c.note ? h('div', { class: 'small faint', style: 'margin-top:2px' }, c.note) : null,
+    controls ? h('div', { class: 'btn-row', style: 'margin-top:8px;gap:8px' }, controls) : null,
+  );
+}
+
+/** 條件的操作（勾選、撤下、改動作）：成功就重畫這一頁，失敗把原因寫在 msg。 */
+async function condOp(ctx, ticker, msg, body, done) {
+  try {
+    await api.post('/ops/own-condition', { ticker, ...body });
+    toast(done);
+    ctx.refresh();
+  } catch (e) {
+    msg.replaceChildren(h('p', { class: 'small', style: 'color:var(--hot)' }, e.message));
+  }
+}
+
+/** 這檔的條件（你定的、AI 建議的），與最近一次健檢 AI 改寫的出場條件（勾選後開始監測）。 */
 export function ownMonitor(ctx, d) {
   const out = [];
-  if (d.monitor?.length)
-    out.push(h('h5', { style: 'margin-top:12px' }, '監測中的條件（新申報出來時檢查；只有法說會或新聞可以確認的，只在定期審查時檢查；價格條件只記錄）'), h('table', { class: 'plain' }, h('tbody', null, d.monitor.map((c) => h('tr', null, h('td', null, c.text, c.note ? h('div', { class: 'small faint' }, c.note) : null), h('td', { class: 'small' }, `${c.kind} · ${c.origin}`), h('td', null, h('span', { class: 'chip ' + (c.status === '已成立' ? 'hot' : c.status === '監測中' ? 'ok' : '') }, c.status)))))));
+  const all = d.monitor ?? [];
+  const owned = all.filter((c) => c.owned);
+  const proposed = all.filter((c) => c.code === 'PROPOSED');
+  const live = owned.filter((c) => c.code === 'ACTIVE' || c.code === 'REVIEW_ONLY').length;
+  const msg = h('div');
+  if (owned.length)
+    out.push(
+      h('h5', { style: 'margin-top:12px' }, `你定的條件（會通知的 ${live}／${MAX_OWNED} 條）`),
+      h('p', { class: 'small dim' }, '成立時照你選的動作通知你；之後的審查不會換掉它們。價格條件只記錄。'),
+      owned.map((c) =>
+        condRow(
+          c,
+          c.code === 'MET'
+            ? [h('span', { class: 'small dim' }, `成立時：${c.actionText ?? '—'}（一次性，要再監測就重新定一條）`)]
+            : [
+                ...(c.recordOnly
+                  ? [h('span', { class: 'small dim' }, '只記錄，不會通知')]
+                  : [h('span', { class: 'small' }, '成立時'), actionSelect(c.action, (e) => condOp(ctx, d.ticker, msg, { id: c.id, op: 'action', action: e.target.value }, `改成成立時${COND_ACTIONS.find(([v]) => v === e.target.value)[1]}`))]),
+                h('button', { class: 'btn quiet', type: 'button', onclick: () => window.confirm(`撤下「${c.text}」？撤下之後不再監測。`) && condOp(ctx, d.ticker, msg, { id: c.id, op: 'retire' }, '已撤下') }, '撤下'),
+              ],
+        ),
+      ),
+    );
+  if (proposed.length)
+    out.push(
+      h('h5', { style: 'margin-top:16px' }, `AI 建議的條件（${proposed.length} 條，你還沒勾選）`),
+      h('p', { class: 'small dim' }, `沒勾選的不會自己發通知，只給下一次審查參考；勾選之後才監測，成立時通知你。下一次審查寫了新的建議時，沒勾的會過期。${live >= MAX_OWNED ? `你定的條件已經 ${MAX_OWNED} 條，要先撤下一條才能再勾。` : ''}`),
+      proposed.map((c) => {
+        let act = c.action;
+        return condRow(c, [
+          ...(c.recordOnly ? [h('span', { class: 'small dim' }, '勾選後只記錄，不會通知')] : [h('span', { class: 'small' }, '成立時'), actionSelect(act, (e) => (act = e.target.value))]),
+          h('button', { class: 'btn', type: 'button', onclick: () => condOp(ctx, d.ticker, msg, { id: c.id, op: 'accept', action: act }, c.recordOnly ? '已勾選（只記錄）' : '已勾選，開始監測') }, c.recordOnly ? '勾選' : '勾選，開始監測'),
+        ]);
+      }),
+    );
+  if (owned.length || proposed.length) out.push(msg);
   const c = d.check;
   if (c && c.mode === 'REWRITE') {
     if (c.status === 'PENDING') out.push(h('p', { class: 'small dim', style: 'margin-top:10px' }, 'AI 正在把你寫的出場條件改寫成可以追蹤的格式，回來之後會出現在這裡。'));

@@ -114,8 +114,8 @@ export interface CheckedPremise {
   downgradedFrom?: string;
 }
 export interface CheckedCondition {
-  /** 在哪裡：lift_or_flip 或 payload.conditions。 */
-  from: 'lift_or_flip' | 'payload.conditions';
+  /** 在哪裡：lift_or_flip、payload.conditions，或 F24 的建議新增條件 payload.proposed_conditions（own_review_v2）。 */
+  from: 'lift_or_flip' | 'payload.conditions' | 'payload.proposed_conditions';
   raw: Record<string, unknown>;
   type: string | null;
   /** true = 可以自動追蹤；false = 改標「人工」。 */
@@ -243,7 +243,11 @@ export function checkSample(pack: EvidencePack, raw: unknown, index: number, hoo
 
   out.payload = (raw.payload as Record<string, unknown> | undefined) ?? {};
   const types = new Set(pack.condition_types);
-  out.conditions = [...checkConditions(raw.lift_or_flip, 'lift_or_flip', okIds, types, out.issues), ...checkConditions(out.payload.conditions, 'payload.conditions', okIds, types, out.issues)];
+  out.conditions = [
+    ...checkConditions(raw.lift_or_flip, 'lift_or_flip', okIds, types, out.issues),
+    ...checkConditions(out.payload.conditions, 'payload.conditions', okIds, types, out.issues),
+    ...checkConditions(out.payload.proposed_conditions, 'payload.proposed_conditions', okIds, types, out.issues),
+  ];
 
   const dq = { ...pack.data_quality, ...((raw.data_quality as Record<string, unknown> | undefined) ?? {}) };
   out.dataMissing = Object.entries(dq)

@@ -277,7 +277,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 不能動：F24 的輸出格式與 `reviewDecision`（T26）；prompt 不升版。
 - 完成條件：兩次審查之間出現 5.02 的 8-K → 下一次 F24 的證據包有那份原文（有 `source_id`）與 `V` 標記；多於 5 份時的順序；F7 的證據包除了新增的部分和改之前相同；移出再加回同一檔 → 新的 `fileId`，舊條件不被讀到；復原快照 → `fileId` 與條件接回來、那一版寫的 log 不見；加前提不重排編號；只有預設前提的股票有 `D1`～`D3`、沒有原本的第四條。
 
-#### [ ] T26 條件的所有權
+#### [x] T26 條件的所有權
 - 讀：`own_thesis` §1.5 全部、§1.6「輸出」與「程式怎麼用結論」的第 1、2、4 點、§3.6.2；問題 N1、N4、N5、P5。檔案：`ai/ownReview.ts`（`reviewDecision`）、`app/ownAi.ts`（`applyOwnReview`、`replaceStmts`、`ownXbrlConditions`、`applyOwnCondition`）、`ai/prompts/own_review_v1.md`、`site/api.ts`（`ops/own-conditions`）、`public/js/pages-more.js`。
 - 做：
   1. migration：§1.5 的新欄位與 `progress_json`；狀態照 §1.5 的表。

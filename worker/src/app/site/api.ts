@@ -308,8 +308,24 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     if (!runId) throw new SiteError(422, '缺少健檢的編號');
     const ids = Array.isArray(b.ids) ? b.ids.filter((x): x is string => typeof x === 'string').slice(0, 10) : [];
     if (!ids.length) throw new SiteError(422, '至少勾一條');
+    const actions = b.actions && typeof b.actions === 'object' && !Array.isArray(b.actions) ? (b.actions as Record<string, unknown>) : {};
     try {
-      return json({ ok: true, added: await backend.ai.acceptConditions(tk, runId, ids) });
+      return json({ ok: true, added: await backend.ai.acceptConditions(tk, runId, ids, actions) });
+    } catch (e) {
+      throw new SiteError(422, errText(e));
+    }
+  }
+  // 條件的所有權（T26，own_thesis §1.5）：勾選 AI 建議的條件（accept）、撤下你定的條件（retire）、改成立時的動作（action）
+  if (rest === 'ops/own-condition' && post) {
+    if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI。');
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const id = typeof b.id === 'number' && Number.isInteger(b.id) && b.id > 0 ? b.id : null;
+    if (!id) throw new SiteError(422, '缺少條件的編號');
+    const op = b.op === 'accept' || b.op === 'retire' || b.op === 'action' ? b.op : null;
+    if (!op) throw new SiteError(422, '操作只能是 accept、retire 或 action');
+    try {
+      return json({ ok: true, ...(await backend.ai.condition(tk, id, op, b.action)) });
     } catch (e) {
       throw new SiteError(422, errText(e));
     }

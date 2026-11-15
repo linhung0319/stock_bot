@@ -877,17 +877,24 @@ describe('F14：新增自選健檢 → 確認出場條件 → 之後的 F24 不�
       // T25：條件屬於這檔現在的論點檔（file_id）
       await db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, file_id) VALUES ('NVDA', 'old', 'C9', 'DOWN', 'XBRL', '舊的 AI 條件', '{}', 'HALF', 'ACTIVE', 'x', ?)").bind(loaded.acct.own.NVDA.fileId).run();
       const tenq = { id: 'D1', source_id: 'edgar:x', kind: 'filing' as const, date: '2026-10-30', title: '10-Q', text: 'Gross margin was 60.0%, down from 70.0% a year ago' };
-      const pack = ownReviewPack({ acct: loaded.acct, view, axis, ticker: 'NVDA', runId: 'rev1', trigger: 'MONTHLY', xbrl: null, filings: [tenq], news: null, previous: [], dataQuality: { filings: 'ok' }, now }).pack;
-      const vote = { verdict: 'HALF', premise_checks: [{ premise_id: 'P1', status: 'BROKEN', evidence_ids: ['E1'] }], evidence: [{ id: 'E1', source_id: 'edgar:x', date: '2026-10-30', quote: 'Gross margin was 60.0%, down from 70.0% a year ago', claim: '毛利率下滑' }], payload: { tier: 'HALF', conditions: [{ id: 'C1', direction: 'DOWN', kind: 'XBRL', text: '毛利率低於 55%', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55 }, basis: ['E1'], tier_if_met: 'EXIT' }] } };
+      const pack = ownReviewPack({ acct: loaded.acct, view, axis, ticker: 'NVDA', runId: 'rev1', trigger: 'MONTHLY', xbrl: null, filings: [tenq], news: null, dataQuality: { filings: 'ok' }, now }).pack;
+      const vote = { verdict: 'HALF', premise_checks: [{ premise_id: 'P1', status: 'BROKEN', evidence_ids: ['E1'] }], evidence: [{ id: 'E1', source_id: 'edgar:x', date: '2026-10-30', quote: 'Gross margin was 60.0%, down from 70.0% a year ago', claim: '毛利率下滑' }], payload: { tier: 'HALF', proposed_conditions: [{ id: 'C1', direction: 'DOWN', kind: 'XBRL', text: '毛利率低於 55%', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55 }, basis: ['E1'], tier_if_met: 'EXIT' }] } };
       const outcome = judge(pack, [vote, vote, vote], PAYLOAD_HOOKS.OWN_REVIEW);
       const ctx: ApplyCtx = { db, acct: loaded.acct, view, axis, session: '2026-11-20', now, stmts: [], log: [] };
       await applyOwnReview(ctx, { runId: 'rev1', fn: 'OWN_REVIEW', ticker: 'NVDA', asOf: '2026-11-20', outcome, pack } as never);
       await db.batch(ctx.stmts);
       const conds = await loadConditions(db, 'NVDA');
+      // T26：審查不再整組替換條件（舊的 AI 條件 C9 也留著），新提的只是建議（勾選才監測）
       expect(conds.map((c) => [c.condId, c.origin, c.status])).toEqual([
         ['U1', 'USER', 'ACTIVE'],
         ['U2', 'USER', 'MANUAL'],
-        ['C1', 'AI', 'ACTIVE'],
+        ['C9', 'AI', 'ACTIVE'],
+        ['C1', 'AI', 'PROPOSED'],
+      ]);
+      // 勾選的出場條件是「你定的條件」：有勾選時間、成立時的動作帶 AI 改寫時的檔位
+      expect(conds.filter((c) => c.origin === 'USER').map((c) => [c.condId, !!c.acceptedAt, c.action])).toEqual([
+        ['U1', true, 'EXIT'],
+        ['U2', true, 'EXIT'],
       ]);
     });
   });

@@ -47,8 +47,11 @@ export interface OwnMeta {
   r1: boolean | null;
   premises: Premise[];
   origin: 'INITIAL' | 'NEW' | 'TRANSFER' | 'ADOPT' | 'MANUAL';
-  /** 最近一次 F24 的檔位（AI 層給的輸入）。suggest = 3 票一致、和目前不同、有通過檢查的證據 → 月報並列。 */
-  aiTier: { tier: Tier; date: string; runId?: string; suggest: boolean } | null;
+  /**
+   * 最近一次 F24 的檔位（AI 層給的輸入）。suggest = 3 票一致、和目前不同、有一條不成立的前提 → 月報並列。
+   * premiseId：三票都判不成立（有申報或財報引用）的那條前提，有多條時取編號最小的（own_thesis §1.6 第 1 點）。
+   */
+  aiTier: { tier: Tier; date: string; runId?: string; suggest: boolean; premiseId?: string } | null;
   raisedAt: string | null;
   /** 未解除的硬事件標記。 */
   flags: string[];

@@ -567,10 +567,10 @@ export function recordExternalFlow(acct: Account, view: MarketView, amount: numb
 
 // ---------------------------------------------------------------- AI 層與硬事件給的輸入
 
-/** AI 層回報：這檔自選的最新 F24 檔位。suggest = 3 票一致、和目前不同、有通過檢查的證據。 */
-export function recordAiTier(acct0: Account, ticker: string, tier: Tier, date: string, suggest: boolean, runId?: string): Account {
+/** AI 層回報：這檔自選的最新 F24 檔位。suggest = 3 票一致、和目前不同、有一條不成立的前提；extra.premiseId = 那條前提（own_thesis §1.6）。 */
+export function recordAiTier(acct0: Account, ticker: string, tier: Tier, date: string, suggest: boolean, runId?: string, extra?: { premiseId?: string }): Account {
   const acct = clone(acct0);
-  if (acct.own[ticker]) acct.own[ticker].aiTier = { tier, date, suggest, runId };
+  if (acct.own[ticker]) acct.own[ticker].aiTier = { tier, date, suggest, runId, ...(extra?.premiseId ? { premiseId: extra.premiseId } : {}) };
   return acct;
 }
 

@@ -12,6 +12,7 @@ import { LINE_PUSH_URL } from '../src/app/line';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
 import { loadConditions } from '../src/app/ownAi';
 import { monitorView } from '../src/app/ownCheckAi';
+import { conditionOp } from '../src/app/ownConds';
 import { extractSection, htmlToText, parseRss, pickExhibit991, quarterTable, xbrlConditionMet, type CompanyFacts, type XbrlFact } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
@@ -219,13 +220,13 @@ function reviewVote(pack: EvidencePack, verdict: string) {
       { id: 'E1', source_id: tenq.source_id, date: tenq.date, quote: 'Revenue for the third quarter was $160 million, up 33% from a year ago', claim: '營收年增 33%，需求仍在' },
       { id: 'E2', source_id: tenq.source_id, date: tenq.date, quote: 'Gross margin was 60.0%, down from 70.0% a year ago', claim: '毛利率 60%，低於前提的 65%' },
     ],
+    // own_review_v2（T26）：condition_checks 取代 previous_conditions；建議新增的條件 proposed_conditions 最多 3 條（勾選才監測）
     payload: {
       tier: verdict,
-      previous_conditions: [],
-      conditions: [
+      condition_checks: [],
+      proposed_conditions: [
         { id: 'C1', direction: 'DOWN', kind: 'XBRL', text: '毛利率低於 55%（最新一季 60%）', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55, quarters: 1 }, basis: ['E2'], tier_if_met: 'EXIT' },
         { id: 'C2', direction: 'DOWN', kind: 'EVENT', text: '公司在 8-K 下修營收財測', check: { type: 'event', confirm_by: ['8-K'] }, basis: ['E1'], tier_if_met: 'EXIT' },
-        { id: 'C3', direction: 'DOWN', kind: 'PRICE', text: '收盤跌破 100', check: { type: 'price_close_below', level: 100 }, basis: ['E1'] },
         { id: 'C4', direction: 'DOWN', kind: 'XBRL', text: '自由現金流殖利率低於 2%', check: { type: 'xbrl_metric_below', metric: 'FcfYield', level: 0.02 }, basis: ['E1'], tier_if_met: 'HALF' },
       ],
     },
@@ -250,7 +251,7 @@ describe('F24：證據包與結論怎麼變成建議', () => {
       const { acct } = (await loadAccount(db))!;
       const series = await loadSeries(db, ['VOO', 'SGOV', 'NVDA']);
       const { view, axis } = buildMarketView(series, '2026-11-19', 'VOO');
-      const mk = (a: Account) => ownReviewPack({ acct: a, view, axis, ticker: 'NVDA', runId: 'r', trigger: 'MONTHLY', xbrl: null, filings: [], news: null, previous: [], dataQuality: {}, now: new Date() }).pack;
+      const mk = (a: Account) => ownReviewPack({ acct: a, view, axis, ticker: 'NVDA', runId: 'r', trigger: 'MONTHLY', xbrl: null, filings: [], news: null, dataQuality: {}, now: new Date() }).pack;
       const ok = structuredClone(acct);
       ok.own.NVDA.slow.aboveRun = 130;
       expect(raiseAllowed(ok, 'NVDA', '2026-11-19').ok).toBe(true);
@@ -267,27 +268,26 @@ describe('F24：證據包與結論怎麼變成建議', () => {
     });
   });
 
-  it('3 票一致減半、有前提不成立 → 月報並列；不動、和目前相同、不一致都不列；條件逐條檢查', async () => {
+  it('3 票一致減半、有前提不成立 → 月報並列；不動、和目前相同、不一致都不列；建議的條件逐條檢查', async () => {
     await withWorld(async ({ db }) => {
       const { acct } = (await loadAccount(db))!;
       const { view, axis } = buildMarketView(await loadSeries(db, ['VOO', 'SGOV', 'NVDA']), '2026-11-19', 'VOO');
       const tenq = { id: 'D1', source_id: 'edgar:x', kind: 'filing' as const, date: '2026-10-30', title: '10-Q', text: htmlToText(TENQ) };
-      const pack = ownReviewPack({ acct, view, axis, ticker: 'NVDA', runId: 'r1', trigger: 'MONTHLY', xbrl: null, filings: [tenq], news: null, previous: [], dataQuality: { filings: 'ok' }, now: new Date() }).pack;
+      const pack = ownReviewPack({ acct, view, axis, ticker: 'NVDA', runId: 'r1', trigger: 'MONTHLY', xbrl: null, filings: [tenq], news: null, dataQuality: { filings: 'ok' }, now: new Date() }).pack;
       const hook = PAYLOAD_HOOKS[OWN_REVIEW];
       const o = judge(pack, [reviewVote(pack, 'HALF'), reviewVote(pack, 'HALF'), reviewVote(pack, 'HALF')], hook);
       expect(o.status).toBe('AGREED');
-      const d = reviewDecision(o, acct, 'NVDA', '2026-11-19');
-      expect(d).toMatchObject({ tier: 'HALF', suggest: true });
-      expect(d.conditions.map((c) => [c.condId, c.kind, c.manual])).toEqual([
+      const d = reviewDecision(o, acct, 'NVDA', '2026-11-19', pack);
+      expect(d).toMatchObject({ tier: 'HALF', suggest: true, premiseId: 'P2' });
+      expect(d.proposed.map((c) => [c.condId, c.kind, c.manual])).toEqual([
         ['C1', 'XBRL', false],
         ['C2', 'EVENT', false],
-        ['C3', 'PRICE', true],
         ['C4', 'XBRL', true],
       ]);
       expect(o.samples[0].conditions.find((c) => c.raw.id === 'C4')!.why).toContain('FcfYield');
-      expect(reviewDecision(judge(pack, [reviewVote(pack, 'HOLD'), reviewVote(pack, 'HOLD'), reviewVote(pack, 'HOLD')], hook), acct, 'NVDA', '2026-11-19')).toMatchObject({ tier: 'HOLD', suggest: false });
-      expect(reviewDecision(judge(pack, [reviewVote(pack, 'STANDARD'), reviewVote(pack, 'STANDARD'), reviewVote(pack, 'STANDARD')], hook), acct, 'NVDA', '2026-11-19').why).toContain('和目前狀態相同');
-      expect(reviewDecision(judge(pack, [reviewVote(pack, 'HALF'), reviewVote(pack, 'HALF'), reviewVote(pack, 'EXIT')], hook), acct, 'NVDA', '2026-11-19')).toMatchObject({ tier: null, suggest: false });
+      expect(reviewDecision(judge(pack, [reviewVote(pack, 'HOLD'), reviewVote(pack, 'HOLD'), reviewVote(pack, 'HOLD')], hook), acct, 'NVDA', '2026-11-19', pack)).toMatchObject({ tier: 'HOLD', suggest: false });
+      expect(reviewDecision(judge(pack, [reviewVote(pack, 'STANDARD'), reviewVote(pack, 'STANDARD'), reviewVote(pack, 'STANDARD')], hook), acct, 'NVDA', '2026-11-19', pack).why).toContain('和目前狀態相同');
+      expect(reviewDecision(judge(pack, [reviewVote(pack, 'HALF'), reviewVote(pack, 'HALF'), reviewVote(pack, 'EXIT')], hook), acct, 'NVDA', '2026-11-19', pack)).toMatchObject({ tier: null, suggest: false });
       // payload.tier 和 verdict 不同 → 記一條問題
       const bad = { ...reviewVote(pack, 'HALF'), payload: { ...reviewVote(pack, 'HALF').payload, tier: 'EXIT' } };
       expect(judge(pack, [bad], hook).samples[0].issues).toContain('payload.tier（EXIT）和 verdict 不同');
@@ -325,13 +325,14 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       expect(fin.status).toBe('SKIPPED');
       let acct = (await loadAccount(db))!.acct;
       expect(acct.own.NVDA.aiTier).toMatchObject({ tier: 'HALF', date: '2026-11-27', suggest: true, runId: r1.runId });
+      // T26：審查寫的條件只是建議（勾選才監測）；不成立的前提記進 aiTier
       const conds = await loadConditions(db, 'NVDA');
       expect(conds.map((c) => [c.condId, c.status])).toEqual([
-        ['C1', 'ACTIVE'],
-        ['C2', 'ACTIVE'],
-        ['C3', 'MANUAL'],
-        ['C4', 'MANUAL'],
+        ['C1', 'PROPOSED'],
+        ['C2', 'PROPOSED'],
+        ['C4', 'PROPOSED'],
       ]);
+      expect(acct.own.NVDA.aiTier!.premiseId).toBe('P2');
 
       // 11-30 月底：月報並列 AI 建議（股數由程式換算），理由用 AI 紀錄
       const m = await run('2026-11-30');
@@ -344,6 +345,8 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       expect(e.line.at(-1)).toContain('另有 1 項 AI 建議（預設不做），到網站決定。');
       expect(acct.own.NVDA.aiTier!.suggest).toBe(false);
 
+      // 使用者在持股頁勾選 C2（成立時出清，帶 AI 建議的檔位）→ 監測中
+      expect(await conditionOp(db, acct, 'NVDA', conds[1].id, 'accept', undefined, '2026-11-30', new Date('2026-11-30T12:00:00Z'))).toMatchObject({ status: 'ACTIVE', action: 'EXIT' });
       // 12-01：公司送了一份 8-K（下修財測）→ 條件 C2 的確認來源 → 開 F25
       e.filings.push({ accession: '0001045810-26-000350', form: '8-K', items: '2.02,9.01', acceptanceDateTime: '2026-12-01T21:05:00.000Z', filingDate: '2026-12-01', primaryDocument: 'nvda-8k.htm', html: EIGHTK_GUIDE });
       await run('2026-12-01');
@@ -443,17 +446,19 @@ describe('T24：確認來源只有法說會、新聞的事件條件只在定期�
     expect(confirmMode({ kind: 'EVENT', check: { confirm_by: ['earnings_call'] }, manual: true })).toBe('NONE');
   });
 
-  /** 11-27 開 F24、送回 3 票減半（條件照 conds）、套用；回傳之後的條件。 */
+  /** 11-27 開 F24、送回 3 票減半（建議的條件照 conds）、套用、使用者全部勾選（T26：勾選才監測）；回傳之後的條件。 */
   async function review(c: Ctx, conds: unknown[]) {
     const { db, run } = c;
     for (const d of ['2026-11-20', '2026-11-23', '2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
     const [r1] = await runsOf(db, 'OWN_REVIEW');
     const vote = () => {
       const v = reviewVote(r1.pack, 'HALF');
-      return { ...v, payload: { ...v.payload, conditions: conds } };
+      return { ...v, payload: { ...v.payload, proposed_conditions: conds } };
     };
     await postResult(db, r1.runId, [vote(), vote(), vote()], new Date('2026-11-28T00:10:00Z'));
     await run('2026-11-27', 'FINAL');
+    const acct = (await loadAccount(db))!.acct;
+    for (const x of await loadConditions(db, 'NVDA')) if (x.status === 'PROPOSED') await conditionOp(db, acct, 'NVDA', x.id, 'accept', undefined, '2026-11-27', new Date('2026-11-28T01:00:00Z'));
     return loadConditions(db, 'NVDA');
   }
 
@@ -485,17 +490,21 @@ describe('T24：確認來源只有法說會、新聞的事件條件只在定期�
     });
   });
 
-  it('下一次審查整組替換時，REVIEW_ONLY 的 AI 條件一起標成已替換、AI 條件裡不留舊的', async () => {
+  // T26 改了這個行為：審查不再整組替換條件，勾選過的 REVIEW_ONLY 條件留著，新提的只寫成建議
+  it('下一次審查不會換掉勾選過的 REVIEW_ONLY 條件；新提的條件寫成建議中', async () => {
     await withWorld(async (c) => {
       expect((await review(c, [ev('C1', ['earnings_call'])])).map((x) => x.status)).toEqual(['REVIEW_ONLY']);
       c.e.filings.push({ accession: '0001045810-26-000350', form: '8-K', items: '2.02,9.01', acceptanceDateTime: '2026-12-01T21:05:00.000Z', filingDate: '2026-12-01', primaryDocument: 'nvda-8k.htm', html: EIGHTK_GUIDE });
       await c.run('2026-12-01');
       const r2 = (await runsOf(c.db, 'OWN_REVIEW')).find((r) => r.asOf === '2026-12-01')!;
       const v = reviewVote(r2.pack, 'HALF');
-      const vote = () => ({ ...v, payload: { ...v.payload, conditions: [ev('C1', ['8-K'])] } });
+      const vote = () => ({ ...v, payload: { ...v.payload, proposed_conditions: [ev('C1', ['8-K'])] } });
       await postResult(c.db, r2.runId, [vote(), vote(), vote()], new Date('2026-12-02T00:10:00Z'));
       await c.run('2026-12-01', 'FINAL');
-      expect((await loadConditions(c.db, 'NVDA')).map((x) => [x.runId === r2.runId, x.status])).toEqual([[true, 'ACTIVE']]);
+      expect((await loadConditions(c.db, 'NVDA')).map((x) => [x.runId === r2.runId, x.status])).toEqual([
+        [false, 'REVIEW_ONLY'],
+        [true, 'PROPOSED'],
+      ]);
     });
   });
 });

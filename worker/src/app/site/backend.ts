@@ -20,6 +20,7 @@ import { loadSnapshot, type MacroSnapshot } from '../crashAi';
 import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
 import { loadReviews, type MomReview } from '../momAi';
 import { acceptOwnConditions, latestOwnCheck, monitorView, ownCheckView, startOwnCheck, type OwnCheckView } from '../ownCheckAi';
+import { conditionOp, type CondOp } from '../ownConds';
 import { annotate } from './explain';
 import type { AiNote } from './types';
 
@@ -78,7 +79,9 @@ export interface SiteAi {
   ownCheck(ticker: string, lines: string[]): Promise<{ runId: string }>;
   checkView(runId: string): Promise<OwnCheckView | null>;
   latestCheck(ticker: string): Promise<OwnCheckView | null>;
-  acceptConditions(ticker: string, runId: string, ids: string[]): Promise<number>;
+  acceptConditions(ticker: string, runId: string, ids: string[], actions?: Record<string, unknown>): Promise<number>;
+  /** 持股頁的條件操作（T26）：勾選 AI 建議的條件、撤下你定的條件、改成立時的動作。 */
+  condition(ticker: string, id: number, op: CondOp, action?: unknown): Promise<{ id: number; status: string; action: string | null; retired?: number }>;
   monitor(ticker: string): Promise<Awaited<ReturnType<typeof monitorView>>>;
   /** AI 紀錄頁上方：最新的總經儀表板、最近一個月的動能進場審查、最近的申報事件。 */
   overview(): Promise<{ macro: MacroSnapshot | null; reviews: MomReview[]; events: SecEventRow[] }>;
@@ -170,7 +173,12 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       },
       checkView: (runId) => ownCheckView(env, runId, now),
       latestCheck: (ticker) => latestOwnCheck(env, ticker, now),
-      acceptConditions: (ticker, runId, ids) => acceptOwnConditions(env, ticker, runId, ids, now),
+      acceptConditions: async (ticker, runId, ids, actions) => acceptOwnConditions(env, ticker, runId, ids, now, actions, lastCompletedSession(now, await loadCalendarOverrides(env.DB))),
+      async condition(ticker, id, op, action) {
+        const acct = (await loadAccount(env.DB))?.acct;
+        if (!acct) throw new Error('還沒有帳戶');
+        return conditionOp(env.DB, acct, ticker, id, op, action, lastCompletedSession(now, await loadCalendarOverrides(env.DB)), now);
+      },
       monitor: (ticker) => monitorView(env, ticker),
       async overview() {
         const macro = await loadSnapshot(env.DB);

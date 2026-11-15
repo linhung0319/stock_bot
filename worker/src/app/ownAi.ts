@@ -1,12 +1,13 @@
 // T10：F24 自選定期審查、F25 自選條件監測（每日流程的 AI 段在 src/app/aiStep.ts）。
 //
-//   套用（applyOwnReview／applyOwnCondition）：F24 → 引擎記下檔位（月報並列建議）＋替換監測條件；F25 → 條件成立的當天通知
-//   財報條件（ownXbrlConditions）：新的 10-Q／10-K → 程式直接比對 XBRL（不用 LLM）；降級條件成立 → 當天通知
+//   套用（applyOwnReview／applyOwnCondition）：F24 → 引擎記下檔位（月報並列建議）＋建議的條件（PROPOSED，勾選才監測）＋審查確認你定的條件成立；
+//                                              F25 → 條件成立的當天通知
+//   財報條件（ownXbrlConditions）：新的 10-Q／10-K → 程式直接比對 XBRL（不用 LLM），寫進度；你定的條件成立 → 當天通知
 //   開新的執行（startOwnRuns）：新申報是事件條件指定的確認來源 → F25；新的財報（10-Q、10-K、8-K 2.02）→ F24（財報後的審查）；
 //                               月報前一天（當月倒數第二個交易日）→ 每檔自選開一次 F24（月報那天用它的結論）
 // 雲端排程（ROUTINE_FIRE_URL／ROUTINE_TOKEN）還沒設定時不開新的執行；EDGAR 的 User-Agent 沒設定時不看申報。
 import type { PackDoc } from '../ai/check';
-import { OWN_CONDITION, OWN_REVIEW, confirmMode, conditionDecision, conditionPack, ownReviewPack, reviewDecision, type ConditionDraft } from '../ai/ownReview';
+import { OWN_CONDITION, OWN_REVIEW, confirmMode, conditionDecision, conditionPack, ownReviewPack, reviewDecision, type ConditionDraft, type ProposedDraft } from '../ai/ownReview';
 import { newRunId } from '../ai/pack';
 import { TIER_NAME, conditionMet, recordAiTier, type Account, type MarketView, type Tier } from '../engine';
 import { isLastTradingDayOfMonth, nextTradingDay } from '../data/calendar';
@@ -17,7 +18,7 @@ import type { ApplyCtx, StartCtx } from './aiCtx';
 import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { cikFor, type FilingCheck } from './filings';
-import { MAX_REVIEW_8K, afterLastReview, defaultFacts, fileConditions, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote, type ThesisFile } from './thesis';
+import { MAX_PROPOSED, MAX_REVIEW_8K, afterLastReview, condFacts, defaultAction, defaultFacts, fileConditions, flaggedAccessions, isOwned, notifyTier, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type ThesisFile } from './thesis';
 
 export { cikFor } from './filings';
 export { loadConditions } from './thesis';
@@ -31,29 +32,44 @@ const isAuto = (c: ConditionDraft) => !c.manual && c.kind !== 'PRICE' && (c.kind
 /** 現在這份論點檔的條件；沒有 fileId 的舊自選是編號空的列（own_thesis §1.2）。 */
 const fileClause = (fileId: string | null) => (fileId ? ['file_id = ?', [fileId]] : ['file_id IS NULL', []]) as [string, unknown[]];
 
-/** F24 的新條件整組替換舊的（只換這份論點檔裡 AI 寫的；使用者在 F14 寫的出場條件不換）。 */
-function replaceStmts(db: D1Database, ticker: string, fileId: string | null, runId: string, drafts: ConditionDraft[], at: string, metPrev: string[]): D1PreparedStatement[] {
-  const stmts: D1PreparedStatement[] = [];
+const autoNote = (c: ConditionDraft, auto: boolean, reviewOnly: boolean) => (auto ? (reviewOnly ? '確認來源沒有申報可以讀，只在定期審查時由 AI 判斷' : null) : c.kind === 'PRICE' ? '價格條件只記錄' : '沒有通過檢查，只記錄');
+
+/**
+ * 審查建議新增的條件（own_thesis §1.5 第 1、2 點）：寫成 PROPOSED（觀察項，不會自己發通知）。
+ * 這次有寫入至少一條時，這份論點檔原本還在 PROPOSED 的標成 EXPIRED；一條都沒提時舊的留著（呼叫的地方判斷）。
+ * map：證據包的編號（C…、W…）→ 列編號，把 supersedes 換成列編號。
+ */
+export function proposeStmts(db: D1Database, ticker: string, fileId: string | null, runId: string, drafts: ProposedDraft[], at: string, map: Record<string, number>): D1PreparedStatement[] {
+  if (!drafts.length) return [];
   const [fw, fa] = fileClause(fileId);
-  if (metPrev.length) stmts.push(db.prepare(`UPDATE own_conditions SET status = 'MET', met_at = ?, note = ? WHERE ticker = ? AND ${fw} AND status = 'ACTIVE' AND origin = 'AI' AND cond_id IN (${metPrev.map(() => '?').join(',')})`).bind(at, `F24 ${runId} 認為已成立`, ticker, ...fa, ...metPrev));
-  stmts.push(db.prepare(`UPDATE own_conditions SET status = 'REPLACED' WHERE ticker = ? AND ${fw} AND origin = 'AI' AND status IN ('ACTIVE', 'MANUAL', 'MET', 'REVIEW_ONLY')`).bind(ticker, ...fa));
-  stmts.push(...insertConditionStmts(db, ticker, runId, drafts, at, 'AI', fileId));
-  return stmts;
+  const ins = db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, note, origin, file_id, premise_id, supersedes, auto) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, 'AI', ?, ?, ?, ?)");
+  return [
+    db.prepare(`UPDATE own_conditions SET status = 'EXPIRED' WHERE ticker = ? AND ${fw} AND status = 'PROPOSED'`).bind(ticker, ...fa),
+    ...drafts.slice(0, MAX_PROPOSED).map((c) => {
+      const auto = isAuto(c);
+      const reviewOnly = auto && confirmMode(c) === 'REVIEW_ONLY';
+      return ins.bind(ticker, runId, c.condId, c.direction, c.kind, c.text, JSON.stringify(c.check), c.tierIfMet, at, autoNote(c, auto, reviewOnly), fileId, c.premiseId, c.supersedes && map[c.supersedes] ? map[c.supersedes] : null, auto ? 1 : 0);
+    }),
+  ];
 }
 
-/** 寫入條件（F24 的 AI 條件、F14 使用者確認過的出場條件），帶這檔現在的論點檔編號。 */
-export function insertConditionStmts(db: D1Database, ticker: string, runId: string, drafts: ConditionDraft[], at: string, origin: 'AI' | 'USER', fileId: string | null): D1PreparedStatement[] {
-  const ins = db.prepare('INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, note, origin, file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+/**
+ * 寫入使用者勾選的條件（F14 改寫後勾選的出場條件，origin = USER）：直接是「你定的條件」，帶勾選時間與成立時的動作，
+ * 狀態依確認方式（監測中／只在審查時檢查／只記錄）。帶這檔現在的論點檔編號。
+ */
+export function insertConditionStmts(db: D1Database, ticker: string, runId: string, drafts: (ConditionDraft & { action?: CondAction })[], at: string, origin: 'AI' | 'USER', fileId: string | null): D1PreparedStatement[] {
+  const ins = db.prepare('INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, note, origin, file_id, accepted_at, action, auto) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
   return drafts.map((c) => {
     const auto = isAuto(c);
     // 確認來源只有法說會、新聞的事件條件沒有申報可以讀：不開 F25，只在定期審查時檢查（T24）
     const reviewOnly = auto && confirmMode(c) === 'REVIEW_ONLY';
     const status = reviewOnly ? 'REVIEW_ONLY' : auto ? 'ACTIVE' : 'MANUAL';
-    return ins.bind(ticker, runId, c.condId, c.direction, c.kind, c.text, JSON.stringify(c.check), c.tierIfMet, status, at, auto ? (reviewOnly ? '確認來源沒有申報可以讀，只在定期審查時由 AI 判斷' : null) : c.kind === 'PRICE' ? '價格條件只記錄' : '沒有通過檢查，只記錄', origin, fileId);
+    return ins.bind(ticker, runId, c.condId, c.direction, c.kind, c.text, JSON.stringify(c.check), c.tierIfMet, status, at, autoNote(c, auto, reviewOnly), origin, fileId, at, c.action ?? defaultAction(c), auto ? 1 : 0);
   });
 }
 
-const metStmt = (db: D1Database, id: number, at: string, note: string) => db.prepare("UPDATE own_conditions SET status = 'MET', met_at = ?, note = ? WHERE id = ?").bind(at, note, id);
+/** 條件成立（met_basis：XBRL 程式比對、FILING_VOTE 申報原文三票、REVIEW_VOTE 審查三票）。 */
+const metStmt = (db: D1Database, id: number, at: string, note: string, basis: 'XBRL' | 'FILING_VOTE' | 'REVIEW_VOTE') => db.prepare("UPDATE own_conditions SET status = 'MET', met_at = ?, note = ?, met_basis = ? WHERE id = ?").bind(at, note, basis, id);
 
 // ---------------------------------------------------------------- 證據
 
@@ -153,9 +169,10 @@ export async function reviewThesisEvidence(env: Env, fetcher: Fetcher, tf: Thesi
 export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: 'MONTHLY' | 'EARNINGS' | 'MANUAL', now: Date, evidence?: OwnEvidence): Promise<AiRun> {
   const ev = evidence ?? (await gatherOwnEvidence(env, fetcher, ticker, view.date));
   const tf = await thesisFile(env.DB, acct, ticker, view.date);
-  const previous = (tf?.conditions ?? []).filter((c) => c.origin === 'AI');
+  // 你定的條件 C、觀察項 W（T26；財報類觀察項用這次的 XBRL 比對）
+  const conds = tf ? condFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null) : undefined;
   const extra = tf ? await reviewThesisEvidence(env, fetcher, tf, ev, view.date) : { facts: [], filings: [], docs: [], notes: [] };
-  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, previous, dataQuality: ev.dataQuality, extraFacts: extra.facts, extraDocs: extra.docs, now });
+  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, dataQuality: ev.dataQuality, extraFacts: extra.facts, extraDocs: extra.docs, now });
   return startRun(env, fetcher, pack, now, [...ev.notes, ...extra.notes, ...notes]);
 }
 
@@ -168,18 +185,43 @@ function notifyCondition(ctx: ApplyCtx, ticker: string, tier: Tier, text: string
   ctx.log.push(`${label} → ${r.notif ? `當天通知 #${r.notif.id}` : `不通知（${r.why}）`}`);
 }
 
-/** F24 → 引擎記下檔位（月報並列建議）＋替換監測條件。 */
+/**
+ * F24 → 引擎記下檔位（月報並列建議）與不成立的前提；條件只在三票一致（含一致選「不動」）時動（own_thesis §1.5、§1.6）：
+ *   你定的條件（REVIEW_ONLY、申報確認的 ACTIVE）三票確認成立 → MET（met_basis = REVIEW_VOTE），沿用條件成立的通知（文字在 T29a 改）
+ *   財報類的你定的條件以程式比對為準，審查的看法只記錄；觀察項（W）成立與否只是給下一次審查的輸入
+ *   建議新增的條件 → PROPOSED（有寫入時舊的建議 EXPIRED，沒提時留著）。你定的條件不會被換掉。
+ */
 export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
   const t = run.ticker ?? '';
   if (!run.outcome || !ctx.acct.own[t]) return void ctx.log.push(`${run.runId}：${ctx.acct.own[t] ? '沒有結論' : '已經不是自選股'}，不套用`);
-  const d = reviewDecision(run.outcome, ctx.acct, t, run.asOf);
+  const d = reviewDecision(run.outcome, ctx.acct, t, run.asOf, run.pack);
   if (d.tier) {
-    ctx.acct = recordAiTier(ctx.acct, t, d.tier, run.asOf, d.suggest, run.runId);
-    // 新的條件取代舊的：上一次成立的降級條件已經被這次審查處理過（F8 不再註明）
+    ctx.acct = recordAiTier(ctx.acct, t, d.tier, run.asOf, d.suggest, run.runId, d.premiseId ? { premiseId: d.premiseId } : undefined);
+    // 上一次成立的降級條件已經被這次審查處理過（F8 不再註明）
     ctx.acct.own[t].metConds = [];
-    ctx.stmts.push(...replaceStmts(ctx.db, t, ctx.acct.own[t].fileId ?? null, run.runId, d.conditions, ctx.now.toISOString(), d.metPrevious));
   }
   ctx.log.push(`${run.runId}：${d.tier ? TIER_NAME[d.tier] : '不更新'}${d.suggest ? '（月報並列）' : ''}。${d.why}`);
+  if (!d.consensus) return void ctx.log.push(`${run.runId}：沒有三票一致的結論，條件不動`);
+  const map = ((run.pack.rule.detail ?? {}) as { conds?: Record<string, number> }).conds ?? {};
+  const conds = await fileConditions(ctx.db, ctx.acct, t);
+  const at = ctx.now.toISOString();
+  for (const pid of d.metChecks) {
+    const c = conds.find((x) => x.id === map[pid]);
+    if (!c || !pid.startsWith('C') || !isOwned(c)) continue;
+    if (c.kind === 'XBRL') {
+      ctx.log.push(`${run.runId}：財報條件 ${pid}（${c.text}）3 票認為成立；以程式比對財報數字為準，只記錄`);
+      continue;
+    }
+    if (!(c.status === 'REVIEW_ONLY' || (c.status === 'ACTIVE' && confirmMode(c) === 'FILING'))) continue;
+    ctx.stmts.push(metStmt(ctx.db, c.id, at, `定期審查 ${run.runId} 3 票確認`, 'REVIEW_VOTE'));
+    const tier = notifyTier(c);
+    if (tier) notifyCondition(ctx, t, tier, c.text, `${run.runId}：你定的條件 ${c.condId} 由審查 3 票確認成立`, [run.runId, c.runId]);
+    else ctx.log.push(`${run.runId}：你定的條件 ${c.condId} 由審查 3 票確認成立（成立時重新審查）→ 下一次審查會看到`);
+  }
+  if (d.proposed.length) {
+    ctx.stmts.push(...proposeStmts(ctx.db, t, ctx.acct.own[t].fileId ?? null, run.runId, d.proposed, at, map));
+    ctx.log.push(`${run.runId}：寫入 ${Math.min(d.proposed.length, MAX_PROPOSED)} 條建議的條件（勾選才監測）`);
+  }
 }
 
 /** F25 → 條件成立的當天通知。 */
@@ -189,22 +231,34 @@ export async function applyOwnCondition(ctx: ApplyCtx, run: AiRun): Promise<void
   const d = conditionDecision(run.outcome);
   if (!d.condId) return void ctx.log.push(`${run.runId}：${d.why}`);
   const cond = (await fileConditions(ctx.db, ctx.acct, t)).find((c) => c.condId === d.condId && c.status === 'ACTIVE');
-  if (!cond) return void ctx.log.push(`${run.runId}：條件 ${d.condId} 已經不在監測中（被新的審查替換），不通知`);
-  ctx.stmts.push(metStmt(ctx.db, cond.id, ctx.now.toISOString(), `F25 ${run.runId} 3 票確認`));
-  // run_id：確認條件成立的 F25，和寫下條件（與成立時的檔位）的那次 F24
-  if (cond.direction === 'DOWN' && cond.tierIfMet) notifyCondition(ctx, t, cond.tierIfMet, cond.text, `${run.runId}：條件 ${d.condId} 成立`, [run.runId, cond.runId]);
-  else ctx.log.push(`${run.runId}：升級條件 ${d.condId} 成立 → 下一次審查會看到`);
+  if (!cond) return void ctx.log.push(`${run.runId}：條件 ${d.condId} 已經不在監測中（已撤下或已成立），不通知`);
+  ctx.stmts.push(metStmt(ctx.db, cond.id, ctx.now.toISOString(), `F25 ${run.runId} 3 票確認`, 'FILING_VOTE'));
+  // run_id：確認條件成立的 F25，和寫下條件的那次執行
+  const tier = notifyTier(cond);
+  if (tier) notifyCondition(ctx, t, tier, cond.text, `${run.runId}：條件 ${d.condId} 成立`, [run.runId, cond.runId]);
+  else ctx.log.push(`${run.runId}：條件 ${d.condId} 成立（成立時重新審查）→ 下一次審查會看到`);
 }
 
-/** 新的 10-Q／10-K：財報條件由程式直接比對 XBRL（不用 LLM）。 */
+/**
+ * 新的 10-Q／10-K：財報條件由程式直接比對 XBRL（不用 LLM）。
+ * 你定的（ACTIVE）與觀察項（PROPOSED）每次比對都寫進度 progress_json（§3.6.2）；只有你定的成立時會標 MET、通知。
+ */
 export async function ownXbrlConditions(ctx: ApplyCtx, facts: Map<string, QuarterRow[]>): Promise<void> {
   for (const [t, rows] of facts) {
-    for (const c of (await fileConditions(ctx.db, ctx.acct, t)).filter((x) => x.kind === 'XBRL' && x.status === 'ACTIVE')) {
-      const m = xbrlConditionMet(rows, c.check as { type: string; metric: string; level: number; quarters?: number });
+    for (const c of (await fileConditions(ctx.db, ctx.acct, t)).filter((x) => x.kind === 'XBRL' && (x.status === 'ACTIVE' || x.status === 'PROPOSED'))) {
+      const check = c.check as { type: string; metric: string; level: number; quarters?: number };
+      const p = xbrlProgress(rows, check, ctx.session);
+      if (p) ctx.stmts.push(ctx.db.prepare('UPDATE own_conditions SET progress_json = ? WHERE id = ?').bind(JSON.stringify(p), c.id));
+      const m = xbrlConditionMet(rows, check);
       if (!m?.met) continue;
-      ctx.stmts.push(metStmt(ctx.db, c.id, ctx.now.toISOString(), `新財報（${rows[0].form} ${rows[0].filed}）：${m.values.map((v) => (v === null ? '—' : v.toFixed(4))).join('、')}`));
-      if (c.direction === 'DOWN' && c.tierIfMet) notifyCondition(ctx, t, c.tierIfMet, c.text, `${t} 財報條件 ${c.condId} 成立（程式比對 XBRL）`, [c.runId]);
-      else ctx.log.push(`${t} 升級的財報條件 ${c.condId} 成立 → 下一次審查會看到`);
+      if (c.status === 'PROPOSED') {
+        ctx.log.push(`${t} 建議中的財報條件 ${c.condId} 依新財報成立；你還沒勾選，不通知（下一次審查會看到）`);
+        continue;
+      }
+      ctx.stmts.push(metStmt(ctx.db, c.id, ctx.now.toISOString(), `新財報（${rows[0].form} ${rows[0].filed}）：${m.values.map((v) => (v === null ? '—' : v.toFixed(4))).join('、')}`, 'XBRL'));
+      const tier = notifyTier(c);
+      if (tier) notifyCondition(ctx, t, tier, c.text, `${t} 財報條件 ${c.condId} 成立（程式比對 XBRL）`, [c.runId]);
+      else ctx.log.push(`${t} 財報條件 ${c.condId} 成立（成立時重新審查）→ 下一次審查會看到`);
     }
   }
 }

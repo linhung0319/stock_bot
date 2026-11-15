@@ -7,9 +7,9 @@
 // L2 各功能的證據包（F24、F7、F25、自選股的 F19）都從這裡取資料；這裡也放組證據包要的純函式（事件 V、預設前提的 D1～D3、
 // 8-K 的挑選順序、論點那一份 note）。讀 D1，所以不在引擎裡。
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
-import type { OwnCondition } from '../ai/ownReview';
+import { confirmMode, type OwnCondition } from '../ai/ownReview';
 import type { Account, OwnMeta, Thesis, Tier } from '../engine';
-import type { QuarterRow } from '../data/edgar';
+import { XBRL_METRICS, type QuarterRow } from '../data/edgar';
 import type { Filing } from '../data/sources';
 import { accOf, loadEvents, type SecEventRow } from './filings';
 
@@ -33,8 +33,52 @@ interface CondRow {
   note: string | null;
   origin: string;
   file_id?: string | null;
+  accepted_at?: string | null;
+  action?: string | null;
+  premise_id?: string | null;
+  supersedes?: number | null;
+  met_basis?: string | null;
+  verified_at?: string | null;
+  progress_json?: string | null;
+  auto?: number | null;
 }
-export type FileCondition = OwnCondition & { id: number; origin: 'AI' | 'USER'; fileId: string | null };
+/** 成立時做什麼（own_thesis §1.5）：出清／減半／重新審查。 */
+export type CondAction = 'EXIT' | 'HALF' | 'REVIEW';
+export const COND_ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
+/** 財報類條件的進度（own_thesis §3.6.2）。values 新到舊；streak 是從最新一季起連續符合幾季。 */
+export interface CondProgress {
+  at: string;
+  basis: 'XBRL' | 'PRESS';
+  period: string;
+  values: (number | null)[];
+  level: number;
+  streak: number;
+  need: number;
+}
+export type FileCondition = OwnCondition & {
+  id: number;
+  origin: 'AI' | 'USER';
+  fileId: string | null;
+  /** 你勾選的時間：有值就是「你定的條件」（舊列沒有）。 */
+  acceptedAt: string | null;
+  action: CondAction | null;
+  premiseId: string | null;
+  /** 想取代的那一條的列編號。 */
+  supersedes: number | null;
+  metBasis: string | null;
+  verifiedAt: string | null;
+  progress: CondProgress | null;
+  /** 寫入時有沒有通過格式檢查（舊列沒有：null）。 */
+  auto: boolean | null;
+};
+const parseJson = <T>(s: string | null | undefined): T | null => {
+  if (!s) return null;
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return null;
+  }
+};
 const toCond = (r: CondRow): FileCondition => ({
   id: r.id,
   ticker: r.ticker,
@@ -51,6 +95,14 @@ const toCond = (r: CondRow): FileCondition => ({
   note: r.note,
   origin: r.origin === 'USER' ? 'USER' : 'AI',
   fileId: r.file_id ?? null,
+  acceptedAt: r.accepted_at ?? null,
+  action: COND_ACTIONS.includes(r.action as CondAction) ? (r.action as CondAction) : null,
+  premiseId: r.premise_id ?? null,
+  supersedes: r.supersedes ?? null,
+  metBasis: r.met_basis ?? null,
+  verifiedAt: r.verified_at ?? null,
+  progress: parseJson<CondProgress>(r.progress_json),
+  auto: r.auto === null || r.auto === undefined ? null : r.auto === 1,
 });
 
 /**
@@ -437,4 +489,142 @@ export function thesisNote(tf: ThesisFile, asOf: string): PackDoc | null {
     for (const d of disputes) L.push(`- ${d.premiseId} 到 ${d.until}（${d.since} 起）：${d.reason}`);
   }
   return { id: `T-${tf.ticker}`, source_id: `thesis:${tf.fileId ?? tf.ticker}`, kind: 'note', date: asOf, title: `${tf.ticker} 的論點檔（背景，不是前提成立的證據）`, text: L.join('\n') };
+}
+
+// ---------------------------------------------------------------- 條件的所有權（T26，own_thesis §1.5、§1.6、§3.6.2；純函式）
+
+/** 一檔「你定的條件」（ACTIVE＋REVIEW_ONLY）最多幾條（§1.5 第 5 點）。 */
+export const MAX_OWNED = 8;
+/** 一次審查最多寫幾條建議（§1.5 第 1 點）。 */
+export const MAX_PROPOSED = 3;
+/** 會自己發通知的「你定的條件」狀態。 */
+export const OWNED_LIVE = ['ACTIVE', 'REVIEW_ONLY'];
+
+/** 你定的條件：有勾選時間；舊資料裡使用者確認過的出場條件（origin = USER）也算。 */
+export const isOwned = (c: Pick<FileCondition, 'acceptedAt' | 'origin'>): boolean => !!c.acceptedAt || c.origin === 'USER';
+
+/** 勾選時預設的動作：帶 AI 建議的檔位（出清、減半），其他（升級、沒寫）是重新審查。 */
+export function defaultAction(c: Pick<FileCondition, 'direction' | 'tierIfMet'>): CondAction {
+  if (c.direction === 'DOWN' && c.tierIfMet === 'EXIT') return 'EXIT';
+  if (c.direction === 'DOWN' && c.tierIfMet === 'HALF') return 'HALF';
+  return 'REVIEW';
+}
+
+/** 勾選之後的狀態（§1.5「怎麼確認」）：程式比對或新申報確認 → 監測中；只有法說會、新聞 → 只在審查時檢查；其他 → 只記錄。 */
+export function acceptStatus(c: Pick<FileCondition, 'kind' | 'check' | 'auto' | 'status'>): 'ACTIVE' | 'REVIEW_ONLY' | 'MANUAL' {
+  const manual = c.auto === false || (c.auto === null && c.status === 'MANUAL');
+  const m = confirmMode({ kind: c.kind, check: c.check, manual });
+  return m === 'XBRL' || m === 'FILING' ? 'ACTIVE' : m === 'REVIEW_ONLY' ? 'REVIEW_ONLY' : 'MANUAL';
+}
+
+/** 成立時要通知的檔位：動作是出清或減半；重新審查不發通知。沒有動作的舊列照舊（降級條件的 tier_if_met）。 */
+export function notifyTier(c: Pick<FileCondition, 'action' | 'direction' | 'tierIfMet'>): Tier | null {
+  if (c.action === 'EXIT' || c.action === 'HALF') return c.action;
+  if (c.action === 'REVIEW') return null;
+  return c.direction === 'DOWN' && c.tierIfMet ? c.tierIfMet : null;
+}
+
+/**
+ * 財報類條件的進度（§3.6.2）：最近幾季的數值（新到舊，最多 4 季）、門檻、從最新一季起連續符合幾季、要連續幾季。
+ * 指標不認得或沒有季度數字 → null。
+ */
+export function xbrlProgress(rows: QuarterRow[], check: Record<string, unknown>, at: string): CondProgress | null {
+  const m = XBRL_METRICS[String(check.metric)];
+  const level = Number(check.level);
+  if (!m || !rows.length || !Number.isFinite(level)) return null;
+  const need = Math.max(1, Math.min(4, Number(check.quarters) || 1));
+  const below = check.type === 'xbrl_metric_below';
+  const values = rows.slice(0, Math.max(need, 4)).map(m.get);
+  let streak = 0;
+  for (const v of values) {
+    if (v === null || !(below ? v < level : v > level)) break;
+    streak++;
+  }
+  return { at, basis: 'XBRL', period: rows[0].end, values, level, streak: Math.min(streak, need), need };
+}
+
+const fmtMetric = (metric: string, v: number | null) => {
+  if (v === null) return '—';
+  const m = XBRL_METRICS[metric];
+  if (m?.pct) return `${(v * 100).toFixed(1)}%`;
+  return Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(0)}M` : v.toFixed(2);
+};
+const KIND_TEXT: Record<string, string> = { XBRL: '財報', EVENT: '事件', PRICE: '價格' };
+export const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查' };
+const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '—');
+
+/** 持股頁的一行進度：`最新一季 71.2%（門檻 70%）；已連續 1／2 季`。 */
+export function progressText(c: Pick<FileCondition, 'progress' | 'check'>): string | null {
+  const p = c.progress;
+  if (!p) return null;
+  const metric = String(c.check.metric);
+  return `最新一季 ${fmtMetric(metric, p.values[0] ?? null)}（${p.period}，門檻 ${fmtMetric(metric, p.level)}）；已連續 ${p.streak}／${p.need} 季`;
+}
+
+/** 誰定的、哪一天（§1.5）：「你寫的，11/20 定」「AI 建議，你在 11/20 勾選」「AI 建議，11/20 的審查寫的」。 */
+export function ownerText(c: Pick<FileCondition, 'origin' | 'acceptedAt' | 'createdAt'>): string {
+  if (c.origin === 'USER') return `你寫的，${md(c.acceptedAt ?? c.createdAt)} 定`;
+  return c.acceptedAt ? `AI 建議，你在 ${md(c.acceptedAt)} 勾選` : `AI 建議，${md(c.createdAt)} 的審查寫的`;
+}
+
+/** 怎麼確認（§1.5 的顯示）。 */
+export function confirmText(c: Pick<FileCondition, 'kind' | 'check' | 'auto' | 'status'>): string {
+  const s = acceptStatus(c);
+  if (s === 'MANUAL') return '只記錄';
+  if (s === 'REVIEW_ONLY') return '只在定期審查時檢查';
+  return c.kind === 'XBRL' ? '新財報出來時比對' : '新申報出來時由 AI 確認';
+}
+
+const STATE_TEXT: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '只在定期審查時檢查', MANUAL: '只記錄', MET: '已成立', PROPOSED: '建議中', RETIRED: '已撤下', EXPIRED: '已過期' };
+
+/**
+ * F24、F7 的證據包裡的條件（§1.6）：
+ *   C1…  你定的條件（ACTIVE、REVIEW_ONLY，以及上次有結論的審查之後成立的 MET）：誰哪天定的、成立時做什麼、怎麼確認、目前狀態
+ *   W1…  觀察項（PROPOSED）：財報類附程式用當時的財報數字比對的結果
+ * map：證據包的編號 → own_conditions 的列編號（審查回來時對回條件用，放在 rule.detail.conds）。
+ * rows：XBRL 季度表（新的在前）；null = 抓不到。
+ */
+export function condFacts(tf: Pick<ThesisFile, 'conditions' | 'lastReview' | 'newSince'>, rows: QuarterRow[] | null): { facts: Fact[]; map: Record<string, number> } {
+  const facts: Fact[] = [];
+  const map: Record<string, number> = {};
+  const owned = tf.conditions.filter((c) => isOwned(c) && (OWNED_LIVE.includes(c.status) || (c.status === 'MET' && !!c.metAt && afterLastReview(tf, c.metAt.slice(0, 10), c.metAt))));
+  owned.forEach((c, k) => {
+    const id = `C${k + 1}`;
+    map[id] = c.id;
+    const act = c.action ?? (notifyTier(c) ?? 'REVIEW');
+    facts.push({
+      id,
+      label: `你定的條件 ${id}（${KIND_TEXT[c.kind] ?? c.kind}；${ownerText(c)}${c.premiseId ? `；對應前提 ${c.premiseId}` : ''}）`,
+      value: c.text,
+      note: `成立時：${ACTION_TEXT[act as CondAction] ?? act}；怎麼確認：${confirmText(c)}；目前：${c.status === 'MET' ? `已成立（${c.metAt?.slice(0, 10)}）` : (STATE_TEXT[c.status] ?? c.status)}${progressText(c) ? `；${progressText(c)}` : ''}`,
+    });
+  });
+  tf.conditions
+    .filter((c) => c.status === 'PROPOSED')
+    .forEach((c, k) => {
+      const id = `W${k + 1}`;
+      map[id] = c.id;
+      let check = `怎麼確認：${confirmText(c)}`;
+      if (c.kind === 'XBRL') {
+        const chk = c.check as { type: string; metric: string; level: number; quarters?: number };
+        const p = rows?.length ? xbrlProgress(rows, chk, '') : null;
+        if (!rows?.length) check = `程式比對：資料還沒更新（${rows ? '沒有季度數字' : 'XBRL 抓不到'}）`;
+        else if (!p || p.values.slice(0, p.need).some((v) => v === null) || p.values.length < p.need) check = `程式比對：資料還沒更新（最近 ${p?.need ?? 1} 季的數字不齊）`;
+        else {
+          const latest = rows[0];
+          const fresh = latest.filed > c.createdAt.slice(0, 10) ? '' : '；建議寫下之後還沒有新財報';
+          check = `程式比對：${p.streak >= p.need ? '成立' : '不成立'}（最新一季 ${latest.end}（${latest.form} ${latest.filed}）：${p.values
+            .slice(0, p.need)
+            .map((v) => fmtMetric(chk.metric, v))
+            .join('、')}，門檻 ${fmtMetric(chk.metric, p.level)}${p.need > 1 ? `，要連續 ${p.need} 季` : ''}${fresh}）`;
+        }
+      }
+      facts.push({
+        id,
+        label: `觀察項 ${id}（AI 建議、使用者還沒勾選；${KIND_TEXT[c.kind] ?? c.kind}；${md(c.createdAt)} 的審查寫的${c.premiseId ? `；對應前提 ${c.premiseId}` : ''}）`,
+        value: c.text,
+        note: `${check}；AI 建議成立時：${ACTION_TEXT[defaultAction(c)]}${c.auto === false ? '；沒有通過格式檢查，勾選後只記錄' : ''}`,
+      });
+    });
+  return { facts, map };
 }

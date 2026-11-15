@@ -12,7 +12,7 @@ import type { ApplyCtx, StartCtx } from './aiCtx';
 import { startRun, type AiRun } from './aiRuns';
 import { insertHitStmts, sectorEtfs } from './filings';
 import { docOf, lastReview, newsDoc } from './ownAi';
-import { defaultFacts, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote } from './thesis';
+import { condFacts, defaultFacts, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote } from './thesis';
 
 const ret = (view: MarketView, t: string, n: number) => {
   const c = view.close[t];
@@ -67,10 +67,11 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
       const news = await newsDoc(fetcher, t, session, since).catch(() => null);
       if (news) docs.push(news);
       const urgent = acct.own[t].pending?.action !== 'REDUCE';
-      // 只有預設前提的股票：D1～D3 要季度數字（F7 原本不抓 XBRL）
+      // 只有預設前提的股票：D1～D3 要季度數字；有財報類觀察項時也要（W 附程式比對的結果）。F7 原本不抓 XBRL
       let rows: QuarterRow[] | null = null;
       const chk = sc.checks.find((x) => x.ticker === t);
-      if (tf?.kind === 'DEFAULT_ONLY' && chk && env.EDGAR_USER_AGENT) {
+      const needRows = tf?.kind === 'DEFAULT_ONLY' || !!tf?.conditions.some((c) => c.status === 'PROPOSED' && c.kind === 'XBRL');
+      if (needRows && chk && env.EDGAR_USER_AGENT) {
         try {
           rows = quarterTable(await fetchCompanyFacts(fetcher, chk.cik, env.EDGAR_USER_AGENT), session);
         } catch (e) {
@@ -78,7 +79,8 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
         }
       }
       const note = tf ? thesisNote(tf, session) : null;
-      const extraFacts = tf ? [...thesisFacts(tf), ...defaultFacts(tf, rows, session)] : [];
+      // 你定的條件 C 與觀察項 W 只當背景：F7 不確認條件成不成立（own_thesis §3.3）
+      const extraFacts = tf ? [...thesisFacts(tf), ...defaultFacts(tf, rows, session), ...condFacts(tf, rows).facts] : [];
       const { pack, notes } = ownDropPack({ acct, view, axis, ticker: t, runId: newRunId(session, OWN_DROP, t), attr, base: baseDoc(base, t), baseRunId: base?.runId ?? null, docs, urgent, dataQuality: { filings: 'ok', news: 'partial', ...(base ? {} : { review: 'partial' }) }, extraFacts, extraDocs: note ? [note] : [], now });
       res.started.push((await startRun(env, fetcher, pack, now, notes)).runId);
     } catch (e) {

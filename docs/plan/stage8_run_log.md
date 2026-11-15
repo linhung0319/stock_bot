@@ -13,6 +13,7 @@
 | T32a | 完成 | （見 git log） | 375 通過、1 略過 |
 | T33a | 完成 | （見 git log） | 387 通過、1 略過 |
 | T25 | 完成 | （見 git log） | 399 通過、1 略過 |
+| T26 | 完成 | （見 git log） | 410 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -58,6 +59,15 @@
 - T25｜D2、D3：最近兩季要相連（差 120 天內），否則資料不足；去年同季是期末差 365 天 ±20 天。
 - T25｜`thesisFile` 遇到已結案的檔回 null；看舊論點檔的畫面留給 T34。
 - T25｜主持者：`own_thesis` §3.11 歸給 T25 的「只有預設前提的股票 F7 拿掉 HOLD」改到 T31b（T31b 本來就要做「只能選減半或出清」，而且它會改 policy 與題目，和 T25 的完成條件「F7 證據包除了新增的部分不變」衝突）；T31b 的派工單已補一句。
+- T26｜`own_conditions` 多加一欄 `auto`（設計沒寫）：建議中的條件要記住寫入時有沒有通過格式檢查，勾選時才知道變 `ACTIVE`、`REVIEW_ONLY` 還是 `MANUAL`。別的選項：從 `note` 文字判斷（脆弱）、沒通過檢查的建議不寫。
+- T26｜「三票一致」= `AGREED`，或 `INSUFFICIENT` 而且每一票自己選 HOLD（沿用 `keptByChoice`）；被逐字檢查降級或少送票的算證據不足、不動條件。
+- T26｜C、W 對到列編號的對照表放 `pack.rule.detail.conds`；v1 的執行沒有這張表，回來後不動條件（部署當下還在跑的 v1 審查只記檔位，開發階段可以接受）。
+- T26｜「你定的條件」= 有 `accepted_at` 或 `origin = USER`（舊的 F14 出場條件也算）。
+- T26｜審查確認成立、動作是「重新審查」時只標 MET、寫 log，不開審查（§1.10 甲類當天開審查是 T29a）；通知沿用現有的條件成立通知，文字與上限在 T29a 改。
+- T26｜`aiTier.trigger` 沒加（給 §1.9 用，T29a）；`suggest` 只看「有不成立的前提」，拿掉舊規則的「上次的條件成立也算」。
+- T26｜勾選不存帳戶，所以 CONDITION 那筆 log 的 `account_version` 是空的，復原快照不會刪它。
+- T26｜建議的 `supersedes` 指到另一條建議時，同一次寫入先把舊建議標 EXPIRED；勾選時只取代還在 ACTIVE／REVIEW_ONLY／MANUAL／PROPOSED 的列。
+- T26｜建議最多 3 條：`checkOwnReviewPayload` 超過時記一條問題、不作廢那一票，`reviewDecision` 只取前 3 條。
 
 ## 要使用者親手做的事
 
@@ -68,6 +78,7 @@
 - T36｜`wrangler deploy` 之後新的 03:30 cron 才生效。
 - T32a｜部署前套用遠端 migration（或照 T17 重建資料庫）：`npx wrangler d1 migrations apply stock-bot --remote`（這次新增 `0010_mom_reviews_data_missing.sql`）。
 - T25｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0011_thesis_file.sql`。
+- T26｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0012_condition_ownership.sql`。`own_review_v2.md` 由雲端排程從 repo 讀，push 之後生效。
 
 ## 畫面截圖
 
@@ -75,6 +86,8 @@
 |---|---|---|
 | T24 | 持股頁的條件那一塊（桌機） | `records/stage8/screens/T24/desktop.png` |
 | T24 | 持股頁的條件那一塊（手機） | `records/stage8/screens/T24/phone.png` |
+| T26 | 持股頁的條件那一塊：你定的、建議中的、勾選與撤下（桌機） | `records/stage8/screens/T26/desktop.png` |
+| T26 | 同上（手機） | `records/stage8/screens/T26/phone.png` |
 
 ## 卡住的任務
 
