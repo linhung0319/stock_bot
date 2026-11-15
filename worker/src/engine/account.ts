@@ -94,6 +94,11 @@ export interface OwnMeta {
    * 這一檔再開審查時清掉。沒有這個欄位（舊資料）= 沒有跳過。
    */
   reviewSkip?: { month: string; since: string } | null;
+  /**
+   * 最近一次提前審查（觸發原因 EARLY，own_thesis §2.4）的訊號日：每檔 30 個日曆天最多 1 次，L1 的事件與 L0 的個股自身大跌合併計算。
+   * 沒有這個欄位（舊資料）= 還沒提前審查過。
+   */
+  earlyReviewAt?: string | null;
 }
 
 /**

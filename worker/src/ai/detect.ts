@@ -171,6 +171,31 @@ export function attribution(axis: string[], close: Record<string, ArrayLike<numb
   return { from: axis[a], to: axis[b], stock: st, market: mk, sector: se === null ? null : se - mk, idio: se === null ? st - mk : st - se, sectorTicker: se === null ? null : sector };
 }
 
+// ---------------------------------------------------------------- 個股自身大跌（own_thesis §3.6.1，取代自選股的 F20）
+
+/** 最近 21 個交易日自己跌 10% 以上，而且比產業 ETF（沒有時比核心 ETF）多跌 10 個百分點以上。 */
+export const IDIO_DROP = { days: 21, stock: -0.1, idio: -0.1 } as const;
+/** 浮點誤差的容許（-10% 剛好在門檻上也算成立：90 / 100 - 1 在浮點數是 -0.0999…98）。 */
+const IDIO_EPS = 1e-9;
+
+/**
+ * 決策日（位置 i）往前 21 個交易日的個股自身大跌：attribution(i - 21, i) 的 stock ≤ -10% 而且 idio ≤ -10%。
+ * 回傳拆解（hit 是成立與否）；算不出來（資料不足）回傳 null（不成立）。
+ */
+export function idioDrop(axis: string[], close: Record<string, ArrayLike<number>>, ticker: string, market: string, sector: string | null, i: number): { hit: boolean; attr: Attribution } | null {
+  if (i - IDIO_DROP.days < 0) return null;
+  const attr = attribution(axis, close, ticker, market, sector, i - IDIO_DROP.days, i);
+  if (!attr) return null;
+  return { hit: attr.stock <= IDIO_DROP.stock + IDIO_EPS && attr.idio <= IDIO_DROP.idio + IDIO_EPS, attr };
+}
+
+/** PRICE_DROP 事件的說明：`最近 21 個交易日：個股 -18.2%，產業（SOXX）-5.1%，個股自身 -13.1%`（沒有產業 ETF 時寫大盤（核心 ETF））。 */
+export function idioDropText(a: Attribution, market: string): string {
+  const p = (v: number) => `${(v * 100).toFixed(1)}%`;
+  const ref = a.sector === null ? `大盤（${market}）${p(a.market)}` : `產業（${a.sectorTicker}）${p(a.sector + a.market)}`;
+  return `最近 ${IDIO_DROP.days} 個交易日：個股 ${p(a.stock)}，${ref}，個股自身 ${p(a.idio)}`;
+}
+
 /** 52 週高點在哪一天（F7 的跌幅從那天算）。 */
 export function highIndex(close: ArrayLike<number>, i: number, days = 252): number {
   let best = i;

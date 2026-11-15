@@ -781,10 +781,12 @@ describe('T33a：崩盤規則檢視什麼時候開（core_ai §3.1 的 crashNeed
 });
 
 describe('整條流程：F7 減半檢視、F20 大跌說明', () => {
-  it('自選暴跌 → 當天減半通知；F7 三票「不動」回來 → 還沒回覆的通知更新 AI 建議；F20 的說明附在月報', async () => {
+  // T29b：自選股不再跑 F20（own_thesis §2.8），F20 改用動能持股（AAPL）驗；動能的 F20 在 T32d 拿掉
+  it('自選暴跌 → 當天減半通知；F7 三票「不動」回來 → 還沒回覆的通知更新 AI 建議；動能持股的 F20 說明附在月報（自選股不再開 F20）', async () => {
     await withWorld(async ({ db, w, run }) => {
       await run('2026-11-20');
       w.shock.NVDA = { from: '2026-11-23', factor: 0.7 };
+      w.shock.AAPL = { from: '2026-11-23', factor: 0.7 };
       await run('2026-11-23');
       let acct = (await loadAccount(db))!.acct;
       const urgent = acct.notifs.find((n) => n.kind === 'URGENT' && n.items.some((i) => i.f === 'F7'))!;
@@ -792,8 +794,9 @@ describe('整條流程：F7 減半檢視、F20 大跌說明', () => {
       expect(drop).toMatchObject({ ticker: 'NVDA', status: 'PENDING' });
       expect(drop.pack.rule.detail).toMatchObject({ urgent: true });
       expect(drop.pack.facts.find((f) => f.id === 'A2')!.value).toMatch(/^-/);
-      const [expl] = await runsOf(db, 'DROP_EXPLAIN');
-      expect(expl.ticker).toBe('NVDA');
+      const [expl, ...more] = await runsOf(db, 'DROP_EXPLAIN');
+      expect(expl.ticker).toBe('AAPL');
+      expect(more).toEqual([]);
       const price = drop.pack.documents.find((d) => d.source_id === 'price:NVDA')!;
       const quote = price.text.split('\n').at(-1)!;
       const hold = { run_id: drop.pack.run_id, verdict: 'HOLD', premise_checks: [{ premise_id: 'P1', status: 'HOLDS', evidence_ids: ['E1'] }], evidence: [{ id: 'E1', source_id: 'price:NVDA', date: price.date, quote, claim: '一天跌 30%，沒有申報' }], payload: { tier: 'HOLD', cause_class: 'ONE_OFF' }, report: '一次性下跌。' };
@@ -809,9 +812,9 @@ describe('整條流程：F7 減半檢視、F20 大跌說明', () => {
       for (const d of ['2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
       const m = await run('2026-11-30');
       const monthly = (await loadAccount(db))!.acct.notifs.find((n) => n.id === m.monthly)!;
-      expect(monthly.text).toContain('NVDA 最近一個月跌');
+      expect(monthly.text).toContain('AAPL 最近一個月跌');
       expect(monthly.text).toContain('一天跌了三成');
-    });
+    }, { mom: ['AAPL'] });
   });
 });
 

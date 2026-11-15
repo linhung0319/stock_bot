@@ -162,7 +162,11 @@ export interface ThesisEvent {
   /** 申報編號（原文是申報時）。 */
   accession: string | null;
   detail: string | null;
+  /** 細項（own_thesis §2.2；舊列沒有：null）。 */
+  detailCode?: string | null;
   status: string;
+  /** 處理的原因（HANDLED 的；提前審查開不開的原因見 EARLY_NOTE）。 */
+  handledNote?: string | null;
   displayOnly: boolean;
   createdAt: string;
   /** 上一次有結論的審查之後的（沒有審查時：最近 120 天）。 */
@@ -442,6 +446,21 @@ export function newEvidence(file: Pick<ThesisFile, 'lastReview' | 'newSince' | '
   return out;
 }
 
+/**
+ * 提前審查（own_thesis §2.4）開不開的原因：事件標 HANDLED，handled_note 寫這幾句（「要看的事」的 PRICE_NO_FILING 認 NO_FILING 這一句）。
+ */
+export const EARLY_NOTE = {
+  inPack: (runId: string) => `已經在 ${runId} 的證據包裡`,
+  dropReview: '30 天內已經做過減半檢視',
+  noFiling: '沒有新的申報可以檢查',
+  monthly: '留給月審',
+  recent: '30 天內已經提前審查過，留給下一次審查',
+  started: (runId: string) => `提前審查 ${runId}`,
+  expired: '過期：事件日超過 10 天沒有處理',
+  notOwn: '已經不是自選股，不提前審查',
+  news: '新聞標題標到的，只記進論點檔',
+} as const;
+
 /** 證據包與紀錄用的原因說明。 */
 export const EVIDENCE_TEXT: Record<EvidenceReason, string> = { NEVER: '還沒有過有結論的審查', FILING: '有新的申報', EVENT: '有新的事件', THESIS: '論點、前提或條件改過', STALE: '距上次審查滿 100 天', UNKNOWN: '申報清單抓不到' };
 
@@ -457,7 +476,9 @@ function toEvent(e: SecEventRow, last: ThesisFile['lastReview'], newSince: strin
     sourceId: ref.kind === 'FILING' ? `edgar:${ref.acc}` : e.accession,
     accession: ref.kind === 'FILING' ? ref.acc : null,
     detail: e.detail,
+    detailCode: e.detail_code ?? null,
     status: e.status,
+    handledNote: e.handled_note ?? null,
     displayOnly: e.display_only === 1,
     createdAt: e.created_at,
     isNew: afterLastReview({ lastReview: last, newSince }, e.event_date, e.created_at),
@@ -766,7 +787,7 @@ const cnNum = (n: number) => CN_NUM[n] ?? String(n);
 const ownedLive = (f: Pick<ThesisFile, 'conditions'>) => f.conditions.filter((c) => isOwned(c) && OWNED_LIVE.includes(c.status));
 
 /**
- * 自選股的「要看的事」，一種一個物件。加一種 = 在這裡加一個物件（T29a 的 COND_MET_NO_SELL 已加；T29b 的 PRICE_NO_FILING、
+ * 自選股的「要看的事」，一種一個物件。加一種 = 在這裡加一個物件（T29a 的 COND_MET_NO_SELL、T29b 的 PRICE_NO_FILING 已加；
  * T29c 的 PRESS_MISMATCH、T35 的 SIZE_2X；T31a 的 NO_CONSENSUS 已加）；判斷需要的資料先放進論點檔或帳戶狀態。
  * 月報的頻率用「月」算（月報一個月一份；設計寫的「90 天」「6 個月」「每年」= 3、6、12 個月）。
  */
@@ -858,6 +879,23 @@ export const OWN_ATTN: AttnKind[] = [
           return !acct.notifs.some((n) => (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY') && n.date > day);
         })
         .map((c) => ({ key: `COND_MET_NO_SELL:${c.id}`, every: null, since: c.metAt!.slice(0, 10), text: `${file.ticker}：你定的條件「${c.text}」成立；${half ? '目前已經是減半，不用再賣' : '目前沒有要賣的股數'}` }));
+    },
+  },
+  {
+    // 個股自身大跌、但上次有結論的審查之後沒有新的申報或事件，沒有開提前審查（§3.6.1、§2.4）：請使用者拿去 claude.ai 討論。
+    // 發生後的第一份月報列一次；持股頁列到那份月報產生為止
+    kind: 'PRICE_NO_FILING',
+    detect({ file, acct }) {
+      return file.events
+        .filter((e) => e.code === 'PRICE_DROP' && e.status === 'HANDLED' && e.handledNote === EARLY_NOTE.noFiling)
+        .filter((e) => !acct.notifs.some((n) => (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY') && n.date > e.date))
+        .map((e) => {
+          // 說明是 idioDropText 寫的：`最近 21 個交易日：個股 -18.2%，產業（SOXX）-5.1%，個股自身 -13.1%`
+          const idio = /個股自身 (-?\d+(?:\.\d+)?)%/.exec(e.detail ?? '')?.[1];
+          const ref = (e.detail ?? '').includes('大盤（') ? '大盤' : '產業';
+          const how = idio ? `比${ref}多跌 ${idio.replace('-', '')}%` : '個股自身大跌';
+          return { key: `PRICE_NO_FILING:${e.id}`, every: null, since: e.date, text: `${file.ticker} 最近 21 個交易日${how}，沒有新的申報可以檢查。可以複製討論包到 claude.ai 討論` };
+        });
     },
   },
 ];

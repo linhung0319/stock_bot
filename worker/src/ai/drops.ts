@@ -17,7 +17,8 @@ export const DROP_EXPLAIN_PROMPT = 'drop_explain_v1';
 export const CAUSE_CLASSES = ['MARKET', 'SECTOR', 'FUNDAMENTAL', 'ONE_OFF', 'UNKNOWN'] as const;
 export const CAUSE_TEXT: Record<string, string> = { MARKET: '大盤一起跌', SECTOR: '產業一起跌', FUNDAMENTAL: '公司基本面', ONE_OFF: '一次性事件', UNKNOWN: '看不出原因' };
 
-const attrFacts = (a: Attribution | null): EvidencePack['facts'] =>
+/** 跌幅拆解的數字 A1～A5（F7、F20、價格類的提前審查共用）。 */
+export const attrFacts = (a: Attribution | null): EvidencePack['facts'] =>
   a
     ? [
         { id: 'A1', label: `跌幅拆解（${a.from}～${a.to}）`, value: attributionText(a), note: '簡單相減：大盤 = 核心 ETF；產業 = 產業 ETF − 大盤；個股自身 = 個股 − 產業（沒有產業 ETF 時減大盤）' },

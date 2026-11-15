@@ -192,7 +192,7 @@ export function shadowLines(sum) {
 
 const DECISION = { ALLOW: '准許', ALLOW_WATCH: '准許但觀察', VETO: '否決', BLOCK: '資料可疑，這個月不進場', PENDING: '等法庭' };
 const SOURCE = { RULE: '規則', AI: 'AI 法庭', DEFAULT: '照規則（AI 沒有結論）' };
-const CODE = { PENDING_MA: '被收購', ACCOUNTING: '會計問題', REGULATORY: '監管或訴訟', EARNINGS_DIVERGENCE: '盈餘背離', ONE_OFF_JUMP: '一次性跳漲', DILUTION: '增資', DATA_SUSPECT: '資料可疑', MGMT_CHANGE: '高層異動', GUIDANCE_CUT: '財測', RESTRUCTURING: '重組', MAJOR_CONTRACT: '重大合約', DISTRESS: '財務危機', CYBER: '資安事件', ACTIVIST: '大股東申報（13D）', CONDITION_HINT: '可能和條件有關', FINANCING: '籌資', EARNINGS: '財報', OTHER: '其他', ALLOW_WATCH: '准許但觀察', ALLOW: '准許', VETO: '否決', INSUFFICIENT: '證據不足', EXIT: '建議出場', HOLD: '不用動' };
+const CODE = { PENDING_MA: '被收購', ACCOUNTING: '會計問題', REGULATORY: '監管或訴訟', EARNINGS_DIVERGENCE: '盈餘背離', ONE_OFF_JUMP: '一次性跳漲', DILUTION: '增資', DATA_SUSPECT: '資料可疑', MGMT_CHANGE: '高層異動', GUIDANCE_CUT: '財測', RESTRUCTURING: '重組', MAJOR_CONTRACT: '重大合約', DISTRESS: '財務危機', CYBER: '資安事件', ACTIVIST: '大股東申報（13D）', CONDITION_HINT: '可能和條件有關', PRICE_DROP: '個股自身大跌', FINANCING: '籌資', EARNINGS: '財報', OTHER: '其他', ALLOW_WATCH: '准許但觀察', ALLOW: '准許', VETO: '否決', INSUFFICIENT: '證據不足', EXIT: '建議出場', HOLD: '不用動' };
 /** 網站不顯示代碼：把文字裡的代碼換成白話。 */
 const plain = (t) => String(t ?? '').replace(/(PENDING_MA|ACCOUNTING|REGULATORY)_CANDIDATE/g, (_, c) => `${CODE[c]}候選`).replace(/\b(PENDING_MA|ACCOUNTING|REGULATORY|EARNINGS_DIVERGENCE|ONE_OFF_JUMP|DILUTION|DATA_SUSPECT|ALLOW_WATCH|ALLOW|VETO|INSUFFICIENT|EXIT|HOLD)\b/g, (m) => CODE[m]);
 const fnum = (x, d = 2) => (x === null || x === undefined || !Number.isFinite(x) ? '—' : x.toFixed(d));

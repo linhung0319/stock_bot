@@ -231,9 +231,10 @@ describe('規則分類：事件的類別與細項', () => {
         const nvda = await eventRows(db, 'NVDA');
         expect(nvda.map(({ code, detail, sub, status, byRule }) => [code, detail, sub, status, byRule])).toEqual(
           expect.arrayContaining([
-            ['CYBER', 'INCIDENT', '8K_1.05', 'NEW', 1],
-            ['DISTRESS', 'ACCELERATION', '8K_2.04', 'NEW', 1],
-            ['DISTRESS', 'DELISTING_NOTICE', '8K_3.01', 'NEW', 1],
+            // 自選股寫成 NEW；T29b 起同一次流程就由提前審查處理（HANDLED，開了一次提前審查）
+            ['CYBER', 'INCIDENT', '8K_1.05', 'HANDLED', 1],
+            ['DISTRESS', 'ACCELERATION', '8K_2.04', 'HANDLED', 1],
+            ['DISTRESS', 'DELISTING_NOTICE', '8K_3.01', 'HANDLED', 1],
             ['ACTIVIST', 'SC_13D', 'SC_13D', 'INFO', 1],
           ]),
         );
@@ -253,7 +254,8 @@ describe('規則分類：事件的類別與細項', () => {
       addFiling(net, cik('NVDA'), ceo);
       await run('2026-11-23');
       const rule = (await eventRows(db, 'NVDA')).find((e) => e.sub === '8K_5.02_CEO_DEPART')!;
-      expect(rule).toMatchObject({ code: 'MGMT_CHANGE', detail: 'CEO_DEPART', status: 'NEW', byRule: 1, accession: ceo.accession });
+      // 寫成 NEW；T29b 起同一次流程就由提前審查處理（HANDLED）
+      expect(rule).toMatchObject({ code: 'MGMT_CHANGE', detail: 'CEO_DEPART', status: 'HANDLED', byRule: 1, accession: ceo.accession });
       // 5.02 照樣送給 Haiku；Haiku 回「沒有」
       const [s1] = await scanRuns(db);
       expect(sources(s1)).toEqual([`edgar:${ceo.accession}`]);
@@ -261,7 +263,7 @@ describe('規則分類：事件的類別與細項', () => {
       await run('2026-11-23', 'FINAL');
       const after = await eventRows(db, 'NVDA');
       expect(after).toHaveLength(1);
-      expect(after[0]).toMatchObject({ sub: '8K_5.02_CEO_DEPART', status: 'NEW' });
+      expect(after[0]).toMatchObject({ sub: '8K_5.02_CEO_DEPART', status: 'HANDLED' });
       expect(runRow((await scanRuns(db))[0]).verdict).toBe('沒有值得標的事');
 
       // 隔天：董事辭任的 5.02 → 規則不記；Haiku 標 MGMT_CHANGE／DIRECTOR → INFO（不是可提前的細項）
@@ -354,10 +356,11 @@ describe('event_scan_v2', () => {
         const rows = (await eventRows(db, 'NVDA')).filter((e) => e.byRule === 0).map(({ code, detail, sub, status, accession }) => [code, detail, sub, status, accession]);
         expect(rows).toEqual(
           expect.arrayContaining([
-            ['MGMT_CHANGE', 'CFO_DEPART', 'SCAN_MGMT_CHANGE', 'NEW', `edgar:${g1.accession}`],
+            // 申報標到的可提前細項與條件提示寫成 NEW；T29b 起 01:30 同一次就由提前審查處理（HANDLED）
+            ['MGMT_CHANGE', 'CFO_DEPART', 'SCAN_MGMT_CHANGE', 'HANDLED', `edgar:${g1.accession}`],
             ['GUIDANCE_CUT', 'CUT', 'SCAN_GUIDANCE_CUT', 'INFO', news],
             ['OTHER', null, 'SCAN_OTHER', 'INFO', `edgar:${g1.accession}`],
-            ['CONDITION_HINT', String(ids.watch), `SCAN_CONDITION_HINT_${ids.watch}`, 'NEW', `edgar:${g1.accession}`],
+            ['CONDITION_HINT', String(ids.watch), `SCAN_CONDITION_HINT_${ids.watch}`, 'HANDLED', `edgar:${g1.accession}`],
             ['CONDITION_HINT', String(ids.reviewOnly), `SCAN_CONDITION_HINT_${ids.reviewOnly}`, 'INFO', news],
           ]),
         );
@@ -489,8 +492,8 @@ describe('掃描失敗、漏看的處理', () => {
       await run('2026-11-23');
       const [s1] = await scanRuns(db);
       expect(sources(s1)).toEqual(four.map((f) => `edgar:${f.accession}`));
-      // 2.05、2.06 由規則記下細項（自選股 → NEW），同時照樣交給 Haiku
-      expect((await eventRows(db, 'NVDA')).filter((e) => e.byRule).map((e) => [e.code, e.detail, e.status])).toEqual(expect.arrayContaining([['RESTRUCTURING', 'EXIT_PLAN', 'NEW'], ['RESTRUCTURING', 'IMPAIRMENT', 'NEW']]));
+      // 2.05、2.06 由規則記下細項（自選股 → NEW，T29b 起同一次流程就由提前審查處理 → HANDLED），同時照樣交給 Haiku
+      expect((await eventRows(db, 'NVDA')).filter((e) => e.byRule).map((e) => [e.code, e.detail, e.status])).toEqual(expect.arrayContaining([['RESTRUCTURING', 'EXIT_PLAN', 'HANDLED'], ['RESTRUCTURING', 'IMPAIRMENT', 'HANDLED']]));
       await postResult(env, s1, [nothing(s1)], new Date('2026-11-23T23:40:00Z'));
       await run('2026-11-23', 'FINAL');
 

@@ -13,7 +13,7 @@
 import type { ScanTarget } from '../ai/events';
 import { guard, type StartCtx } from './aiCtx';
 import { rescanEvents, startCourts } from './events';
-import { startCondReviews } from './ownAi';
+import { startCondReviews, startEarlyReviews } from './ownAi';
 
 export type Attempt = 'FIRST' | 'FINAL' | 'APPLY' | 'MANUAL';
 
@@ -62,7 +62,7 @@ export function attemptOfCron(cron: string): Attempt {
  * 每一段各自 guard，出錯只記在紀錄裡。後面的任務在這裡加：
  *   T28  當天的每日掃描沒有合格結論就重開一次（own_thesis §2.6）：rescanEvents（已接）
  *   T29a 你定的「重新審查」條件在 01:30 才確認成立 → 當天開審查（own_thesis §1.10）：startCondReviews（已接）
- *   T29b 提前審查 startEarlyReviews（own_thesis §2.4）
+ *   T29b 提前審查（掃描在 01:30 才標到的可提前事件，同一次就開）：startEarlyReviews（已接；每日第一次流程也呼叫）
  *   T32b 動能的 momRecheck（月報前一天與訊號日，momentum_ai §3.9）
  *   T33b 崩盤檢視的 crashNeeds（有需要時，core_ai §3.12）
  */
@@ -73,4 +73,6 @@ export async function finalStarts(sc: StartCtx, targets: ScanTarget[]): Promise<
   await guard(sc.res, '每日掃描重掃（01:30）', () => rescanEvents(sc, targets));
   // 套用時成立的你定的「重新審查」條件 → 今天還沒有審查的開一次
   await guard(sc.res, '你定的條件成立後的審查（01:30）', () => startCondReviews(sc));
+  // 掃描標到的可提前事件（執行長或財務長離任、下修財測…）→ 同一次就開提前審查（own_thesis §2.4、§2.7）
+  await guard(sc.res, '提前審查（01:30）', () => startEarlyReviews(sc, { fetchChecks: true }));
 }

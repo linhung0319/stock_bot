@@ -1,7 +1,8 @@
-// T11：F7 自選減半的 AI 檢視、F20 持股單月跌 > 20% 的說明（每日流程的 AI 段，src/app/aiStep.ts 呼叫）。
+// T11：F7 自選減半的 AI 檢視、F20 動能持股單月跌 > 20% 的說明（每日流程的 AI 段，src/app/aiStep.ts 呼叫）。
+// T29b：自選股不再跑 F20，改成個股自身大跌（PRICE_DROP 事件，own_thesis §3.6.1），由提前審查決定開不開。
 import { verdictText } from '../ai/functions';
 import type { PackDoc } from '../ai/check';
-import { attribution, highIndex } from '../ai/detect';
+import { attribution, highIndex, idioDrop, idioDropText } from '../ai/detect';
 import { DROP_EXPLAIN, MONTH_DROP, OWN_DROP, dropDecision, dropExplainPack, explainLine, ownDropPack } from '../ai/drops';
 import { newRunId } from '../ai/pack';
 import { recordAiTier, refreshOwnAiChoice, type MarketView } from '../engine';
@@ -87,9 +88,11 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
       res.log.push(`${t} 的減半檢視沒有開成：${errText(e)}`);
     }
   }
-  // F20：最近 21 個交易日跌超過 20% 的持股（同一檔 30 天內只說明一次）
+  // 個股自身大跌（own_thesis §3.6.1，取代自選股的 F20）：寫一筆 PRICE_DROP，由提前審查（startEarlyReviews）決定開不開
+  await priceDrops(sc, sectors).catch((e) => void res.log.push(`個股自身大跌沒有算成：${errText(e)}`));
+  // F20：最近 21 個交易日跌超過 20% 的動能持股（同一檔 30 天內只說明一次）。自選股不再跑（own_thesis §2.8；動能的在 T32d 拿掉）
   const since30 = new Date(Date.parse(session) - 30 * 86400_000).toISOString().slice(0, 10);
-  for (const t of holdings) {
+  for (const t of holdings.filter((x) => !acct.own[x])) {
     const r21 = ret(view, t, 21);
     if (!(r21 <= MONTH_DROP) || (await recentRun(env.DB, DROP_EXPLAIN, t, since30))) continue;
     try {
@@ -97,11 +100,37 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
       const docs = await filingDocs(t, since30, 2);
       const news = await newsDoc(fetcher, t, session).catch(() => null);
       if (news) docs.push(news);
-      const { pack, notes } = dropExplainPack({ view, axis, ticker: t, role: acct.own[t] ? 'OWN' : 'MOM', runId: newRunId(session, DROP_EXPLAIN, t), ret21: r21, attr, docs, dataQuality: { news: 'partial' }, now });
+      const { pack, notes } = dropExplainPack({ view, axis, ticker: t, role: 'MOM', runId: newRunId(session, DROP_EXPLAIN, t), ret21: r21, attr, docs, dataQuality: { news: 'partial' }, now });
       res.started.push((await startRun(env, fetcher, pack, now, notes)).runId);
     } catch (e) {
       res.log.push(`${t} 的跌幅說明沒有開成：${errText(e)}`);
     }
+  }
+}
+
+/** 同一檔最近幾個日曆天內已經有一筆 PRICE_DROP 就不再寫。 */
+export const PRICE_DROP_GAP = 30;
+
+/**
+ * 個股自身大跌（own_thesis §3.6.1）：自選股最近 21 個交易日自己跌 10% 以上、而且比產業 ETF（沒有時比核心 ETF）多跌 10 個百分點以上
+ * → sec_events 寫一筆 PRICE_DROP（source PRICE、NEW），等提前審查處理。不寫的情況：30 天內已經有一筆；同一天慢規則觸發減半（那天跑 F7）。
+ */
+export async function priceDrops(sc: StartCtx, sectors: Record<string, string>): Promise<void> {
+  const { env, acct, view, axis, session, now, res } = sc;
+  const cutoff = new Date(Date.parse(session) - PRICE_DROP_GAP * 86400_000).toISOString().slice(0, 10);
+  const halved = new Set((sc.extras.reduced ?? []).filter((r) => r.session === session).map((r) => r.ticker));
+  for (const t of Object.keys(acct.own)) {
+    const d = idioDrop(axis, view.close, t, acct.cfg.coreTicker, sectors[t] ?? null, view.i);
+    if (!d?.hit) continue;
+    const detail = idioDropText(d.attr, acct.cfg.coreTicker);
+    if (halved.has(t)) {
+      res.log.push(`${t} 個股自身大跌（${detail}），同一天慢規則觸發減半，只跑減半檢視`);
+      continue;
+    }
+    if (await env.DB.prepare("SELECT 1 AS x FROM sec_events WHERE ticker = ? AND code = 'PRICE_DROP' AND event_date > ? LIMIT 1").bind(t, cutoff).first()) continue;
+    const hit: FilingHit = { accession: `price:${t}:${session}`, form: 'RULE', date: session, acceptedAt: '', code: 'PRICE_DROP', detailCode: 'IDIO_21D', sub: 'RULE_IDIO_21D', byRule: true, displayOnly: false, detail };
+    await env.DB.batch(insertHitStmts(env.DB, t, [hit], 'PRICE', now.toISOString(), () => 'NEW'));
+    res.log.push(`${t} 個股自身大跌（${detail}）→ 記下，等提前審查`);
   }
 }
 
