@@ -50,8 +50,52 @@ export function coreContext(acct: Account, view: MarketView, reserveCash = 0, ha
   };
 }
 
-/** 照每一項目前選的選項合成清單；核心吸收差額。 */
-export function composeNotif(acct: Account, view: MarketView, n: Notif): Composed {
+/**
+ * 還沒填快照的清單都照做之後的持股與現金（T38 走一遍的缺口）：另一份清單已經回覆、還沒成交時，
+ * 入金、出金、改比例與「核心吸收現金」原本都用成交前的持股與現金算，會把那一份已經要買、要賣的再列一次，
+ * 同一筆閒置現金也會再交給核心一次。
+ *   已回覆的照合成的清單（composed，含核心吸收的部分）；pending = true 時，還沒回覆的也照每一項目前選的選項算（不含核心吸收）。
+ *   except：正在算的那一則；before：只算編號比它小的。
+ *   規則狀態：月報、減半在產生清單時就已經改了目標，不再動；只有成交時才生效的選項效果（移出自選、照 AI 的檔位、動能照 AI 出場）
+ *   照樣套到 rule 上（不然移出自選的那一檔賣光之後，入金會照它的標準比重再買回來）。
+ */
+export function afterOpenLists(acct: Account, view: MarketView, opt: { except?: number; before?: number; pending?: boolean } = {}): Account {
+  const open = acct.notifs.filter((n) => n.id !== opt.except && (opt.before === undefined || n.id < opt.before) && n.kind !== 'INFO' && ((n.status === 'RESPONDED' && !!n.composed) || (!!opt.pending && n.status === 'PENDING' && n.items.length > 0)));
+  if (!open.length) return acct;
+  const lots = { own: { ...acct.lots.own }, mom: { ...acct.lots.mom }, core: { ...acct.lots.core }, unc: { ...acct.lots.unc } };
+  let cash = acct.cash;
+  let rule = acct.rule;
+  const ruleW = () => (rule === acct.rule ? (rule = clone(acct.rule)) : rule);
+  for (const n of open) {
+    const chosen = n.items.filter((it) => !it.cancelled).map((it) => it.choices.find((c) => c.id === it.choice));
+    const lines = n.status === 'RESPONDED' ? n.composed!.lines : chosen.flatMap((c) => c?.lines ?? []);
+    for (const l of lines) {
+      if (!l.shares) continue;
+      const v = (lots[l.bucket][l.ticker] ?? 0) + l.shares;
+      if (Math.abs(v) < 1e-9) delete lots[l.bucket][l.ticker];
+      else lots[l.bucket][l.ticker] = v;
+      cash -= l.shares * priceOf(view, l.ticker);
+    }
+    cash -= n.withdraw ?? 0;
+    for (const e of chosen.flatMap((c) => c?.effects ?? [])) {
+      if (e.type === 'REMOVE_OWN' || (e.type === 'APPLY_TIER' && e.tier === 'EXIT')) {
+        if (rule.own[e.ticker]) delete ruleW().own[e.ticker];
+      } else if (e.type === 'MOM_DROP') {
+        if (rule.heldMom.includes(e.ticker)) ruleW().heldMom = rule.heldMom.filter((t) => t !== e.ticker);
+      } else if (e.type === 'APPLY_TIER' && rule.own[e.ticker]) {
+        const o = ruleW().own[e.ticker];
+        if (e.tier === 'HALF') o.applied = 'HALF';
+        else if (e.tier === 'STANDARD') o.applied = 'STD';
+        else if (e.tier === 'RAISE') o.stdWeight *= 1.25;
+      }
+    }
+  }
+  return { ...acct, lots, cash, rule };
+}
+
+/** 照每一項目前選的選項合成清單；核心吸收差額。已回覆、還沒填快照的其他清單先當成做完了（afterOpenLists）。 */
+export function composeNotif(acct0: Account, view: MarketView, n: Notif): Composed {
+  const acct = afterOpenLists(acct0, view, { except: n.id });
   const lines: OrderLine[] = [];
   for (const it of n.items) {
     if (it.cancelled) continue;
@@ -811,6 +855,22 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
       }
     }
     if (old.items.every((i) => i.cancelled)) old.status = 'READ';
+  }
+  // 上一份月報一直沒回覆（T38 走一遍的缺口）：這份月報用同樣的帳本又把動能、上限的單列了一次，舊的那幾項還在「等你決定」，
+  // 兩份都照做就重複下單。策略類「下一份月報把差額再列一次」（§2.3.1）→ 舊月報的策略項目以這份為準、取消；
+  // 併在舊月報裡的入金（F11）也一樣：入金的錢已經在帳上，這份月報會用它。
+  // 自選的項目（慢規則、AI 建議、條件成立）是一次性的、這份不會再列，照舊留著。崩盤項目不動（切換只列在切換那一份）。
+  for (const old of acct.notifs) {
+    if (old.status !== 'PENDING' || old.kind !== 'MONTHLY') continue;
+    for (const it of old.items) {
+      if (it.cancelled || (it.kind !== 'STRATEGY' && it.f !== 'F11') || it.f === 'F5' || it.f === 'F6') continue;
+      it.cancelled = true;
+      it.note = `上一份月報沒有回覆，這一項以 ${input.month} 月報為準`;
+    }
+    if (old.items.every((i) => i.cancelled)) {
+      old.status = 'SUPERSEDED';
+      old.coreAbsorb = false;
+    }
   }
   const status = `崩盤規則：${acct.rule.crash ? '啟動中' : '未啟動'}${relisted ? '（上次沒做，這份再列）' : ''}；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '');
   const probe: Notif = { id: 0, kind: 'MONTHLY', date: view.date, seq: view.i, title: '', items, status: 'PENDING', coreAbsorb: true, reminded: false };

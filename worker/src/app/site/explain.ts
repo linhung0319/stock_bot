@@ -5,6 +5,7 @@ import { ENTRY_CODE_TEXT, replacements } from '../../ai/momEntry';
 import {
   SLOW,
   TIER_NAME,
+  afterOpenLists,
   annualizedVol,
   drawdownFromHigh,
   hardToldDays,
@@ -651,9 +652,11 @@ function lineFacts(ctx: ExplainContext, lines: OrderLine[]): Fact[] {
 /**
  * 清單做完之後三桶占總資產的比例（core_ai §3.11）：把清單（composed 的每一行，含核心吸收的部分）照 view 的價格套到目前的持股上，
  * 核心含做完之後的現金（出金已經在 cashAfter 扣掉要轉出的金額）。未分類的持股只算在總資產裡。算不出來（缺價格）回 null。
+ * except：這份清單的編號。其他已回覆、還沒填快照的清單先當成做完了（和合成清單時的 cashAfter 同一個起點，T38）。
  */
-export function bucketSharesAfter(acct: Account, view: MarketView, composed: Pick<Composed, 'lines' | 'cashAfter'>): { own: number; mom: number; core: number } | null {
+export function bucketSharesAfter(acct0: Account, view: MarketView, composed: Pick<Composed, 'lines' | 'cashAfter'>, except?: number): { own: number; mom: number; core: number } | null {
   try {
+    const acct = afterOpenLists(acct0, view, { except });
     const lots = { own: { ...acct.lots.own }, mom: { ...acct.lots.mom }, core: { ...acct.lots.core } };
     for (const l of composed.lines) lots[l.bucket][l.ticker] = (lots[l.bucket][l.ticker] ?? 0) + l.shares;
     const val = (m: Record<string, number>) => Object.entries(m).reduce((a, [t, n]) => a + (n ? n * priceOf(view, t) : 0), 0);
@@ -669,8 +672,8 @@ export function bucketSharesAfter(acct: Account, view: MarketView, composed: Pic
 }
 
 /** 「做完之後」那一列（入金、出金、改比例的清單；core_ai §3.11）：自選 23.1%（預算 20%）、動能 28.4%（30%）、核心 48.5%（50%）。 */
-export function afterFact(acct: Account, view: MarketView, composed: Pick<Composed, 'lines' | 'cashAfter'> | undefined): Fact | null {
-  const b = composed ? bucketSharesAfter(acct, view, composed) : null;
+export function afterFact(acct: Account, view: MarketView, composed: Pick<Composed, 'lines' | 'cashAfter'> | undefined, except?: number): Fact | null {
+  const b = composed ? bucketSharesAfter(acct, view, composed, except) : null;
   if (!b) return null;
   const r = acct.cfg.ratio;
   return { label: '做完之後', value: `自選 ${fmtPct(b.own, 1)}（預算 ${fmtPct(r.own)}）、動能 ${fmtPct(b.mom, 1)}（${fmtPct(r.strat)}）、核心 ${fmtPct(b.core, 1)}（${fmtPct(r.core)}）`, note: '照前一日收盤估的三桶占總資產；比例是風險預算，平常不會為了拉回比例下單。' };
@@ -687,19 +690,36 @@ export function momRelFact(st: StrategyReviewState | null | undefined): Fact | n
 export function liveCashflow(ctx: ExplainContext, n: Notif, it: ItemX): Explain {
   const x = it.x ?? explainItem(ctx, n, it);
   if (n.status !== 'PENDING' && n.status !== 'RESPONDED') return x;
-  const f = afterFact(ctx.acct, ctx.view, n.composed ?? n.preview);
+  const f = afterFact(ctx.acct, ctx.view, n.composed ?? n.preview, n.id);
   if (!f) return x;
   const facts = x.facts ?? [];
   const k = facts.findIndex((y) => y.label === '做完之後');
   return { ...x, facts: k >= 0 ? facts.map((y, j) => (j === k ? f : y)) : [f, ...facts] };
 }
 
+/**
+ * 入金、出金、改比例產生時已經算進去的其他清單（還沒填快照的；T38）：「#3 月報（等你下單）」。
+ * 這份清單的股數是假設那幾份照目前的選擇做完之後算的，所以每一檔的「目前」也從那之後算。
+ */
+function openBefore(acct: Account, n: Notif): Fact | null {
+  const xs = acct.notifs.filter((o) => o.id < n.id && o.kind !== 'INFO' && ((o.status === 'RESPONDED' && !!o.composed) || (o.status === 'PENDING' && o.items.length > 0)));
+  if (!xs.length) return null;
+  return {
+    label: '先算進',
+    value: xs.map((o) => `#${o.id} ${o.title}（${o.status === 'RESPONDED' ? '等你下單' : '等你決定'}）`).join('、'),
+    note: '這幾份清單還沒填快照，這份先當成它們照目前的選擇做完了才算，所以不會把同一張單再列一次；那幾份之後改了決定，這份不會跟著改。',
+  };
+}
+
 function cashflow(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const { acct } = ctx;
   const lines = it.choices[0].lines;
   const core = acct.cfg.coreTicker;
-  const after = afterFact(acct, ctx.view, n.composed ?? n.preview);
-  const head = after ? [after] : [];
+  const after = afterFact(acct, ctx.view, n.composed ?? n.preview, n.id);
+  // 入金、出金、改比例的股數是從還沒填快照的其他清單做完之後算的（T38）：每一檔的「目前」也從那之後算
+  const open = it.f === 'F11' || it.f === 'F12' || it.f === 'F13' ? openBefore(acct, n) : null;
+  const head = [...(after ? [after] : []), ...(open ? [open] : [])];
+  if (open) ctx = { ...ctx, acct: afterOpenLists(acct, ctx.view, { before: n.id, pending: true }) };
   if (it.f === 'F11') {
     const amt = n.deposit ?? 0;
     return {

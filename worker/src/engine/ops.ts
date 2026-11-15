@@ -31,7 +31,7 @@ import {
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
-import { KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, composeNotif, crashReviewOf, monthlyReport, monthlyWait, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
+import { KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, afterOpenLists, composeNotif, crashReviewOf, monthlyReport, monthlyWait, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
 import type { Bucket } from './types';
 
@@ -538,15 +538,64 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
     }
     acct.events.push({ date: view.date, kind, ticker, bucket, shares: q, reason, ...(notif !== undefined ? { notif } : {}) });
   };
-  /** 拿走這一桶這一檔同方向的變動（整筆算給清單，和舊的總股數快照相同）。 */
-  const take = (b: 'own' | 'mom' | 'core', t: string, listed: number): number => {
+  /** 幾份已回覆的清單都列了同一桶同一檔時，事先分好的股數（通知編號:桶:代號 → 股數）。 */
+  let split = new Map<string, number>();
+  /** 拿走這一桶這一檔同方向的變動（整筆算給清單，和舊的總股數快照相同）；幾份清單共用的照 split。 */
+  const take = (b: 'own' | 'mom' | 'core', t: string, listed: number, id?: number): number => {
+    const k = `${id}:${b}:${t}`;
+    if (split.has(k)) {
+      const q = split.get(k)!;
+      split.delete(k);
+      return q;
+    }
     const x = d[b][t] ?? 0;
     if (!x || Math.sign(x) !== Math.sign(listed)) return 0;
     delete d[b][t];
     return x;
   };
+  /**
+   * 同時有兩份以上已回覆、還沒填快照的清單列了同一桶同一檔（T38 走一遍的缺口：例如月報買 GE 20、入金清單又補 GE 2，
+   * 或月報賣 PLTR 19、入金清單買 PLTR 3）：原本整筆變動都算給第一份，兩份都跳「和清單不同」。
+   * 合計和快照的變動差不到 1 股 → 每一份照它列的股數算；否則照清單的順序、同方向的先分到它列的股數為止，多出來的算給最後一份同方向的。
+   */
+  const planSplit = () => {
+    split = new Map();
+    const claims = new Map<string, { id: number; listed: number }[]>();
+    for (const n of acct.notifs) {
+      if (n.status !== 'RESPONDED' || !n.composed) continue;
+      const per = new Map<string, number>();
+      for (const l of n.composed.lines) if (l.shares) per.set(`${l.bucket}:${l.ticker}`, (per.get(`${l.bucket}:${l.ticker}`) ?? 0) + l.shares);
+      for (const [k, listed] of per) if (listed) claims.set(k, [...(claims.get(k) ?? []), { id: n.id, listed }]);
+    }
+    for (const [k, cs] of claims) {
+      if (cs.length < 2) continue;
+      const [b, t] = k.split(':') as ['own' | 'mom' | 'core', string];
+      const x = d[b][t] ?? 0;
+      const sum = cs.reduce((a, c) => a + c.listed, 0);
+      const alloc = cs.map((c) => c.listed);
+      let rest = 0;
+      if (Math.abs(x - sum) <= 1) alloc[alloc.length - 1] += x - sum;
+      else {
+        rest = x;
+        cs.forEach((c, i) => {
+          const q = rest && Math.sign(c.listed) === Math.sign(rest) ? Math.sign(rest) * Math.min(Math.abs(rest), Math.abs(c.listed)) : 0;
+          alloc[i] = q;
+          rest -= q;
+        });
+        const last = cs.map((c) => Math.sign(c.listed)).lastIndexOf(Math.sign(rest));
+        if (rest && last >= 0) {
+          alloc[last] += rest;
+          rest = 0;
+        }
+      }
+      cs.forEach((c, i) => split.set(`${c.id}:${k}`, alloc[i]));
+      if (rest) d[b][t] = rest;
+      else delete d[b][t];
+    }
+  };
 
   const reconcileResponded = () => {
+    planSplit();
     for (const n of acct.notifs) {
       if (n.status !== 'RESPONDED' || !n.composed) continue;
       const fu: NonNullable<Notif['followUp']> = [];
@@ -560,12 +609,12 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
         }
         if (m.shares === 0) {
           // 同代號兩桶對沖（劃撥）：不用下單，照三桶的數字搬
-          for (const [b, p] of per) assign(b, m.ticker, take(b, m.ticker, p.shares), p.reason, n.id, 'TRANSFER');
+          for (const [b, p] of per) assign(b, m.ticker, take(b, m.ticker, p.shares, n.id), p.reason, n.id, 'TRANSFER');
           continue;
         }
         let done = 0;
         for (const [b, p] of per) {
-          const q = take(b, m.ticker, p.shares);
+          const q = take(b, m.ticker, p.shares, n.id);
           assign(b, m.ticker, q, p.reason, n.id);
           done += q;
         }
@@ -593,15 +642,23 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
       }
     }
   };
-  reconcileResponded();
-  // 還沒按回覆、但快照顯示已經照清單做了（非核心的那幾行，同一桶有同方向的變動）→ 當成照預設選項回覆
+  // 還沒按回覆、但快照顯示已經照清單做了（非核心的那幾行，同一桶有同方向的變動）→ 當成照預設選項回覆。
+  // 變動先扣掉已回覆的清單列的股數再比，再和已回覆的一起對帳（T38 走一遍的缺口：同一桶同一檔在已回覆和還沒回覆的清單上都有時，
+  // 原本整筆變動先算給已回覆的那一份，兩份都跳「和清單不同」，還沒回覆的那一份也留在「等你決定」）
+  const claimed = new Map<string, number>();
+  const claim = (c: NonNullable<Notif['composed']>) => {
+    for (const l of c.lines) if (l.shares) claimed.set(`${l.bucket}:${l.ticker}`, (claimed.get(`${l.bucket}:${l.ticker}`) ?? 0) + l.shares);
+  };
+  for (const n of acct.notifs) if (n.status === 'RESPONDED' && n.composed) claim(n.composed);
+  const left = (b: 'own' | 'mom' | 'core', t: string) => (d[b][t] ?? 0) - (claimed.get(`${b}:${t}`) ?? 0);
   for (const n of acct.notifs) {
     if (n.status !== 'PENDING' || !n.items.length || n.kind === 'INFO') continue;
     const pv = composeNotif(acct, view, n);
-    if (pv.lines.some((l) => l.bucket !== 'core' && l.shares !== 0 && d[l.bucket][l.ticker] && Math.sign(d[l.bucket][l.ticker]) === Math.sign(l.shares))) {
+    if (pv.lines.some((l) => l.bucket !== 'core' && l.shares !== 0 && Math.abs(left(l.bucket, l.ticker)) > 1e-9 && Math.sign(left(l.bucket, l.ticker)) === Math.sign(l.shares))) {
       n.composed = pv;
       n.respondedAt = view.date;
       n.status = 'RESPONDED';
+      claim(pv);
     }
   }
   reconcileResponded();
@@ -632,6 +689,18 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
       removedOwn.push(t);
     }
     acct.shadow.push({ date: view.date, f: 'F17', ticker: t, title: soldOut ? '手動交易：賣光並移出自選（如果繼續持有）' : '手動交易（自選）', rule: 0, ai: null, actual: q, price: px(t), choice: 'MANUAL', ...(note ? { note } : {}) });
+  }
+  // 已回覆的清單要買（或賣）這檔自選，你卻在同一份快照把它賣光、移出自選（T38 走一遍的缺口）：
+  // 那一行不再問「補做差額」（補做會替已經移出的自選再買回來）
+  for (const id of [...followUps]) {
+    const n = acct.notifs.find((x) => x.id === id)!;
+    const ownOnly = (t: string) => (n.composed?.lines ?? []).filter((l) => l.ticker === t && l.shares).every((l) => l.bucket === 'own');
+    n.followUp = (n.followUp ?? []).filter((x) => !(removedOwn.includes(x.ticker) && ownOnly(x.ticker)));
+    if (!n.followUp.length) {
+      delete n.followUp;
+      delete n.followUpOpen;
+      followUps.splice(followUps.indexOf(id), 1);
+    }
   }
 
   acct.units.own = flowUnits(acct.units.own, valueBefore.own, flows.own);
@@ -685,10 +754,12 @@ export function resolveFollowUp(acct0: Account, view: MarketView, id: number, fi
 /**
  * 入金（設計 §2.1.1）：只買不賣，當天給清單。
  * 入金遇到月報日：月報還沒回覆 → 用新的現金重算，取代原本的月報清單；已經回覆 → 另給一份入金清單。
+ * 月報之後另一份清單已經回覆、還沒填快照（或有未分類的持股）時，重算的月報會暫停、入金會不見（T38 走一遍的缺口）
+ * → 這時也另給一份入金清單（還沒回覆的月報先當成照預設做完了，afterOpenLists）。
  */
 export function deposit(acct0: Account, view: MarketView, amount: number): { acct: Account; notif: Notif; mergedIntoMonthly: boolean } {
   const pendingMonthly = acct0.notifs.find((n) => (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY') && n.status === 'PENDING' && n.date === view.date && n.monthly);
-  if (pendingMonthly?.monthly) {
+  if (pendingMonthly?.monthly && !monthlyWait(acct0)) {
     const base = clone(acct0);
     const old = base.notifs.find((n) => n.id === pendingMonthly.id)!;
     old.status = 'SUPERSEDED';
@@ -697,14 +768,16 @@ export function deposit(acct0: Account, view: MarketView, amount: number): { acc
     return { acct: r.acct, notif: r.notif, mergedIntoMonthly: true };
   }
   const acct = clone(acct0);
-  const values = cellValues(acct, view);
-  const plan = planDay({ cfg: acct.cfg, values, state: acct.rule, flow: { kind: '入金', amount } });
+  // 還沒填快照的清單（已回覆的、還沒回覆的照目前的選項）先當成做完了，才不會把它們要買的再列一次（T38）
+  const base = afterOpenLists(acct, view, { pending: true });
+  const values = cellValues(base, view);
+  const plan = planDay({ cfg: acct.cfg, values, state: base.rule, flow: { kind: '入金', amount } });
   acct.cash += amount;
   recordExternalFlow(acct, view, amount);
   const price = (t: string) => priceOf(view, t);
   // 補「低於目標最多」的格子：照缺口由大到小排，買單合計不超過現金的 98%
-  const lines = planToLines(plan, values, { price, shares: shareCells(acct) }).sort((a, b) => b.shares * price(b.ticker) - a.shares * price(a.ticker));
-  const capped = capBuys(lines, BUY_CASH_FRACTION * Math.max(0, acct.cash), price);
+  const lines = planToLines(plan, values, { price, shares: shareCells(base) }).sort((a, b) => b.shares * price(b.ticker) - a.shares * price(a.ticker));
+  const capped = capBuys(lines, BUY_CASH_FRACTION * Math.max(0, base.cash + amount), price);
   const item = makeItem({ f: 'F11', kind: 'CASHFLOW', title: `入金 ${amount}：只買不賣`, choices: [{ id: 'DO', label: '照做', lines: capped }], noSkip: true, why: '依序補低於目標最多的格子；缺口小於總資產 0.25% 的不補；剩下的進核心' });
   const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: `入金 ${amount} 的清單`, items: [item], deposit: amount });
   notif.preview = composeNotif(acct, view, notif);
@@ -717,9 +790,10 @@ export function deposit(acct0: Account, view: MarketView, amount: number): { acc
  */
 export function withdraw(acct0: Account, view: MarketView, amount: number): { acct: Account; notif: Notif } {
   const acct = clone(acct0);
-  const values = cellValues(acct, view);
-  const plan = planDay({ cfg: acct.cfg, values, state: acct.rule, flow: { kind: '出金', amount } });
-  const lines = planToLines(plan, values, { price: (t) => priceOf(view, t), shares: shareCells(acct) });
+  const base = afterOpenLists(acct, view, { pending: true }); // 同入金（T38）
+  const values = cellValues(base, view);
+  const plan = planDay({ cfg: acct.cfg, values, state: base.rule, flow: { kind: '出金', amount } });
+  const lines = planToLines(plan, values, { price: (t) => priceOf(view, t), shares: shareCells(base) });
   const item = makeItem({ f: 'F12', kind: 'CASHFLOW', title: `出金 ${amount}：只賣不買`, choices: [{ id: 'DO', label: '照做', lines }], noSkip: true, why: '先做單檔上限檢查；再照 核心現金 → 動能高於目標 → 核心 ETF → 動能 → 自選' });
   const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: `出金 ${amount} 的清單`, items: [item], withdraw: amount });
   notif.preview = composeNotif(acct, view, notif);
@@ -735,6 +809,10 @@ export function cancelCashflow(acct0: Account, view: MarketView, id: number): { 
   const n = acct.notifs.find((x) => x.id === id);
   if (!n || n.kind !== 'CASHFLOW' || !cashflowKind(n)) return { acct: acct0, ok: false, error: '這則不是入金、出金或改比例的清單' };
   if (n.status !== 'PENDING' && n.status !== 'RESPONDED') return { acct: acct0, ok: false, error: '這份清單已經結束（填過快照），要改請用「復原上一份快照」' };
+  // 之後的入金、出金、改比例是照這一筆做完之後算的（T38）：先取消後面那一份。
+  // 例如改了兩次比例（A → B → C），取消第一次會把比例改回 A，第二份清單卻還是照 C 列的
+  const later = acct.notifs.find((x) => x.id > id && cashflowKind(x) && (x.status === 'PENDING' || x.status === 'RESPONDED'));
+  if (later) return { acct: acct0, ok: false, error: `之後的「${later.title}」（通知 #${later.id}）是照這一筆做完之後算的，還沒填快照：先取消那一份，再取消這一筆` };
   const kind = cashflowKind(n)!;
   if (kind === '入金') {
     const amt = n.deposit ?? 0;
@@ -768,25 +846,27 @@ export function changeRatio(acct0: Account, view: MarketView, ratio: { own: numb
   const acct = clone(acct0);
   const old = acct.cfg.ratio;
   const ratioBefore = { ratio: { ...old }, std: Object.fromEntries(Object.entries(acct.rule.own).map(([t, o]) => [t, o.stdWeight])) };
-  const total = totalValue(acct, view);
+  // 同入金（T38）：還沒填快照的清單先當成做完了，股數從那之後算
+  const base = afterOpenLists(acct, view, { pending: true });
+  const total = totalValue(base, view);
   const lines: OrderLine[] = [];
   // 自選：每檔股數與標準比重都乘上「新比例 ÷ 舊比例」（原型假設 7）
   if (Math.abs(ratio.own - old.own) > 1e-9) {
     const f = old.own > 0 ? ratio.own / old.own : 1;
     for (const tk of Object.keys(acct.rule.own)) {
       acct.rule.own[tk].stdWeight *= f;
-      const cur = acct.lots.own[tk] ?? 0;
+      const cur = base.lots.own[tk] ?? 0;
       const d = Math.round(cur * f) - cur;
       if (d) lines.push({ ticker: tk, bucket: 'own', shares: d, reason: '改比例' });
     }
   }
   acct.cfg = { ...acct.cfg, ratio: { ...ratio } };
   const slot = momSlotTarget(acct.cfg, total, acct.rule.effPrev ?? 1);
-  for (const tk of new Set([...Object.keys(acct.lots.mom), ...acct.rule.heldMom])) {
-    const cur = acct.lots.mom[tk] ?? 0;
+  for (const tk of new Set([...Object.keys(base.lots.mom), ...base.rule.heldMom])) {
+    const cur = base.lots.mom[tk] ?? 0;
     let tgt = 0;
-    if (acct.rule.heldMom.includes(tk)) {
-      const ownVal = (acct.lots.own[tk] ?? 0) * priceOf(view, tk);
+    if (base.rule.heldMom.includes(tk)) {
+      const ownVal = (base.lots.own[tk] ?? 0) * priceOf(view, tk);
       const room = acct.cfg.crossCapBuy !== null ? Math.max(0, acct.cfg.crossCapBuy * total - ownVal) : Infinity;
       tgt = Math.floor(Math.min(slot, room) / priceOf(view, tk));
     }

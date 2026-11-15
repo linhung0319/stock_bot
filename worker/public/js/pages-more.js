@@ -196,10 +196,10 @@ export const depositPage = (() => {
   const amt = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '10,000' });
   return opPage({
     title: '入金',
-    sub: '錢已經匯進券商（或正要匯）。系統當天給一份只買不賣的清單。',
+    sub: '錢已經到券商、券商畫面看得到之後再登記。系統當天給一份只買不賣的清單。',
     fields: () => {
       amt.value = '';
-      return h('label', { class: 'field', style: 'margin:0' }, h('span', null, '入金金額（美元）'), h('div', { style: 'max-width:12em' }, amt), h('small', null, '登記後現金立刻入帳，清單才算得出來。'));
+      return h('label', { class: 'field', style: 'margin:0' }, h('span', null, '入金金額（美元）'), h('div', { style: 'max-width:12em' }, amt), h('small', null, '登記後現金立刻入帳，清單才算得出來。錢到券商之前先別填快照：還沒到的那筆會被當成現金少掉、記成虧損。'));
     },
     payload: () => ({ amount: amountOf(amt, '入金金額') }),
     path: '/ops/deposit',
