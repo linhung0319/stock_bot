@@ -344,7 +344,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 做：三種回應寫 log 的 `RESPONSE`；照做的效果照舊（出清時論點檔結案）；修正論點（編輯論點頁勾「這是對通知 #N 的回應」→ 通知結案、`afterBreak` 加 1；保留同一條前提 → 當成不同意）；不同意要寫理由 → `disputes`；月報裡沒動的乙類項目記 `SKIPPED` 並進靜默期；一直沒回的記 `NONE`；靜默期的長度（滿 45 天後第一份財報類申報的前一天，最長 100 天）與三個例外；持股頁與討論包顯示「失效後修改第 N 次」。
 - 完成條件：三種回應各一個測試；不同意之後同一條前提的建議不通知、不進月報；別條前提不成立照給；檔位加重照給；滿 45 天後的第一份 10-Q 結束靜默期；最長 100 天；修正論點但保留那條前提 → 進靜默期；月報的 `SKIPPED`；下一次審查的證據包有上次的回應與理由。
 
-#### [ ] T31b 減半檢視與慢規則通知
+#### [x] T31b 減半檢視與慢規則通知
 - 讀：`own_thesis` §3.2～§3.5、§1.9 表裡和慢規則通知有關的三列；問題 K1～K5。檔案：`ai/drops.ts`（`dropDecision`）、`app/dropAi.ts`（`applyOwnDrop`、`startDropRuns`）、`engine/report.ts`（`ownAiChoice`、`refreshOwnAiChoice`）、`app/flow.ts`（`pushPending`）、`ai/prompts/own_drop_v1.md`。
 - 做：
   1. `own_drop_v2.md`；只有預設前提的股票只能選減半或出清（`own_thesis` §3.11 歸給 T25 的「F7 拿掉 HOLD」也在這裡做，T25 執行時移過來）；`dropDecision` 的五種結果；`dropReview`。

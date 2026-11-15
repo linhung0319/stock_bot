@@ -14,6 +14,7 @@ import {
   type Account,
   type Choice,
   type CondNotice,
+  type DropStatus,
   type Item,
   type MarketView,
   type MonthlyContext,
@@ -23,10 +24,10 @@ import {
   type Tier,
 } from './account';
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
-import { excessVol } from './indicators';
+import { drawdownFromHigh, excessVol } from './indicators';
 import { composeWithCore, crashCoreLines, mergeByTicker, planToLines, type Composed, type CoreContext, type OrderLine } from './orders';
 import { crashDecision, validBars } from './risk';
-import { halveShares, slowDayInput, stepSlowRule } from './slowRule';
+import { SLOW, halveShares, slowDayInput, stepSlowRule } from './slowRule';
 import type { OwnAction, OwnState } from './types';
 
 // ---------------------------------------------------------------- 共用
@@ -89,57 +90,207 @@ function sharesText(n: number): string {
   return n < 0 ? `賣 ${-n} 股` : n > 0 ? `買 ${n} 股` : '不動，0 股';
 }
 
+// ---------------------------------------------------------------- 慢規則通知上的 AI 那一行與選項（own_thesis §3.4）
+
+/** 跌幅的歸類（減半檢視的 cause_class）的白話。 */
+export const DROP_CAUSE_TEXT: Record<string, string> = { MARKET: '大盤一起跌', SECTOR: '產業一起跌', FUNDAMENTAL: '公司基本面', ONE_OFF: '一次性事件', UNKNOWN: '看不出原因' };
+/** 減半項目的理由（慢規則是底線，§3.2）。 */
+export const REDUCE_WHY = '收盤距 52 週高點跌 ≥ 20%。慢規則是底線：你沒有另外決定時照它做。';
+/** 只有預設前提的股票，理由後面加的那一句（§3.4）。 */
+export const DEFAULT_ONLY_WHY = '這檔還沒有你的論點，AI 只檢查系統預設前提。';
+/** AI 建議出清、你選了照規則（沒有另外寫理由）時，靜默期記的理由（§3.4）。 */
+export const RULE_OVER_EXIT_REASON = '照規則減半，沒有照 AI 出清';
+
+/** 慢規則項目上 AI 的那一部分：那一行、「照 AI」選項（有才有）、狀態。 */
+interface OwnAi {
+  choice?: Choice;
+  aiLine?: string;
+  runIds?: string[];
+  drop?: DropStatus;
+  /** 帶「出清」那一行時：哪一條前提（寫 BREAK_NOTICE、拿去討論、靜默期用）。 */
+  exitPremise?: string;
+}
+
+const premiseText = (meta: OwnMeta, id: string) => meta.premises.find((p) => p.id === id)?.text ?? id;
+
+/** 那條前提在靜默中 → `（你在 M/D 對這條前提表示不同意）`；靜默期不擋慢規則通知上的那一行（§3.4）。 */
+function disputeNote(meta: OwnMeta, premiseId: string, date: string): string {
+  const d = (meta.disputes ?? []).find((x) => x.premiseId === premiseId && x.until >= date);
+  return d ? `（你在 ${mdOf(d.since)} 對這條前提表示不同意）` : '';
+}
+
 /**
- * 慢規則減半（F7）或加回（F8）時，並列最近一次 F24 的檔位（設計 §2.2）。
- * 回傳 null = 沒有 AI 檔位，或 AI 和規則一致（只顯示一行）。
+ * 觸發之後另外回來的審查（§3.4）：aiTier 的日期不早於觸發日、不是減半檢視自己寫的、三票一致而且資料沒有缺漏、有一條不成立的前提（還在現行的前提裡）、
+ * 檔位是出清或減半。靜默期不看。沒有的話看併進來的乙類通知（absorbed）。
+ * since：沒有 dropReview（開減半檢視時的狀態沒有存成、舊通知）時，用通知的訊號日當觸發日。
  */
-function ownAiChoice(acct: Account, view: MarketView, ticker: string, action: OwnAction, stateBefore: OwnState): { choice: Choice; aiLine: string; runIds?: string[] } | null {
-  const ai = acct.own[ticker]?.aiTier;
-  if (!ai) return null;
-  const tier = ai.tier;
-  if (action === 'REDUCE' && tier === 'HALF') return null; // 同一個動作
-  if (action === 'READD' && (tier === 'STANDARD' || tier === 'HOLD' || tier === 'RAISE')) return null; // 「不動」當成沒有異議（原型假設 2）
-  const eff: Tier = action === 'REDUCE' && (tier === 'STANDARD' || tier === 'RAISE') ? 'HOLD' : tier;
-  const sh = tierShares(acct, view, ticker, eff, stateBefore);
-  const label = action === 'READD' && tier === 'HALF' ? '維持減半' : TIER_NAME[eff];
+function reviewOnTop(meta: OwnMeta, absorbed: Item['absorbed'], since: string): { tier: 'EXIT' | 'HALF'; premiseId: string; date: string; runIds: string[] } | null {
+  const live = (id: string) => meta.premises.some((p) => p.id === id);
+  const ai = meta.aiTier;
+  const dr = meta.dropReview;
+  if (ai && ai.date >= (dr?.session ?? since) && ai.trigger !== 'DROP' && ai.agreed && ai.premiseId && live(ai.premiseId) && (ai.tier === 'EXIT' || ai.tier === 'HALF')) {
+    return { tier: ai.tier, premiseId: ai.premiseId, date: ai.date, runIds: ai.runId ? [ai.runId] : [] };
+  }
+  if (absorbed && live(absorbed.premiseId)) return { tier: absorbed.tier, premiseId: absorbed.premiseId, date: absorbed.date, runIds: absorbed.runIds ?? [] };
+  return null;
+}
+
+/**
+ * 減半項目（F7）的 AI 那一部分（§3.4 的表）。原則：「照 AI」只來自看過這次觸發的結論（修 K1、K2）——
+ * 減半檢視的結果（dropReview），或觸發之後另外回來的審查；觸發之前的審查檔位不用。
+ */
+function reduceAi(acct: Account, view: MarketView, ticker: string, absorbed: Item['absorbed'], since: string): OwnAi {
+  const meta = acct.own[ticker];
+  if (!meta) return {};
+  const dr = meta.dropReview ?? null;
+  const top = reviewOnTop(meta, absorbed, since);
+  const exit = (premiseId: string, lead: string, runIds: string[]): OwnAi => {
+    const sh = tierShares(acct, view, ticker, 'EXIT', 'STD');
+    const act = `出清，${sharesText(sh)}`;
+    return {
+      choice: { id: 'AI', label: `照 AI：${act}`, tier: 'EXIT', lines: sh ? [{ ticker, bucket: 'own', shares: sh, reason: 'AI 建議' }] : [], effects: [{ type: 'APPLY_TIER', ticker, tier: 'EXIT' }] },
+      aiLine: `${lead}前提「${premiseText(meta, premiseId)}」不成立。AI 建議${act}${disputeNote(meta, premiseId, view.date)}`,
+      drop: 'EXIT',
+      exitPremise: premiseId,
+      ...(runIds.length ? { runIds } : {}),
+    };
+  };
+  const drRun = dr?.runId ? [dr.runId] : [];
+  if (dr?.status === 'EXIT' && dr.premiseId) return exit(dr.premiseId, '論點檢查（3 票）：', drRun);
+  if (top?.tier === 'EXIT') return exit(top.premiseId, `${mdOf(top.date)} 的審查（3 票）：`, top.runIds);
+  // 另外的審查認為有一條前提不成立、同意減半 → 沒有「不動」選項
+  if (top) return { aiLine: `${mdOf(top.date)} 的審查認為前提「${premiseText(meta, top.premiseId)}」不成立，同意減半${disputeNote(meta, top.premiseId, view.date)}`, drop: 'AGREE', ...(top.runIds.length ? { runIds: top.runIds } : {}) };
+  if (!dr) return {};
+  const runIds = drRun.length ? { runIds: drRun } : {};
+  switch (dr.status) {
+    case 'PENDING':
+      return { aiLine: 'AI 論點檢查進行中，台灣 09:30 前更新', drop: 'PENDING', ...runIds };
+    case 'HOLD':
+      // 只有預設前提的股票不會有「不動」（§3.3：沒有論點就沒有東西可檢查）；萬一出現，當成沒有可用的結論
+      if (defaultOnly(meta)) break;
+      return {
+        choice: { id: 'AI', label: '照 AI：不動', tier: 'HOLD', lines: [], effects: [{ type: 'APPLY_TIER', ticker, tier: 'HOLD' }] },
+        aiLine: `論點檢查（3 票）：跌幅主要是${dr.cause === 'MARKET' ? '大盤一起跌' : '產業一起跌'}；你的 ${meta.premises.length} 條前提都沒有被判不成立。AI 建議不動`,
+        drop: 'HOLD',
+        ...runIds,
+      };
+    case 'AGREE':
+      return { aiLine: `論點檢查（3 票）：同意減半${dr.cause && DROP_CAUSE_TEXT[dr.cause] ? `（歸類：${DROP_CAUSE_TEXT[dr.cause]}）` : ''}`, drop: 'AGREE', ...runIds };
+    default:
+      break;
+  }
+  return { aiLine: 'AI 論點檢查沒有一致結論，照規則', drop: 'NONE', ...runIds };
+}
+
+/**
+ * 加回項目（F8）的「照 AI」（維持減半／出清）：只在 aiTier 的檔位是減半或出清、三票判同一條前提不成立（有 premiseId）、
+ * 而且那條前提還在現行的前提裡時列（§3.4）。審查在減半狀態下選了「減半」但沒有不成立的前提，不算異議（修 K5）。
+ */
+function readdAi(acct: Account, view: MarketView, ticker: string): OwnAi {
+  const meta = acct.own[ticker];
+  const ai = meta?.aiTier;
+  if (!meta || !ai || !ai.agreed || !ai.premiseId || (ai.tier !== 'HALF' && ai.tier !== 'EXIT') || !meta.premises.some((p) => p.id === ai.premiseId)) return {};
+  const sh = tierShares(acct, view, ticker, ai.tier, 'HALF');
+  const act = ai.tier === 'HALF' ? '維持減半' : `出清，${sharesText(sh)}`;
   return {
-    choice: {
-      id: 'AI',
-      label: '照 AI',
-      tier: eff,
-      lines: sh ? [{ ticker, bucket: 'own', shares: sh, reason: 'AI 建議' }] : [],
-      effects: [{ type: 'APPLY_TIER', ticker, tier: action === 'READD' && tier === 'HALF' ? 'HALF' : eff }],
-    },
-    aiLine: `AI（最近一次審查的檔位：${label}）：${sharesText(sh)}`,
+    choice: { id: 'AI', label: `照 AI：${act}`, tier: ai.tier, lines: sh ? [{ ticker, bucket: 'own', shares: sh, reason: 'AI 建議' }] : [], effects: [{ type: 'APPLY_TIER', ticker, tier: ai.tier }] },
+    aiLine: `${mdOf(ai.date)} 的審查認為前提「${premiseText(meta, ai.premiseId)}」不成立：AI 建議${act}${disputeNote(meta, ai.premiseId, view.date)}`,
     ...(ai.runId ? { runIds: [ai.runId] } : {}),
   };
 }
 
-function ownRuleItem(acct: Account, view: MarketView, ticker: string, action: OwnAction, lines: OrderLine[], note: string): Item {
-  const stateBefore: OwnState = action === 'REDUCE' ? 'STD' : 'HALF';
-  const f = action === 'REDUCE' ? 'F7' : 'F8';
-  const ai = ownAiChoice(acct, view, ticker, action, stateBefore);
-  const choices: Choice[] = [{ id: 'RULE', label: '照規則', lines }];
-  if (ai) choices.push(ai.choice);
-  // F8：加回時註明未解除的硬事件標記、已成立的降級條件（ai_layer F8 卡片）
-  const meta = acct.own[ticker];
-  const warn = action === 'READD' && meta ? [...(meta.flags.length ? [`未解除的硬事件標記：${meta.flags.join('、')}`] : []), ...((meta.metConds ?? []).length ? [`已成立的降級條件：${meta.metConds!.join('；')}`] : [])] : [];
-  return makeItem({
-    f,
-    kind: 'OWN_RULE',
-    ticker,
-    title: `${ticker} 慢規則${action === 'REDUCE' ? '減半' : '加回'}${note}`,
-    choices,
-    aiLine: ai?.aiLine,
-    ...(ai?.runIds ? { runIds: ai.runIds } : {}),
-    why: action === 'REDUCE' ? '收盤距 52 週高點跌 ≥ 20%' : '收盤站上 200 日均線連續 10 天、距上次切換 ≥ 15 個交易日',
-    ...(warn.length ? { note: `注意：${warn.join('；')}` } : {}),
-  });
+/** 把 AI 那一部分寫到項目上（選項順序固定：照規則、照 AI、這次不做）。回傳有沒有變。 */
+function setOwnAi(acct: Account, it: Item, ai: OwnAi): boolean {
+  const before = JSON.stringify([it.choices, it.aiLine, it.runIds, it.drop, it.brk, it.why, it.choice]);
+  const keep = it.choices.filter((c) => c.id !== 'AI');
+  it.choices = ai.choice ? [keep[0], ai.choice, ...keep.slice(1)] : keep;
+  const set = <K extends 'aiLine' | 'runIds' | 'drop' | 'brk'>(k: K, v: Item[K] | undefined) => {
+    if (v === undefined) delete it[k];
+    else it[k] = v;
+  };
+  set('aiLine', ai.aiLine);
+  set('runIds', ai.runIds);
+  if (it.f === 'F7') {
+    set('drop', ai.drop);
+    set('brk', ai.exitPremise ? { type: 'B', premiseId: ai.exitPremise, withRule: true } : undefined);
+    const meta = it.ticker ? acct.own[it.ticker] : undefined;
+    it.why = REDUCE_WHY + (meta && ai.drop && defaultOnly(meta) ? DEFAULT_ONLY_WHY : '');
+  }
+  if (it.choice === 'AI' && !ai.choice) it.choice = it.ruleChoice;
+  return before !== JSON.stringify([it.choices, it.aiLine, it.runIds, it.drop, it.brk, it.why, it.choice]);
 }
 
 /**
- * F7 的 AI 檢視晚一點才回來：還沒回覆的通知裡，這檔的慢規則項目照最新的 AI 檔位重算「照 AI」那個選項。
- * 已經回覆的不動。回傳改了哪幾則通知。
+ * 慢規則的通知產生時，同一檔有還沒回覆的乙類通知（§3.4、§1.9）：那一項取消、整則只剩取消的就標 SUPERSEDED，內容併進慢規則項目。
+ * 沒有乙類、但月中有記著等月報的建議（往下的檔位、有不成立的前提）→ 一樣併進來，不再另列一項。
+ */
+function absorbBreak(acct: Account, view: MarketView, ticker: string): Item['absorbed'] {
+  const meta = acct.own[ticker];
+  if (!meta) return undefined;
+  const pb = pendingBreak(acct, ticker);
+  if (pb && pb.it.brk?.type === 'B') {
+    const tier = pb.it.choices.find((c) => c.id === 'AI')?.tier === 'EXIT' ? 'EXIT' : 'HALF';
+    const premiseId = pb.it.brk.premiseId;
+    const date = meta.aiTier?.premiseId === premiseId && meta.aiTier.date <= pb.n.date ? meta.aiTier.date : pb.n.date;
+    pb.it.cancelled = true;
+    pb.it.note = `慢規則也觸發減半了，這一項併進 ${ticker} 的慢規則減半通知（在那裡決定）`;
+    if (pb.n.items.every((i) => i.cancelled)) pb.n.status = 'SUPERSEDED';
+    else pb.n.preview = composeNotif(acct, view, pb.n);
+    return { notif: pb.n.id, tier, premiseId, date, ...(pb.it.runIds?.length ? { runIds: [...pb.it.runIds] } : {}) };
+  }
+  const ai = meta.aiTier;
+  if (ai?.suggest && ai.premiseId && (ai.tier === 'EXIT' || ai.tier === 'HALF')) {
+    ai.suggest = false;
+    return { notif: 0, tier: ai.tier, premiseId: ai.premiseId, date: ai.date, ...(ai.runId ? { runIds: [ai.runId] } : {}) };
+  }
+  // 月報重算（入金合併、排除）：被取代的那一份月報上這檔的減半項目併過的，沿用
+  for (let k = acct.notifs.length - 1; k >= 0; k--) {
+    const old = acct.notifs[k].items.find((i) => i.f === 'F7' && i.ticker === ticker);
+    if (!old) continue;
+    return acct.notifs[k].status === 'SUPERSEDED' && old.absorbed ? clone(old.absorbed) : undefined;
+  }
+  return undefined;
+}
+
+/** dd：觸發那天距 52 週高點的跌幅（減半項目的標題用；沒有就用訊號日的）。 */
+function ownRuleItem(acct: Account, view: MarketView, ticker: string, action: OwnAction, lines: OrderLine[], note: string, dd?: number): Item {
+  const meta = acct.own[ticker];
+  if (action === 'REDUCE') {
+    const absorbed = absorbBreak(acct, view, ticker);
+    const c = view.close[ticker];
+    const d = dd ?? (c ? drawdownFromHigh(c, view.i, SLOW.highDays) : NaN);
+    const it = makeItem({
+      f: 'F7',
+      kind: 'OWN_RULE',
+      ticker,
+      title: Number.isFinite(d) ? `${ticker}：比 52 週高點低 ${(-d * 100).toFixed(1)}% → 慢規則減半${note}` : `${ticker} 慢規則減半${note}`,
+      choices: [{ id: 'RULE', label: '照規則', lines }],
+      why: REDUCE_WHY,
+      // 「這次不做」要寫一句理由（§3.4；整則通知選這次不做時也要）
+      reasonRequired: true,
+      ...(absorbed ? { absorbed } : {}),
+    });
+    setOwnAi(acct, it, reduceAi(acct, view, ticker, absorbed, view.date));
+    return it;
+  }
+  // F8：加回時註明未解除的硬事件標記、已成立的降級條件（ai_layer F8 卡片）
+  const warn = meta ? [...(meta.flags.length ? [`未解除的硬事件標記：${meta.flags.join('、')}`] : []), ...((meta.metConds ?? []).length ? [`已成立的降級條件：${meta.metConds!.join('；')}`] : [])] : [];
+  const it = makeItem({
+    f: 'F8',
+    kind: 'OWN_RULE',
+    ticker,
+    title: `${ticker} 慢規則加回${note}`,
+    choices: [{ id: 'RULE', label: '照規則', lines }],
+    why: '收盤站上 200 日均線連續 10 天、距上次切換 ≥ 15 個交易日',
+    ...(warn.length ? { note: `注意：${warn.join('；')}` } : {}),
+  });
+  setOwnAi(acct, it, readdAi(acct, view, ticker));
+  return it;
+}
+
+/**
+ * 還沒回覆的通知裡，這檔的慢規則項目照現在的狀態重算 AI 那一行與「照 AI」選項（§3.4）：
+ * 減半檢視的結果回來、觸發之後另外有審查回來、開減半檢視時寫 PENDING 都會呼叫。已經回覆的不動。回傳改了哪幾則通知。
  */
 export function refreshOwnAiChoice(acct0: Account, view: MarketView, ticker: string): { acct: Account; changed: number[] } {
   const acct = clone(acct0);
@@ -148,14 +299,8 @@ export function refreshOwnAiChoice(acct0: Account, view: MarketView, ticker: str
     if (n.status !== 'PENDING') continue;
     for (const it of n.items) {
       if (it.kind !== 'OWN_RULE' || it.ticker !== ticker || it.cancelled) continue;
-      const action: OwnAction = it.f === 'F7' ? 'REDUCE' : 'READD';
-      const ai = ownAiChoice(acct, view, ticker, action, action === 'REDUCE' ? 'STD' : 'HALF');
-      const keep = it.choices.filter((c) => c.id !== 'AI');
-      it.choices = ai ? [keep[0], ai.choice, ...keep.slice(1)] : keep;
-      it.aiLine = ai?.aiLine;
-      if (ai?.runIds) it.runIds = ai.runIds;
-      else delete it.runIds;
-      if (it.choice === 'AI' && !ai) it.choice = it.ruleChoice;
+      const ai = it.f === 'F7' ? reduceAi(acct, view, ticker, it.absorbed, n.date) : readdAi(acct, view, ticker);
+      if (!setOwnAi(acct, it, ai)) continue;
       syncRunIds(n);
       changed.push(n.id);
     }
@@ -182,7 +327,7 @@ function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values
         break;
       case '自選訊號': {
         const action: OwnAction = reduced.has(t) ? 'REDUCE' : 'READD';
-        items.push(ownRuleItem(acct, view, t, action, [l], ctx.ownNotes?.[t] ?? ''));
+        items.push(ownRuleItem(acct, view, t, action, [l], ctx.ownNotes?.[t] ?? '', action === 'REDUCE' ? (acct.own[t]?.reduceDd ?? undefined) : undefined));
         break;
       }
       case '動能換股':
@@ -328,6 +473,12 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
     const step = stepSlowRule(meta.slow, slowDayInput(c, view.i));
     meta.slow = step.next;
     if (step.signal) {
+      // 慢規則切換（或和尚未下單的那次互相抵銷）：上一次減半的論點檢查不再對應（own_thesis §3.3）
+      delete meta.dropReview;
+      if (step.signal === 'REDUCE') {
+        const dd = drawdownFromHigh(c, view.i, SLOW.highDays);
+        meta.reduceDd = Number.isFinite(dd) ? dd : null;
+      }
       if (meta.pending && meta.pending.action !== step.signal) {
         // 還沒下單的切換和這次互相抵銷
         meta.pending = null;
@@ -483,7 +634,13 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   }
   // F24／F23：AI 的月報建議（規則沒有動作的自選股）
   for (const [tk, m] of Object.entries(acct.own)) {
-    if (!m.aiTier?.suggest || items.some((i) => i.ticker === tk && i.kind === 'OWN_RULE')) continue;
+    // 這檔有慢規則項目：AI 的看法已經列在那一項上（§3.4），不另列一項；往下的建議算給過了
+    const ruleIt = items.find((i) => i.ticker === tk && i.kind === 'OWN_RULE');
+    if (ruleIt) {
+      if (m.aiTier?.suggest && ruleIt.choices.some((c) => c.id === 'AI')) m.aiTier.suggest = false;
+      continue;
+    }
+    if (!m.aiTier?.suggest) continue;
     const tier = m.aiTier.tier;
     const state = acct.rule.own[tk].applied;
     if (tier === 'HOLD' || (tier === 'HALF' && state === 'HALF') || (tier === 'STANDARD' && state === 'STD')) continue;
@@ -587,11 +744,12 @@ export function recordExternalFlow(acct: Account, view: MarketView, amount: numb
 
 /**
  * AI 層回報：這檔自選的最新 F24 檔位。suggest = 3 票一致、和目前不同、有一條不成立的前提（還沒給使用者的）；
- * extra.premiseId = 那條前提（own_thesis §1.6）、trigger = 觸發原因、basis = 判不成立的依據（乙類的理由用）。
+ * extra.premiseId = 那條前提（own_thesis §1.6）、trigger = 觸發原因、basis = 判不成立的依據（乙類的理由用）、
+ * agreed = 三票同一個檔位而且資料沒有缺漏（慢規則通知上的「照 AI」只認這種，§3.4）。
  */
-export function recordAiTier(acct0: Account, ticker: string, tier: Tier, date: string, suggest: boolean, runId?: string, extra?: { premiseId?: string | null; trigger?: ReviewTrigger; basis?: string | null }): Account {
+export function recordAiTier(acct0: Account, ticker: string, tier: Tier, date: string, suggest: boolean, runId?: string, extra?: { premiseId?: string | null; trigger?: ReviewTrigger; basis?: string | null; agreed?: boolean }): Account {
   const acct = clone(acct0);
-  if (acct.own[ticker]) acct.own[ticker].aiTier = { tier, date, suggest, runId, ...(extra?.premiseId ? { premiseId: extra.premiseId } : {}), ...(extra?.trigger ? { trigger: extra.trigger } : {}), ...(extra?.basis ? { basis: extra.basis } : {}) };
+  if (acct.own[ticker]) acct.own[ticker].aiTier = { tier, date, suggest, runId, ...(extra?.premiseId ? { premiseId: extra.premiseId } : {}), ...(extra?.trigger ? { trigger: extra.trigger } : {}), ...(extra?.basis ? { basis: extra.basis } : {}), ...(extra?.agreed ? { agreed: true } : {}) };
   return acct;
 }
 
@@ -804,11 +962,21 @@ export function routeReview(acct0: Account, view: MarketView, ticker: string, r:
   if (!r.consensus && meta0.aiTier?.suggest) return { acct: acct0, route: 'KEPT', notif: null, changed: [], why: `這次沒有三票一致的結論，${meta0.aiTier.date} 的建議留著進月報` };
   const down = r.tier === 'EXIT' || r.tier === 'HALF';
   const silent = r.suggest && down && !!r.premiseId && silenced(acct0, ticker, r.premiseId, r.date, r.tier);
-  let acct = recordAiTier(acct0, ticker, r.tier, r.date, r.suggest && !silent, r.runId, { premiseId: r.premiseId, trigger: r.trigger, basis: r.basis });
+  let acct = recordAiTier(acct0, ticker, r.tier, r.date, r.suggest && !silent, r.runId, { premiseId: r.premiseId, trigger: r.trigger, basis: r.basis, agreed: r.consensus });
   const done = (route: ReviewRoute, why: string, notif: Notif | null = null, changed: number[] = []) => {
     if (route !== 'MONTHLY' && acct.own[ticker]?.aiTier) acct.own[ticker].aiTier!.suggest = false;
-    return { acct, route, notif, changed, why };
+    return { acct, route, notif, changed: [...new Set([...ruleChanged, ...changed])], why };
   };
+  // 這檔有還沒回覆的慢規則通知：那則通知上 AI 的那一行照 §3.4 重算（哪些結論會變成那一行或選項由 refreshOwnAiChoice 判斷）。
+  // 三票一致、往下的檔位、有不成立的前提 → 不另發（§1.9 的表）；靜默期不擋那一行，審查的檔位和規則已經做的相同（減半）也照寫
+  const ruleN0 = acct.notifs.find((n) => n.status === 'PENDING' && n.items.some((i) => i.kind === 'OWN_RULE' && i.ticker === ticker && !i.cancelled));
+  let ruleChanged: number[] = [];
+  if (ruleN0) {
+    const rr = refreshOwnAiChoice(acct, view, ticker);
+    acct = rr.acct;
+    ruleChanged = rr.changed;
+    if (down && r.consensus && r.premiseId) return done('RULE_NOTICE', `有還沒回覆的慢規則通知 #${ruleN0.id}，不另發，更新那則的 AI 那一行`, null, ruleChanged);
+  }
   if (silent) return done('SILENT', `前提 ${r.premiseId} 在靜默期內（你之前表示不同意），只放網站`);
   if (!r.suggest) return done('NONE', '沒有資格（只放網站）');
   if (!down || !r.premiseId) return done('MONTHLY', '回到標準、提高到 125% 只進月報');

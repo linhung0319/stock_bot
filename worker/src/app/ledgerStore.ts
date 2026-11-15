@@ -225,3 +225,26 @@ export async function undoSnapshot(db: D1Database, now: Date): Promise<{ ok: tru
   }
   return { ok: true, date: row.date };
 }
+
+/**
+ * 帳戶已經存好之後還要改一點東西（開 AI 執行時記狀態、推播之後記「講過了」）：重新讀、改、存；和網站同時存檔時重來，最多 3 次。
+ * fn 回傳 null = 不用存。stmts：和帳戶同一筆交易要寫的語句。回傳存好的帳戶（沒有存是 null）；存不成只記在 log。
+ */
+export async function patchAccount(db: D1Database, now: Date, cause: string, fn: (acct: Account) => { acct: Account; stmts?: D1PreparedStatement[] } | null, log?: string[]): Promise<Account | null> {
+  for (let k = 0; k < 3; k++) {
+    const loaded = await loadAccount(db);
+    if (!loaded) return null;
+    const next = fn(loaded.acct);
+    if (!next) return null;
+    try {
+      await saveAccount(db, next.acct, loaded, cause, now, next.stmts ?? []);
+      return next.acct;
+    } catch (e) {
+      if (!(e instanceof ConflictError) || k === 2) {
+        log?.push(`${cause}：帳戶沒有存成（${e instanceof Error ? e.message : String(e)}）`);
+        return null;
+      }
+    }
+  }
+  return null;
+}

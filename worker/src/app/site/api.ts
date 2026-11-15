@@ -46,7 +46,7 @@ import { DISCUSSION_MODES, THESIS_LIMITS, parseThesisBlock } from '../../ai/disc
 import type { ExitLine } from '../../ai/ownCheck';
 import { demoDiscussion } from '../discussion';
 import type { ThesisLogInput } from '../ledgerStore';
-import type { CondAction } from '../thesis';
+import { ruleResponseLogs, type CondAction } from '../thesis';
 import { errText } from '../../data/util';
 import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
 import { json, type Env, type Fetcher } from '../env';
@@ -281,9 +281,11 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
       const n = findNotif(d.acct, Number.isInteger(replyTo) ? replyTo : -1);
       if (!dry && !revisableBreak(d.acct, n.id, tk)) throw new SiteError(409, n.status !== 'PENDING' ? `通知 #${n.id} 已經回覆過了，不能再用「修正論點」回應。取消勾選「這是對通知 #${n.id} 的回應」再存。` : `通知 #${n.id} 不是 ${tk} 的「AI 判斷前提不成立」通知，不能用「修正論點」回應。取消勾選再存。`);
     }
+    // 這檔有還沒回覆、帶「AI 建議出清」那一行的慢規則通知時存論點：一樣算「失效後修改」（§3.4；通知本身仍要回去選一項）
+    const ruleExit = !dry && d.acct.notifs.some((n) => n.status === 'PENDING' && n.items.some((i) => i.ticker === tk && !i.cancelled && i.brk?.type === 'B' && !!i.brk.withRule));
     let out: ReturnType<typeof setThesis>;
     try {
-      out = setThesis(d.acct, tk, { text: thesisText, source, premises, date: d.view.date, afterBreak: replyTo !== null });
+      out = setThesis(d.acct, tk, { text: thesisText, source, premises, date: d.view.date, afterBreak: replyTo !== null || ruleExit });
     } catch (e) {
       throw new SiteError(422, errText(e));
     }
@@ -314,7 +316,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
               before: { text: out.before.text, premises: brief(out.before.premises) },
               after: { text: meta.thesis!.text, premises: brief(meta.premises) },
               retired: out.mapping.retired.map((p) => p.id),
-              afterBreak: !!rv?.ok,
+              afterBreak: !!rv?.ok || ruleExit,
               replyTo,
               exitLines: exits.map((e) => e.text),
               exitActions: exits.map((e) => e.action),
@@ -516,7 +518,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       const r = await mutate(backend, `回覆通知 #${id}`, [], (d) => {
         const n = findNotif(d.acct, id);
         if (n.status !== 'PENDING') throw new SiteError(409, '這則通知已經回覆過了');
-        // 甲類的「這次不做」、當天乙類的「不同意，不動」要寫一句理由（own_thesis §1.10）
+        // 甲類的「這次不做」、當天乙類的「不同意，不動」、慢規則減半項目的「這次不做」要寫一句理由（own_thesis §1.10、§3.4）
         const miss = missingReasons(n, { mode, choices, reasons });
         if (miss.length) throw new SiteError(422, `${miss.map((it) => `「${it.ticker ?? it.title}」`).join('、')}選了不做，要寫一句理由（1～${REASON_MAX} 字）`);
         const long = n.items.find((it) => (reasons[it.key] ?? '').length > REASON_MAX);
@@ -528,7 +530,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
         const after = acct.notifs.find((x) => x.id === id)!;
         const log: ThesisLogInput[] = after.items.flatMap((it) => {
           const fileId = it.brk && it.ticker ? d.acct.own[it.ticker]?.fileId : undefined;
-          if (!fileId || !it.brk || it.cancelled) return [];
+          // 慢規則減半項目上帶「AI 建議出清」的不是乙類：回應在下面寫成 type R
+          if (!fileId || !it.brk || it.cancelled || (it.brk.type === 'B' && it.brk.withRule)) return [];
           const skip = it.choice === 'SKIP';
           const body =
             it.brk.type === 'A'
@@ -536,6 +539,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
               : { notif: id, type: 'B', outcome: !skip ? 'FOLLOW' : it.reason ? 'DISAGREE' : 'SKIPPED', reason: skip ? (it.reason ?? null) : null, premiseId: it.brk.premiseId };
           return [{ ticker: it.ticker!, fileId, session: d.view.date, kind: 'RESPONSE' as const, ref: String(id), body }];
         });
+        // 慢規則減半項目的回應（type R，own_thesis §3.4）：照規則／照 AI／這次不做＋理由，連同當時 AI 給的選項
+        log.push(...ruleResponseLogs(d.acct, after, d.view.date));
         return { acct, log };
       });
       return json({ ok: true, status: findNotif(r.after.acct, id).status });

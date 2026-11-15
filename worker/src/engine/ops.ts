@@ -30,7 +30,7 @@ import {
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
-import { KEPT_REASON, SKIPPED_REASON, addDispute, composeNotif, monthlyReport, monthlyWait, recordExternalFlow, type MonthlyResult } from './report';
+import { KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, composeNotif, monthlyReport, monthlyWait, recordExternalFlow, refreshOwnAiChoice, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
 import type { Bucket } from './types';
 
@@ -166,15 +166,19 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
         ...(it.runIds?.length ? { runIds: [...it.runIds] } : {}),
         ...(it.reason ? { note: it.reason } : {}),
       };
-      if (rec.ai !== null || rec.actual !== rec.rule || it.aiLine) acct.shadow.push(rec);
+      // 慢規則項目上 AI 的那一行可能只是「同意減半」「沒有一致結論」（沒有另一個選項）：照規則做了就不用記
+      if (rec.ai !== null || rec.actual !== rec.rule || (it.aiLine && it.kind !== 'OWN_RULE')) acct.shadow.push(rec);
       // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒
       if (it.kind === 'STRATEGY' && it.choice === 'SKIP' && rec.rule !== 0) acct.mom.owe[tk] = { since: view.date, notif: n.id };
     }
   }
   // 乙類沒有照 AI（不同意並寫了理由，或月報裡沒動它）→ 那條前提進靜默期（own_thesis §1.10）
+  // 慢規則減半項目上 AI 建議出清、你選了照規則或這次不做 → 一樣進靜默期（§3.4），免得下一次審查又為同一條前提通知
   for (const it of n.items) {
-    if (it.cancelled || it.brk?.type !== 'B' || it.choice !== 'SKIP' || !it.ticker || !acct.own[it.ticker]) continue;
-    addDispute(acct.own[it.ticker], it.brk.premiseId, view.date, it.reason ?? SKIPPED_REASON, n.id);
+    if (it.cancelled || it.brk?.type !== 'B' || !it.ticker || !acct.own[it.ticker]) continue;
+    if (it.brk.withRule) {
+      if (it.choice !== 'AI') addDispute(acct.own[it.ticker], it.brk.premiseId, view.date, it.reason ?? RULE_OVER_EXIT_REASON, n.id);
+    } else if (it.choice === 'SKIP') addDispute(acct.own[it.ticker], it.brk.premiseId, view.date, it.reason ?? SKIPPED_REASON, n.id);
   }
   const nothingToTrade = n.composed.lines.length === 0;
   if (input.mode === 'SKIP' || n.items.every((i) => i.cancelled || i.choice === 'SKIP')) {
@@ -186,7 +190,14 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
   } else {
     n.status = 'RESPONDED';
   }
+  // 減半項目有了最後的結果（這次不做、不用下單）→ 這一次減半的論點檢查清掉；等你下單的先留著（還可以改決定），填快照時清
+  if (n.status !== 'RESPONDED') clearDropReviews(acct, n);
   return acct;
+}
+
+/** 這則通知的減半項目有了最後的結果 → 那幾檔這一次減半的論點檢查清掉（own_thesis §3.3）。 */
+function clearDropReviews(acct: Account, n: Notif): void {
+  for (const it of n.items) if (it.f === 'F7' && it.kind === 'OWN_RULE' && !it.cancelled && it.ticker && acct.own[it.ticker]) delete acct.own[it.ticker].dropReview;
 }
 
 /**
@@ -207,13 +218,17 @@ export function reopen(acct0: Account, view: MarketView, id: number): { acct: Ac
   for (const [tk, o] of Object.entries(acct.mom.owe)) if (o.notif === id) delete acct.mom.owe[tk];
   // 回覆時乙類「不同意」寫的靜默期一起收回（修正論點寫的那一項已經取消，不在這裡）
   for (const it of n.items) {
-    if (it.cancelled || it.brk?.type !== 'B' || it.choice !== 'SKIP' || !it.ticker) continue;
+    if (it.cancelled || it.brk?.type !== 'B' || !it.ticker) continue;
+    if (it.brk.withRule ? it.choice === 'AI' : it.choice !== 'SKIP') continue;
     const meta = acct.own[it.ticker];
     const pid = it.brk.premiseId;
     if (meta?.disputes) meta.disputes = meta.disputes.filter((d) => !(d.notif === id && d.premiseId === pid));
   }
   acct.shadow.push({ date: view.date, f: 'REOPEN', ticker: null, title: '改決定：先前的回覆作廢', rule: 0, ai: null, actual: 0, price: 0, choice: 'REOPEN', notif: id });
-  return { acct, ok: true };
+  // 回覆之後才回來的減半檢視結果當時不動已回覆的通知（own_thesis §3.5）：退回「等你決定」時補上那一行與選項
+  let out = acct;
+  for (const t of new Set(n.items.filter((i) => i.kind === 'OWN_RULE' && i.f === 'F7' && !i.cancelled && !!i.ticker && !!acct.own[i.ticker]?.dropReview).map((i) => i.ticker!))) out = refreshOwnAiChoice(out, view, t).acct;
+  return { acct: out, ok: true };
 }
 
 /** 沒照做的紀錄裡，拿掉被「改決定」作廢的那幾筆（同一則通知、在作廢記號之前的）和記號本身。 */
@@ -351,6 +366,7 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
       }
       for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects, it.f);
       n.status = 'DONE';
+      clearDropReviews(acct, n);
       completed.push(n.id);
       if (fu.length) {
         n.followUp = fu;
@@ -501,6 +517,7 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
       }
       for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects, it.f);
       n.status = 'DONE';
+      clearDropReviews(acct, n);
       completed.push(n.id);
       if (fu.length) {
         n.followUp = fu;
@@ -883,7 +900,8 @@ export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { a
 export function revisableBreak(acct: Pick<Account, 'notifs'>, id: number, ticker: string): { n: Notif; it: Item } | null {
   const n = acct.notifs.find((x) => x.id === id);
   if (!n || n.status !== 'PENDING') return null;
-  const it = n.items.find((i) => i.ticker === ticker && !i.cancelled && i.brk?.type === 'B');
+  // 慢規則減半項目上的「AI 建議出清」不能用修正論點結案（§3.4：改完論點仍要回通知選一項）
+  const it = n.items.find((i) => i.ticker === ticker && !i.cancelled && i.brk?.type === 'B' && !i.brk.withRule);
   return it ? { n, it } : null;
 }
 

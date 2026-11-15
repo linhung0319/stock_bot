@@ -200,24 +200,30 @@ describe('③ AI 建議產生的通知項目、通知、影子紀錄帶 run_id',
     expect(rule.notif!.runIds).toBeUndefined();
   });
 
-  it('F7：慢規則減半並列的 AI 檔位帶那次 AI 執行；F7 檢視晚回來更新選項時跟著換', () => {
+  // T31b 改了這個行為（own_thesis §3.4）：減半項目上 AI 的那一行只來自看過這次觸發的結論——減半檢視（dropReview），或觸發之後另外回來的審查；
+  // 觸發之前的定期審查檔位不再並列，所以這裡改成：項目帶的是那次減半檢視的執行，之後另外有審查回來（建議出清）時換成那一次
+  it('F7：慢規則減半項目帶那次減半檢視的執行；觸發之後另外有審查回來（建議出清）時跟著換', () => {
     const sc = scenarios.s2();
     const sim = new Sim(sc.market, sc.init);
     sim.runUntil('2026-12-31');
-    sim.acct = recordAiTier(sim.acct, 'META', 'HOLD', '2026-12-31', false, 'run-f24-meta');
-    sim.runUntil('2027-01-04');
-    const jan = sim.preOpen()!;
-    const it7 = item(jan, 'F7', 'META');
-    expect(it7.runIds).toEqual(['run-f24-meta']);
-    expect(jan.runIds).toContain('run-f24-meta');
-    // F7 的減半檢視回來（AI 改說出清）→ 還沒回覆的通知換成新的 run_id
-    sim.acct = recordAiTier(sim.acct, 'META', 'EXIT', '2027-01-04', false, 'run-f7-meta');
-    sim.acct = refreshOwnAiChoice(sim.acct, sim.pre, 'META').acct;
-    const after = sim.acct.notifs.find((n) => n.id === jan.id)!;
-    expect(item(after, 'F7', 'META').runIds).toEqual(['run-f7-meta']);
-    expect(after.runIds).toEqual(expect.arrayContaining(['run-f24-meta', 'run-f7-meta']));
-    sim.respond(jan.id, { mode: 'DO', choices: { [it7.key]: 'AI' } });
-    expect(liveShadow(sim.acct.shadow).find((s) => s.f === 'F7' && s.ticker === 'META')!.runIds).toEqual(['run-f7-meta']);
+    // 觸發（12/24）之前的定期審查不會出現在減半項目上
+    sim.acct = recordAiTier(sim.acct, 'MU', 'HOLD', '2026-12-18', false, 'run-f24-old');
+    const urgent = sim.acct.notifs.find((n) => n.kind === 'URGENT' && n.items.some((i) => i.f === 'F7' && i.ticker === 'MU'))!;
+    expect(item(urgent, 'F7', 'MU').runIds).toBeUndefined();
+    // 減半檢視開了（等結果）→ 回來建議不動：項目帶那次執行
+    sim.acct.own.MU.dropReview = { session: '2026-12-24', runId: 'run-f7-mu', status: 'HOLD', cause: 'SECTOR', premiseId: null, told: false };
+    sim.acct = refreshOwnAiChoice(sim.acct, sim.pre, 'MU').acct;
+    const it7 = item(sim.acct.notifs.find((n) => n.id === urgent.id)!, 'F7', 'MU');
+    expect(it7.runIds).toEqual(['run-f7-mu']);
+    expect(sim.acct.notifs.find((n) => n.id === urgent.id)!.runIds).toContain('run-f7-mu');
+    // 觸發之後另外有審查回來（三票一致、前提 P1 不成立、建議出清）→ 還沒回覆的通知換成那一次的 run_id
+    sim.acct = recordAiTier(sim.acct, 'MU', 'EXIT', '2026-12-30', false, 'run-f24-mu', { premiseId: 'P1', trigger: 'EARNINGS', agreed: true });
+    sim.acct = refreshOwnAiChoice(sim.acct, sim.pre, 'MU').acct;
+    const after = sim.acct.notifs.find((n) => n.id === urgent.id)!;
+    expect(item(after, 'F7', 'MU').runIds).toEqual(['run-f24-mu']);
+    expect(after.runIds).toEqual(expect.arrayContaining(['run-f7-mu', 'run-f24-mu']));
+    sim.respond(urgent.id, { mode: 'DO', choices: { [it7.key]: 'AI' } });
+    expect(liveShadow(sim.acct.shadow).find((s) => s.f === 'F7' && s.ticker === 'MU')!.runIds).toEqual(['run-f24-mu']);
   });
 
   it('月報：F24／F23 建議、F1 進場帶各自的 run_id；被否決的代號與 F20 說明的 run_id 掛在通知上', () => {

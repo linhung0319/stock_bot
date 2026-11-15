@@ -3,7 +3,7 @@
 //   LINE_CHANNEL_TOKEN  channel access token（long-lived）
 //   LINE_USER_ID        要收訊息的 user ID（LINE Developers 後台 Basic settings 的「Your user ID」）
 // 兩個都放 `wrangler secret`。網站網址（訊息裡的連結）是 wrangler.jsonc 的 vars.SITE_URL。
-import type { Account, Notif } from '../engine';
+import type { Account, DropStatus, Notif } from '../engine';
 import type { Env, Fetcher } from './env';
 
 export const LINE_PUSH_URL = 'https://api.line.me/v2/bot/message/push';
@@ -80,6 +80,11 @@ export function notifText(acct: Account, n: Notif, link: string | null): string 
   } else if (n.kind === 'MONTHLY_EMPTY') {
     out.push('', '本月不用下單。');
   }
+  // 慢規則減半：AI 論點檢查的一行，放在下單清單後面（own_thesis §3.4）。月報裡可能不只一檔，前面寫代號
+  for (const it of n.items) {
+    if (it.cancelled || it.f !== 'F7' || !it.drop) continue;
+    out.push(`${n.kind === 'URGENT' ? '' : `${it.ticker} 的 `}${DROP_LINE[it.drop]}`);
+  }
   // 崩盤規則的 AI 檢視只附一行（設計 §4.4）
   for (const it of n.items) if (!it.cancelled && it.aiLine?.startsWith('AI 檢視：')) out.push(it.aiLine);
   const optional = n.items.filter((it) => !it.cancelled && it.choice === 'SKIP' && (it.kind === 'AI_ONLY' || (it.kind === 'HARD' && it.choices.some((c) => c.id === 'AI')))).length;
@@ -92,8 +97,17 @@ export function notifText(acct: Account, n: Notif, link: string | null): string 
   return out.join('\n');
 }
 
-/** 乙類的當天通知：只有 AI 判斷前提不成立的那一項（月報裡的乙類項目照月報的格式）。 */
-export const isBreakNotice = (n: Pick<Notif, 'kind' | 'items'>): boolean => n.kind === 'URGENT' && n.items.length > 0 && n.items.every((it) => it.brk?.type === 'B');
+/** 乙類的當天通知：只有 AI 判斷前提不成立的那一項（月報裡的乙類項目照月報的格式；慢規則減半項目上帶「AI 建議出清」的不算）。 */
+export const isBreakNotice = (n: Pick<Notif, 'kind' | 'items'>): boolean => n.kind === 'URGENT' && n.items.length > 0 && n.items.every((it) => it.brk?.type === 'B' && !it.brk.withRule);
+
+/** 慢規則減半通知多的那一行（own_thesis §3.4）。 */
+export const DROP_LINE: Record<DropStatus, string> = {
+  HOLD: 'AI 論點檢查：建議不動（預設仍是照規則），到網站決定',
+  EXIT: 'AI 論點檢查：前提不成立，建議出清（預設仍是照規則），到網站決定',
+  AGREE: 'AI 論點檢查：同意減半',
+  PENDING: 'AI 論點檢查還沒有結論',
+  NONE: 'AI 論點檢查沒有一致結論，照規則',
+};
 
 /** 月報的「要看的事」那一行：`持股有 3 件事要看（不用下單），在持股頁。`；不是月報或沒有就是 null。 */
 export function attentionLine(n: Pick<Notif, 'kind' | 'attention'>): string | null {

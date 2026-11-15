@@ -21,7 +21,7 @@ import { OWN_CONDITION, OWN_REVIEW } from '../ai/ownReview';
 import { guard, type Applier, type ApplyCtx, type FlowExtras, type StartCtx, type StepResult } from './aiCtx';
 import { closeStaleRuns, getRun, listRuns } from './aiRuns';
 import { startCrashRuns } from './crashAi';
-import { applyDropExplain, applyOwnDrop, startDropRuns } from './dropAi';
+import { applyDropExplain, applyOwnDrop, markDropNone, startDropRuns } from './dropAi';
 import { applyOwnEarnings, startOwnEarnings } from './earningsAi';
 import type { Env, Fetcher } from './env';
 import { applyEventScan, applyHardEvent, applyRuleEvents, classifyFresh, scanTargets, startEventRuns, type Classified } from './events';
@@ -33,7 +33,7 @@ import { noteOfRun } from './site/aiViews';
 import { annotate } from './site/explain';
 import type { AiNote } from './site/types';
 import { startStrategyRun } from './strategyAi';
-import { breakLogs } from './thesis';
+import { breakLogs, ruleBreakLogs, withRuleKeys } from './thesis';
 import { endDisputes } from '../engine';
 
 export type { StepResult as AiStepResult } from './aiCtx';
@@ -90,6 +90,7 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
     if (!loaded) return res;
     rebaseNotifSeq(loaded.acct, axis);
     const before = new Set(loaded.acct.notifs.map((n) => n.id));
+    const hadExit = withRuleKeys(loaded.acct);
     const ctx: ApplyCtx = { db, acct: loaded.acct, view, axis, session, now, stmts: [], log: [], alerts: [] };
     // 靜默期：這檔出現新的財報類申報、距不同意滿 45 天 → 到那份申報的前一天結束（own_thesis §1.10）；在套用審查之前
     for (const c of checks) {
@@ -111,6 +112,8 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
     await applyRuleEvents(ctx, classified);
     // 新的失效通知（甲類、乙類）→ 論點檔的 BREAK_NOTICE（own_thesis §1.10），和帳戶同一筆存
     ctx.stmts.push(...breakLogs(ctx.acct, ctx.acct.notifs.filter((n) => !before.has(n.id))).map((l) => thesisLogStmt(db, l, null, now.toISOString())));
+    // 既有的慢規則通知這次更新成「AI 建議出清」（own_thesis §3.4）→ 一樣寫 BREAK_NOTICE（withRule）
+    ctx.stmts.push(...ruleBreakLogs(hadExit, before, ctx.acct).map((l) => thesisLogStmt(db, l, null, now.toISOString())));
     if (!ctx.stmts.length && ctx.acct === loaded.acct) break;
     const notes = (await listRuns(db, now, { limit: 200 })).map(noteOfRun).filter((n): n is AiNote => n !== null);
     annotate({ acct: ctx.acct, view, axis, rankOrder: ranking?.order ?? [], aiNotes: notes }, (n) => !before.has(n.id));
@@ -139,6 +142,8 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
   await markSeen(db, checks, now);
   if (!routineReady(env)) {
     res.log.push('雲端排程還沒設定，不開新的 AI 執行');
+    // 這次新觸發減半的自選股沒有論點檢查：記成沒有結論（own_thesis §3.3），通知照舊當場推
+    await guard(res, '減半檢視的狀態', async () => markDropNone(db, now, view, (await loadAccount(db))!.acct, extras.reduced ?? [], res.log));
     return res;
   }
 

@@ -100,9 +100,9 @@ records/                         ← .gitignore，不進 repo
 |---|---|---|
 | `data_runs` | 每次抓資料：OK／DEGRADED／FAILED、能不能出訊號與換股、耗時 | 只增加 |
 | `flow_runs` | 每次每日流程：FIRST（23:30）／FINAL（01:30）／APPLY（03:30，只套用與推播，狀態一律 SKIPPED）／MANUAL、DONE／ERROR…、處理了哪幾天 | 只增加 |
-| `pushes` | 每次 LINE 推播與結果（`kind`：NOTIF 通知、ALERT 告警、TEST 測試、REPLY 關鍵字回覆；REPLY 不算推播額度） | 只增加 |
+| `pushes` | 每次 LINE 推播與結果（`kind`：NOTIF 通知、ALERT 告警、TEST 測試、REPLY 關鍵字回覆、FOLLOWUP 通知推出去之後才回來的 AI 結果補推的一行（T31b；`ref` 是那則通知的編號）；REPLY 不算推播額度） | 只增加 |
 | `alerts` | 告警與推播時間 | 會改 |
-| `flow_state` | 流程進度（最後處理到的交易日、上線日…）；T31a 起另有 `review:checkpoint:<年月>`（月底檢查點審了誰、跳過誰、原因）、`review:fails:<代號>`（自選審查連續沒有結論的次數與每次的原因）、`review:splits:<代號>`（連續票數不一致的次數） | 會改 |
+| `flow_state` | 流程進度（最後處理到的交易日、上線日…）；T31a 起另有 `review:checkpoint:<年月>`（月底檢查點審了誰、跳過誰、原因）、`review:fails:<代號>`（自選審查連續沒有結論的次數與每次的原因）、`review:splits:<代號>`（連續票數不一致的次數）；T31b 起另有 `push:held`（上面有還在等的 AI 結果、留到下一次流程才推 LINE 的通知編號） | 會改 |
 
 ### 不傳
 

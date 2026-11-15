@@ -1,6 +1,7 @@
 // 把帳戶與通知組成畫面要的資料。這裡只讀不寫。
 // 用字原則：不出現功能代號（F1…F25）與權限等級；狀態用一句話寫出「現在怎樣、到哪裡會觸發」。
 import {
+  DEFAULT_ONLY_WHY,
   SLOW,
   TIER_NAME,
   bookShares,
@@ -24,7 +25,7 @@ import {
 } from '../../engine';
 import type { SiteData } from './backend';
 import { accountBubble, todoBubble, type Bubble } from './bubble';
-import { coreLineWhy, explainItem, findNote, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
+import { coreLineWhy, explainItem, findNote, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
 import { labelOf, meter, place, scaleOf, type Meter } from './meter';
 import { BUCKET_NAME, type AiNote, type Explain, type Gauge, type RankRow } from './types';
 
@@ -130,8 +131,12 @@ export interface ItemView {
   reasonRequired: boolean;
   /** 回覆時寫的理由。 */
   reason: string | null;
-  /** 乙類：可以「拿去討論」（複製 BREAK 討論包）。 */
+  /** 乙類、慢規則減半項目上帶「AI 建議出清」的：可以「拿去討論」（複製 BREAK 討論包）。 */
   discuss: boolean;
+  /** 慢規則項目上 AI 的那一行（減半：論點檢查的結果；加回：審查認為前提不成立時的建議；own_thesis §3.4）。沒有是 null。 */
+  aiLine: string | null;
+  /** 慢規則減半項目上 AI 那一行的狀態（PENDING 檢查進行中、HOLD 建議不動、EXIT 建議出清、AGREE 同意減半、NONE 沒有一致結論）；沒有是 null。 */
+  drop: string | null;
   /** 乙類用「修正論點」結案的訊號日（這一項同時是取消的，own_thesis §1.10）。 */
   revised: string | null;
 }
@@ -336,7 +341,8 @@ const thirdName = (w: number) => (w >= 0.999 ? '全額' : Math.abs(w - 2 / 3) < 
 
 function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   const it = it0 as ItemX;
-  const x = it.x ?? explainItem(ctxOf(d), n, it);
+  // 慢規則項目上 AI 的那一部分會在通知產生之後才更新（減半檢視晚一點回來），每次讀的時候重算
+  const x = it.kind === 'OWN_RULE' ? liveOwnRule(ctxOf(d), n, it) : (it.x ?? explainItem(ctxOf(d), n, it));
   const primary = it.choices.find((c) => c.id !== 'SKIP') ?? it.choices[0];
   const tickers = [...new Set(primary.lines.map((l) => l.ticker))];
   const buckets = [...new Set(primary.lines.map((l) => l.bucket))];
@@ -366,7 +372,7 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   });
   return {
     key: it.key,
-    label: it.f === 'F25' && it.kind !== 'OWN_COND' ? 'AI 的條件成立' : it.brk?.type === 'B' ? 'AI 判斷前提不成立' : (ITEM_LABEL[it.f] ?? it.f),
+    label: it.f === 'F25' && it.kind !== 'OWN_COND' ? 'AI 的條件成立' : it.brk?.type === 'B' && !it.brk.withRule ? 'AI 判斷前提不成立' : (ITEM_LABEL[it.f] ?? it.f),
     bucket,
     bucketName: bucket === 'mixed' ? '多桶' : BUCKET_NAME[bucket],
     ticker: it.ticker ?? null,
@@ -384,6 +390,9 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
     reasonRequired: !!it.reasonRequired,
     reason: it.reason ?? null,
     discuss: it.brk?.type === 'B' && !!it.ticker && !!d.acct.own[it.ticker],
+    // 只有預設前提的股票：那一行後面接「這檔還沒有你的論點，AI 只檢查系統預設前提。」（引擎寫在這一項的理由裡）
+    aiLine: it.kind === 'OWN_RULE' && it.aiLine ? `${it.aiLine}${it.why?.includes(DEFAULT_ONLY_WHY) ? `。${DEFAULT_ONLY_WHY}` : ''}` : null,
+    drop: it.drop ?? null,
     revised: it.revised ?? null,
   };
 }
@@ -923,7 +932,8 @@ function silencedText(meta: Account['own'][string], premiseId: string, date: str
 function pendingBreakOf(acct: Account, ticker: string): { notif: number; tier: string | null; premiseId: string | null } | null {
   for (const n of [...acct.notifs].reverse()) {
     if (n.status !== 'PENDING') continue;
-    const it = n.items.find((i) => i.ticker === ticker && i.brk?.type === 'B' && !i.cancelled);
+    // 慢規則減半項目上的「AI 建議出清」不能用修正論點結案（§3.4），不算
+    const it = n.items.find((i) => i.ticker === ticker && i.brk?.type === 'B' && !i.brk.withRule && !i.cancelled);
     if (it) return { notif: n.id, tier: it.choices.find((c) => c.id === 'AI')?.tier ?? null, premiseId: it.brk?.premiseId ?? null };
   }
   return null;

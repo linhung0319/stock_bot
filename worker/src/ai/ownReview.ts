@@ -199,6 +199,17 @@ function hardCited(s: CheckedSample, ids: unknown, hard: Set<string>): boolean {
 }
 
 /**
+ * 不成立的前提（own_thesis §1.6 第 1 點；減半檢視的「出清」也用同一個定義，§3.3）：每一票都判 BROKEN、而且每一票都至少有一條通過檢查、
+ * 來源是申報原文或財報表的引用——取交集，編號由小到大。samples 是合格的票；不到 wanted 票就是空的。
+ */
+export function brokenPremises(samples: CheckedSample[], pack: Pick<EvidencePack, 'documents'>, wanted = OWN_REVIEW_SAMPLES): string[] {
+  if (samples.length < wanted) return [];
+  const hard = new Set(pack.documents.filter((d) => d.kind === 'filing' || d.kind === 'xbrl').map((d) => d.source_id));
+  const sets = samples.map((s) => new Set(s.premises.filter((p) => p.status === 'BROKEN' && hardCited(s, p.evidence_ids, hard)).map((p) => p.premise_id)));
+  return [...sets[0]].filter((id) => sets.every((x) => x.has(id))).sort((a, b) => pnum(a) - pnum(b));
+}
+
+/**
  * F24 的結論 → 引擎的輸入與條件的變動（own_thesis §1.5、§1.6「程式怎麼用結論」第 1、2、4 點）。
  * suggest：3 票一致、和目前狀態不同、而且有一條「不成立的前提」（只有新聞標題或價格當引用的不算；修 N5）；RAISE 另外要求前提全部成立（F23）。
  * 其他情況只放網站。什麼時候當天通知（§1.9）由之後的任務做。
@@ -213,10 +224,8 @@ export function reviewDecision(outcome: Outcome, acct: Account, ticker: string, 
   const hard = new Set(pack.documents.filter((d) => d.kind === 'filing' || d.kind === 'xbrl').map((d) => d.source_id));
 
   // §1.6 第 1 點：不成立的前提取交集
-  const brokenOf = (s: CheckedSample) => new Set(s.premises.filter((p) => p.status === 'BROKEN' && hardCited(s, p.evidence_ids, hard)).map((p) => p.premise_id));
-  const sets = samples.map(brokenOf);
-  const brokenPremises = full ? [...sets[0]].filter((id) => sets.every((x) => x.has(id))).sort((a, b) => pnum(a) - pnum(b)) : [];
-  const premiseId = brokenPremises[0] ?? null;
+  const broken = brokenPremises(samples, pack);
+  const premiseId = broken[0] ?? null;
 
   // §1.6 第 2 點：三票都寫 MET、各有申報或財報的引用
   const metOf = (s: CheckedSample) => {
@@ -247,7 +256,7 @@ export function reviewDecision(outcome: Outcome, acct: Account, ticker: string, 
         }))
     : [];
 
-  const base = { tier, consensus, proposed, metChecks, brokenPremises, premiseId };
+  const base = { tier, consensus, proposed, metChecks, brokenPremises: broken, premiseId };
   if (!outcome.actionable) return { ...base, suggest: false, why: outcome.reason };
   const state = acct.rule.own[ticker]?.applied ?? 'STD';
   if (tier === 'HOLD' || tier === STATE_TIER[state]) return { ...base, suggest: false, why: `和目前狀態相同（${TIER_NAME[tier]}），不列進月報。` };

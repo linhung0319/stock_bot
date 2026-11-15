@@ -329,6 +329,8 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     for (const rv of reviews) if (ids.includes(rv.runId) && rv.notif === null) rv.notif = notif;
   }
   for (const l of log.filter((x) => x.kind === 'RESPONSE')) {
+    // 慢規則通知的回應（type R）帶著那次減半檢視的執行編號：沒有 BREAK_NOTICE（AI 沒有建議出清）時也對得上
+    if (l.body.type === 'R' && typeof l.body.notif === 'number') for (const rv of reviews) if (rv.notif === null && ((l.body.runIds as string[] | undefined) ?? []).includes(rv.runId)) rv.notif = l.body.notif;
     for (const rv of reviews) if (rv.notif !== null && rv.notif === l.body.notif) rv.response = { outcome: String(l.body.outcome ?? ''), reason: (l.body.reason as string | null) ?? null, ...(typeof l.body.type === 'string' ? { type: l.body.type } : {}) };
   }
   const lastRun = runs.find((r) => r.fn === 'OWN_REVIEW' && r.status === 'DONE' && r.outcome && CONCLUSIVE.has((JSON.parse(r.outcome) as Outcome).status));
@@ -580,8 +582,9 @@ export function pickFilings<F extends Pick<Filing, 'accession' | 'form' | 'items
 const ORIGIN_TEXT: Record<string, string> = { INITIAL: '上線時就持有', NEW: '新增自選', TRANSFER: '從動能轉入', ADOPT: '認養', MANUAL: '自己買進' };
 const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
 const OUTCOME_TEXT: Record<string, string> = { FOLLOW: '照做', REVISE: '修正論點', DISAGREE: '不同意', SKIPPED: '月報裡沒有動它（當成不同意）', NONE: '上次的失效通知沒有回應', RULE: '照規則' };
-/** 回應的白話（甲類的 SKIPPED 是「這次不做」）。 */
-export const outcomeText = (r: { outcome: string; type?: string }): string => (r.outcome === 'SKIPPED' && r.type === 'A' ? '這次不做' : (OUTCOME_TEXT[r.outcome] ?? r.outcome));
+/** 回應的白話（甲類、慢規則通知的 SKIPPED 是「這次不做」；慢規則通知的 FOLLOW 是「照 AI」）。 */
+export const outcomeText = (r: { outcome: string; type?: string }): string =>
+  r.outcome === 'SKIPPED' && (r.type === 'A' || r.type === 'R') ? '這次不做' : r.outcome === 'FOLLOW' && r.type === 'R' ? '照 AI' : r.outcome === 'RULE' ? '照規則減半' : (OUTCOME_TEXT[r.outcome] ?? r.outcome);
 
 /**
  * 論點那一份 note（own_thesis §1.6）：論點本文、最近 3 次定期審查的結論與使用者的回應、靜默中的前提與當時的理由。
@@ -929,11 +932,12 @@ export function noneResponses(acct: Pick<Account, 'notifs'>, file: Pick<ThesisFi
   const answered = new Set(file.log.filter((l) => l.kind === 'RESPONSE').map((l) => Number(l.body.notif)));
   const out: ThesisLogInput[] = [];
   for (const l of file.log) {
-    if (l.kind !== 'BREAK_NOTICE' || l.body.type !== 'B') continue;
+    // 附在慢規則通知上的「AI 建議出清」不算（那則通知的底線是規則，回應寫 type R）
+    if (l.kind !== 'BREAK_NOTICE' || l.body.type !== 'B' || l.body.withRule) continue;
     const id = Number(l.body.notif);
     const n = acct.notifs.find((x) => x.id === id);
     if (answered.has(id) || !n || n.status !== 'PENDING' || !n.reminded) continue;
-    const it = n.items.find((i) => i.ticker === file.ticker && !i.cancelled && i.brk?.type === 'B');
+    const it = n.items.find((i) => i.ticker === file.ticker && !i.cancelled && i.brk?.type === 'B' && !i.brk.withRule);
     if (!it || it.brk?.type !== 'B') continue;
     answered.add(id);
     out.push({ ticker: file.ticker, fileId: file.fileId, session, kind: 'RESPONSE', ref: String(id), body: { notif: id, type: 'B', outcome: 'NONE', reason: null, premiseId: it.brk.premiseId } });
@@ -944,23 +948,80 @@ export function noneResponses(acct: Pick<Account, 'notifs'>, file: Pick<ThesisFi
 /**
  * 新的通知裡的失效通知項目（Item.brk）→ own_thesis_log 的 BREAK_NOTICE（own_thesis §1.10）。沒有論點檔編號的舊自選不寫。
  * sameDay：當天通知（月報裡的是 false）。每日流程的套用段（當天通知）與月報產生時各寫一次。
+ * 慢規則減半項目帶「AI 建議出清」那一行的（own_thesis §3.4）：type 一樣是 B，多 withRule: true，tier 是 EXIT。
+ * only：只寫這幾個項目（`<通知編號>:<項目的 key>`）；不給就是 notifs 裡全部。
  */
-export function breakLogs(acct: Pick<Account, 'own'>, notifs: Notif[]): ThesisLogInput[] {
+export function breakLogs(acct: Pick<Account, 'own'>, notifs: Notif[], only?: Set<string>): ThesisLogInput[] {
   const out: ThesisLogInput[] = [];
   for (const n of notifs) {
     for (const it of n.items) {
-      if (!it.brk || !it.ticker || it.cancelled) continue;
+      if (!it.brk || !it.ticker || it.cancelled || (only && !only.has(`${n.id}:${it.key}`))) continue;
       const fileId = acct.own[it.ticker]?.fileId;
       if (!fileId) continue;
+      const withRule = it.brk.type === 'B' && !!it.brk.withRule;
       out.push({
         ticker: it.ticker,
         fileId,
         session: n.date,
         kind: 'BREAK_NOTICE',
         ref: String(n.id),
-        body: { type: it.brk.type, notif: n.id, runIds: it.runIds ?? [], conditionId: it.brk.type === 'A' ? it.brk.conditionId : null, premiseId: it.brk.premiseId, tier: it.choices.find((c) => c.id !== 'SKIP')?.tier ?? null, sameDay: n.kind === 'URGENT' },
+        body: {
+          type: it.brk.type,
+          notif: n.id,
+          runIds: it.runIds ?? [],
+          conditionId: it.brk.type === 'A' ? it.brk.conditionId : null,
+          premiseId: it.brk.premiseId,
+          tier: withRule ? 'EXIT' : (it.choices.find((c) => c.id !== 'SKIP')?.tier ?? null),
+          sameDay: n.kind === 'URGENT',
+          ...(withRule ? { withRule: true } : {}),
+        },
       });
     }
+  }
+  return out;
+}
+
+/** 帶「AI 建議出清」那一行的慢規則減半項目：`<通知編號>:<項目的 key>` → 哪一條前提。 */
+export const withRuleKeys = (acct: Pick<Account, 'notifs'>): Map<string, string> =>
+  new Map(acct.notifs.flatMap((n) => n.items.filter((it) => !it.cancelled && it.brk?.type === 'B' && it.brk.withRule).map((it) => [`${n.id}:${it.key}`, it.brk!.premiseId ?? ''] as [string, string])));
+
+/**
+ * 既有的慢規則通知更新成「AI 建議出清」的那一刻（減半檢視或之後的審查回來，own_thesis §3.4）→ BREAK_NOTICE（withRule）。
+ * had：套用結論之前就帶著那一行的項目（withRuleKeys）；oldIds：套用之前就有的通知（新通知由 breakLogs 寫）；after：套用之後的帳戶。
+ * 只寫這次才帶上那一行的項目（或換了一條前提的），已經寫過的不重寫。
+ */
+export function ruleBreakLogs(had: Map<string, string>, oldIds: Set<number>, after: Pick<Account, 'own' | 'notifs'>): ThesisLogInput[] {
+  const fresh = new Set([...withRuleKeys(after)].filter(([k, pid]) => had.get(k) !== pid).map(([k]) => k));
+  return fresh.size ? breakLogs(after, after.notifs.filter((n) => oldIds.has(n.id)), fresh) : [];
+}
+
+/**
+ * 慢規則減半項目的回應 → own_thesis_log 的 RESPONSE（type R，own_thesis §3.4）：照規則 RULE／照 AI FOLLOW／這次不做 SKIPPED，
+ * 加上理由與當時 AI 給的選項（aiOffered：HOLD、EXIT 或空的）。n：回覆之後的那則通知；acct：回覆之前的帳戶（照 AI 出清時這檔已經不在回覆後的帳戶裡）。
+ */
+export function ruleResponseLogs(acct: Pick<Account, 'own'>, n: Notif, session: string): ThesisLogInput[] {
+  const out: ThesisLogInput[] = [];
+  for (const it of n.items) {
+    if (it.f !== 'F7' || it.kind !== 'OWN_RULE' || it.cancelled || !it.ticker) continue;
+    const fileId = acct.own[it.ticker]?.fileId;
+    if (!fileId) continue;
+    const ai = it.choices.find((c) => c.id === 'AI');
+    out.push({
+      ticker: it.ticker,
+      fileId,
+      session,
+      kind: 'RESPONSE',
+      ref: String(n.id),
+      body: {
+        notif: n.id,
+        type: 'R',
+        outcome: it.choice === 'AI' ? 'FOLLOW' : it.choice === 'SKIP' ? 'SKIPPED' : 'RULE',
+        reason: it.choice === 'SKIP' ? (it.reason ?? null) : null,
+        aiOffered: ai?.tier === 'EXIT' ? 'EXIT' : ai?.tier === 'HOLD' ? 'HOLD' : null,
+        premiseId: it.brk?.type === 'B' ? it.brk.premiseId : null,
+        runIds: it.runIds ?? [],
+      },
+    });
   }
   return out;
 }

@@ -12,6 +12,7 @@ import {
   excessVol,
   monthlyReport,
   recordAiTier,
+  refreshOwnAiChoice,
   type Account,
   type InitialAccount,
   type MarketView,
@@ -65,7 +66,7 @@ const isFirstOfMonth = (m: Market, d: number) => m.days[d - 1].slice(0, 7) !== m
 /** 早上：先記下腳本裡這一天的 F24 檔位，月報日就出月報。 */
 function morning(st: DemoState, m: Market, script: DemoScript, on?: OnNotifs): void {
   const date = m.days[st.d];
-  for (const t of script.aiTiers ?? []) if (t.on === date) st.acct = recordAiTier(st.acct, t.ticker, t.tier, t.date, t.suggest);
+  for (const t of script.aiTiers ?? []) if (t.on === date) st.acct = recordAiTier(st.acct, t.ticker, t.tier, t.date, t.suggest, undefined, t.premiseId ? { premiseId: t.premiseId, agreed: true } : undefined);
   if (!isFirstOfMonth(m, st.d)) return;
   const view = viewAt(m, st.d - 1);
   const month = date.slice(0, 7);
@@ -79,6 +80,14 @@ function evening(st: DemoState, m: Market, script: DemoScript, on?: OnNotifs): v
   const view = viewAt(m, st.d);
   const date = m.days[st.d];
   st.acct = dailyCheck(st.acct, view).acct;
+  // 這一天慢規則觸發減半：腳本裡減半檢視（AI 論點檢查）的結果寫進 dropReview，通知上 AI 的那一行跟著重算（own_thesis §3.3、§3.4）
+  for (const x of script.drops ?? []) {
+    const meta = st.acct.own[x.ticker];
+    if (x.on !== date || !meta || meta.slow.state !== 'HALF') continue;
+    meta.dropReview = { session: date, runId: null, status: x.status, cause: x.cause ?? null, premiseId: x.premiseId ?? null, told: true };
+    if (x.status === 'EXIT' && x.premiseId) st.acct = recordAiTier(st.acct, x.ticker, 'EXIT', date, false, undefined, { premiseId: x.premiseId, trigger: 'DROP', agreed: true });
+    st.acct = refreshOwnAiChoice(st.acct, view, x.ticker).acct;
+  }
   (script.conditions ?? []).forEach((c, k) => {
     if (c.on === date) st.acct = condMetNotice(st.acct, view, c.ticker, { id: 9000 + k, text: c.text, action: c.action, setAt: c.setAt, aiProposed: true, why: c.why }).acct;
   });

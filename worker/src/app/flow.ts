@@ -2,6 +2,7 @@
 //   FIRST  美股收盤後（UTC 23:30 = 台灣早上 7:30）：抓資料 → 每日檢查 → 月底那天出月報 → 寫理由 → 存檔 → LINE
 //   FINAL  兩小時後（UTC 01:30）：今天已經做完就套用結論、開 finalStarts、補推；沒做完就再試一次，還是不行就告警（缺席告警）
 //   APPLY  再兩小時後（UTC 03:30）：只套用回來的結論、推新通知與告警、標記逾時（不抓資料、不開新的執行）
+// 規則的通知上有還在等的 AI 結果時，產生它的那一次不推 LINE，下一次流程才推；之後才回來的結果補推一行（src/app/pushHold.ts）。
 // 同一個交易日只會處理一次（flow_state.lastSession 和帳戶在同一筆交易裡更新）。
 // 漏掉的交易日（兩次都失敗、排程沒跑）下一次會照順序補做，最多 MAX_CATCHUP 天。
 //
@@ -27,8 +28,9 @@ import type { AiNote } from './site/types';
 import { sweepTimeoutTasks, timeoutAlert } from './aiTasks';
 import { breakLogs, monthOwnAttention } from './thesis';
 import type { Env, Fetcher } from './env';
-import { ConflictError, loadAccount, requiredTickers, saveAccount, shadowTickers, thesisLogStmt } from './ledgerStore';
+import { ConflictError, loadAccount, patchAccount, requiredTickers, saveAccount, shadowTickers, thesisLogStmt } from './ledgerStore';
 import { alertText, lineConfigured, notifLink, notifText, pushLine, type AlertRow } from './line';
+import { PUSH_HELD_KEY, PUSH_WAITERS, parseHeld, pushWaiting, type PushFollowUp } from './pushHold';
 import { SCHEDULE, finalStarts, type Attempt } from './schedule';
 
 export type { Attempt } from './schedule';
@@ -57,7 +59,8 @@ export interface FlowResult {
   /** 這次出的月報（或「月報暫停」那則）的通知編號。 */
   monthly: number | null;
   alerts: string[];
-  push: { configured: boolean; sent: number; failed: number; errors: string[] };
+  /** held：這次留住、下一次流程才推的通知（上面有還在等的 AI 結果）；沒有就不留這個欄位。 */
+  push: { configured: boolean; sent: number; failed: number; errors: string[]; held?: number[] };
   error?: string;
   ms: number;
 }
@@ -226,7 +229,7 @@ export function sessionsToProcess(last: string | null, session: string, ov: Cale
 
 // ---------------------------------------------------------------- 推播
 
-async function recordPush(db: D1Database, at: string, kind: 'NOTIF' | 'ALERT' | 'TEST', ref: number | null, ok: boolean, status: number | null, error: string | undefined, text: string) {
+async function recordPush(db: D1Database, at: string, kind: 'NOTIF' | 'ALERT' | 'TEST' | 'FOLLOWUP', ref: number | null, ok: boolean, status: number | null, error: string | undefined, text: string) {
   await db.prepare('INSERT INTO pushes (at, kind, ref, ok, status, error, text) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(at, kind, ref, ok ? 1 : 0, status, error ?? null, text).run();
 }
 
@@ -239,8 +242,10 @@ export async function sendTestPush(env: Env, fetcher: Fetcher, now: Date, text: 
 /**
  * 推播：① 這次新產生的通知，和最近幾天推失敗、還沒回覆的通知；② 還沒推的告警合成一則（withAlerts 時）。
  * 同一個交易日後來成功了的「今天沒有訊號」告警不推，標成已處理。
+ * 規則的通知等到下一次流程再推（src/app/pushHold.ts；own_thesis §3.5）：holdWaiting 時，這次新產生、上面有還在等的 AI 結果的通知先留住（記在 flow_state），
+ * 上一次留住的這次照推（不管結果回來了沒）；推出去時把跟著推出去的結果標成講過了；通知推出去之後才回來的結果補推一行。
  */
-export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: Account | null, fresh: number[], withAlerts: boolean): Promise<FlowResult['push']> {
+export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: Account | null, fresh: number[], withAlerts: boolean, holdWaiting = false): Promise<FlowResult['push']> {
   const db = env.DB;
   const at = now.toISOString();
   const out: FlowResult['push'] = { configured: lineConfigured(env), sent: 0, failed: 0, errors: [] };
@@ -249,18 +254,60 @@ export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: A
   if (acct) {
     const since = new Date(now.getTime() - PUSH_RETRY_DAYS * 86400_000).toISOString();
     const failed = (await db.prepare('SELECT DISTINCT ref FROM pushes WHERE kind = ? AND ok = 0 AND at >= ? AND ref NOT IN (SELECT ref FROM pushes WHERE kind = ? AND ok = 1 AND ref IS NOT NULL)').bind('NOTIF', since, 'NOTIF').all<{ ref: number }>()).results.map((r) => r.ref);
-    const ids = [...new Set([...fresh, ...failed])].sort((a, b) => a - b);
+    const heldBefore = parseHeld(await getFlowState(db, PUSH_HELD_KEY));
+    const hold: number[] = [];
+    const pushed: number[] = [];
+    const ids = [...new Set([...fresh, ...failed, ...heldBefore])].sort((a, b) => a - b);
     for (const id of ids) {
       const n: Notif | undefined = acct.notifs.find((x) => x.id === id);
       if (!n || (n.status !== 'PENDING' && !fresh.includes(id))) continue;
+      // 這次新產生、上面有還在等的 AI 結果 → 留到下一次流程（只有 23:30 與手動的流程會留；上一次留住的不再留）
+      if (holdWaiting && fresh.includes(id) && !heldBefore.includes(id) && pushWaiting(acct, n)) {
+        hold.push(id);
+        continue;
+      }
       const text = notifText(acct, n, notifLink(env, n.id));
       const r = await pushLine(env, fetcher, text);
       await recordPush(db, at, 'NOTIF', id, r.ok, r.status, r.error, text);
-      if (r.ok) out.sent++;
-      else {
+      if (r.ok) {
+        out.sent++;
+        pushed.push(id);
+      } else {
         out.failed++;
         out.errors.push(`通知 #${id}：${r.error}`);
       }
+    }
+    if (hold.length || heldBefore.length) await setFlowStateStmt(db, PUSH_HELD_KEY, JSON.stringify(hold), at).run();
+    if (hold.length) out.held = hold;
+    // 通知推出去之後才回來的結果：補推一行（已經成功推過的通知才補；還沒推成功的等整則重推）
+    const followed: PushFollowUp[] = [];
+    for (const f of PUSH_WAITERS.flatMap((w) => w.followUps?.(acct) ?? [])) {
+      if (pushed.includes(f.notif) || hold.includes(f.notif)) continue;
+      if (!(await db.prepare("SELECT 1 AS x FROM pushes WHERE kind = 'NOTIF' AND ref = ? AND ok = 1 LIMIT 1").bind(f.notif).first())) continue;
+      const link = notifLink(env, f.notif);
+      const text = `${acct.paper ? '【紙上】' : ''}${f.text}${link ? '\n' + link : ''}`;
+      const r = await pushLine(env, fetcher, text);
+      await recordPush(db, at, 'FOLLOWUP', f.notif, r.ok, r.status, r.error, text);
+      if (r.ok) {
+        out.sent++;
+        followed.push(f);
+      } else {
+        out.failed++;
+        out.errors.push(`通知 #${f.notif} 的補推：${r.error}`);
+      }
+    }
+    // 跟著通知推出去的、補推出去的結果標成講過了（帳戶已經存好，所以重新讀、改、存）
+    if (pushed.length || followed.length) {
+      await patchAccount(db, now, '推播之後記下講過的 AI 結果', (a0) => {
+        const a = structuredClone(a0);
+        const before = JSON.stringify(a.own);
+        for (const id of pushed) {
+          const n = a.notifs.find((x) => x.id === id);
+          if (n) for (const w of PUSH_WAITERS) w.told?.(a, n);
+        }
+        for (const f of followed) f.told(a);
+        return JSON.stringify(a.own) === before ? null : { acct: a };
+      }).catch((e) => console.error('推播之後記下講過的 AI 結果', e));
     }
   }
 
@@ -421,7 +468,8 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
       res.created.push(...a.created);
       alerts.push(...a.alerts);
       aiLog = { log: [...aiPrep, ...a.log], started: a.started };
-      if (a.created.length) acct = (await loadAccount(db))?.acct ?? acct;
+      // 套用的結論可能只更新了既有的通知（慢規則通知上 AI 的那一行），推播要用最新的內容
+      acct = (await loadAccount(db))?.acct ?? acct;
     } catch (e) {
       console.error('AI 那一段出錯', e);
       alerts.push({ kind: 'FLOW_ERROR', message: `AI 那一段（自選審查、條件監測）出錯：${errText(e)}；規則的部分已經照常做完。` });
@@ -444,7 +492,7 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
   const detail = () => JSON.stringify({ processed: res.processed, created: res.created, monthly: res.monthly, alerts: res.alerts, push: res.push, error: res.error, blocked: acct ? blockedMonthly(acct)?.id ?? null : null, ai: aiLog });
   const row = await db.prepare('INSERT INTO flow_runs (session, at, attempt, status, detail) VALUES (?, ?, ?, ?, ?) RETURNING id').bind(session, at, opt.attempt, res.status, detail()).first<{ id: number }>();
   // 第一次失敗先不推告警（兩小時後會再試）；成功了就把通知與告警都推出去
-  res.push = await pushPending(env, fetcher, opt.now, acct, res.created, ok || plan.alertOnFailure);
+  res.push = await pushPending(env, fetcher, opt.now, acct, res.created, ok || plan.alertOnFailure, plan.holdWaiting);
   res.ms = Date.now() - t0;
   await db.prepare('UPDATE flow_runs SET detail = ? WHERE id = ?').bind(detail(), row!.id).run();
   return res;

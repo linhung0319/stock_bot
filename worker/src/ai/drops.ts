@@ -2,20 +2,24 @@
 // 純函式：證據包、payload 檢查、結論。資料抓取與排程在 src/app/dropAi.ts。
 //
 // F7：以最近一次 F24 為底，補上之後的新證據；程式先算好跌幅拆解（大盤、產業、個股）。
-//     AI 把跌幅歸類、逐條對照前提、選一個檔位（EXIT／HALF／HOLD；HALF 就是照規則）。3 票一致才更新清單上的「AI 建議」那一行。
+//     AI 把跌幅歸類、逐條對照前提、選一個檔位（EXIT／HALF／HOLD；HALF 就是照規則）。只有預設前提的股票只能選 EXIT 或 HALF。
+//     結論是五種之一（own_thesis §3.3）：建議出清、建議不動、同意減半、沒有可用的結論、還沒有結果；寫進帳戶狀態的 dropReview。
 // F20：只說明（A1、一票）：跌幅拆解＋原因；找到硬事件就轉交 F19。說明附在下一次月報。
-import type { Account, MarketView } from '../engine';
-import type { CheckedSample, EvidencePack, Outcome, PackDoc } from './check';
+import { DROP_CAUSE_TEXT, type Account, type DropStatus, type MarketView } from '../engine';
+import { keptByChoice, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
 import { attributionText, type Attribution } from './detect';
+import { brokenPremises } from './ownReview';
 import { buildPack, ownPremises, ownRuleFacts, priceDoc, priceFacts } from './pack';
 
 export const OWN_DROP = 'OWN_DROP';
-export const OWN_DROP_PROMPT = 'own_drop_v1';
+export const OWN_DROP_PROMPT = 'own_drop_v2';
+/** F7 獨立跑幾次。 */
+export const OWN_DROP_SAMPLES = 3;
 export const DROP_EXPLAIN = 'DROP_EXPLAIN';
 export const DROP_EXPLAIN_PROMPT = 'drop_explain_v1';
 
 export const CAUSE_CLASSES = ['MARKET', 'SECTOR', 'FUNDAMENTAL', 'ONE_OFF', 'UNKNOWN'] as const;
-export const CAUSE_TEXT: Record<string, string> = { MARKET: '大盤一起跌', SECTOR: '產業一起跌', FUNDAMENTAL: '公司基本面', ONE_OFF: '一次性事件', UNKNOWN: '看不出原因' };
+export const CAUSE_TEXT: Record<string, string> = DROP_CAUSE_TEXT;
 
 /** 跌幅拆解的數字 A1～A5（F7、F20、價格類的提前審查共用）。 */
 export const attrFacts = (a: Attribution | null): EvidencePack['facts'] =>
@@ -51,8 +55,13 @@ export interface OwnDropInput {
   now: Date;
 }
 
+/** 只有系統預設前提（使用者還沒有自己的論點）。 */
+const onlyDefault = (acct: Account, ticker: string) => (acct.own[ticker]?.premises ?? []).every((p) => p.origin === 'SYSTEM_DEFAULT');
+
 export function ownDropPack(inp: OwnDropInput) {
   const { acct, view, ticker } = inp;
+  // 只有預設前提的股票只能選減半或出清（own_thesis §3.3，使用者 2026-11-15 決定：AI 能對底線提異議，是因為它檢查了使用者的論點）
+  const noThesis = onlyDefault(acct, ticker);
   return buildPack({
     runId: inp.runId,
     fn: OWN_DROP,
@@ -62,9 +71,13 @@ export function ownDropPack(inp: OwnDropInput) {
     question:
       `${ticker} 收盤距 52 週高點跌超過 20%，慢規則要減半（${inp.urgent ? '變動 ≥ 總資產 5%，當天通知' : '變動 < 5%，併入月報'}）。` +
       '請以最近一次定期審查為底，只看之後的新證據：把這次的跌幅歸類（大盤、產業、公司基本面、一次性事件、看不出來），逐條對照使用者的前提，' +
-      '區分「論點壞了」和「價格跌了」。最後選一個檔位：EXIT（出清）、HALF（減半，等於照規則）、HOLD（不動）。拿不定主意就選 HALF（照規則）。',
-    policy: { level: 'A3', verdicts: ['EXIT', 'HALF', 'HOLD'], abstain: 'HALF', min_evidence: 1, samples: 3 },
-    rule: { action: '減半（賣掉一半）', detail: { urgent: inp.urgent, baseReview: inp.baseRunId } },
+      '區分「論點壞了」和「價格跌了」。' +
+      (noThesis
+        ? '這檔沒有使用者的論點，只能選照規則減半或出清：EXIT（出清）、HALF（減半，等於照規則）。拿不定主意就選 HALF（照規則）。'
+        : '最後選一個檔位：EXIT（出清）、HALF（減半，等於照規則）、HOLD（不動）。拿不定主意就選 HALF（照規則）。'),
+    policy: { level: 'A3', verdicts: noThesis ? ['EXIT', 'HALF'] : ['EXIT', 'HALF', 'HOLD'], abstain: 'HALF', min_evidence: 1, samples: OWN_DROP_SAMPLES },
+    // attr：程式算的跌幅拆解（從 52 週高點那天到今天），結論是「不動」時拿來核對（dropDecision）
+    rule: { action: '減半（賣掉一半）', detail: { urgent: inp.urgent, baseReview: inp.baseRunId, attr: inp.attr ? { stock: inp.attr.stock, market: inp.attr.market, sector: inp.attr.sector, idio: inp.attr.idio } : null } },
     facts: [...priceFacts(view, ticker), ...ownRuleFacts(acct, view, ticker), ...attrFacts(inp.attr), ...(inp.extraFacts ?? [])],
     premises: ownPremises(acct, ticker),
     documents: [inp.base, ...inp.docs, priceDoc(view, inp.axis, ticker, 120), ...(inp.extraDocs ?? [])].filter((d): d is PackDoc => !!d),
@@ -87,13 +100,53 @@ export function checkDropPayload(s: CheckedSample, pack: EvidencePack): void {
   }
 }
 
-/** F7 的結論：3 票一致、和規則（HALF）不同才更新「AI 建議」。 */
-export function dropDecision(outcome: Outcome): { tier: 'EXIT' | 'HOLD' | null; cause: string | null; escalate: string | null; why: string } {
-  const s = outcome.samples.find((x) => x.valid && x.verdict === outcome.verdict);
+export interface DropDecision {
+  /** 建議不動／建議出清／同意減半／沒有可用的結論（PENDING 是還沒有結果，不會從這裡出來）。 */
+  status: Exclude<DropStatus, 'PENDING'>;
+  /** 和結論同檔位的第一張合格票的 cause_class。 */
+  cause: string | null;
+  /** 建議出清時：不成立的那條前提（有多條取編號最小的）。 */
+  premiseId: string | null;
+  /** 轉交硬事件法庭的代碼（和上面的結果無關）。 */
+  escalate: string | null;
+  why: string;
+}
+
+/** 「不動」的程式核對：拆解算得出來、個股是跌的、個股自身的跌幅不超過整段跌幅的一半。 */
+export function idioWithinHalf(attr: { stock?: unknown; idio?: unknown } | null | undefined): boolean {
+  if (!attr || typeof attr.stock !== 'number' || typeof attr.idio !== 'number' || !Number.isFinite(attr.stock) || !Number.isFinite(attr.idio)) return false;
+  return attr.stock < 0 && attr.idio >= 0.5 * attr.stock;
+}
+
+/**
+ * F7 的結論（own_thesis §3.3，修 K4）：
+ *   EXIT  三票都選出清、資料沒有缺漏，而且有一條「不成立的前提」（三票都判同一條 BROKEN、每一票都有申報原文或財報表的引用；定義同 §1.6 第 1 點）
+ *   HOLD  三票都選不動、資料沒有缺漏；三票的歸類都是大盤或產業；沒有任何一票把任何前提判成不成立（被引用檢查降級的也算判過）；
+ *         而且程式核對跌幅拆解：個股是跌的、個股自身的跌幅不超過整段跌幅的一半
+ *   AGREE 三票都選減半（每一票都是自己選的，不是被檢查降級或補上的）
+ *   NONE  其餘：票數不一致、三票出清或不動但沒過上面的條件、資料缺漏、不合格、逾時、被退回
+ */
+export function dropDecision(outcome: Outcome, pack: Pick<EvidencePack, 'documents' | 'rule' | 'policy'>): DropDecision {
+  const valid = outcome.samples.filter((x) => x.valid);
+  const s = valid.find((x) => x.verdict === outcome.verdict);
   const cause = (s?.payload?.cause_class as string) ?? null;
   const escalate = outcome.samples.length && outcome.samples.every((x) => x.valid && x.payload?.escalate_to_F19 === true) ? String(s?.payload?.escalate_code) : null;
-  if (!outcome.actionable || (outcome.verdict !== 'EXIT' && outcome.verdict !== 'HOLD')) return { tier: null, cause, escalate, why: outcome.reason };
-  return { tier: outcome.verdict, cause, escalate, why: outcome.reason };
+  const out = (status: DropDecision['status'], why: string, premiseId: string | null = null): DropDecision => ({ status, cause, premiseId, escalate, why });
+  const wanted = pack.policy.samples;
+  if (outcome.samples.length === wanted && keptByChoice('HALF', outcome.samples, wanted)) return out('AGREE', `${wanted} 票都選減半：同意照規則。`);
+  if (outcome.status !== 'AGREED' || valid.length < wanted) return out('NONE', outcome.reason);
+  if (outcome.verdict === 'EXIT') {
+    const broken = brokenPremises(valid, pack, wanted);
+    return broken.length ? out('EXIT', `${wanted} 票都選出清，而且都判前提 ${broken[0]} 不成立（有申報或財報的引用）。`, broken[0]) : out('NONE', `${wanted} 票都選出清，但沒有一條前提三票都判「不成立」而且有申報或財報的引用，照規則。`);
+  }
+  if (outcome.verdict === 'HOLD' && pack.policy.verdicts.includes('HOLD')) {
+    if (!valid.every((x) => x.payload?.cause_class === 'MARKET' || x.payload?.cause_class === 'SECTOR')) return out('NONE', `${wanted} 票都選不動，但跌幅的歸類不是每一票都是大盤或產業，照規則。`);
+    if (valid.some((x) => x.premises.some((p) => p.status === 'BROKEN' || p.downgradedFrom === 'BROKEN'))) return out('NONE', `${wanted} 票都選不動，但有一票把前提判成不成立，照規則。`);
+    const attr = (pack.rule.detail as { attr?: { stock?: unknown; idio?: unknown } | null } | undefined)?.attr;
+    if (!idioWithinHalf(attr)) return out('NONE', `${wanted} 票都選不動，但程式算的跌幅拆解不支持（個股自身的跌幅超過整段的一半，或拆解算不出來），照規則。`);
+    return out('HOLD', `${wanted} 票都選不動：跌幅主要是${cause === 'MARKET' ? '大盤' : '產業'}一起跌，沒有前提被判不成立。`);
+  }
+  return out('NONE', outcome.reason);
 }
 
 // ---------------------------------------------------------------- F20

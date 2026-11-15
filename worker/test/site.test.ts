@@ -654,9 +654,11 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
 
 // ================================================================ 情境 ②（示範用；確認規則和 AI 並列時兩邊的理由都在）
 
+// T31b 改了減半項目上 AI 的那一部分（own_thesis §3.3、§3.4）：「照 AI」只來自看過這次觸發的結論；只有系統預設前提的股票（META）不能選不動。
+// 所以示範腳本改成：MU 由 12/18 的審查（前提不成立、減半）併進來寫「同意減半」；META 的減半檢視同意減半，並寫明只檢查系統預設前提
 describe('示範情境 ② 自選股大跌：規則和 AI 並列', () => {
   const web = new Web('/demo/api');
-  it('整個情境從頭走到尾不出錯；MU 減半只有一行、META 兩行並列、你定的條件成立預設照當時的決定、乙類要寫理由', async () => {
+  it('整個情境從頭走到尾不出錯；MU 減半寫審查同意減半、META 只檢查預設前提同意減半、這次不做要寫理由、你定的條件成立預設照當時的決定、乙類要寫理由', async () => {
     await web.post('/reset', { scenario: 's2' });
     let st = await web.state();
     expect(st.today).toBe('2026-12-28');
@@ -667,23 +669,29 @@ describe('示範情境 ② 自選股大跌：規則和 AI 並列', () => {
     expect(mu.choices.map((c) => c.id)).toEqual(['RULE', 'SKIP']);
     expect(mu.explain.why).toMatch(/比 52 週高點 \$[\d.]+ 低 2\d\.\d%/);
     expect(mu.explain.gauge!.value).toBeLessThanOrEqual(-0.2);
-    // AI 和規則同一個動作：不多一行，但理由裡看得到 AI 的看法與那次審查
-    expect(mu.explain.facts!.find((f) => f.label === 'AI 的看法')!.value).toContain('減半');
+    // AI 和規則同一個動作：不多一個選項，那一行寫 12/18 的審查認為哪一條前提不成立、同意減半；理由裡看得到那次審查
+    expect(mu.aiLine).toBe('12/18 的審查認為前提「HBM 長約有價格保護，記憶體循環這次不會像以前一樣崩」不成立，同意減半');
+    expect(mu.drop).toBe('AGREE');
+    expect(mu.explain.short).toContain('AI 同意減半');
     expect(mu.explain.ai).toMatchObject({ kind: 'REVIEW', ticker: 'MU', verdict: '減半' });
+    // 減半項目選「這次不做」要寫一句理由（整則這次不做也一樣）
+    expect(mu.reasonRequired).toBe(true);
+    expect(await web.fail(`/notif/${urgent.id}/respond`, { mode: 'DO', choices: { [mu.key]: 'SKIP' } })).toMatchObject({ status: 422 });
+    expect(await web.fail(`/notif/${urgent.id}/respond`, { mode: 'SKIP' })).toMatchObject({ status: 422 });
     await web.post(`/notif/${urgent.id}/respond`, { mode: 'DO' });
     await web.fill();
 
-    // 1/4 月報：META 規則說減半、AI 說不動
+    // 1/4 月報：META 只有系統預設前提 → AI 只能同意減半或建議出清，沒有「不動」；那一行寫明只檢查系統預設前提
     await web.post('/advance', { mode: 'month' });
     st = await web.state();
     const jan = await web.notif(st.todo.find((t) => t.title === '2027-01 月報')!.id);
     const meta = itemOf(jan, '慢規則減半', 'META');
-    expect(meta.choices.map((c) => c.id)).toEqual(['RULE', 'AI', 'SKIP']);
-    expect(meta.choices[1]).toMatchObject({ label: '照 AI：不動', text: '不動' });
-    expect(meta.choices[1].note).toContain('AI 12/31 審查的結論是「不動」');
+    expect(meta.choices.map((c) => c.id)).toEqual(['RULE', 'SKIP']);
+    expect(meta.aiLine).toBe('論點檢查（3 票）：同意減半（歸類：產業一起跌）。這檔還沒有你的論點，AI 只檢查系統預設前提。');
+    expect(meta.title).toMatch(/^META：比 52 週高點低 2\d\.\d% → 慢規則減半（2026-12-24 觸發/);
     expect(meta.explain.why).toContain('併到這份月報');
-    expect(meta.explain.ai!.verdict).toBe('不動');
-    await web.post(`/notif/${jan.id}/respond`, { mode: 'DO', choices: { [meta.key]: 'AI' } });
+    expect(meta.explain.ai!.verdict).toBe('減半（照規則）');
+    await web.post(`/notif/${jan.id}/respond`, { mode: 'DO' });
     await web.fill();
 
     // 1/7 早上：你定的條件成立（T29a 起是甲類：預設照當時的決定、規則沒有動作）
@@ -712,7 +720,8 @@ describe('示範情境 ② 自選股大跌：規則和 AI 並列', () => {
     }
     expect((await web.state()).demo!.atEnd).toBe(true);
     const hist = await web.get<HistoryView>('/history');
-    expect(hist.shadow.some((s) => s.ticker === 'META' && s.ai === '不動')).toBe(true);
+    // META 的減半（AI 同意，沒有另一個選項）照規則做了：不算「沒照規則做的」，紀錄裡沒有這一筆
+    expect(hist.shadow.some((s) => s.ticker === 'META' && s.title.includes('慢規則減半'))).toBe(false);
   });
 });
 

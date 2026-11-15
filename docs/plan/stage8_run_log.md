@@ -22,6 +22,7 @@
 | T29b | 完成 | （見 git log） | 494 通過、1 略過 |
 | T29c | 完成 | （見 git log） | 514 通過、1 略過 |
 | T30 | 完成 | （見 git log） | 526 通過、1 略過 |
+| T31b | 完成 | （見 git log） | 552 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -145,6 +146,17 @@
 - T30｜靜默期：同一條前提還在靜默中又不同意，換成新的那一筆；結束用申報日距開始滿 45 天、`until` 改成申報日前一天；財報類申報只算 10-Q、10-K、8-K 2.02，不算 /A（和 `isEarningsFiling` 不同）。
 - T30｜乙類的 RESPONSE 多一個 `premiseId`（設計沒寫）；持股頁多顯示靜默中的那一句（派工單沒要求，一小行）。
 - T30｜範圍外留著：被 BREAK_UPDATE 更新過的通知，BREAK_NOTICE 的 runIds 還是最早那次，之後那次審查的 note 看不到回應；`ai/discussion.ts` 回應的白話沒和論點 note 統一（留給 T34）。
+- T31b｜`aiTier` 多一個 `agreed`（三票同一檔位、資料沒有缺漏）：`premiseId` 在不合格的審查上也可能有值，慢規則通知上的「照 AI」只認 `agreed` 加 `premiseId`；舊資料沒有就當不算。
+- T31b｜`dropReview` 在那則通知有最後結果時才清（這次不做、填了快照），不是回覆就清，因為等下單期間還可以改決定。
+- T31b｜新欄位 `Item.drop`、`Item.absorbed`、`brk.withRule`、`OwnMeta.reduceDd`（標題用的觸發日跌幅）。
+- T31b｜推播共用段：留住的通知編號記在 `flow_state` 的 `push:held`（不在 `pushes` 寫假的失敗列）；`SCHEDULE` 加 `holdWaiting`（23:30 與手動會等）；補推用 `pushes.kind = 'FOLLOWUP'`，運作統計會多一列。
+- T31b｜LINE 那一行：`NONE` 寫「AI 論點檢查沒有一致結論，照規則」、`PENDING` 寫「還沒有結論」；月報裡前面加代號。日期用 `12/28` 寫法。AI 層沒設定時照設計寫 `NONE`。
+- T31b｜併入的範圍多一種：月中記著等月報的建議在慢規則項目產生時也併進去，不另列一項。
+- T31b｜優先順序：減半檢視的出清 ＞ 另外審查的出清 ＞ 另外審查的減半 ＞ 減半檢視的結果。
+- T31b｜`routeReview`：有還沒回覆的慢規則通知時，三票一致、往下、有前提的審查一律走 `RULE_NOTICE`，排在靜默與「和目前狀態相同」之前（靜默期不擋那一行）。
+- T31b｜慢規則通知上的出清不寫 `NONE` 回應；`RESPONSE`（R）多帶 `premiseId`、`runIds`。影子紀錄只記有差異的（同意減半或沒結論又照規則做的不記）。
+- T31b｜示範情境 ② 的 META（只有預設前提）改成同意減半，示範裡因此沒有「照 AI：不動」。別的選項：替 META 加一條前提。
+- T31b｜已知限制：03:30 補推實際上很少發生（只有 23:30 沒跑成、01:30 才處理時）；之後一次資料缺漏的審查會蓋掉 `aiTier`，還沒回覆的慢規則通知上由審查帶來的出清選項下次重算時會消失（很少見）；月報重算可能讓 `dropReview.told` 退回，最壞多補推一行。
 
 ## 要使用者親手做的事
 
@@ -161,6 +173,7 @@
 - T29a｜部署後才生效：01:30 多了「你定的條件成立後的審查」。沒有 migration、沒有改 prompt。
 - T29b｜部署後才生效：第一次排程與 01:30 多了提前審查；自選股不再開單月大跌說明（F20）。
 - T29c｜`own_earnings_v1.md` 由雲端排程從 repo 讀，push 之後生效；部署後才開始跑。
+- T31b｜`own_drop_v2.md` 由雲端排程從 repo 讀，push 之後生效。部署後減半通知在 23:30 可能先不推、01:30 才推，03:30 可能補推一行。
 
 ## 畫面截圖
 
@@ -186,6 +199,10 @@
 | T30 | 從通知來的編輯論點頁：回應勾選、保留前提的警告（桌機／手機） | `records/stage8/screens/T30/edit-reply-desktop.png、edit-reply-phone.png` |
 | T30 | 修正論點之後的通知頁（桌機／手機） | `records/stage8/screens/T30/notif-revised-desktop.png、notif-revised-phone.png` |
 | T30 | 持股頁：失效後修改第 1 次、靜默中的前提（桌機／手機） | `records/stage8/screens/T30/holding-desktop.png、holding-phone.png` |
+| T31b | 減半通知五種狀態：還在檢查、不動、出清、同意減半、沒有結論（桌機／手機） | `records/stage8/screens/T31b/reduce-{pending,hold,exit,agree,none}-{desktop,phone}.png` |
+| T31b | 減半項目選「這次不做」的理由欄（桌機／手機） | `records/stage8/screens/T31b/reduce-skip-reason-desktop.png、reduce-skip-reason-phone.png` |
+| T31b | 加回通知（照 AI：維持減半）（桌機／手機） | `records/stage8/screens/T31b/readd-desktop.png、readd-phone.png` |
+| T31b | 月報裡只有預設前提的減半項目（桌機／手機） | `records/stage8/screens/T31b/monthly-default-only-desktop.png、monthly-default-only-phone.png` |
 
 ## 卡住的任務
 

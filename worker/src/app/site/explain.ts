@@ -407,25 +407,33 @@ function triggerIndex(ctx: ExplainContext, it: Item): { i: number; date: string 
   return { i: ctx.view.i, date: ctx.view.date };
 }
 
-function ownAiParts(ctx: ExplainContext, n: Notif, it: Item, action: 'REDUCE' | 'READD'): Pick<Explain, 'ai' | 'aiMissing' | 'facts'> & { aiNote?: string } {
-  const t = it.ticker!;
-  const meta = ctx.acct.own[t];
+/**
+ * 慢規則項目上 AI 的說明（own_thesis §3.4）：只認這一項帶的那幾次 AI 執行（runIds），不取「日期最近的一筆」——
+ * 通知上 AI 的那一行只來自看過這次觸發的結論，舊的審查不能被當成這次的說明（修 K1）。示範模式的假說明沒有執行編號，照代號與日期找。
+ */
+function ownAiParts(ctx: ExplainContext, n: Notif, it: Item): Pick<Explain, 'ai' | 'aiMissing'> {
+  if (!it.aiLine) return {};
+  const byRun = noteByRun(ctx.aiNotes, 'REVIEW', it.runIds);
+  const demo = byRun ? undefined : findNote(ctx.aiNotes, 'REVIEW', it.ticker, n.date);
+  const note = byRun ?? (demo?.fake ? demo : undefined);
+  return { ai: note, aiMissing: !!it.choices.find((c) => c.id === 'AI') && !note };
+}
+
+/** 收合時那一行理由後面接的 AI 狀態（減半項目）。 */
+const DROP_SHORT: Record<string, string> = { PENDING: 'AI 論點檢查進行中', HOLD: 'AI 建議不動', EXIT: 'AI 認為前提不成立，建議出清', AGREE: 'AI 同意減半', NONE: 'AI 沒有一致結論' };
+/** 靜默期的一句話（選項說明用）。 */
+const SILENCE_NOTE = '到下一季財報出來（最長 100 天）不再為這條前提通知你';
+
+/**
+ * 慢規則項目的理由，AI 的那一部分每次讀通知時重算：通知產生之後那一行還會更新（減半檢視晚一點回來、之後另外有審查回來），
+ * 存在通知裡的數字（價格、跌幅、股數）不變。
+ */
+export function liveOwnRule(ctx: ExplainContext, n: Notif, it: ItemX): Explain {
+  const fresh = explainItem(ctx, n, it);
+  const x = it.x ?? fresh;
   const ai = it.choices.find((c) => c.id === 'AI');
-  const note = findNote(ctx.aiNotes, 'REVIEW', t, n.date, it.runIds);
-  if (ai) {
-    const label = it.aiLine?.match(/檔位：([^）]+)）/)?.[1] ?? (ai.tier ? TIER_NAME[ai.tier] : '');
-    return { ai: note, aiMissing: !note, aiNote: note ? `AI ${md(note.date)} 審查的結論是「${label}」：${note.summary}` : `AI 最近一次審查的結論是「${label}」。` };
-  }
-  if (meta?.aiTier) {
-    const same = action === 'REDUCE' ? meta.aiTier.tier === 'HALF' : meta.aiTier.tier !== 'HALF' && meta.aiTier.tier !== 'EXIT';
-    if (same) {
-      return {
-        ai: note,
-        facts: [{ label: 'AI 的看法', value: `${md(meta.aiTier.date)} 審查：${TIER_NAME[meta.aiTier.tier]}`, note: action === 'REDUCE' ? '和規則是同一個動作，所以只列一行。' : 'AI 沒有不同意見，所以只列一行。' }],
-      };
-    }
-  }
-  return {};
+  const tail = it.f === 'F7' ? (it.drop ? DROP_SHORT[it.drop] : null) : ai ? `AI 建議${ai.tier === 'EXIT' ? '出清' : '維持減半'}` : null;
+  return { ...x, short: tail ? `${x.short}；${tail}` : x.short, ai: fresh.ai, aiMissing: fresh.aiMissing, choiceNotes: fresh.choiceNotes ?? x.choiceNotes };
 }
 
 function ownReduce(ctx: ExplainContext, n: Notif, it: Item): Explain {
@@ -440,23 +448,30 @@ function ownReduce(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const sh = -sharesOf(rule?.lines ?? [], t);
   const cur = acct.lots.own[t] ?? 0;
   const late = trig.date !== view.date;
-  const ai = ownAiParts(ctx, n, it, 'REDUCE');
+  const ai = ownAiParts(ctx, n, it);
   const aiChoice = it.choices.find((x) => x.id === 'AI');
+  const exit = aiChoice?.tier === 'EXIT';
   const total = totalValue(acct, view);
   return {
     short: `比 52 週高點低 ${fmtPct(-dd)}，門檻是 20%`,
-    why: `${t} ${late ? `在 ${md(trig.date)} ` : ''}收盤 ${fmtPx(px)}，比 52 週高點 ${fmtPx(high)} 低 ${fmtPct(-dd, 1)}。慢規則：跌超過 20% 就賣掉一半。這是保險，不是判斷它會繼續跌。${late ? '當時變動不到總資產 5%，所以沒有當天通知，併到這份月報。' : ''}`,
+    why: `${t} ${late ? `在 ${md(trig.date)} ` : ''}收盤 ${fmtPx(px)}，比 52 週高點 ${fmtPx(high)} 低 ${fmtPct(-dd, 1)}。慢規則：跌超過 20% 就賣掉一半。它是底線：你沒有另外決定時照它做；這是保險，不是判斷它會繼續跌。${late ? '當時變動不到總資產 5%，所以沒有當天通知，併到這份月報。' : ''}`,
     gauge: Number.isFinite(dd) ? drawdownGauge(dd) : undefined,
     rule: RULE.slow,
-    facts: [...(ai.facts ?? []), { label: '這一筆占總資產', value: fmtPct((sh * (c ? c[view.i] : 0)) / total, 1), note: '5% 以上當天通知，不到 5% 併入月報。' }],
+    facts: [{ label: '這一筆占總資產', value: fmtPct((sh * (c ? c[view.i] : 0)) / total, 1), note: '5% 以上當天通知，不到 5% 併入月報。' }],
     math: [`目前自選持有 ${cur} 股 → 賣掉一半 = ${sh} 股（四捨五入到整股）`],
     chart: t,
     ai: ai.ai,
     aiMissing: ai.aiMissing,
     choiceNotes: {
-      RULE: '賣一半，錢交給核心。之後站回 200 日均線連續 10 天，再買回到標準比重。',
-      ...(aiChoice ? { AI: ai.aiNote ?? '' } : {}),
-      SKIP: SKIP.own,
+      RULE: `賣一半，錢交給核心。之後站回 200 日均線連續 10 天，再買回到標準比重。${exit ? `AI 建議的是出清：選這個（沒有照 AI）的話，${SILENCE_NOTE}。` : ''}`,
+      ...(aiChoice
+        ? {
+            AI: exit
+              ? '全部賣出、錢回核心，這檔移出自選，論點檔結案。想先改論點可以按「拿去討論」，改完再回來選一項。'
+              : 'AI 判斷的是論點有沒有壞，不是會不會繼續跌。大盤或產業帶動的下跌，正是慢規則在 2000–2002、2008、2022 年有用的情況。選這個就不賣；規則照樣記成已經減半，之後不再為這次下跌提醒。',
+          }
+        : {}),
+      SKIP: `要寫一句為什麼這次不做。${SKIP.own}${exit ? `沒有照 AI 出清，${SILENCE_NOTE}。` : ''}`,
     },
   };
 }
@@ -475,21 +490,20 @@ function ownReadd(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const std = acct.rule.own[t]?.stdWeight ?? 0;
   const total = totalValue(acct, view);
   const trig = triggerIndex(ctx, it);
-  const ai = ownAiParts(ctx, n, it, 'READD');
+  const ai = ownAiParts(ctx, n, it);
   const aiChoice = it.choices.find((x) => x.id === 'AI');
   return {
     short: `站回 200 日均線連續 10 天以上（${fmtSigned(rel, 1)}）`,
     why: `${t} 收盤 ${fmtPx(px)}，在 200 日均線 ${fmtPx(ma)} 之上（${fmtSigned(rel, 1)}）${trig.date !== view.date ? `，${md(trig.date)} 就已經連續站上 10 天` : `，已連續 ${run} 天`}。慢規則：之前減半的部分買回來，回到標準比重 ${fmtPct(std, 1)}。`,
     gauge: Number.isFinite(rel) ? maGauge(rel, `${t} 收盤相對 200 日均線`, false) : undefined,
     rule: RULE.slow,
-    facts: ai.facts,
     math: [`標準比重 ${fmtPct(std, 1)} × 總資產 ${fmtMoney(total)} ÷ 前一日收盤 ${fmtPx(px)} = ${Math.floor((std * total) / px)} 股`, `已有 ${cur} 股 → 買 ${sh} 股`],
     chart: t,
     ai: ai.ai,
     aiMissing: ai.aiMissing,
     choiceNotes: {
       RULE: '買回到標準比重，錢從核心出。',
-      ...(aiChoice ? { AI: `${ai.aiNote ?? ''}照 AI 的話維持減半，之後規則符合條件時會再提一次。` } : {}),
+      ...(aiChoice ? { AI: aiChoice.tier === 'EXIT' ? '全部賣出、錢回核心，這檔移出自選，論點檔結案。' : '不買回，維持減半。之後規則符合條件時會再提一次。' } : {}),
       SKIP: SKIP.own,
     },
   };

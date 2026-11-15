@@ -27,7 +27,7 @@ import { buildMarketView } from '../src/data/marketView';
 import { activeHits, classify401, classify424, classifyProxy, coverHits, quickHits, tenderSubject } from '../src/data/secEvents';
 import type { Filing } from '../src/data/sources';
 import { loadConstituents, loadRanking, loadSeries } from '../src/data/store';
-import { createAccount, monthlyReport, refreshOwnAiChoice, recordAiTier, strategyReminder, type Account } from '../src/engine';
+import { createAccount, monthlyReport, refreshOwnAiChoice, strategyReminder, type Account } from '../src/engine';
 import { freshDb } from './helpers/d1';
 import { cronTime, fakeFetcher, fakeParams, newWorld, type World } from './helpers/fakeSources';
 
@@ -263,11 +263,13 @@ describe('F18／F19：payload 檢查與結論', () => {
 // ---------------------------------------------------------------- F7、F20、F5／F6、F21、F14 的純函式
 
 describe('F7／F20／F5／F6／F21／F14：檢查與結論', () => {
-  it('F7：3 票一致而且和規則（減半）不同才更新；轉交 F19 要寫代碼；F20 的一句話', () => {
-    const pack = { run_id: 'r', function: 'OWN_DROP', as_of: '2026-11-23', policy: { level: 'A3', verdicts: ['EXIT', 'HALF', 'HOLD'], abstain: 'HALF', min_evidence: 1, samples: 3 }, premises: [], condition_types: [], data_quality: {}, facts: [], rule: { action: '', detail: {} }, documents: [{ id: 'P', source_id: 'price:MU', kind: 'price', date: '2026-11-23', title: 'p', text: '2026-11-23 MU close 70.00' }] } as unknown as EvidencePack;
+  // T31b 改了 dropDecision（own_thesis §3.3，修 K4）：結果是五種之一，「不動」多了程式核對（跌幅拆解在證據包的 rule.detail.attr）。
+  // 各種結果的條件在 test/t31b-drop.test.ts；這裡留原本的兩個斷言（三票不動、三票減半）與轉交、F20
+  it('F7：3 票一致而且和規則（減半）不同才給「照 AI」；轉交 F19 要寫代碼；F20 的一句話', () => {
+    const pack = { run_id: 'r', function: 'OWN_DROP', as_of: '2026-11-23', policy: { level: 'A3', verdicts: ['EXIT', 'HALF', 'HOLD'], abstain: 'HALF', min_evidence: 1, samples: 3 }, premises: [], condition_types: [], data_quality: {}, facts: [], rule: { action: '', detail: { attr: { stock: -0.25, market: -0.2, sector: null, idio: -0.05 } } }, documents: [{ id: 'P', source_id: 'price:MU', kind: 'price', date: '2026-11-23', title: 'p', text: '2026-11-23 MU close 70.00' }] } as unknown as EvidencePack;
     const v = (verdict: string, extra: Record<string, unknown> = {}) => ({ verdict, evidence: [{ id: 'E1', source_id: 'price:MU', date: '2026-11-23', quote: '2026-11-23 MU close 70.00', claim: 'x' }], payload: { tier: verdict, cause_class: 'MARKET', ...extra } });
-    expect(dropDecision(judge(pack, [v('HOLD'), v('HOLD'), v('HOLD')], PAYLOAD_HOOKS.OWN_DROP))).toMatchObject({ tier: 'HOLD', cause: 'MARKET' });
-    expect(dropDecision(judge(pack, [v('HALF'), v('HALF'), v('HALF')], PAYLOAD_HOOKS.OWN_DROP)).tier).toBeNull();
+    expect(dropDecision(judge(pack, [v('HOLD'), v('HOLD'), v('HOLD')], PAYLOAD_HOOKS.OWN_DROP), pack)).toMatchObject({ status: 'HOLD', cause: 'MARKET' });
+    expect(dropDecision(judge(pack, [v('HALF'), v('HALF'), v('HALF')], PAYLOAD_HOOKS.OWN_DROP), pack).status).toBe('AGREE');
     const bad = judge(pack, [v('HOLD', { cause_class: 'VIBES', escalate_to_F19: true })], PAYLOAD_HOOKS.OWN_DROP);
     expect(bad.samples[0].payload).toMatchObject({ cause_class: 'UNKNOWN', escalate_to_F19: false });
     expect(explainLine('MU', -0.27, { samples: [{ valid: true, payload: { cause_class: 'SECTOR', summary: '記憶體類股一起跌。' } }] } as never)).toBe('MU 最近一個月跌 27%：產業一起跌。記憶體類股一起跌。（AI 說明，詳見網站）');
@@ -782,7 +784,9 @@ describe('T33a：崩盤規則檢視什麼時候開（core_ai §3.1 的 crashNeed
 
 describe('整條流程：F7 減半檢視、F20 大跌說明', () => {
   // T29b：自選股不再跑 F20（own_thesis §2.8），F20 改用動能持股（AAPL）驗；動能的 F20 在 T32d 拿掉
-  it('自選暴跌 → 當天減半通知；F7 三票「不動」回來 → 還沒回覆的通知更新 AI 建議；動能持股的 F20 說明附在月報（自選股不再開 F20）', async () => {
+  // T31b 改了這個行為（own_thesis §3.3，修 K4）：這裡三票「不動」的歸類是一次性事件、而且只有 NVDA 自己跌（個股自身的跌幅超過整段的一半），
+  // 過不了「不動」的條件 → 沒有可用的結論，通知上不會出現「照 AI：不動」，也不動 aiTier。過得了的情況在 test/t31b-drop.test.ts
+  it('自選暴跌 → 當天減半通知；F7 三票「不動」但只有個股自己跌 → 沒有可用的結論、照規則；動能持股的 F20 說明附在月報（自選股不再開 F20）', async () => {
     await withWorld(async ({ db, w, run }) => {
       await run('2026-11-20');
       w.shock.NVDA = { from: '2026-11-23', factor: 0.7 };
@@ -805,10 +809,10 @@ describe('整條流程：F7 減半檢視、F20 大跌說明', () => {
       await run('2026-11-23', 'FINAL');
       acct = (await loadAccount(db))!.acct;
       const it = acct.notifs.find((n) => n.id === urgent.id)!.items.find((i) => i.f === 'F7')!;
-      expect(it.choices.map((c) => c.id)).toEqual(['RULE', 'AI', 'SKIP']);
-      expect(it.choices[1]).toMatchObject({ tier: 'HOLD', lines: [] });
-      expect(it.aiLine).toContain('不動');
-      expect(acct.own.NVDA.aiTier).toMatchObject({ tier: 'HOLD', suggest: false });
+      expect(it.choices.map((c) => c.id)).toEqual(['RULE', 'SKIP']);
+      expect(it.aiLine).toBe('AI 論點檢查沒有一致結論，照規則');
+      expect(acct.own.NVDA.dropReview).toMatchObject({ session: '2026-11-23', runId: drop.runId, status: 'NONE' });
+      expect(acct.own.NVDA.aiTier).toBeNull();
       for (const d of ['2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
       const m = await run('2026-11-30');
       const monthly = (await loadAccount(db))!.acct.notifs.find((n) => n.id === m.monthly)!;
@@ -919,12 +923,14 @@ describe('引擎的 T11 部分', () => {
     });
   }
 
-  it('F7 的 AI 檢視晚回來：還沒回覆的減半項目照新的檔位重算「照 AI」；已回覆的不動', async () => {
+  // T31b 改了這個行為（own_thesis §3.4）：重算看的是這次減半的論點檢查（dropReview），不是 aiTier 的檔位
+  it('F7 的 AI 檢視晚回來：還沒回覆的減半項目照減半檢視的結果重算「照 AI」；已回覆的不動', async () => {
     await base((acct, view) => {
       const a = structuredClone(acct);
       const n = { id: 99, kind: 'URGENT', date: view.date, seq: view.i, title: 'x', status: 'PENDING', coreAbsorb: true, reminded: false, items: [{ key: 'k', f: 'F7', kind: 'OWN_RULE', ticker: 'NVDA', title: 't', choices: [{ id: 'RULE', label: '照規則', lines: [] }, { id: 'SKIP', label: '這次不做', lines: [] }], choice: 'RULE', ruleChoice: 'RULE' }] };
       a.notifs.push(n as never, { ...structuredClone(n), id: 100, status: 'RESPONDED' } as never);
-      const r = refreshOwnAiChoice(recordAiTier(a, 'NVDA', 'EXIT', view.date, false), view, 'NVDA');
+      a.own.NVDA.dropReview = { session: view.date, runId: 'run-f7', status: 'EXIT', cause: 'FUNDAMENTAL', premiseId: 'P1', told: false };
+      const r = refreshOwnAiChoice(a, view, 'NVDA');
       expect(r.changed).toEqual([99]);
       const it = r.acct.notifs.find((x) => x.id === 99)!.items[0];
       expect(it.choices.map((c) => c.id)).toEqual(['RULE', 'AI', 'SKIP']);

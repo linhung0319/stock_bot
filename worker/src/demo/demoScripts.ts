@@ -15,8 +15,10 @@ export interface DemoScript {
   startAt: string;
   /** 月份 → 本月被否決的代號。 */
   vetoes?: Record<string, string[]>;
-  /** on 那一天早上（月報之前）記下的 F24 檔位。 */
-  aiTiers?: { on: string; ticker: string; tier: Tier; date: string; suggest: boolean }[];
+  /** on 那一天早上（月報之前）記下的 F24 檔位。premiseId：三票都判不成立的那條前提（有的話算三票一致，慢規則通知上才會列「照 AI」；own_thesis §3.4）。 */
+  aiTiers?: { on: string; ticker: string; tier: Tier; date: string; suggest: boolean; premiseId?: string }[];
+  /** on 那一天收盤後慢規則觸發減半時，減半檢視（AI 論點檢查）的結果（own_thesis §3.3）：通知上 AI 的那一行照它寫。 */
+  drops?: { on: string; ticker: string; status: 'HOLD' | 'EXIT' | 'AGREE' | 'NONE'; cause?: string; premiseId?: string }[];
   /** on 那一天收盤後成立的你定的條件（甲類通知，own_thesis §1.10）：setAt 哪天勾選的、why 怎麼確認的。 */
   conditions?: { on: string; ticker: string; action: 'EXIT' | 'HALF'; text: string; setAt: string; why: string }[];
   /** on 那一天收盤後 AI 審查判前提不成立的當天通知（乙類，own_thesis §1.10）。 */
@@ -80,13 +82,16 @@ export const DEMO_SCRIPTS: Record<DemoId, DemoScript> = {
   s2: {
     id: 's2',
     title: '自選股大跌',
-    summary: 'MU 占帳戶約 14%。財報後下跌，12/24 觸發慢規則減半（當天通知）；1 月你定的出場條件成立、照當時的決定出清；META 也跌破 -20% 但部位小，併入 1 月月報，AI 說不動；1/21 AI 審查認為 NVDA 的前提不成立。',
-    tips: ['MU 減半：規則和 AI 這次是同一個動作，只有一行', '跳到 1/4 的月報：META 規則說減半、AI 說不動，兩個並列', '跳到 1/7：你定的出場條件成立，預設照當時的決定出清 MU', '跳到 1/21：AI 審查認為 NVDA 的前提不成立，可以照 AI、拿去討論或不同意'],
+    summary: 'MU 占帳戶約 14%。財報後下跌，12/24 觸發慢規則減半（當天通知）；1 月你定的出場條件成立、照當時的決定出清；META 也跌破 -20% 但部位小，併入 1 月月報；1/21 AI 審查認為 NVDA 的前提不成立。',
+    tips: ['MU 減半：12/18 的審查已經認為一條前提不成立，通知上寫 AI 同意減半；選「這次不做」要寫一句理由', '跳到 1/4 的月報：META 還沒有你的論點，AI 只檢查系統預設前提，同意減半', '跳到 1/7：你定的出場條件成立，預設照當時的決定出清 MU', '跳到 1/21：AI 審查認為 NVDA 的前提不成立，可以照 AI、拿去討論或不同意'],
     startAt: '2026-12-28',
     aiTiers: [
-      { on: '2026-12-18', ticker: 'MU', tier: 'HALF', date: '2026-12-18', suggest: true },
-      { on: '2026-12-31', ticker: 'META', tier: 'HOLD', date: '2026-12-31', suggest: false },
-      { on: '2027-02-26', ticker: 'MU', tier: 'HALF', date: '2027-02-26', suggest: false },
+      { on: '2026-12-18', ticker: 'MU', tier: 'HALF', date: '2026-12-18', suggest: true, premiseId: 'P1' },
+      { on: '2027-02-26', ticker: 'MU', tier: 'HALF', date: '2027-02-26', suggest: false, premiseId: 'P1' },
+    ],
+    drops: [
+      { on: '2026-12-24', ticker: 'MU', status: 'AGREE', cause: 'FUNDAMENTAL' },
+      { on: '2026-12-24', ticker: 'META', status: 'AGREE', cause: 'SECTOR' },
     ],
     conditions: [{ on: '2027-01-06', ticker: 'MU', action: 'EXIT', text: 'DRAM/HBM 合約價走平或下跌', setAt: '2026-12-20', why: '8-K 2027-01-06 的原文，3 票確認（引用在網站）。這條是 AI 建議，你在 12/20 勾選。' }],
     breaks: [{ on: '2027-01-20', ticker: 'NVDA', tier: 'HALF', premiseId: 'P1', basis: '10-Q 2027-01-20' }],
@@ -113,10 +118,10 @@ export const DEMO_SCRIPTS: Record<DemoId, DemoScript> = {
       {
         kind: 'REVIEW',
         ticker: 'META',
-        date: '2026-12-31',
-        verdict: '不動',
+        date: '2026-12-24',
+        verdict: '減半（照規則）',
         votes: '3 票一致',
-        summary: '這次下跌拆開來看：大盤 -2%、產業 -9%、個股 -10%。個股的部分來自監管新聞，但沒有罰款金額或禁令；系統預設的前提都還成立。',
+        summary: '這次下跌拆開來看：大盤 -2%、產業 -9%、個股 -10%。個股的部分來自監管新聞，但沒有罰款金額或禁令；系統預設的前提都沒有被判不成立。這檔沒有你的論點，AI 只能選照規則減半或出清：同意減半。',
         premises: [
           { text: '沒有硬事件（重編、換會計師、被收購、重大監管）', origin: 'SYSTEM_DEFAULT', status: 'HOLDS', evidence: '只有新聞報導，沒有 8-K 或主管機關公告（虛構）' },
           { text: '營收年增率沒有連兩季轉負', origin: 'SYSTEM_DEFAULT', status: 'HOLDS' },

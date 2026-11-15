@@ -191,12 +191,16 @@ describe('情境 ② 自選股大跌（MU）', () => {
     expect(listOf(sim.acct.notifs.find((n) => n.id === urgent!.id)!).find((x) => x.includes('VOO'))).toMatch(/^買 VOO/);
   });
 
-  it('META 同一天也跌破 -20%，但變動 < 5% → 不通知，併入 1 月月報；AI 說「不動」→ 兩行並列', () => {
+  // T31b 改了這個行為（own_thesis §3.3、§3.4）：「照 AI：不動」只來自這次減半的論點檢查（減半檢視三票不動、過了程式核對），
+  // 不再用最近一次定期審查的檔位；只有系統預設前提的股票不能選不動，所以這裡先替 META 寫一條自己的前提
+  it('META 同一天也跌破 -20%，但變動 < 5% → 不通知，併入 1 月月報；減半檢視說「不動」→ 兩行並列', () => {
     const sim = start();
+    sim.acct.own.META.premises = [{ id: 'P4', text: '廣告營收維持兩位數成長', origin: 'USER' }];
     sim.runUntil('2026-12-31');
     expect(sim.acct.own.META.pending).toEqual({ action: 'REDUCE', date: '2026-12-24' });
     expect(sim.acct.notifs.some((n) => n.kind === 'URGENT' && n.items.some((i) => i.ticker === 'META'))).toBe(false);
-    sim.acct = recordAiTier(sim.acct, 'META', 'HOLD', '2026-12-31', false);
+    // 12/24 觸發那天開的減半檢視：三票不動（產業一起跌）
+    sim.acct.own.META.dropReview = { session: '2026-12-24', runId: null, status: 'HOLD', cause: 'SECTOR', premiseId: null, told: false };
     sim.runUntil('2027-01-04');
     const jan = sim.preOpen()!;
     const it7 = item(jan, 'F7', 'META');
@@ -245,11 +249,12 @@ describe('情境 ② 自選股大跌（MU）', () => {
     expect(sim.acct.notifs.some((x) => x.id > n.id && x.items.some((i) => i.ticker === 'MU'))).toBe(false);
   });
 
-  it('F8：2 月反彈後加回（< 5%，併入 3 月月報），AI 檔位「減半」→ 並列「維持減半」；照 AI 後狀態回到減半、切換日重算', () => {
+  // T31b 改了這個行為（own_thesis §3.4，修 K5）：加回時的「照 AI」只在審查三票判同一條前提不成立（有 premiseId）時才列
+  it('F8：2 月反彈後加回（< 5%，併入 3 月月報），審查認為前提 P1 不成立、檔位「減半」→ 並列「維持減半」；照 AI 後狀態回到減半、切換日重算', () => {
     const sim = new Sim(scenarios.s2().market, scenarios.s2().init, { autoRespond: true });
     sim.runUntil('2027-02-26');
     expect(sim.acct.own.MU.pending).toEqual({ action: 'READD', date: '2027-02-18' });
-    sim.acct = recordAiTier(sim.acct, 'MU', 'HALF', '2027-02-26', false);
+    sim.acct = recordAiTier(sim.acct, 'MU', 'HALF', '2027-02-26', false, undefined, { premiseId: 'P1', agreed: true });
     sim.opt.autoRespond = false;
     sim.runUntil('2027-03-01');
     const mar = sim.preOpen()!;

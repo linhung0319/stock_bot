@@ -1,0 +1,89 @@
+// 規則的通知等到第二次排程再推（T31b；own_thesis_design_2026-11-15 §3.5。core_ai_design §3.2 的月報共用這一段：T33b 在 PUSH_WAITERS 加一筆）。
+//
+// 規則的通知不等 AI 的內容，只等到固定的時間：
+//   通知產生的那一次流程（通常是 UTC 23:30）：通知上有還在等的 AI 結果（waiting）→ 這次不推 LINE，編號記在 flow_state 的 push:held
+//   下一次流程（通常是 01:30）：套用結論之後照推，不管結果回來了沒；推出去時把跟著推出去的結果標成「講過了」（told）
+//   再之後的流程（通常是 03:30）：通知推出去之後結果才回來 → 補推一行（followUps），每個結果一次
+// 沒有在等的通知（AI 沒開成、AI 層沒設定、結果已經回來）照舊當場推。手動或補做的流程照同樣的條件判斷。
+// 這裡只放判斷；實際推播與存檔在 src/app/flow.ts 的 pushPending。
+import type { Account, Notif } from '../engine';
+
+export interface PushFollowUp {
+  /** 哪一則通知的結果。 */
+  notif: number;
+  /** 補推的那一行。 */
+  text: string;
+  /** 補推成功之後標成講過了（直接改傳進來的帳戶）。 */
+  told(acct: Account): void;
+}
+
+export interface PushWaiter {
+  name: string;
+  /** 這則新通知上有還在等的 AI 結果 → 產生它的這次流程不推，下一次流程推。 */
+  waiting(acct: Account, n: Notif): boolean;
+  /** 通知推出去了：跟著推出去的結果標成講過了（直接改傳進來的帳戶）。 */
+  told?(acct: Account, n: Notif): void;
+  /** 通知推出去之後才回來的結果：要補推的。 */
+  followUps?(acct: Account): PushFollowUp[];
+}
+
+/** flow_state 的鍵：這次留住、下一次流程要推的通知編號（JSON 陣列）。 */
+export const PUSH_HELD_KEY = 'push:held';
+
+const reduceItems = (n: Notif) => n.items.filter((it) => it.f === 'F7' && it.kind === 'OWN_RULE' && !it.cancelled && !!it.ticker);
+
+/** 補推的那一行（own_thesis §3.5 的第三次排程）。 */
+export const dropFollowUpText = (ticker: string, state: 'HOLD' | 'EXIT', notif: number): string => `${ticker} 的 AI 論點檢查回來了：${state === 'HOLD' ? '建議不動' : '前提不成立，建議出清'}。通知 #${notif} 已更新，預設仍是照規則。`;
+
+/**
+ * 慢規則減半通知與減半檢視（own_thesis §3.5）：
+ *   等：新通知裡有減半項目，而且那檔的 dropReview 是 PENDING（沒開成或 AI 層沒設定是 NONE，照舊當場推）
+ *   講過了：推出去時 dropReview 不是 PENDING 的，told 設成 true
+ *   補推：dropReview 是不動或出清、told 是 false、通知還沒回覆（已經推過由 pushPending 判斷）；同意減半、沒有結論不補推
+ */
+export const dropWaiter: PushWaiter = {
+  name: '減半檢視',
+  waiting: (acct, n) => reduceItems(n).some((it) => acct.own[it.ticker!]?.dropReview?.status === 'PENDING'),
+  told(acct, n) {
+    for (const it of reduceItems(n)) {
+      const dr = acct.own[it.ticker!]?.dropReview;
+      if (dr && dr.status !== 'PENDING') dr.told = true;
+    }
+  },
+  followUps(acct) {
+    const out: PushFollowUp[] = [];
+    for (const n of acct.notifs) {
+      if (n.status !== 'PENDING') continue;
+      for (const it of reduceItems(n)) {
+        const t = it.ticker!;
+        const dr = acct.own[t]?.dropReview;
+        if (!dr || dr.told || (dr.status !== 'HOLD' && dr.status !== 'EXIT') || (it.drop !== 'HOLD' && it.drop !== 'EXIT')) continue;
+        out.push({
+          notif: n.id,
+          text: dropFollowUpText(t, it.drop, n.id),
+          told: (a) => {
+            const d = a.own[t]?.dropReview;
+            if (d && d.status !== 'PENDING') d.told = true;
+          },
+        });
+      }
+    }
+    return out;
+  },
+};
+
+/** 所有「等到下一次流程再推」的規則通知。T33b：崩盤規則的月報（core_ai §3.2）加在這裡。 */
+export const PUSH_WAITERS: PushWaiter[] = [dropWaiter];
+
+/** 這則新通知要不要等到下一次流程再推。 */
+export const pushWaiting = (acct: Account, n: Notif, waiters: PushWaiter[] = PUSH_WAITERS): boolean => waiters.some((w) => w.waiting(acct, n));
+
+/** flow_state 裡留住的通知編號（格式壞了當成沒有）。 */
+export function parseHeld(v: string | null): number[] {
+  try {
+    const j = JSON.parse(v ?? '[]') as unknown;
+    return Array.isArray(j) ? j.filter((x): x is number => Number.isInteger(x)) : [];
+  } catch {
+    return [];
+  }
+}

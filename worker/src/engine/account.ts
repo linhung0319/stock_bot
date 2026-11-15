@@ -52,8 +52,9 @@ export interface OwnMeta {
    * 最近一次 F24 的檔位（AI 層給的輸入）。suggest = 3 票一致、和目前不同、有一條不成立的前提 → 月報並列。
    * premiseId：三票都判不成立（有申報或財報引用）的那條前提，有多條時取編號最小的（own_thesis §1.6 第 1 點）。
    * trigger：那次審查的觸發原因（§1.9 決定當天通知還是等月報）；basis：判不成立的依據（例如「8-K 2027-01-06」，乙類通知的理由用）。
+   * agreed：三票同一個檔位、資料沒有缺漏（不看和目前狀態同不同、也不看靜默期）。慢規則通知上的「照 AI」只認這種（§3.4）；舊資料沒有 = 不算。
    */
-  aiTier: { tier: Tier; date: string; runId?: string; suggest: boolean; premiseId?: string; trigger?: ReviewTrigger; basis?: string } | null;
+  aiTier: { tier: Tier; date: string; runId?: string; suggest: boolean; premiseId?: string; trigger?: ReviewTrigger; basis?: string; agreed?: boolean } | null;
   raisedAt: string | null;
   /** 未解除的硬事件標記。 */
   flags: string[];
@@ -102,6 +103,30 @@ export interface OwnMeta {
    * 沒有這個欄位（舊資料）= 還沒提前審查過。
    */
   earlyReviewAt?: string | null;
+  /**
+   * 這一次慢規則減半的 AI 論點檢查（減半檢視 F7，own_thesis §3.3）：每檔最多一筆。
+   * 開減半檢視時寫 PENDING（沒開成或 AI 層沒設定寫 NONE），套用時改成結果；逾時、被退回改成 NONE。
+   * 這檔的減半項目被回覆之後、慢規則下一次切換或和尚未下單的那次互相抵銷時清掉。沒有這個欄位（舊資料）= 通知上不顯示 AI 那一行。
+   */
+  dropReview?: DropReview | null;
+  /** 最近一次觸發減半那天距 52 週高點的跌幅（例如 -0.224）：減半項目的標題用（併入月報的項目要寫觸發那天的數字）。舊資料沒有。 */
+  reduceDd?: number | null;
+}
+
+/** 減半檢視的結果（own_thesis §3.3 的五種）：還沒有結果／建議不動／建議出清／同意減半／沒有可用的結論。 */
+export type DropStatus = 'PENDING' | 'HOLD' | 'EXIT' | 'AGREE' | 'NONE';
+
+export interface DropReview {
+  /** 觸發減半的訊號日。 */
+  session: string;
+  runId: string | null;
+  status: DropStatus;
+  /** 和結論同檔位的第一張合格票的 cause_class（MARKET、SECTOR、FUNDAMENTAL…）。 */
+  cause: string | null;
+  /** EXIT 時：不成立的那條前提。 */
+  premiseId: string | null;
+  /** 這個結果有沒有跟著通知推過 LINE（§3.5）。 */
+  told: boolean;
 }
 
 /**
@@ -190,8 +215,20 @@ export interface Item {
   /**
    * 失效通知（own_thesis §1.10）：A = 你定的條件成立（conditionId 是 own_conditions 的列編號）；B = AI 判斷前提不成立、沒有對應的條件。
    * 寫 own_thesis_log 的 BREAK_NOTICE、網站的「拿去討論」用。
+   * withRule：附在慢規則減半項目上的「AI 建議出清」（§3.4）。不是獨立的乙類通知：不能用「修正論點」結案；沒有照 AI 出清 → 那條前提進靜默期。
    */
-  brk?: { type: 'A'; conditionId: number; premiseId: string | null } | { type: 'B'; premiseId: string };
+  brk?: { type: 'A'; conditionId: number; premiseId: string | null } | { type: 'B'; premiseId: string; withRule?: boolean };
+  /**
+   * 慢規則減半項目（F7）上 AI 那一行現在的狀態（own_thesis §3.4）：PENDING 檢查進行中、HOLD 建議不動（有「照 AI：不動」）、
+   * EXIT 建議出清（有「照 AI：出清」，同時帶 withRule 的 brk）、AGREE 同意減半、NONE 沒有一致結論。
+   * 沒有 = 不顯示（舊通知、沒有跑減半檢視）。LINE 多的那一行、回應的 aiOffered、補推都看它。
+   */
+  drop?: DropStatus;
+  /**
+   * 併進這個減半項目的乙類通知（own_thesis §3.4：慢規則通知產生時同一檔有還沒回覆的乙類 → 那一則標 SUPERSEDED，內容併進來）。
+   * 之後重算「照 AI」時（refreshOwnAiChoice）沿用。
+   */
+  absorbed?: { notif: number; tier: 'EXIT' | 'HALF'; premiseId: string; date: string; runIds?: string[] };
   /** 選「這次不做」（SKIP）時要寫一句理由（1～200 字），沒寫不能送出。 */
   reasonRequired?: boolean;
   /** 回覆時寫的理由（選了不做的那一句）。 */

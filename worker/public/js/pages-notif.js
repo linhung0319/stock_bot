@@ -303,6 +303,8 @@ function slip(it, v, ui) {
       ),
     );
   }
+  // 慢規則項目：先寫 AI 論點檢查的結果，下面才是規則的底線與選項（own_thesis §3.2、§3.4）
+  if (it.aiLine) act.push(h('p', { class: 'ai-line' }, it.aiLine));
   if (it.note) act.push(h('p', { class: 'note-line' }, it.note));
   let pick = null;
   if (it.cancelled) pick = h('p', { class: 'picked' }, it.revised ? '你用「修正論點」回應了這一項，不用下單。' : '這一項已取消，不用下單。');
@@ -337,17 +339,28 @@ function slip(it, v, ui) {
         ),
       ),
     );
-    // 甲類的「這次不做」、當天乙類的「不同意，不動」：要寫一句理由（own_thesis §1.10），選了才出現。
+    // 甲類的「這次不做」、當天乙類的「不同意，不動」、慢規則減半的「這次不做」：要寫一句理由（own_thesis §1.10、§3.4），選了才出現。
     // 月報裡的乙類：理由可以不寫，不寫記成「月報裡沒有動它」；兩種都會讓這條前提進靜默期（T30）
     let reasonBox = null;
-    const optional = !it.reasonRequired && it.discuss;
+    const rule = it.kind === 'OWN_RULE';
+    const optional = !it.reasonRequired && it.discuss && !rule;
     if (it.reasonRequired || optional) {
-      const ta = h('textarea', { rows: 2, maxlength: 200, 'aria-label': '一句理由', placeholder: it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做' ? '為什麼這次不照當時的決定做（1～200 字）' : '為什麼不同意（1～200 字）' });
+      const skipIt = it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做';
+      const ta = h('textarea', { rows: 2, maxlength: 200, 'aria-label': '一句理由', placeholder: rule ? '為什麼這次不照規則減半（1～200 字）' : skipIt ? '為什麼這次不照當時的決定做（1～200 字）' : '為什麼不同意（1～200 字）' });
       ta.value = ui.reasons?.[it.key] ?? '';
       ta.addEventListener('input', () => {
         if (ui.reasons) ui.reasons[it.key] = ta.value;
       });
-      reasonBox = h('label', { class: 'field', style: 'margin-top:10px' }, h('span', null, it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做' ? '這次不做的理由（必填）' : optional ? '不同意的理由（可以不寫）' : '不同意的理由（必填）'), ta, h('small', null, it.discuss ? (optional ? '下一次審查會看到這句話。不寫的話記成「月報裡沒有動它」。不管寫不寫，這條前提都會進靜默期：到下一季財報出來（最長 100 天）不再為它通知你。' : '下一次審查會看到這句話。這條前提會進靜默期：到下一季財報出來（最長 100 天）不再為它通知你。') : '下一次審查會看到這句話。'));
+      const hint = rule
+        ? it.drop === 'EXIT'
+          ? '下一次審查會看到這句話。規則的狀態照樣記成已經減半。沒有照 AI 出清：那條前提會進靜默期，到下一季財報出來（最長 100 天）不再為它通知你。'
+          : '下一次審查會看到這句話。規則的狀態照樣記成已經減半。'
+        : it.discuss
+          ? optional
+            ? '下一次審查會看到這句話。不寫的話記成「月報裡沒有動它」。不管寫不寫，這條前提都會進靜默期：到下一季財報出來（最長 100 天）不再為它通知你。'
+            : '下一次審查會看到這句話。這條前提會進靜默期：到下一季財報出來（最長 100 天）不再為它通知你。'
+          : '下一次審查會看到這句話。';
+      reasonBox = h('label', { class: 'field', style: 'margin-top:10px' }, h('span', null, skipIt ? '這次不做的理由（必填）' : optional ? '不同意的理由（可以不寫）' : '不同意的理由（必填）'), ta, h('small', null, hint));
     }
     function syncReason(id) {
       if (reasonBox) reasonBox.hidden = id !== 'SKIP';
@@ -355,7 +368,7 @@ function slip(it, v, ui) {
     syncReason(ui.choices[it.key]);
     // 乙類：拿去討論（複製 BREAK 討論包；通知留在「等你決定」）
     const discuss = it.discuss && it.ticker
-      ? h('div', { class: 'extra' }, h('div', { class: 'btn-row' }, copyPackButton(it.ticker, v.id, '拿去討論')), h('p', { class: 'small dim', style: 'margin-top:6px' }, '把討論包貼到 claude.ai 討論。這則通知會留在「等你決定」；改了論點，回來在「編輯論點」頁貼回、勾「這是對這則通知的回應」。'))
+      ? h('div', { class: 'extra' }, h('div', { class: 'btn-row' }, copyPackButton(it.ticker, v.id, '拿去討論')), h('p', { class: 'small dim', style: 'margin-top:6px' }, rule ? '把討論包貼到 claude.ai 討論 AI 判不成立的那條前提。這則通知會留在「等你決定」；改完論點之後，仍然要回來這裡選一項。' : '把討論包貼到 claude.ai 討論。這則通知會留在「等你決定」；改了論點，回來在「編輯論點」頁貼回、勾「這是對這則通知的回應」。'))
       : null;
     const formBox = h('div');
     const extra = it.actions.length
@@ -516,7 +529,7 @@ export async function notifPage(ctx, id) {
       // 要寫理由的項目選了不做卻沒寫：先在這裡擋下，打開那一張單（伺服器也會再檢查）
       const miss = v.items.filter((it) => !it.cancelled && it.reasonRequired && (mode === 'SKIP' || choices[it.key] === 'SKIP') && !(reasons[it.key] ?? '').trim());
       if (miss.length) {
-        msg.replaceChildren(errBox({ message: `${miss.map((it) => it.ticker ?? it.headline).join('、')} 選了不做，要寫一句理由。` }));
+        msg.replaceChildren(errBox({ message: mode === 'SKIP' ? `${miss.map((it) => it.ticker ?? it.headline).join('、')} 這次不做要寫一句理由：先在那一項選「這次不做」（或「不同意，不動」）、寫下理由，再按一次。` : `${miss.map((it) => it.ticker ?? it.headline).join('、')} 選了不做，要寫一句理由。` }));
         if (mode === 'SKIP') return msg.scrollIntoView({ block: 'center' });
         const el = [...document.querySelectorAll('details.slip')][v.items.indexOf(miss[0])];
         if (el) {
