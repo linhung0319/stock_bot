@@ -9,16 +9,19 @@ import {
   drawdownFromHigh,
   hardToldDays,
   momSlotTarget,
+  priceOf,
   rollingMax,
   sma,
   totalValue,
   trailingReturn,
   type Account,
+  type Composed,
   type CrashReviewInfo,
   type Item,
   type MarketView,
   type Notif,
   type OrderLine,
+  type StrategyReviewState,
 } from '../../engine';
 import { BUCKET_NAME, type AiNote, type Explain, type Fact, type Gauge, type RankRow } from './types';
 
@@ -30,6 +33,8 @@ export interface ExplainContext {
   /** 最近一次的排名（月報以月報自己的排名為準）。 */
   rankOrder: string[];
   aiNotes: AiNote[];
+  /** 策略檢討的狀態（flow_state 的 strategyReview；改比例那一列「動能相對大盤」用，core_ai §3.11）。示範模式沒有。 */
+  strategy?: StrategyReviewState | null;
 }
 
 export type ItemX = Item & { x?: Explain };
@@ -466,7 +471,11 @@ export function liveCrash(ctx: ExplainContext, n: Notif, it: ItemX): Explain {
   const facts = [...(x.facts ?? []).filter((f) => f.label !== 'AI 檢視'), ...crashFacts(it)];
   const cr = it.crashReview;
   const tail = cr?.state === 'OPINION' && cr.opinion ? `AI 檢視：${cr.opinion}` : cr?.state === 'PENDING' ? 'AI 檢視進行中' : null;
-  return { ...x, short: tail && !x.short.includes(tail) ? `${x.short}；${tail}` : x.short, facts, ai: note, aiMissing: !!it.aiLine && !note };
+  // 價格和基準對不上（core_ai §3.10）：收合時也留一句，展開後的那一行寫數字與怎麼做
+  const check = n.monthly?.input.coreCheck?.some((c) => c === 'DAY_GAP' || c === 'MA_GAP') ? `${ctx.acct.cfg.coreTicker} 價格待核對` : null;
+  let short = tail && !x.short.includes(tail) ? `${x.short}；${tail}` : x.short;
+  if (check && !short.includes(check)) short = `${short}；${check}`;
+  return { ...x, short, facts, ai: note, aiMissing: !!it.aiLine && !note };
 }
 
 /** 崩盤項目「這次不做」的說明（core_ai §3.6）。 */
@@ -635,17 +644,65 @@ function lineFacts(ctx: ExplainContext, lines: OrderLine[]): Fact[] {
   });
 }
 
+/**
+ * 清單做完之後三桶占總資產的比例（core_ai §3.11）：把清單（composed 的每一行，含核心吸收的部分）照 view 的價格套到目前的持股上，
+ * 核心含做完之後的現金（出金已經在 cashAfter 扣掉要轉出的金額）。未分類的持股只算在總資產裡。算不出來（缺價格）回 null。
+ */
+export function bucketSharesAfter(acct: Account, view: MarketView, composed: Pick<Composed, 'lines' | 'cashAfter'>): { own: number; mom: number; core: number } | null {
+  try {
+    const lots = { own: { ...acct.lots.own }, mom: { ...acct.lots.mom }, core: { ...acct.lots.core } };
+    for (const l of composed.lines) lots[l.bucket][l.ticker] = (lots[l.bucket][l.ticker] ?? 0) + l.shares;
+    const val = (m: Record<string, number>) => Object.entries(m).reduce((a, [t, n]) => a + (n ? n * priceOf(view, t) : 0), 0);
+    const own = val(lots.own);
+    const mom = val(lots.mom);
+    const core = val(lots.core) + composed.cashAfter;
+    const total = own + mom + core + val(acct.lots.unc);
+    if (!(total > 0)) return null;
+    return { own: own / total, mom: mom / total, core: core / total };
+  } catch {
+    return null;
+  }
+}
+
+/** 「做完之後」那一列（入金、出金、改比例的清單；core_ai §3.11）：自選 23.1%（預算 20%）、動能 28.4%（30%）、核心 48.5%（50%）。 */
+export function afterFact(acct: Account, view: MarketView, composed: Pick<Composed, 'lines' | 'cashAfter'> | undefined): Fact | null {
+  const b = composed ? bucketSharesAfter(acct, view, composed) : null;
+  if (!b) return null;
+  const r = acct.cfg.ratio;
+  return { label: '做完之後', value: `自選 ${fmtPct(b.own, 1)}（預算 ${fmtPct(r.own)}）、動能 ${fmtPct(b.mom, 1)}（${fmtPct(r.strat)}）、核心 ${fmtPct(b.core, 1)}（${fmtPct(r.core)}）`, note: '照前一日收盤估的三桶占總資產；比例是風險預算，平常不會為了拉回比例下單。' };
+}
+
+/** 改比例那一列「動能相對大盤」（設計 §2.1 第 7 點，core_ai §3.11）：落後事件中寫從哪天開始，不在就寫不在。沒有策略檢討的狀態（示範）是 null。 */
+export function momRelFact(st: StrategyReviewState | null | undefined): Fact | null {
+  if (!st || !(st.peak > 0)) return null;
+  const lag = Math.max(0, 1 - st.rel / st.peak);
+  return { label: '動能相對大盤', value: st.eventStart ? `比高點落後 ${fmtPct(lag)}（這次從 ${st.eventStart} 開始）` : `比高點落後 ${fmtPct(lag)}，不在落後事件中`, note: '純動能部位相對大盤的累積表現，比它自己的高點落後多少；落後 20% 以上算一次落後事件。' };
+}
+
+/** 入金、出金、改比例的清單：「做完之後」那一列在還沒填快照前每次讀時重算（回覆後用合成的清單；core_ai §3.11）。 */
+export function liveCashflow(ctx: ExplainContext, n: Notif, it: ItemX): Explain {
+  const x = it.x ?? explainItem(ctx, n, it);
+  if (n.status !== 'PENDING' && n.status !== 'RESPONDED') return x;
+  const f = afterFact(ctx.acct, ctx.view, n.composed ?? n.preview);
+  if (!f) return x;
+  const facts = x.facts ?? [];
+  const k = facts.findIndex((y) => y.label === '做完之後');
+  return { ...x, facts: k >= 0 ? facts.map((y, j) => (j === k ? f : y)) : [f, ...facts] };
+}
+
 function cashflow(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const { acct } = ctx;
   const lines = it.choices[0].lines;
   const core = acct.cfg.coreTicker;
+  const after = afterFact(acct, ctx.view, n.composed ?? n.preview);
+  const head = after ? [after] : [];
   if (it.f === 'F11') {
     const amt = n.deposit ?? 0;
     return {
       short: `入金 ${fmtMoney(amt)}：補低於目標最多的格子，其餘進核心`,
       why: `你入金 ${fmtMoney(amt)}。入金只買不賣：先補「離目標最遠」的格子${lines.length ? `（${lines.map((l) => l.ticker).join('、')}）` : ''}，剩下的交給核心買 ${core}。已經高於目標的股票不會再買。`,
       rule: RULE.deposit,
-      facts: lineFacts(ctx, lines),
+      facts: [...head, ...lineFacts(ctx, lines)],
     };
   }
   if (it.f === 'F12') {
@@ -655,16 +712,18 @@ function cashflow(ctx: ExplainContext, n: Notif, it: Item): Explain {
       short: `出金 ${fmtMoney(amt)}：只賣不買${cap.length ? `，${cap.join('、')} 先減回 10%` : ''}`,
       why: `你要出金 ${fmtMoney(amt)}。出金只賣不買${cap.length ? `：${cap.join('、')} 在出金後會超過總資產 15%，所以先在這份清單減回 10%，賣得的錢抵出金` : ''}；其餘照順序從核心、動能、最後才是自選拿。清單做完後，從券商轉出 ${fmtMoney(amt)}，再回來填快照。`,
       rule: RULE.withdraw,
-      facts: lineFacts(ctx, lines),
+      facts: [...head, ...lineFacts(ctx, lines)],
     };
   }
   if (it.f === 'F13') {
-    const m = /(\d+% \/ \d+% \/ \d+%) → (\d+% \/ \d+% \/ \d+%)/.exec(it.title);
+    const m = /(\d+% \/ (\d+)% \/ \d+%) → (\d+% \/ (\d+)% \/ \d+%)/.exec(it.title);
+    // Strategy 的比例有變才放「動能相對大盤」（這次相對回撤的狀態）
+    const rel = m && m[2] !== m[4] ? momRelFact(ctx.strategy) : null;
     return {
-      short: m ? `比例 ${m[1]} → ${m[2]}` : '改比例',
-      why: `你把自選／動能／核心的比例${m ? `從 ${m[1]} 改成 ${m[2]}` : '改了'}。自選每一檔的股數和標準比重照新舊比例縮放，動能每檔的目標照新的比例重算，差額由核心吸收。原本的比例會繼續記在紀錄裡，之後可以回頭看這次調整是加分還是扣分。`,
+      short: m ? `比例 ${m[1]} → ${m[3]}` : '改比例',
+      why: `你把自選／動能／核心的比例${m ? `從 ${m[1]} 改成 ${m[3]}` : '改了'}。自選每一檔的股數和標準比重照新舊比例縮放，動能每檔的目標照新的比例重算，差額由核心吸收。原本的比例會繼續記在紀錄裡，之後可以回頭看這次調整是加分還是扣分。`,
       rule: RULE.ratio,
-      facts: [...lineFacts(ctx, lines), { label: '提醒', value: '', note: '在動能落後大盤的時候把它調成 0，等於在相對低點放棄它。系統不會擋，由你決定。' }],
+      facts: [...head, ...(rel ? [rel] : []), ...lineFacts(ctx, lines), { label: '提醒', value: '', note: '在動能落後大盤的時候把它調成 0，等於在相對低點放棄它。系統不會擋，由你決定。' }],
     };
   }
   if (it.f === 'F14') return addOwnExplain(ctx, it);

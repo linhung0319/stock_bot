@@ -469,9 +469,11 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect(v.composed!.orders.map((o) => `${o.ticker}:${o.shares}`).sort()).toEqual(r.notif.preview!.merged.map((m) => `${m.ticker}:${m.shares}`).sort());
     // 入金的項目沒有「這次不做」
     expect(v.items[0].choices.map((c) => c.id)).toEqual(['DO']);
-    // 每一行都說明現在占多少、目標多少
-    expect(v.items[0].explain.facts!.length).toBe(v.items[0].choices[0].lines.length);
-    expect(v.items[0].explain.facts![0].note).toMatch(/目前 [\d.]+%，目標 [\d.]+%/);
+    // 每一行都說明現在占多少、目標多少；T33d 起最上面多一列「做完之後」（core_ai §3.11）
+    const lineFacts = v.items[0].explain.facts!.filter((f) => f.label !== '做完之後');
+    expect(v.items[0].explain.facts![0].label).toBe('做完之後');
+    expect(lineFacts.length).toBe(v.items[0].choices[0].lines.length);
+    expect(lineFacts[0].note).toMatch(/目前 [\d.]+%，目標 [\d.]+%/);
     sim.open();
     expect((await web.fill()).created).toEqual([]);
     await expectSame(sim);

@@ -36,13 +36,13 @@ import type { AiRun } from '../aiRuns';
 import type { RunRow } from './aiViews';
 import type { SiteData } from './backend';
 import { accountBubble, todoBubble, type Bubble } from './bubble';
-import { coreLineWhy, crashReasonText, explainItem, findNote, liveCrash, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
+import { coreLineWhy, crashReasonText, explainItem, findNote, liveCashflow, liveCrash, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
 import { labelOf, meter, place, scaleOf, type Meter } from './meter';
 import { BUCKET_NAME, type AiNote, type Explain, type Gauge, type RankRow } from './types';
 
 type Ready = SiteData & { acct: Account; view: MarketView };
 
-export const ctxOf = (d: Ready): ExplainContext => ({ acct: d.acct, view: d.view, axis: d.axis, rankOrder: d.rankOrder, aiNotes: d.aiNotes });
+export const ctxOf = (d: Ready): ExplainContext => ({ acct: d.acct, view: d.view, axis: d.axis, rankOrder: d.rankOrder, aiNotes: d.aiNotes, strategy: d.strategy ?? null });
 
 const priceAt = (view: MarketView, t: string): number | null => {
   const c = view.close[t];
@@ -363,7 +363,8 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   const it = it0 as ItemX;
   // 慢規則項目上 AI 的那一部分會在通知產生之後才更新（減半檢視晚一點回來），每次讀的時候重算
   // 崩盤項目的「AI 檢視」那一列也一樣：月報之後才回來的檢視（core_ai §3.2）
-  const x = it.kind === 'OWN_RULE' ? liveOwnRule(ctxOf(d), n, it) : it.f === 'F5' || it.f === 'F6' ? liveCrash(ctxOf(d), n, it) : (it.x ?? explainItem(ctxOf(d), n, it));
+  // 入金、出金、改比例的「做完之後」：還沒填快照前每次重算（回覆後用合成的清單，core_ai §3.11）
+  const x = it.kind === 'OWN_RULE' ? liveOwnRule(ctxOf(d), n, it) : it.f === 'F5' || it.f === 'F6' ? liveCrash(ctxOf(d), n, it) : it.f === 'F11' || it.f === 'F12' || it.f === 'F13' ? liveCashflow(ctxOf(d), n, it) : (it.x ?? explainItem(ctxOf(d), n, it));
   const primary = it.choices.find((c) => c.id !== 'SKIP') ?? it.choices[0];
   const tickers = [...new Set(primary.lines.map((l) => l.ticker))];
   const buckets = [...new Set(primary.lines.map((l) => l.bucket))];

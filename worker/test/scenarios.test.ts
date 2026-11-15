@@ -427,8 +427,10 @@ describe('情境 ⑤ 你自己的操作', () => {
     const lines = r.notif.items[0].choices[0].lines;
     expect(lines.map((l) => `${l.ticker}:${l.shares}`).sort()).toEqual(['AMD:-25', 'AVGO:-18', 'NFLX:-52', 'ORCL:-28', 'PLTR:-33']);
     expect(listOf(r.notif).find((x) => x.includes('VOO'))).toMatch(/^買 VOO/);
-    expect(sim.acct.shadow.at(-1)).toMatchObject({ f: 'F13', choice: 'RATIO' });
+    // T33d 起影子紀錄在回覆時照合成後的清單每一檔寫（core_ai §3.11），產生清單時不再寫 0 股的那一筆
+    expect(sim.acct.shadow.some((x) => x.f === 'F13')).toBe(false);
     sim.respond(r.notif.id);
+    expect(sim.acct.shadow.at(-1)).toMatchObject({ f: 'F13', choice: 'RATIO' });
     sim.open();
     expect(sim.acct.lots.mom).toEqual({});
   });

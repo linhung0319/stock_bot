@@ -350,6 +350,13 @@ export interface MonthlyContext {
    * 月報照抄到通知的 attention；重算（暫停後、入金合併、排除）沿用這一份。
    */
   attention?: Attention[];
+  /**
+   * 訊號日核心 ETF 資料檢查的結果（core_ai §3.10）：代碼（MA_SHORT、DAY_GAP、MA_GAP、BOND_JUMP、NO_BENCH）。每日流程在產生月報前算好；重算沿用。
+   * 有 DAY_GAP 或 MA_GAP、而且這個月崩盤規則切換 → F5／F6 項目的 note 寫 coreNote，LINE 加一行「注意：…」。
+   */
+  coreCheck?: string[];
+  /** 那一句 note（帶數字，每日流程寫好；引擎只照抄）。沒有 DAY_GAP、MA_GAP 時沒有。 */
+  coreNote?: string;
 }
 
 export interface SavedState {

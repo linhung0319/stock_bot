@@ -1,6 +1,7 @@
 // 網站的 AI 紀錄（T9；design_v2 §6.6）：每一次 AI 執行一頁（輸入、每一票、檢查、結論、過程），「匯出 md 拿去問 AI」，
 // 以及把 AI 紀錄轉成建議單上的 AI 說明（AiNote）。
 import { keptByChoice, type CheckedSample, type Outcome } from '../../ai/check';
+import { CRASH_REVIEW } from '../../ai/crash';
 import { EVENT_SCAN, scanQualified } from '../../ai/events';
 import { fnInfo, verdictText } from '../../ai/functions';
 import type { AiRun } from '../aiRuns';
@@ -81,13 +82,17 @@ const outcomeLabel = (o: Outcome): string => (keptState(o) ? '一致：維持現
 /** 每日掃描沒有合格結論時的標題（own_thesis §2.6：不顯示成「沒有值得標的事」）。 */
 export const SCAN_FAILED_TEXT = '掃描失敗，下一次重掃';
 
+/** 舊的每月總經評語（崩盤規則不會切換的月份，direction NONE）：2026-11-15 拿掉，舊紀錄照樣看得到（core_ai §3.9）。 */
+export const CRASH_MONTHLY_LABEL = '每月總經評語（已停用）';
+const isCrashMonthly = (run: Pick<AiRun, 'fn' | 'pack'>): boolean => run.fn === CRASH_REVIEW && (run.pack.rule.detail as { direction?: string } | undefined)?.direction === 'NONE';
+
 export function runRow(run: AiRun): RunRow {
   const o = run.outcome;
   const status = o?.status ?? 'PENDING';
   return {
     id: run.runId,
     date: run.asOf,
-    label: fnInfo(run.fn).label,
+    label: isCrashMonthly(run) ? CRASH_MONTHLY_LABEL : fnInfo(run.fn).label,
     ticker: run.ticker,
     // 沒有一致的結論時，標題寫「照規則」，最多票的判斷只放在票數裡（避免被看成 AI 的結論）
     verdict: !o ? '等結果中' : run.fn === EVENT_SCAN && !scanQualified(o) ? SCAN_FAILED_TEXT : o.status === 'AGREED' || keptState(o) ? verdictText(run.fn, o.verdict) : '照規則',

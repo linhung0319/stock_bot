@@ -11,7 +11,8 @@
 import { annotate } from './site/explain';
 import { blockedMonthly, dailyCheck, monthlyReport, stepStrategyReview, strategyReminder, type Account, type MarketView, type MonthlyContext, type Notif, type StrategyReviewState } from '../engine';
 import { isLastTradingDayOfMonth, lastCompletedSession, nextTradingDay, tradingDaysBetween, type CalendarOverrides } from '../data/calendar';
-import { runIngest, type IngestResult } from '../data/ingest';
+import { ALERT_CODES, coreAlertText, coreDataCheck, corePriceNote } from '../data/coreCheck';
+import { BENCHMARK, runIngest, type IngestResult } from '../data/ingest';
 import { buildMarketView, rebaseNotifSeq } from '../data/marketView';
 import { NO_SIGNAL_ALERTS, loadCalendarOverrides, loadRanking, loadRun, loadSeries, saveAlerts, saveRun, type Alert, type DataRun, type Ranking } from '../data/store';
 import { errText } from '../data/util';
@@ -116,6 +117,8 @@ export interface Processed {
   strategy: StrategyReviewState;
   /** 要開 AI 的事（F7 新的減半、F21 提醒）。 */
   extras: FlowExtras;
+  /** 流程紀錄（只記、不告警的事，例如核心 ETF 資料檢查的 NO_BENCH）。 */
+  log: string[];
 }
 
 /** 動能名單等權的日報酬（策略檢討用「純動能部位」）；名單是空的回傳 null。 */
@@ -134,6 +137,7 @@ export const monthlyMade = (acct: Account, month: string): boolean => acct.notif
 export async function processSessions(db: D1Database, acct0: Account, sessions: string[], ov: CalendarOverrides, aiNotes: AiNote[] = [], monthInputs: Map<string, MonthInputs> = new Map()): Promise<Processed> {
   let acct = acct0;
   const alerts: Alert[] = [];
+  const log: string[] = [];
   const done: string[] = [];
   let monthly: number | null = null;
   let strategy = await loadStrategyState(db);
@@ -144,7 +148,8 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
   const rankings = new Map<string, Ranking | null>();
   for (const s of sessions) if (isLastTradingDayOfMonth(s, ov)) rankings.set(s, await loadRanking(db, s));
   const extra = [...rankings.values()].flatMap((r) => r?.order ?? []);
-  const series = await loadSeries(db, [...new Set([...requiredTickers(acct), ...extra])]);
+  // 基準（SPY）：核心 ETF 的資料檢查用（core_ai §3.10）
+  const series = await loadSeries(db, [...new Set([...requiredTickers(acct), ...extra, BENCHMARK])]);
   const latest = await loadRanking(db);
   for (const s of sessions) {
     const built = buildMarketView(series, s, core);
@@ -163,6 +168,17 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
       }
     }
     acct = dailyCheck(acct, view).acct;
+    // 核心 ETF 的資料檢查（core_ai §3.10）：對不上就告警，每日訊號照常產生、不擋流程
+    const issues = coreDataCheck(view, core, BENCHMARK, acct.bondTicker);
+    const names = { core, bench: BENCHMARK, bond: acct.bondTicker };
+    // 均線算不出來的那一天如果要出月報，月報另外推 CORE_MA_MISSING（§3.10 最後一段），這裡不重複
+    const monthDay = isLastTradingDayOfMonth(s, ov) && !monthlyMade(acct, nextTradingDay(s, ov).slice(0, 7));
+    for (const x of issues) {
+      if (x.code === 'MA_SHORT' && monthDay) continue;
+      if (x.code === 'NO_BENCH') log.push(`${s} ${BENCHMARK} 沒有這一天的價格，這次沒辦法核對 ${core}`);
+      const text = ALERT_CODES.has(x.code) ? coreAlertText(x, names, s) : null;
+      if (text) alerts.push({ kind: 'CORE_PRICE_SUSPECT', message: text });
+    }
     // F7：今天新觸發減半的自選股（當天通知的，或 < 5% 等月報的）
     for (const n of acct.notifs) if (!before.has(n.id)) for (const it of n.items) if (it.f === 'F7' && it.ticker) extras.reduced!.push({ ticker: it.ticker, session: s });
     for (const [t, m] of Object.entries(acct.own)) if (m.pending?.action === 'REDUCE' && m.pending.date === s && !extras.reduced!.some((r) => r.ticker === t && r.session === s)) extras.reduced!.push({ ticker: t, session: s });
@@ -183,6 +199,11 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
           const runIds = { ...(ai.runIds?.crash ? { crash: ai.runIds.crash } : {}), ...(ai.runIds?.notes ? { notes: ai.runIds.notes } : {}) };
           input = { order: [...acct.rule.heldMom], month, paused: why, ...(ai.crashReview ? { crashReview: ai.crashReview } : {}), ...(ai.notes ? { notes: ai.notes } : {}), ...(Object.keys(runIds).length ? { runIds } : {}) };
           alerts.push({ kind: 'MONTHLY_PAUSED', message: `${month} 月報照出，但本月暫停換股（${why}），動能名單不變。` });
+        }
+        // 訊號日的資料檢查結果跟著月報存（core_ai §3.10）；重算沿用
+        if (issues.length) {
+          const note = corePriceNote(issues, names);
+          input = { ...input, coreCheck: issues.map((x) => x.code), ...(note ? { coreNote: note } : {}) };
         }
         // 「要看的事」（own_thesis §3.6.6）：用訊號日的帳戶狀態算這個月該列的，記下 attnShown；動能的（momentum_ai §3.6）接在後面
         try {
@@ -206,7 +227,7 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
     done.push(s);
   }
   const created = acct.notifs.filter((n) => !start.has(n.id)).map((n) => n.id);
-  return { acct, processed: done, created, monthly, alerts, strategy, extras };
+  return { acct, processed: done, created, monthly, alerts, strategy, extras, log };
 }
 
 function pauseReason(run: DataRun | null, ranked: boolean): string {
@@ -439,6 +460,7 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
           for (const s of signalsIn(plan.sessions, ov)) monthInputs.set(s, await monthEndInputs(env, fetcher, loaded.acct, s, ov, opt.now, aiPrep, alerts));
           const p = await processSessions(db, loaded.acct, plan.sessions, ov, aiNotes, monthInputs);
           alerts.push(...p.alerts);
+          aiPrep.push(...p.log);
           try {
             // 月報裡的失效通知項目（甲類、乙類）→ 論點檔的 BREAK_NOTICE（own_thesis §1.10）
             const brk = breakLogs(p.acct, p.acct.notifs.filter((n) => p.created.includes(n.id))).map((l) => thesisLogStmt(db, l, null, at));

@@ -27,6 +27,7 @@
 | T32b | 完成 | （見 git log） | 579 通過、1 略過 |
 | T33c | 完成 | （見 git log） | 586 通過、1 略過 |
 | T33b | 完成 | （見 git log） | 602 通過、1 略過 |
+| T33d | 完成 | （見 git log） | 617 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -198,6 +199,14 @@
 - T33b｜每月評語照舊開（拿掉在 T33d），01:30 不開每月評語。
 - T33b｜手機寬度的檢視紀錄表表頭（「1 個月後」等）會擠成直排；改不換行會讓整頁可以左右捲，所以照原樣，留給 T34。
 - T33b｜**意外**：subagent 關本機站時比對條件寫太寬，誤關了使用者 Chrome 的 2 個子行程（PID 19420、19332；Chrome 主程式還在，可能是某個分頁或擴充功能當掉）。之後的派工單已加「只用確定的 PID 關、不要用條件比對命令列」。
+- T33d｜月報輸入除了 `coreCheck`（代碼）另存 `coreNote`（每日流程寫好帶數字的那一句），引擎只照抄、維持純函式。
+- T33d｜均線不足的告警文字自訂；要出月報的那天不推（月報另推 `CORE_MA_MISSING`），其他日子每天推（同天同文字去重），歷史一直不足時會天天推。
+- T33d｜網站崩盤項目收合時那一行接「VOO 價格待核對」（共用規則第 8 點）。
+- T33d｜「做完之後」：還沒填快照時每次讀用目前持股與清單重算（用網站當下價格），之後用產生時存的。
+- T33d｜「動能相對大盤」用標題裡 Strategy 新舊比例是否不同判斷「有變」；落後 = 1 − rel ÷ peak；真實模式沒存過狀態時顯示「落後 0%」。
+- T33d｜改比例的影子紀錄：股數 0 的劃撥行不記；`note` 取標題裡的「X → Y」。
+- T33d｜測試輔助的假市場改成 SPY 用 VOO 的價格（真實兩者追蹤同一個指數）。
+- T33d｜**範圍外的邏輯缺口（建議 T34 或使用者角度走一遍時處理）**：另一份清單已經回覆、還沒填快照時，入金、出金、改比例的清單與「做完之後」都用還沒成交的持股算，會把月報已經要賣、要買的再列一次。這是 `changeRatio`／`deposit` 原本的行為，網站也沒擋。
 
 ## 要使用者親手做的事
 
@@ -218,6 +227,7 @@
 - T32b｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0014_mom_reviews_entry.sql`。`mom_entry_v2.md` 與修改過的 `event_scan_v2.md` 由雲端排程從 repo 讀，push 之後生效。
 - T33b｜部署後才生效：01:30 會重抓 FRED、重開崩盤檢視；月報補開檢視時 LINE 等 01:30 才推、03:30 可能補推一行；新告警 `CRASH_REVIEW_FAILED`、`MACRO_MISSING`。
 - T33b｜（T33b 的意外）如果 Chrome 有分頁或擴充功能顯示當掉，重新整理或重開即可。
+- T33d｜`crash_review_v2.md` 由雲端排程從 repo 讀，push 之後生效。部署後才生效：不會切換的月份不再開每月評語；每天多了核心 ETF 的資料檢查與告警 `CORE_PRICE_SUSPECT`。
 
 ## 畫面截圖
 
@@ -257,6 +267,9 @@
 | T33b | 崩盤項目上那一列的七種狀態：有意見、沒有意見、還在檢視、沒有結論、總經資料抓不到、AI 沒開、回覆之後才回來（桌機／手機） | `records/stage8/screens/T33b/item-{opinion,no-opinion,pending,failed,no-data,off,late}-{desktop,phone}.png` |
 | T33b | 整頁月報（桌機／手機） | `records/stage8/screens/T33b/monthly-opinion-full-desktop.png、monthly-opinion-full-phone.png` |
 | T33b | AI 紀錄分頁：崩盤檢視紀錄表與總經儀表板（桌機／手機） | `records/stage8/screens/T33b/ai-records-desktop.png、ai-records-phone.png` |
+| T33d | 有資料檢查那一行的月報（桌機／手機） | `records/stage8/screens/T33d/monthly-check-desktop.png、monthly-check-phone.png` |
+| T33d | 入金清單的「做完之後」（桌機／手機） | `records/stage8/screens/T33d/deposit-desktop.png、deposit-phone.png` |
+| T33d | 改比例的那一列：做完之後、動能相對大盤（桌機／手機） | `records/stage8/screens/T33d/ratio-desktop.png、ratio-phone.png` |
 
 ## 卡住的任務
 

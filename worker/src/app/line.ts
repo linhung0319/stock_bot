@@ -3,6 +3,7 @@
 //   LINE_CHANNEL_TOKEN  channel access token（long-lived）
 //   LINE_USER_ID        要收訊息的 user ID（LINE Developers 後台 Basic settings 的「Your user ID」）
 // 兩個都放 `wrangler secret`。網站網址（訊息裡的連結）是 wrangler.jsonc 的 vars.SITE_URL。
+import { PRICE_CODES, corePriceLine } from '../data/coreCheck';
 import type { Account, DropStatus, Notif } from '../engine';
 import type { Env, Fetcher } from './env';
 
@@ -80,6 +81,8 @@ export function notifText(acct: Account, n: Notif, link: string | null): string 
   } else if (n.kind === 'MONTHLY_EMPTY') {
     out.push('', '本月不用下單。');
   }
+  // 核心 ETF 的價格和基準對不上、而且這份月報崩盤規則切換（core_ai §3.10）：下單清單後面加一行
+  if (corePriceWarn(n)) out.push(corePriceLine(acct.cfg.coreTicker));
   // 慢規則減半：AI 論點檢查的一行，放在下單清單後面（own_thesis §3.4）。月報裡可能不只一檔，前面寫代號
   for (const it of n.items) {
     if (it.cancelled || it.f !== 'F7' || !it.drop) continue;
@@ -96,6 +99,10 @@ export function notifText(acct: Account, n: Notif, link: string | null): string 
   if (link) out.push(link);
   return out.join('\n');
 }
+
+/** 月報訊號日的資料檢查有 DAY_GAP 或 MA_GAP，而且這份月報有崩盤規則切換的那一項（不是重列的）。 */
+export const corePriceWarn = (n: Pick<Notif, 'kind' | 'items' | 'monthly'>): boolean =>
+  (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY') && !!n.monthly?.input.coreCheck?.some((c) => PRICE_CODES.has(c)) && n.items.some((it) => (it.f === 'F5' || it.f === 'F6') && !it.relist && !it.cancelled);
 
 /** 乙類的當天通知：只有 AI 判斷前提不成立的那一項（月報裡的乙類項目照月報的格式；慢規則減半項目上帶「AI 建議出清」的不算）。 */
 export const isBreakNotice = (n: Pick<Notif, 'kind' | 'items'>): boolean => n.kind === 'URGENT' && n.items.length > 0 && n.items.every((it) => it.brk?.type === 'B' && !it.brk.withRule);

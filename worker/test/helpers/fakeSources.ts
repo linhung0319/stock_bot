@@ -24,7 +24,8 @@ function hash(s: string, seed = 2166136261): number {
 
 /** 代號（Yahoo 的寫法，例如 BRK-B）→ 假價格的參數。 */
 export function fakeParams(ticker: string): { p0: number; g: number; volume: number } {
-  const sym = yahooSymbol(ticker);
+  // SPY 和 VOO 追蹤同一個指數：假市場裡用同一組價格（否則核心 ETF 的資料檢查每天都會告警，core_ai §3.10；T33d）
+  const sym = yahooSymbol(ticker) === 'SPY' ? 'VOO' : yahooSymbol(ticker);
   const h = hash(sym);
   return { p0: 20 + (h % 300), g: ((h % 20011) - 6000) / 1e7, volume: 1_000_000 + (hash(sym, 97) % 50_000_000) };
 }

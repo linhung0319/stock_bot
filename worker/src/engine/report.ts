@@ -738,6 +738,11 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   let items = itemsFromPlan(acct, view, plan, values, { coreBefore, ownNotes, crashReview: monthlyCrashReview(input), runIds: input.runIds });
   // 崩盤項目上次選了「這次不做」（core_ai §3.6）：規則還在同一個狀態就再列一次核心的單
   const relisted = applyCoreOwe(acct, items, plan.crashChanged, coreBefore);
+  // 核心 ETF 的價格和基準對不上（core_ai §3.10）：切換的那一項寫明要核對；月報照規則出、不改判斷
+  if (plan.crashChanged && input.coreNote && input.coreCheck?.some((c) => c === 'DAY_GAP' || c === 'MA_GAP')) {
+    const sw = items.find((i) => (i.f === 'F5' || i.f === 'F6') && !i.relist);
+    if (sw) sw.note = sw.note ? `${sw.note}；${input.coreNote}` : input.coreNote;
+  }
   // 任務 A：進場那一項的說明（准許，附註、法庭的結論、沿用、還在審…；momentum_ai §3.3）。舊月報只有觀察理由
   for (const it of items) {
     if (it.f !== 'F1' || !it.ticker) continue;

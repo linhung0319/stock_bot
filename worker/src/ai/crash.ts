@@ -8,7 +8,8 @@ import type { CheckedSample, EvidencePack, Outcome, PackDoc, PackPremise } from 
 import { buildPack } from './pack';
 
 export const CRASH_REVIEW = 'CRASH_REVIEW';
-export const CRASH_REVIEW_PROMPT = 'crash_review_v1';
+/** T33d 起 v2（core_ai §3.9）：拿掉每月評語、bear_prob、lift_or_flip。 */
+export const CRASH_REVIEW_PROMPT = 'crash_review_v2';
 
 /** §3.3：2000–2026 每次啟動（SPY 代替 VOO）。 */
 export const CRASH_EPISODES: { on: string; off: string; months: number; gap: number; buyBack: number; low: number }[] = [
@@ -201,18 +202,15 @@ export function crashPack(inp: CrashInput) {
     premises: PREMISES[inp.direction],
     documents: [{ id: 'BASE', source_id: 'base-rate:crash', kind: 'table', date: inp.asOf, title: '崩盤規則 2000–2026 每次啟動的結果（基準率）', text: baseRateText() }, inp.dashboard, inp.news].filter((d): d is PackDoc => !!d),
     dataQuality: inp.dataQuality,
-    conditionTypes: ['fred_above', 'fred_below', 'price_close_above', 'price_close_below', 'ma_cross_above', 'ma_cross_below', 'date_after'],
+    // lift_or_flip 沒有程式讀（core_ai §3.9，修 C8）：不給條件種類
+    conditionTypes: [],
     now: inp.now,
   });
 }
 
-/** bear_prob 在 0～1；意見（opinion）和 verdict 一致。 */
+/** 意見（opinion）和 verdict 一致。bear_prob 隨每月評語拿掉（core_ai §3.9）：送來就忽略，不再檢查。 */
 export function checkCrashPayload(s: CheckedSample, pack: EvidencePack): void {
   const p = s.payload ?? {};
-  if (p.bear_prob !== undefined && (typeof p.bear_prob !== 'number' || p.bear_prob < 0 || p.bear_prob > 1)) {
-    s.issues.push('bear_prob 要是 0～1 的數字，不採用');
-    s.payload = { ...p, bear_prob: null };
-  }
   if ((pack.rule.detail as { direction?: string })?.direction !== 'NONE' && p.opinion !== undefined && p.opinion !== s.rawVerdict) s.issues.push(`payload.opinion（${String(p.opinion)}）和 verdict 不同`);
 }
 

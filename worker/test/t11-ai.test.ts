@@ -292,8 +292,9 @@ describe('F7／F20／F5／F6／F21／F14：檢查與結論', () => {
     const pack = { rule: { detail: { direction: 'ON' } }, policy: { verdicts: ['FOLLOW', 'DELAY', 'INSUFFICIENT'] } } as unknown as EvidencePack;
     const smp = { rawVerdict: 'FOLLOW', verdict: 'FOLLOW', issues: [] as string[], payload: { bear_prob: 1.4, opinion: 'DELAY' } };
     checkCrashPayload(smp as never, pack);
-    expect(smp.payload.bear_prob).toBeNull();
-    expect(smp.issues).toHaveLength(2);
+    // T33d 起不再檢查 bear_prob（送來就忽略，core_ai §3.9）；opinion 和 verdict 不同照樣記
+    expect(smp.payload.bear_prob).toBe(1.4);
+    expect(smp.issues).toEqual(['payload.opinion（DELAY）和 verdict 不同']);
   });
 
   it('F21：French 動能因子的回撤事件；不得建議停用或繼續；每條前提都要有正反證據', () => {

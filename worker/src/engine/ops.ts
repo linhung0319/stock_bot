@@ -162,6 +162,15 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
   n.composed = composeNotif(acct, view, n);
   for (const it of n.items) {
     if (it.cancelled) continue;
+    // 改比例（core_ai §3.11）：照合成後的清單（含核心）每一檔記一筆，規則 0 股（沒改的話不動），現有的影子算法就算得出「如果沒改」
+    if (it.f === 'F13') {
+      const note = /(\d+% \/ \d+% \/ \d+% → \d+% \/ \d+% \/ \d+%)/.exec(it.title)?.[1];
+      for (const m of n.composed.merged) {
+        if (!m.shares) continue;
+        acct.shadow.push({ date: view.date, f: 'F13', ticker: m.ticker, title: RATIO_SHADOW_TITLE, rule: 0, ai: null, actual: m.shares, price: priceOf(view, m.ticker), choice: 'RATIO', notif: n.id, ...(note ? { note } : {}) });
+      }
+      continue;
+    }
     const rule = it.choices.find((c) => c.id === it.ruleChoice);
     const ai = it.choices.find((c) => c.id === 'AI');
     const act = it.choices.find((c) => c.id === it.choice);
@@ -726,6 +735,9 @@ export function cashflowKind(n: Notif): '入金' | '出金' | '改比例' | null
   return f === 'F11' ? '入金' : f === 'F12' ? '出金' : f === 'F13' ? '改比例' : null;
 }
 
+/** 改比例的影子紀錄標題（回覆時每一檔一筆，core_ai §3.11）。 */
+export const RATIO_SHADOW_TITLE = '改比例（影子組合繼續追蹤「如果沒改」）';
+
 /** 改比例（設計 §2.1 第 7 點）：使用者觸發，當天給清單；影子組合繼續追蹤「如果沒改」。 */
 export function changeRatio(acct0: Account, view: MarketView, ratio: { own: number; strat: number; core: number }): { acct: Account; notif: Notif } {
   const acct = clone(acct0);
@@ -759,7 +771,7 @@ export function changeRatio(acct0: Account, view: MarketView, ratio: { own: numb
   const item = makeItem({ f: 'F13', kind: 'CASHFLOW', title: `改比例：自選 / Strategy / 核心 ${fmt(old)} → ${fmt(ratio)}`, choices: [{ id: 'DO', label: '照做', lines }], noSkip: true });
   const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: '改比例的清單', items: [item], ratioBefore });
   notif.preview = composeNotif(acct, view, notif);
-  acct.shadow.push({ date: view.date, f: 'F13', ticker: null, title: '改比例（影子組合繼續追蹤「如果沒改」）', rule: 0, ai: null, actual: 0, price: 0, choice: 'RATIO', note: `${fmt(old)} → ${fmt(ratio)}`, notif: notif.id });
+  // 影子紀錄在回覆時照合成後的清單每一檔寫（core_ai §3.11），這裡不再寫 0 股的那一筆
   return { acct, notif };
 }
 

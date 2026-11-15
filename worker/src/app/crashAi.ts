@@ -1,6 +1,6 @@
 // T11：F5／F6 崩盤規則檢視的排程端（T33a 起照 core_ai_design §3.1：先列出需要檢視的切換 crashNeeds，再決定開不開；T33b 補 §3.1～§3.5 其餘的部分）。
 //   月報前一天：抓 FRED、算儀表板（存一份，網站顯示）；預估訊號日會切換、總經資料夠 → 開完整檢視（PREVIEW，3 票，A2）；
-//              不會切換 → 開每月評語（一票，只記錄；§3.9 的拿掉在 T33d）。
+//              不會切換 → 不開任何 AI（每月評語在 T33d 拿掉，§3.9），儀表板照樣算、存。
 //   月報出了、有沒取消的 F5／F6、還沒回覆 → 不看日期都算需要（MAKEUP）：月報晚一天才出、使用者隔天還沒回覆都會補開。
 //   同一個月份＋方向：有一筆跑完了（有意見或沒有意見）、還在等、或沒有結論的已經 3 筆 → 不開；總經資料不足（§3.5）→ 不開，01:30 重抓。
 //   01:30（finalStarts）：先重抓不足的總經資料，再跑同一段 crashNeeds（沒有結論的重開一次）。03:30 不開新的執行。
@@ -299,8 +299,8 @@ async function refreshCrashItem(sc: StartCtx, need: CrashNeed): Promise<void> {
 /**
  * 崩盤規則檢視（core_ai §3.1）：月報前一天先算儀表板並存（資料不足記 macro:retry）；
  * 列出需要檢視的切換（crashNeeds），每一筆照「跑完了不開、在等不開、沒有結論滿 3 筆不開、總經資料不足不開」決定開不開。
- * 不會切換的月份照舊開每月評語（拿掉在 T33d）。
- * final：01:30（finalStarts）——先重抓不足的總經資料；儀表板 23:30 已經算過就不重算；不開每月評語。
+ * 不會切換的月份不開任何 AI（每月評語在 T33d 拿掉，§3.9），儀表板照樣算、存。
+ * final：01:30（finalStarts）——先重抓不足的總經資料；儀表板 23:30 已經算過就不重算。
  */
 export async function startCrashRuns(sc: StartCtx, opt: { final?: boolean } = {}): Promise<void> {
   const { env, fetcher, acct, view, session, ov, res } = sc;
@@ -318,7 +318,7 @@ export async function startCrashRuns(sc: StartCtx, opt: { final?: boolean } = {}
         // 不會切換的月份也一樣：每月驗一次 FRED 抓不抓得到（§3.5）
         if (macroQuality(snap.rows) === 'missing') await setFlag(db, `${MACRO_RETRY_PREFIX}${month}`, sc.now.toISOString(), sc.now);
       }
-      if (!opt.final && crashDirection(acct, view) === 'NONE') await start(sc, snap, 'NONE', month);
+      // 不會切換的月份不開任何 AI（每月評語拿掉，core_ai §3.9）；儀表板上面已經算好、存了
     }
     for (const need of crashNeeds(acct, view, session, ov)) {
       const runs = await crashRunsFor(db, need.month, need.direction);

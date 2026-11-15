@@ -2,7 +2,7 @@
 //   真實：帳本與價格都在 D1（T6 的資料層）。
 //   示範：假市場＋腳本（src/demo），整個狀態存在 D1 的 demo_state 一列；和真實帳本完全分開。
 // 網站的程式只認這個介面，所以兩種模式走同一套畫面與操作。
-import type { Account, Attention, LedgerEvent, MarketView, ShadowRecord, Snapshot } from '../../engine';
+import type { Account, Attention, LedgerEvent, MarketView, ShadowRecord, Snapshot, StrategyReviewState } from '../../engine';
 import { lastCompletedSession } from '../../data/calendar';
 import { BENCHMARK } from '../../data/ingest';
 import { buildMarketView, rebaseNotifSeq } from '../../data/marketView';
@@ -19,6 +19,7 @@ import { noteOfRun } from './aiViews';
 import { loadSnapshot, type MacroSnapshot } from '../crashAi';
 import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
 import { loadReviews, type MomReview } from '../momAi';
+import { loadStrategyState } from '../strategyAi';
 import { acceptOwnConditions, monitorView, ownCheckView, rewriteView, startOwnCheck, type OwnCheckView, type RewriteView } from '../ownCheckAi';
 import type { ExitLine } from '../../ai/ownCheck';
 import type { DiscussionMode } from '../../ai/discussion';
@@ -60,6 +61,8 @@ export interface SiteData {
   autofill?: (extra?: Record<string, number>, exact?: boolean) => Snapshot;
   /** 可以復原的快照（最後一份、之後帳戶還沒有變動）。 */
   undoable?: SnapshotUndoInfo | null;
+  /** 策略檢討的狀態（改比例那一列「動能相對大盤」，core_ai §3.11）；示範模式沒有。 */
+  strategy?: StrategyReviewState | null;
 }
 
 export interface SiteBackend {
@@ -160,7 +163,8 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       // AI 紀錄 → 建議單上的 AI 說明
       const aiNotes = (await listRuns(env.DB, now, { limit: 200 })).map(noteOfRun).filter((n): n is AiNote => n !== null);
       const undoable = acct ? await snapshotUndoInfo(env.DB, loaded?.rev ?? null) : null;
-      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), warnings, undoable };
+      const strategy = acct ? await loadStrategyState(env.DB) : null;
+      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), warnings, undoable, strategy };
     },
     async save(acct, cause, log = []) {
       // 論點檔紀錄和這一版帳戶同一筆交易寫（account_version = 這次存檔的 rev，復原快照時一起刪）
