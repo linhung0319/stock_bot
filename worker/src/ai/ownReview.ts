@@ -34,8 +34,8 @@ export interface OwnCondition {
   text: string;
   check: Record<string, unknown>;
   tierIfMet: Tier | null;
-  /** ACTIVE 監測中、MET 已成立、REPLACED 被下一次 F24 換掉、MANUAL 只記錄（價格條件、沒通過檢查的）。 */
-  status: 'ACTIVE' | 'MET' | 'REPLACED' | 'MANUAL';
+  /** ACTIVE 監測中、MET 已成立、REPLACED 被下一次 F24 換掉、MANUAL 只記錄（價格條件、沒通過檢查的）、REVIEW_ONLY 只在定期審查時檢查（確認來源只有法說會或新聞，沒有申報可以讀）。 */
+  status: 'ACTIVE' | 'MET' | 'REPLACED' | 'MANUAL' | 'REVIEW_ONLY';
   createdAt: string;
   metAt: string | null;
   note: string | null;
@@ -67,7 +67,7 @@ export function ownReviewPack(inp: OwnReviewInput) {
   const state = acct.rule.own[ticker]?.applied ?? 'STD';
   const verdicts: Tier[] = ['EXIT', 'HALF', 'HOLD', 'STANDARD', ...(raise.ok ? (['RAISE'] as Tier[]) : [])];
   const docs = [priceDoc(view, inp.axis, ticker, 60), inp.xbrl, ...inp.filings, inp.news].filter((d): d is PackDoc => !!d);
-  const prev = inp.previous.filter((c) => c.status === 'ACTIVE' || c.status === 'MET');
+  const prev = inp.previous.filter((c) => c.status === 'ACTIVE' || c.status === 'MET' || c.status === 'REVIEW_ONLY');
   return buildPack({
     runId: inp.runId,
     fn: OWN_REVIEW,
@@ -87,7 +87,7 @@ export function ownReviewPack(inp: OwnReviewInput) {
     facts: [
       ...priceFacts(view, ticker),
       ...ownRuleFacts(acct, view, ticker),
-      ...prev.map((c, k) => ({ id: `C${k + 1}`, label: `上一次的條件 ${c.condId}（${c.kind === 'XBRL' ? '財報' : c.kind === 'EVENT' ? '事件' : '價格'}，${c.direction === 'DOWN' ? '降級' : '升級'}）`, value: c.text, note: c.status === 'MET' ? `已成立（${c.metAt}）` : '監測中' })),
+      ...prev.map((c, k) => ({ id: `C${k + 1}`, label: `上一次的條件 ${c.condId}（${c.kind === 'XBRL' ? '財報' : c.kind === 'EVENT' ? '事件' : '價格'}，${c.direction === 'DOWN' ? '降級' : '升級'}）`, value: c.text, note: c.status === 'MET' ? `已成立（${c.metAt}）` : c.status === 'REVIEW_ONLY' ? '只在定期審查時檢查' : '監測中' })),
     ],
     premises: ownPremises(acct, ticker),
     documents: docs,
@@ -97,6 +97,25 @@ export function ownReviewPack(inp: OwnReviewInput) {
 }
 
 const CONFIRM_BY = ['8-K', '10-Q', '10-K', 'SEC', 'earnings_call', 'major_news'];
+const FILING_SOURCES = ['8-K', '10-Q', '10-K', 'SEC'];
+
+/**
+ * 條件怎麼確認（own_thesis §1.5「怎麼確認」，由條件本身推出來，不另存）：
+ *   XBRL        財報條件，新 10-Q／10-K 出來時程式比對
+ *   FILING      事件條件，確認來源裡有申報類型 → 新申報出現時 F25 三票讀原文
+ *   REVIEW_ONLY 事件條件，確認來源只有 earnings_call、major_news → 沒有申報可讀，只在定期審查時由三票判斷（P4）
+ *   NONE        價格條件、或沒通過格式檢查的（含事件條件沒寫確認來源）→ 只記錄
+ */
+export type ConfirmMode = 'XBRL' | 'FILING' | 'REVIEW_ONLY' | 'NONE';
+export function confirmMode(c: { kind: string; check: Record<string, unknown>; manual?: boolean }): ConfirmMode {
+  if (c.manual) return 'NONE';
+  if (c.kind === 'XBRL') return 'XBRL';
+  if (c.kind !== 'EVENT') return 'NONE';
+  const by = Array.isArray(c.check.confirm_by) ? c.check.confirm_by.map(String) : [];
+  if (!by.length) return 'NONE';
+  if (by.some((x) => FILING_SOURCES.includes(x))) return 'FILING';
+  return by.every((x) => x === 'earnings_call' || x === 'major_news') ? 'REVIEW_ONLY' : 'NONE';
+}
 
 /**
  * F24 的 payload 逐欄檢查（ai_layer F24 卡片）：tier 要和 verdict 一致；條件最多 5 條，

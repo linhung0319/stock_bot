@@ -4,13 +4,14 @@
 import { describe, expect, it } from 'vitest';
 import { judge, type EvidencePack } from '../src/ai/check';
 import { PAYLOAD_HOOKS } from '../src/ai/hooks';
-import { OWN_REVIEW, conditionDecision, ownReviewPack, raiseAllowed, reviewDecision } from '../src/ai/ownReview';
+import { OWN_REVIEW, confirmMode, conditionDecision, ownReviewPack, raiseAllowed, reviewDecision } from '../src/ai/ownReview';
 import { finalizeRun, getRun, listRuns } from '../src/app/aiRuns';
 import type { Env, Fetcher } from '../src/app/env';
 import { runFlow, type Attempt } from '../src/app/flow';
 import { LINE_PUSH_URL } from '../src/app/line';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
 import { loadConditions } from '../src/app/ownAi';
+import { monitorView } from '../src/app/ownCheckAi';
 import { extractSection, htmlToText, parseRss, pickExhibit991, quarterTable, xbrlConditionMet, type CompanyFacts, type XbrlFact } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
@@ -421,5 +422,79 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       },
       { routine: false },
     );
+  });
+});
+
+// ---------------------------------------------------------------- T24：不會成立的條件
+
+describe('T24：確認來源只有法說會、新聞的事件條件只在定期審查時檢查', () => {
+  const ev = (id: string, by: string[]) => ({ id, direction: 'DOWN', kind: 'EVENT', text: `事件 ${id}`, check: { type: 'event', confirm_by: by }, basis: ['E1'], tier_if_met: 'HALF' });
+
+  it('confirmMode：XBRL／有申報來源／只有法說會或新聞／價格與沒寫來源', () => {
+    expect(confirmMode({ kind: 'XBRL', check: {} })).toBe('XBRL');
+    expect(confirmMode({ kind: 'EVENT', check: { confirm_by: ['8-K'] } })).toBe('FILING');
+    expect(confirmMode({ kind: 'EVENT', check: { confirm_by: ['SEC'] } })).toBe('FILING');
+    expect(confirmMode({ kind: 'EVENT', check: { confirm_by: ['major_news', '10-Q'] } })).toBe('FILING');
+    expect(confirmMode({ kind: 'EVENT', check: { confirm_by: ['earnings_call'] } })).toBe('REVIEW_ONLY');
+    expect(confirmMode({ kind: 'EVENT', check: { confirm_by: ['earnings_call', 'major_news'] } })).toBe('REVIEW_ONLY');
+    expect(confirmMode({ kind: 'EVENT', check: {} })).toBe('NONE');
+    expect(confirmMode({ kind: 'PRICE', check: { type: 'price_close_below', level: 100 } })).toBe('NONE');
+    expect(confirmMode({ kind: 'EVENT', check: { confirm_by: ['earnings_call'] }, manual: true })).toBe('NONE');
+  });
+
+  /** 11-27 開 F24、送回 3 票減半（條件照 conds）、套用；回傳之後的條件。 */
+  async function review(c: Ctx, conds: unknown[]) {
+    const { db, run } = c;
+    for (const d of ['2026-11-20', '2026-11-23', '2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
+    const [r1] = await runsOf(db, 'OWN_REVIEW');
+    const vote = () => {
+      const v = reviewVote(r1.pack, 'HALF');
+      return { ...v, payload: { ...v.payload, conditions: conds } };
+    };
+    await postResult(db, r1.runId, [vote(), vote(), vote()], new Date('2026-11-28T00:10:00Z'));
+    await run('2026-11-27', 'FINAL');
+    return loadConditions(db, 'NVDA');
+  }
+
+  it('只有新聞來源的條件：狀態是只在審查時檢查，不是監測中；新的 8-K 出來也不開 F25；持股頁的字樣', async () => {
+    await withWorld(async (c) => {
+      const conds = await review(c, [ev('C1', ['earnings_call', 'major_news'])]);
+      expect(conds.map((x) => [x.condId, x.status])).toEqual([['C1', 'REVIEW_ONLY']]);
+      expect((await monitorView(c.env, 'NVDA'))[0]).toMatchObject({ status: '只在定期審查時檢查' });
+      c.e.filings.push({ accession: '0001045810-26-000350', form: '8-K', items: '2.02,9.01', acceptanceDateTime: '2026-12-01T21:05:00.000Z', filingDate: '2026-12-01', primaryDocument: 'nvda-8k.htm', html: EIGHTK_GUIDE });
+      await c.run('2026-12-01');
+      expect(await runsOf(c.db, 'OWN_CONDITION')).toHaveLength(0);
+      // 財報後的 F24 照開（條件還在，下一次審查會看到）
+      expect((await runsOf(c.db, 'OWN_REVIEW')).filter((r) => r.asOf === '2026-12-01')).toHaveLength(1);
+    });
+  });
+
+  it('同時有 8-K 與新聞來源的條件照舊：監測中、新的 8-K 開 F25；只有新聞的那一條不進 F25', async () => {
+    await withWorld(async (c) => {
+      const conds = await review(c, [ev('C1', ['8-K', 'major_news']), ev('C2', ['major_news'])]);
+      expect(conds.map((x) => [x.condId, x.status])).toEqual([
+        ['C1', 'ACTIVE'],
+        ['C2', 'REVIEW_ONLY'],
+      ]);
+      c.e.filings.push({ accession: '0001045810-26-000350', form: '8-K', items: '2.02,9.01', acceptanceDateTime: '2026-12-01T21:05:00.000Z', filingDate: '2026-12-01', primaryDocument: 'nvda-8k.htm', html: EIGHTK_GUIDE });
+      await c.run('2026-12-01');
+      const f25 = await runsOf(c.db, 'OWN_CONDITION');
+      expect(f25).toHaveLength(1);
+      expect(f25[0].pack.facts.filter((f) => /^E\d+$/.test(f.id)).map((f) => f.value)).toEqual(['事件 C1']);
+    });
+  });
+
+  it('下一次審查整組替換時，REVIEW_ONLY 的 AI 條件一起標成已替換、AI 條件裡不留舊的', async () => {
+    await withWorld(async (c) => {
+      expect((await review(c, [ev('C1', ['earnings_call'])])).map((x) => x.status)).toEqual(['REVIEW_ONLY']);
+      c.e.filings.push({ accession: '0001045810-26-000350', form: '8-K', items: '2.02,9.01', acceptanceDateTime: '2026-12-01T21:05:00.000Z', filingDate: '2026-12-01', primaryDocument: 'nvda-8k.htm', html: EIGHTK_GUIDE });
+      await c.run('2026-12-01');
+      const r2 = (await runsOf(c.db, 'OWN_REVIEW')).find((r) => r.asOf === '2026-12-01')!;
+      const v = reviewVote(r2.pack, 'HALF');
+      const vote = () => ({ ...v, payload: { ...v.payload, conditions: [ev('C1', ['8-K'])] } });
+      await postResult(c.db, r2.runId, [vote(), vote(), vote()], new Date('2026-12-02T00:10:00Z'));
+      await c.run('2026-12-01', 'FINAL');
+      expect((await loadConditions(c.db, 'NVDA')).map((x) => [x.runId === r2.runId, x.status])).toEqual([[true, 'ACTIVE']]);
+    });
   });
 });

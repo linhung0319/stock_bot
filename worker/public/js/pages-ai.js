@@ -245,7 +245,7 @@ export function aiOverview() {
 export function ownMonitor(ctx, d) {
   const out = [];
   if (d.monitor?.length)
-    out.push(h('h5', { style: 'margin-top:12px' }, '監測中的條件（新申報出來時檢查；價格條件只記錄）'), h('table', { class: 'plain' }, h('tbody', null, d.monitor.map((c) => h('tr', null, h('td', null, c.text, c.note ? h('div', { class: 'small faint' }, c.note) : null), h('td', { class: 'small' }, `${c.kind} · ${c.origin}`), h('td', null, h('span', { class: 'chip ' + (c.status === '已成立' ? 'hot' : c.status === '監測中' ? 'ok' : '') }, c.status)))))));
+    out.push(h('h5', { style: 'margin-top:12px' }, '監測中的條件（新申報出來時檢查；只有法說會或新聞可以確認的，只在定期審查時檢查；價格條件只記錄）'), h('table', { class: 'plain' }, h('tbody', null, d.monitor.map((c) => h('tr', null, h('td', null, c.text, c.note ? h('div', { class: 'small faint' }, c.note) : null), h('td', { class: 'small' }, `${c.kind} · ${c.origin}`), h('td', null, h('span', { class: 'chip ' + (c.status === '已成立' ? 'hot' : c.status === '監測中' ? 'ok' : '') }, c.status)))))));
   const c = d.check;
   if (c && c.mode === 'REWRITE') {
     if (c.status === 'PENDING') out.push(h('p', { class: 'small dim', style: 'margin-top:10px' }, 'AI 正在把你寫的出場條件改寫成可以追蹤的格式，回來之後會出現在這裡。'));

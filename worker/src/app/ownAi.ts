@@ -6,7 +6,7 @@
 //                               月報前一天（當月倒數第二個交易日）→ 每檔自選開一次 F24（月報那天用它的結論）
 // 雲端排程（ROUTINE_FIRE_URL／ROUTINE_TOKEN）還沒設定時不開新的執行；EDGAR 的 User-Agent 沒設定時不看申報。
 import type { PackDoc } from '../ai/check';
-import { OWN_CONDITION, OWN_REVIEW, conditionDecision, conditionPack, ownReviewPack, reviewDecision, type ConditionDraft, type OwnCondition } from '../ai/ownReview';
+import { OWN_CONDITION, OWN_REVIEW, confirmMode, conditionDecision, conditionPack, ownReviewPack, reviewDecision, type ConditionDraft, type OwnCondition } from '../ai/ownReview';
 import { newRunId } from '../ai/pack';
 import { TIER_NAME, conditionMet, recordAiTier, type Account, type MarketView, type Tier } from '../engine';
 import { isLastTradingDayOfMonth, nextTradingDay } from '../data/calendar';
@@ -69,7 +69,7 @@ const isAuto = (c: ConditionDraft) => !c.manual && c.kind !== 'PRICE' && (c.kind
 function replaceStmts(db: D1Database, ticker: string, runId: string, drafts: ConditionDraft[], at: string, metPrev: string[]): D1PreparedStatement[] {
   const stmts: D1PreparedStatement[] = [];
   if (metPrev.length) stmts.push(db.prepare(`UPDATE own_conditions SET status = 'MET', met_at = ?, note = ? WHERE ticker = ? AND status = 'ACTIVE' AND origin = 'AI' AND cond_id IN (${metPrev.map(() => '?').join(',')})`).bind(at, `F24 ${runId} 認為已成立`, ticker, ...metPrev));
-  stmts.push(db.prepare("UPDATE own_conditions SET status = 'REPLACED' WHERE ticker = ? AND origin = 'AI' AND status IN ('ACTIVE', 'MANUAL', 'MET')").bind(ticker));
+  stmts.push(db.prepare("UPDATE own_conditions SET status = 'REPLACED' WHERE ticker = ? AND origin = 'AI' AND status IN ('ACTIVE', 'MANUAL', 'MET', 'REVIEW_ONLY')").bind(ticker));
   stmts.push(...insertConditionStmts(db, ticker, runId, drafts, at, 'AI'));
   return stmts;
 }
@@ -79,7 +79,10 @@ export function insertConditionStmts(db: D1Database, ticker: string, runId: stri
   const ins = db.prepare('INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, note, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
   return drafts.map((c) => {
     const auto = isAuto(c);
-    return ins.bind(ticker, runId, c.condId, c.direction, c.kind, c.text, JSON.stringify(c.check), c.tierIfMet, auto ? 'ACTIVE' : 'MANUAL', at, auto ? null : c.kind === 'PRICE' ? '價格條件只記錄' : '沒有通過檢查，只記錄', origin);
+    // 確認來源只有法說會、新聞的事件條件沒有申報可以讀：不開 F25，只在定期審查時檢查（T24）
+    const reviewOnly = auto && confirmMode(c) === 'REVIEW_ONLY';
+    const status = reviewOnly ? 'REVIEW_ONLY' : auto ? 'ACTIVE' : 'MANUAL';
+    return ins.bind(ticker, runId, c.condId, c.direction, c.kind, c.text, JSON.stringify(c.check), c.tierIfMet, status, at, auto ? (reviewOnly ? '確認來源沒有申報可以讀，只在定期審查時由 AI 判斷' : null) : c.kind === 'PRICE' ? '價格條件只記錄' : '沒有通過檢查，只記錄', origin);
   });
 }
 

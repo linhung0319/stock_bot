@@ -251,7 +251,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 完成條件：第三次排程不呼叫任何資料來源、不開執行，但會套用一筆完成的結果並推播；掃描標到硬事件候選 → 同一次第二次排程就開法庭；掃過逾時之後送到的結果有 `LATE` 紀錄而且不套用；兩種逾時原因的文字。
 - 手動事項：把 `run.md`、`ping.md` 的新內容貼到 claude.ai 的排程；部署後新的 cron 才生效。
 
-#### [ ] T24 不會成立的條件
+#### [x] T24 不會成立的條件
 - 讀：`own_thesis` §1.5「怎麼確認」與「狀態」；問題表 P4。檔案：`worker/src/ai/ownReview.ts`（`CONFIRM_BY`）、`app/ownAi.ts`（`startOwnRuns`）、`public/js/pages-more.js`。
 - 做：函式 `confirmMode`；確認來源只有 `earnings_call`、`major_news` 的事件條件存成 `REVIEW_ONLY`，持股頁顯示「只在定期審查時檢查」，不開條件確認（F25）。prompt 不改（T26、T27 的 v2 會寫）。
 - 完成條件：只有新聞來源的條件不顯示監測中、不開 F25；同時有 8-K 與新聞來源的照舊。

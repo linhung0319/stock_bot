@@ -102,7 +102,7 @@ export async function acceptOwnConditions(env: Env, ticker: string, runId: strin
 /** 持股頁要顯示的監測條件。 */
 export async function monitorView(env: Env, ticker: string): Promise<{ text: string; kind: string; origin: string; status: string; note: string | null }[]> {
   try {
-    return (await loadConditions(env.DB, ticker)).map((c) => ({ text: c.text, kind: { XBRL: '財報', EVENT: '事件', PRICE: '價格' }[c.kind] ?? c.kind, origin: c.origin === 'USER' ? '你寫的' : 'AI 寫的', status: { ACTIVE: '監測中', MET: '已成立', MANUAL: '只記錄', REPLACED: '已替換' }[c.status] ?? c.status, note: c.note }));
+    return (await loadConditions(env.DB, ticker)).map((c) => ({ text: c.text, kind: { XBRL: '財報', EVENT: '事件', PRICE: '價格' }[c.kind] ?? c.kind, origin: c.origin === 'USER' ? '你寫的' : 'AI 寫的', status: { ACTIVE: '監測中', MET: '已成立', MANUAL: '只記錄', REVIEW_ONLY: '只在定期審查時檢查', REPLACED: '已替換' }[c.status] ?? c.status, note: c.note }));
   } catch (e) {
     return [{ text: `讀不到：${errText(e)}`, kind: '', origin: '', status: '', note: null }];
   }
