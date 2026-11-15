@@ -297,6 +297,8 @@ describe('T29a：乙類（AI 判斷前提不成立）', () => {
       const c2 = structuredClone(b.acct);
       c2.own.NVDA.aiTier = null;
       c2.own.NVDA.aiNotifiedAt = '2026-10-19';
+      c2.own.NVDA.disputes = []; // T30 起上面的「不同意」會讓 P2 進靜默期；這裡只看 30 天上限
+      expect(b.acct.own.NVDA.disputes).toMatchObject([{ premiseId: 'P2', since: '2026-11-19', until: '2027-02-27', reason: '毛利率下滑是一次性的', notif: first[0].id }]);
       const later = routeReview(c2, view, 'NVDA', { tier: 'HALF', suggest: true, consensus: true, premiseId: 'P2', trigger: 'EARNINGS', date: '2026-11-19' });
       expect(later.route).toBe('SAME_DAY');
 

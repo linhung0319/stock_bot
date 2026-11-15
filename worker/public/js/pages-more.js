@@ -310,7 +310,7 @@ function thesisBlock(ctx, d) {
       ? [h('p', { style: 'margin-top:4px;white-space:pre-wrap' }, t.text), h('p', { class: 'small faint' }, `${day(t.setAt, true)} 定，${t.source}，第 ${t.version} 版${t.afterBreak ? `；失效後修改第 ${t.afterBreak} 次` : ''}`)]
       : h('p', { class: 'small dim', style: 'margin-top:4px' }, o.kind === 'DEFAULT_ONLY' ? '還沒有論點本文。目前用系統預設前提做一般健康檢查，不是你的論點。' : '還沒有論點本文。'),
     h('h5', { style: 'margin-top:12px' }, o.kind === 'DEFAULT_ONLY' ? '前提（系統預設）' : '前提（你為什麼持有它）'),
-    h('ul', { class: 'prem' }, o.premises.map((p) => h('li', null, h('span', { class: 'st' }, p.id), h('span', null, p.text, h('span', { class: 'faint small' }, `（${p.origin}）`))))),
+    h('ul', { class: 'prem' }, o.premises.map((p) => h('li', null, h('span', { class: 'st' }, p.id), h('span', null, p.text, h('span', { class: 'faint small' }, `（${p.origin}）`), p.silenced ? h('span', { class: 'small dim', style: 'display:block;margin-top:2px' }, p.silenced) : null)))),
     h('div', { class: 'btn-row', style: 'margin-top:12px' }, h('a', { class: 'btn primary', href: `#/h/${encodeURIComponent(d.ticker)}/thesis` }, '編輯論點'), copyPackButton(d.ticker)),
     h('p', { class: 'small faint', style: 'margin-top:8px' }, '「複製討論包」把這檔的論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論；說「收尾」後把結果貼回「編輯論點」。'),
   ];

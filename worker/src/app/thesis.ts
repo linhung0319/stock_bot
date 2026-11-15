@@ -187,7 +187,8 @@ export interface ThesisReview {
   /** 每一票都判「不成立」的前提。 */
   brokenPremises: string[];
   notif: number | null;
-  response: { outcome: string; reason: string | null } | null;
+  /** 使用者對那則通知的回應（論點檔的 RESPONSE，最後一筆為準）；type：A 甲類、B 乙類。 */
+  response: { outcome: string; reason: string | null; type?: string } | null;
   /** 這次每一票對每條前提的判斷（算「最近一次檢查」用）。 */
   premiseVotes: Record<string, string[]>;
   /** 和結論同檔位的第一張合格票的報告第一段（討論包用；沒有是 null）。 */
@@ -328,7 +329,7 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     for (const rv of reviews) if (ids.includes(rv.runId) && rv.notif === null) rv.notif = notif;
   }
   for (const l of log.filter((x) => x.kind === 'RESPONSE')) {
-    for (const rv of reviews) if (rv.notif !== null && rv.notif === l.body.notif) rv.response = { outcome: String(l.body.outcome ?? ''), reason: (l.body.reason as string | null) ?? null };
+    for (const rv of reviews) if (rv.notif !== null && rv.notif === l.body.notif) rv.response = { outcome: String(l.body.outcome ?? ''), reason: (l.body.reason as string | null) ?? null, ...(typeof l.body.type === 'string' ? { type: l.body.type } : {}) };
   }
   const lastRun = runs.find((r) => r.fn === 'OWN_REVIEW' && r.status === 'DONE' && r.outcome && CONCLUSIVE.has((JSON.parse(r.outcome) as Outcome).status));
   const lastDetail = lastRun ? parseJson<{ thesisVersion?: unknown }>(lastRun.detail) : null;
@@ -578,7 +579,9 @@ export function pickFilings<F extends Pick<Filing, 'accession' | 'form' | 'items
 
 const ORIGIN_TEXT: Record<string, string> = { INITIAL: '上線時就持有', NEW: '新增自選', TRANSFER: '從動能轉入', ADOPT: '認養', MANUAL: '自己買進' };
 const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
-const OUTCOME_TEXT: Record<string, string> = { FOLLOW: '照做', REVISE: '修正論點', DISAGREE: '不同意', SKIPPED: '沒有回應', NONE: '沒有回應', RULE: '照規則' };
+const OUTCOME_TEXT: Record<string, string> = { FOLLOW: '照做', REVISE: '修正論點', DISAGREE: '不同意', SKIPPED: '月報裡沒有動它（當成不同意）', NONE: '上次的失效通知沒有回應', RULE: '照規則' };
+/** 回應的白話（甲類的 SKIPPED 是「這次不做」）。 */
+export const outcomeText = (r: { outcome: string; type?: string }): string => (r.outcome === 'SKIPPED' && r.type === 'A' ? '這次不做' : (OUTCOME_TEXT[r.outcome] ?? r.outcome));
 
 /**
  * 論點那一份 note（own_thesis §1.6）：論點本文、最近 3 次定期審查的結論與使用者的回應、靜默中的前提與當時的理由。
@@ -603,7 +606,7 @@ export function thesisNote(tf: ThesisFile, asOf: string): PackDoc | null {
       const prem = Object.entries(r.premiseVotes)
         .map(([id, v]) => `${id} ${v.map((x) => PREM_TEXT[x] ?? x).join('／')}`)
         .join('；');
-      const resp = r.response ? `；你的回應：${OUTCOME_TEXT[r.response.outcome] ?? r.response.outcome}${r.response.reason ? `（${r.response.reason}）` : ''}` : '';
+      const resp = r.response ? `；你的回應：${outcomeText(r.response)}${r.response.reason ? `（${r.response.reason}）` : ''}` : '';
       L.push(`- ${r.date}（${r.trigger ?? '—'}，${r.runId}）：${r.status} ${r.verdict ?? '—'}${votes ? `（${votes}）` : ''}${prem ? `；前提逐票：${prem}` : ''}${r.brokenPremises.length ? `；三票都判不成立：${r.brokenPremises.join('、')}` : ''}${resp}`);
     }
   }
@@ -916,6 +919,27 @@ export const OWN_ATTN: AttnKind[] = [
     },
   },
 ];
+
+/**
+ * 一直沒回的乙類通知（own_thesis §1.10）：提醒過（發出 2 個交易日）、還在等你決定、論點檔還沒有那則通知的回應 → RESPONSE 的 NONE。
+ * 下一次審查開始時寫，那次的證據包寫「上次的失效通知沒有回應」。之後才回覆的，回覆那一筆排在後面、以它為準。
+ */
+export function noneResponses(acct: Pick<Account, 'notifs'>, file: Pick<ThesisFile, 'ticker' | 'fileId' | 'log'>, session: string): ThesisLogInput[] {
+  if (!file.fileId) return [];
+  const answered = new Set(file.log.filter((l) => l.kind === 'RESPONSE').map((l) => Number(l.body.notif)));
+  const out: ThesisLogInput[] = [];
+  for (const l of file.log) {
+    if (l.kind !== 'BREAK_NOTICE' || l.body.type !== 'B') continue;
+    const id = Number(l.body.notif);
+    const n = acct.notifs.find((x) => x.id === id);
+    if (answered.has(id) || !n || n.status !== 'PENDING' || !n.reminded) continue;
+    const it = n.items.find((i) => i.ticker === file.ticker && !i.cancelled && i.brk?.type === 'B');
+    if (!it || it.brk?.type !== 'B') continue;
+    answered.add(id);
+    out.push({ ticker: file.ticker, fileId: file.fileId, session, kind: 'RESPONSE', ref: String(id), body: { notif: id, type: 'B', outcome: 'NONE', reason: null, premiseId: it.brk.premiseId } });
+  }
+  return out;
+}
 
 /**
  * 新的通知裡的失效通知項目（Item.brk）→ own_thesis_log 的 BREAK_NOTICE（own_thesis §1.10）。沒有論點檔編號的舊自選不寫。

@@ -29,7 +29,7 @@ import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { accOf, cikFor, fetchFilingChecks, handledStmt, loadEvents, sectorEtfs, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
-import { EARLY_NOTE, EVIDENCE_TEXT, MAX_PROPOSED, MAX_REVIEW_8K, afterLastReview, condFacts, defaultAction, defaultFacts, fileConditions, flaggedAccessions, fmtMetric, isOwned, newEvidence, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
+import { EARLY_NOTE, EVIDENCE_TEXT, MAX_PROPOSED, MAX_REVIEW_8K, afterLastReview, condFacts, defaultAction, defaultFacts, fileConditions, flaggedAccessions, fmtMetric, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
 
 export { cikFor } from './filings';
 export { loadConditions } from './thesis';
@@ -190,7 +190,13 @@ type PackFact = ReturnType<typeof thesisFacts>[number];
  */
 export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: ReviewTrigger, now: Date, evidence?: OwnEvidence, reasons?: EvidenceReason[], early?: EarlyInput): Promise<AiRun> {
   const ev = evidence ?? (await gatherOwnEvidence(env, fetcher, ticker, view.date));
-  const tf = await thesisFile(env.DB, acct, ticker, view.date);
+  let tf = await thesisFile(env.DB, acct, ticker, view.date);
+  // 一直沒回的乙類通知 → 論點檔記 NONE，這次的證據包寫「上次的失效通知沒有回應」（own_thesis §1.10）
+  const none = tf ? noneResponses(acct, tf, view.date) : [];
+  if (none.length) {
+    await env.DB.batch(none.map((l) => thesisLogStmt(env.DB, l, null, now.toISOString())));
+    tf = await thesisFile(env.DB, acct, ticker, view.date);
+  }
   // 你定的條件 C、觀察項 W（T26；財報類觀察項用這次的 XBRL 比對）
   const conds = tf ? condFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null) : undefined;
   const extra = tf ? await reviewThesisEvidence(env, fetcher, tf, ev, view.date) : { facts: [], filings: [], docs: [], notes: [] };

@@ -132,6 +132,8 @@ export interface ItemView {
   reason: string | null;
   /** 乙類：可以「拿去討論」（複製 BREAK 討論包）。 */
   discuss: boolean;
+  /** 乙類用「修正論點」結案的訊號日（這一項同時是取消的，own_thesis §1.10）。 */
+  revised: string | null;
 }
 
 export interface OrderView {
@@ -382,6 +384,7 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
     reasonRequired: !!it.reasonRequired,
     reason: it.reason ?? null,
     discuss: it.brk?.type === 'B' && !!it.ticker && !!d.acct.own[it.ticker],
+    revised: it.revised ?? null,
   };
 }
 
@@ -837,7 +840,8 @@ export interface HoldingDetail {
     state: string;
     stdWeight: number;
     /** id：前提的編號；system：系統預設前提。 */
-    premises: { id: string; text: string; origin: string; system: boolean }[];
+    /** silenced：這條前提在靜默期內的那一句（own_thesis §1.10；不在是 null）。 */
+    premises: { id: string; text: string; origin: string; system: boolean; silenced: string | null }[];
     lastReview: string | null;
     /** 月底檢查點沒有新證據、沒審的那一句（own_thesis §3.7）；之後有新的審查就不顯示。 */
     reviewSkip: string | null;
@@ -848,7 +852,7 @@ export interface HoldingDetail {
     /** 開檔時就是減半、還沒加回過（own_thesis §3.8）的那一句。 */
     openNote: string | null;
     /** 還沒回覆、建議這檔照 AI 調整的通知（編輯論點頁的「這是對通知 #N 的回應」）。 */
-    pendingBreak: { notif: number; tier: string | null } | null;
+    pendingBreak: { notif: number; tier: string | null; premiseId: string | null } | null;
   } | null;
   ai: AiNote | null;
   history: { date: string; text: string; notif: number | null }[];
@@ -906,12 +910,21 @@ function reviewSkipOf(meta: Account['own'][string], date: string): string | null
   return `${when}沒有新證據，沿用 ${s.since} 的審查。`;
 }
 
-/** 還沒回覆的乙類（AI 判斷前提不成立；當天通知或月報裡的，own_thesis §1.10）。T29a 之前的月報建議項目（沒有 brk）也算。 */
-function pendingBreakOf(acct: Account, ticker: string): { notif: number; tier: string | null } | null {
+/**
+ * 這條前提在靜默期內（own_thesis §1.10）的那一句：「靜默中，到 2027-02-26：你在 11/19 不同意（理由）…」。不在靜默期是 null。
+ */
+function silencedText(meta: Account['own'][string], premiseId: string, date: string): string | null {
+  const d = [...(meta.disputes ?? [])].reverse().find((x) => x.premiseId === premiseId && x.until >= date);
+  if (!d) return null;
+  return `靜默中，到 ${d.until}（${Number(d.since.slice(5, 7))}/${Number(d.since.slice(8, 10))} 起，${d.reason}）：AI 只因為這條前提不成立的建議，這段期間不會通知你`;
+}
+
+/** 還沒回覆的乙類（AI 判斷前提不成立；當天通知或月報裡的，own_thesis §1.10）：編輯論點頁可以用「修正論點」回應的那一則。 */
+function pendingBreakOf(acct: Account, ticker: string): { notif: number; tier: string | null; premiseId: string | null } | null {
   for (const n of [...acct.notifs].reverse()) {
     if (n.status !== 'PENDING') continue;
-    const it = n.items.find((i) => i.ticker === ticker && i.f === 'F24' && i.kind === 'AI_ONLY' && !i.cancelled);
-    if (it) return { notif: n.id, tier: it.choices.find((c) => c.id === 'AI')?.tier ?? null };
+    const it = n.items.find((i) => i.ticker === ticker && i.brk?.type === 'B' && !i.cancelled);
+    if (it) return { notif: n.id, tier: it.choices.find((c) => c.id === 'AI')?.tier ?? null, premiseId: it.brk?.premiseId ?? null };
   }
   return null;
 }
@@ -960,7 +973,7 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
         ? {
             state: rule.applied === 'HALF' ? '減半中' : '正常',
             stdWeight: rule.stdWeight,
-            premises: meta.premises.map((p) => ({ id: p.id, text: p.text + (p.breaksIf ? `（不成立的訊號：${p.breaksIf}）` : ''), origin: ORIGIN[p.origin] ?? p.origin, system: p.origin === 'SYSTEM_DEFAULT' })),
+            premises: meta.premises.map((p) => ({ id: p.id, text: p.text + (p.breaksIf ? `（不成立的訊號：${p.breaksIf}）` : ''), origin: ORIGIN[p.origin] ?? p.origin, system: p.origin === 'SYSTEM_DEFAULT', silenced: silencedText(meta, p.id, view.date) })),
             lastReview: meta.aiTier ? `${meta.aiTier.date}：${TIER_NAME[meta.aiTier.tier]}` : null,
             reviewSkip: reviewSkipOf(meta, view.date),
             thesis: meta.thesis?.text ? { text: meta.thesis.text, setAt: meta.thesis.setAt, source: meta.thesis.source === 'DISCUSSION' ? '討論後貼回' : '在網站手寫', version: meta.thesis.version, afterBreak: meta.thesis.afterBreak } : null,

@@ -285,7 +285,7 @@ function slip(it, v, ui) {
   };
   let showChip = true;
   if (it.cancelled) {
-    chip.textContent = '已取消';
+    chip.textContent = it.revised ? '修正論點' : '已取消';
     chip.classList.add('off');
   } else if (!editable && v.status === 'PENDING') showChip = false; // 試算：還沒有決定
   else setChip(editable ? ui.choices[it.key] : it.choice);
@@ -305,7 +305,7 @@ function slip(it, v, ui) {
   }
   if (it.note) act.push(h('p', { class: 'note-line' }, it.note));
   let pick = null;
-  if (it.cancelled) pick = h('p', { class: 'picked' }, '這一項已取消，不用下單。');
+  if (it.cancelled) pick = h('p', { class: 'picked' }, it.revised ? '你用「修正論點」回應了這一項，不用下單。' : '這一項已取消，不用下單。');
   else if (!editable && v.status === 'PENDING') {
     /* 試算：還沒有決定可以顯示 */
   } else if (!editable) {
@@ -337,15 +337,17 @@ function slip(it, v, ui) {
         ),
       ),
     );
-    // 甲類的「這次不做」、當天乙類的「不同意，不動」：要寫一句理由（own_thesis §1.10），選了才出現
+    // 甲類的「這次不做」、當天乙類的「不同意，不動」：要寫一句理由（own_thesis §1.10），選了才出現。
+    // 月報裡的乙類：理由可以不寫，不寫記成「月報裡沒有動它」；兩種都會讓這條前提進靜默期（T30）
     let reasonBox = null;
-    if (it.reasonRequired) {
+    const optional = !it.reasonRequired && it.discuss;
+    if (it.reasonRequired || optional) {
       const ta = h('textarea', { rows: 2, maxlength: 200, 'aria-label': '一句理由', placeholder: it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做' ? '為什麼這次不照當時的決定做（1～200 字）' : '為什麼不同意（1～200 字）' });
       ta.value = ui.reasons?.[it.key] ?? '';
       ta.addEventListener('input', () => {
         if (ui.reasons) ui.reasons[it.key] = ta.value;
       });
-      reasonBox = h('label', { class: 'field', style: 'margin-top:10px' }, h('span', null, it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做' ? '這次不做的理由（必填）' : '不同意的理由（必填）'), ta, h('small', null, '下一次審查會看到這句話。'));
+      reasonBox = h('label', { class: 'field', style: 'margin-top:10px' }, h('span', null, it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做' ? '這次不做的理由（必填）' : optional ? '不同意的理由（可以不寫）' : '不同意的理由（必填）'), ta, h('small', null, it.discuss ? (optional ? '下一次審查會看到這句話。不寫的話記成「月報裡沒有動它」。不管寫不寫，這條前提都會進靜默期：到下一季財報出來（最長 100 天）不再為它通知你。' : '下一次審查會看到這句話。這條前提會進靜默期：到下一季財報出來（最長 100 天）不再為它通知你。') : '下一次審查會看到這句話。'));
     }
     function syncReason(id) {
       if (reasonBox) reasonBox.hidden = id !== 'SKIP';
@@ -613,6 +615,7 @@ export async function notifPage(ctx, id) {
   const body = [];
   let bubble = { k: '當時', say: [v.statusLabel, '。'], mood: 'watch' };
   if (v.status === 'DONE') bubble = { k: '當時', say: ['這份清單', em('已經完成'), v.filled.length ? `，${v.filled.length} 筆成交照快照記進帳本了。` : '。'], mood: 'happy' };
+  if (v.status === 'DONE' && v.items.length && v.items.every((i) => i.revised)) bubble = { k: '當時', say: ['你用', em('修正論點'), '回應了這則通知，部位不動。'], mood: 'watch' };
   if (v.status === 'SKIPPED') bubble = { k: '當時', say: ['這次', em('整則沒做'), '。差異記在「沒照規則做的」紀錄裡。'], mood: 'watch' };
   if (v.status === 'SUPERSEDED') bubble = { k: '當時', say: ['這份清單被', em('重算過的新清單'), '取代了，以新的為準。'], mood: 'watch' };
   if (v.status === 'CANCELLED') bubble = { k: '當時', say: ['這份清單', em('取消了'), v.withdraw ? '，出金沒有記帳。' : '。'], mood: 'watch' };

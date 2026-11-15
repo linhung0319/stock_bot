@@ -324,7 +324,7 @@ describe('情境 ① 平常的月報：用網站走完', () => {
     const h = (await web.state()).account!.holdings.find((x) => x.ticker === 'ORCL')!;
     expect(h).toMatchObject({ bucket: 'own', shares: 28 });
     const detail = await web.get<HoldingDetail>('/holding/ORCL');
-    expect(detail.own!.premises[0]).toEqual({ id: 'P1', text: '雲端訂單還在成長', origin: '你寫的', system: false }); // T27：持股頁的前提帶編號
+    expect(detail.own!.premises[0]).toEqual({ id: 'P1', text: '雲端訂單還在成長', origin: '你寫的', system: false, silenced: null }); // T27：持股頁的前提帶編號；T30：靜默中的那一句
   });
 
   it('策略類「這次不做」：下一份月報把差額再列一次，理由寫明是上次沒做', async () => {

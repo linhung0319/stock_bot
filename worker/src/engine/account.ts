@@ -78,7 +78,10 @@ export interface OwnMeta {
   premiseSeq?: number;
   /** 開檔時的慢規則狀態與距 52 週高點的跌幅（寫 log 的 OPEN 用；own_thesis §3.8）。 */
   opened?: { startState: 'STD' | 'HALF'; drawdownAtOpen: number | null };
-  /** 「不同意」之後的靜默期（own_thesis §1.10；由 T30 寫入，論點檔與證據包會列出來）。 */
+  /**
+   * 「不同意」之後的靜默期（own_thesis §1.10）：乙類選「不同意，不動」、月報裡沒動它（SKIPPED）、修正論點但保留那條前提時寫入。
+   * until 先寫 since 加 100 天；滿 45 天之後出現第一份財報類申報時改成那份申報的前一天。過期的留著給網站顯示。
+   */
   disputes?: { premiseId: string; since: string; until: string; reason: string; notif: number | null }[];
   /**
    * 「要看的事」上次列進月報的訊號日（own_thesis §3.6.6）：鍵是那一件事的鍵（`NO_THESIS`、`COND_NEAR:<列編號>@<季末日>`…），
@@ -193,6 +196,11 @@ export interface Item {
   reasonRequired?: boolean;
   /** 回覆時寫的理由（選了不做的那一句）。 */
   reason?: string;
+  /**
+   * 乙類用「修正論點」結案的訊號日（own_thesis §1.10 的 REVISE：在編輯論點頁勾「這是對通知 #N 的回應」）。
+   * 這一項同時標 cancelled（部位不動、不用下單、回覆時不再算它）。
+   */
+  revised?: string;
 }
 
 export type NotifKind = 'MONTHLY' | 'MONTHLY_EMPTY' | 'URGENT' | 'CASHFLOW' | 'FIX' | 'INFO' | 'CLASSIFY' | 'CASH_DIFF';

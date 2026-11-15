@@ -25,8 +25,11 @@ import {
   reopen,
   resolveFollowUp,
   REASON_MAX,
+  KEPT_REASON,
   missingReasons,
   respond,
+  revisableBreak,
+  reviseBreak,
   resumeMonthly,
   totalValue,
   unexclude,
@@ -252,7 +255,9 @@ function exitsOf(v: unknown): ExitLine[] {
  *   1. 論點與前提立刻存進帳戶狀態（version 加 1），log 寫 THESIS（含出場條件的原文，免得改寫失敗時不見）
  *   2. 出場條件送去改寫（一票）；送出失敗或 AI 層沒設定 → 回 rewrite.status = FAILED，頁面顯示「還沒送去改寫」與「重送」
  *   3. 出場條件不存成前提
- * dry：只算前提的對應（沿用、新的、會撤下），不存。replyTo：這是對通知 #N 的回應（log 記下；效果在 T30）。
+ * dry：只算前提的對應（沿用、新的、會撤下），不存。
+ * replyTo：這是對乙類通知 #N 的回應（修正論點，own_thesis §1.10）：那一項結案、afterBreak 加 1、log 寫 RESPONSE（REVISE）；
+ *   新的前提還留著被判不成立的那一條 → 當成不同意（DISAGREE，進靜默期）。通知已經回覆過、或不是這檔的乙類 → 409。
  */
 async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
   const tk = ticker(b.ticker);
@@ -271,13 +276,20 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
   const dry = b.dry === true;
   const r = await mutate(backend, `${tk} 編輯論點`, [], (d) => {
     if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
-    if (replyTo !== null) findNotif(d.acct, Number.isInteger(replyTo) ? replyTo : -1);
+    // 對乙類通知的回應（修正論點，own_thesis §1.10）：那則通知要還沒回覆、而且有這檔的乙類項目
+    if (replyTo !== null) {
+      const n = findNotif(d.acct, Number.isInteger(replyTo) ? replyTo : -1);
+      if (!dry && !revisableBreak(d.acct, n.id, tk)) throw new SiteError(409, n.status !== 'PENDING' ? `通知 #${n.id} 已經回覆過了，不能再用「修正論點」回應。取消勾選「這是對通知 #${n.id} 的回應」再存。` : `通知 #${n.id} 不是 ${tk} 的「AI 判斷前提不成立」通知，不能用「修正論點」回應。取消勾選再存。`);
+    }
     let out: ReturnType<typeof setThesis>;
     try {
-      out = setThesis(d.acct, tk, { text: thesisText, source, premises, date: d.view.date });
+      out = setThesis(d.acct, tk, { text: thesisText, source, premises, date: d.view.date, afterBreak: replyTo !== null });
     } catch (e) {
       throw new SiteError(422, errText(e));
     }
+    // 通知結案；新的前提還留著那一條 → 當成不同意（靜默期）
+    const rv = replyTo !== null && !dry ? reviseBreak(out.acct, d.view, replyTo, tk) : null;
+    if (rv?.ok) out = { ...out, acct: rv.acct };
     const meta = out.acct.own[tk];
     const brief = (ps: Premise[]) => ps.map((p) => ({ id: p.id, text: p.text, origin: p.origin }));
     const result = {
@@ -302,15 +314,17 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
               before: { text: out.before.text, premises: brief(out.before.premises) },
               after: { text: meta.thesis!.text, premises: brief(meta.premises) },
               retired: out.mapping.retired.map((p) => p.id),
-              afterBreak: false,
+              afterBreak: !!rv?.ok,
               replyTo,
               exitLines: exits.map((e) => e.text),
               exitActions: exits.map((e) => e.action),
             },
           },
+          // 乙類的回應：修正論點（REVISE）；保留了那條前提 → 當成不同意（DISAGREE，理由固定）
+          ...(rv?.ok ? [{ ticker: tk, fileId: meta.fileId, session: d.view.date, kind: 'RESPONSE' as const, ref: String(replyTo), body: { notif: replyTo, type: 'B', outcome: rv.kept ? 'DISAGREE' : 'REVISE', reason: rv.kept ? KEPT_REASON : null, premiseId: rv.premiseId } }] : []),
         ]
       : [];
-    return { acct: out.acct, dry, result, log };
+    return { acct: out.acct, dry, result: { ...result, revised: rv?.ok ? { notif: replyTo, kept: rv.kept, premiseId: rv.premiseId } : null }, log };
   });
   if (dry) return json({ ok: true, ...r.result });
   // 出場條件送去改寫：失敗要明白告訴使用者（N9），之後持股頁也會一直提示到重送為止
@@ -508,12 +522,19 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
         const long = n.items.find((it) => (reasons[it.key] ?? '').length > REASON_MAX);
         if (long) throw new SiteError(422, `理由最多 ${REASON_MAX} 個字`);
         const acct = respond(d.acct, d.view, id, { mode, choices, reasons });
-        // 甲類的回應寫進論點檔（照當時的決定 FOLLOW／這次不做 SKIPPED＋理由）；乙類的回應在 T30
+        // 失效通知的回應寫進論點檔（own_thesis §1.10），下一次審查的證據包看得到：
+        //   甲類：照當時的決定 FOLLOW／這次不做 SKIPPED＋理由
+        //   乙類：照 AI FOLLOW／不同意並寫理由 DISAGREE／月報裡沒動它 SKIPPED（後兩種的前提進靜默期，respond 寫好了）
         const after = acct.notifs.find((x) => x.id === id)!;
         const log: ThesisLogInput[] = after.items.flatMap((it) => {
-          const fileId = it.brk?.type === 'A' && it.ticker ? d.acct.own[it.ticker]?.fileId : undefined;
-          if (!fileId || it.cancelled) return [];
-          return [{ ticker: it.ticker!, fileId, session: d.view.date, kind: 'RESPONSE' as const, ref: String(id), body: { notif: id, type: 'A', outcome: it.choice === 'SKIP' ? 'SKIPPED' : 'FOLLOW', reason: it.reason ?? null } }];
+          const fileId = it.brk && it.ticker ? d.acct.own[it.ticker]?.fileId : undefined;
+          if (!fileId || !it.brk || it.cancelled) return [];
+          const skip = it.choice === 'SKIP';
+          const body =
+            it.brk.type === 'A'
+              ? { notif: id, type: 'A', outcome: skip ? 'SKIPPED' : 'FOLLOW', reason: it.reason ?? null }
+              : { notif: id, type: 'B', outcome: !skip ? 'FOLLOW' : it.reason ? 'DISAGREE' : 'SKIPPED', reason: skip ? (it.reason ?? null) : null, premiseId: it.brk.premiseId };
+          return [{ ticker: it.ticker!, fileId, session: d.view.date, kind: 'RESPONSE' as const, ref: String(id), body }];
         });
         return { acct, log };
       });

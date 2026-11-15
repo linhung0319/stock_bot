@@ -512,7 +512,7 @@ describe('T27：前提有增減 → 下一次每日第一次流程開審查（�
 // ---------------------------------------------------------------- BREAK、replyTo、§3.8
 
 describe('T27：replyTo、BREAK 情境、開檔時是減半的那一句', () => {
-  it('編輯論點帶 replyTo → log 記下（效果在 T30）；不存在的通知擋下；從通知來的討論包是 BREAK', async () => {
+  it('編輯論點帶 replyTo → log 記下（T30 起是修正論點：afterBreak 為 true）；不存在的通知擋下；從通知來的討論包是 BREAK', async () => {
     await withWorld(async (c) => {
       const loaded = (await loadAccount(c.db))!;
       const { view } = await c.viewAt('2026-11-19');
@@ -523,7 +523,7 @@ describe('T27：replyTo、BREAK 情境、開檔時是減半的那一句', () => 
       expect((await c.api('POST', 'ops/own-thesis', { ticker: 'NVDA', thesis: 'x', premises: USER_PREMISES, exitConditions: [], replyTo: 9999 })).status).toBe(404);
       const r = await c.api('POST', 'ops/own-thesis', { ticker: 'NVDA', thesis: 'x', premises: USER_PREMISES, exitConditions: [], replyTo: id, source: 'DISCUSSION' });
       expect(r.status).toBe(200);
-      expect((await thesisLog(c.db)).at(-1)!.body).toMatchObject({ replyTo: id, afterBreak: false, source: 'DISCUSSION' });
+      expect((await thesisLog(c.db)).at(-1)!.body).toMatchObject({ replyTo: id, afterBreak: true, source: 'DISCUSSION' }); // T30：對乙類的回應 = 修正論點
       const d = await c.api<{ mode: string; text: string }>('GET', `own/NVDA/discussion?notif=${id}`);
       expect(d.body.mode).toBe('BREAK');
       expect(d.body.text).toContain('stock bot 的審查（3 票一致）認為');

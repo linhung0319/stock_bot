@@ -402,8 +402,10 @@ describe('T25：F24 的證據包由論點檔組', () => {
       expect(tf.events.find((x) => x.sourceId === src)).toMatchObject({ source: 'SCAN', code: 'MGMT_CHANGE', isNew: true, accession: EIGHTK_502.accession });
       expect(tf.reviews.find((x) => x.runId === r1.runId)).toMatchObject({ fn: 'OWN_REVIEW', label: '定期審查', trigger: 'MONTHLY', status: 'AGREED', verdict: 'HALF', brokenPremises: ['P2'] });
       // T29a：11-27 月審的減半建議進了 11-30 的月報（乙類項目），論點檔記一筆 BREAK_NOTICE
-      expect(tf.log.map((l) => l.kind)).toEqual(['OPEN', 'BREAK_NOTICE']);
+      // T30：那份月報一直沒回（12-02 提醒過）→ 這次審查開始時記 RESPONSE 的 NONE
+      expect(tf.log.map((l) => l.kind)).toEqual(['OPEN', 'BREAK_NOTICE', 'RESPONSE']);
       expect(tf.log[1].body).toMatchObject({ type: 'B', premiseId: 'P2', runIds: [r1.runId], sameDay: false });
+      expect(tf.log[2].body).toMatchObject({ type: 'B', outcome: 'NONE', notif: tf.log[1].body.notif });
     });
   });
 

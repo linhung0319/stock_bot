@@ -30,7 +30,7 @@ import {
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
-import { composeNotif, monthlyReport, monthlyWait, recordExternalFlow, type MonthlyResult } from './report';
+import { KEPT_REASON, SKIPPED_REASON, addDispute, composeNotif, monthlyReport, monthlyWait, recordExternalFlow, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
 import type { Bucket } from './types';
 
@@ -171,6 +171,11 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
       if (it.kind === 'STRATEGY' && it.choice === 'SKIP' && rec.rule !== 0) acct.mom.owe[tk] = { since: view.date, notif: n.id };
     }
   }
+  // 乙類沒有照 AI（不同意並寫了理由，或月報裡沒動它）→ 那條前提進靜默期（own_thesis §1.10）
+  for (const it of n.items) {
+    if (it.cancelled || it.brk?.type !== 'B' || it.choice !== 'SKIP' || !it.ticker || !acct.own[it.ticker]) continue;
+    addDispute(acct.own[it.ticker], it.brk.premiseId, view.date, it.reason ?? SKIPPED_REASON, n.id);
+  }
   const nothingToTrade = n.composed.lines.length === 0;
   if (input.mode === 'SKIP' || n.items.every((i) => i.cancelled || i.choice === 'SKIP')) {
     n.status = 'SKIPPED';
@@ -200,6 +205,13 @@ export function reopen(acct0: Account, view: MarketView, id: number): { acct: Ac
   delete n.respondedSeq;
   delete n.fillReminded;
   for (const [tk, o] of Object.entries(acct.mom.owe)) if (o.notif === id) delete acct.mom.owe[tk];
+  // 回覆時乙類「不同意」寫的靜默期一起收回（修正論點寫的那一項已經取消，不在這裡）
+  for (const it of n.items) {
+    if (it.cancelled || it.brk?.type !== 'B' || it.choice !== 'SKIP' || !it.ticker) continue;
+    const meta = acct.own[it.ticker];
+    const pid = it.brk.premiseId;
+    if (meta?.disputes) meta.disputes = meta.disputes.filter((d) => !(d.notif === id && d.premiseId === pid));
+  }
   acct.shadow.push({ date: view.date, f: 'REOPEN', ticker: null, title: '改決定：先前的回覆作廢', rule: 0, ai: null, actual: 0, price: 0, choice: 'REOPEN', notif: id });
   return { acct, ok: true };
 }
@@ -841,12 +853,14 @@ export interface ThesisInput {
   premises: { id?: string | null; text: string }[];
   /** 訊號日。 */
   date: string;
+  /** 這是對乙類通知的回應（修正論點，own_thesis §1.10）：「失效後修改」的次數加 1、記日期。 */
+  afterBreak?: boolean;
 }
 
 /**
  * 存論點與前提（持股頁的「編輯論點」，own_thesis §1.8 確認的第 1 點；§3.6.5）：論點本文與前提立刻存進帳戶狀態，version 加 1。
  * 前提有新增或撤下 → thesisReviewDue 記今天（下一次每日第一次流程開論點變動後的審查）；只改論點本文或前提的字不算。
- * 「失效後修改」（afterBreak）在 T30 才累加，這裡照舊。
+ * inp.afterBreak（對乙類通知的回應）→ thesis.afterBreak 加 1、lastAfterBreakAt 記今天（§1.10 的 REVISE）。
  */
 export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { acct: Account; mapping: PremiseMapping; before: { text: string; premises: Premise[] }; changed: boolean } {
   const acct = clone(acct0);
@@ -855,12 +869,68 @@ export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { a
   const mapping = mapPremises(meta, inp.premises, inp.date);
   const before = { text: meta.thesis?.text ?? '', premises: clone(meta.premises) };
   const prev = meta.thesis ?? null;
-  meta.thesis = { text: inp.text.trim(), setAt: inp.date, source: inp.source, version: (prev?.version ?? 0) + 1, afterBreak: prev?.afterBreak ?? 0, lastAfterBreakAt: prev?.lastAfterBreakAt ?? null };
+  const afterBreak = (prev?.afterBreak ?? 0) + (inp.afterBreak ? 1 : 0);
+  const lastAfterBreakAt = inp.afterBreak ? inp.date : (prev?.lastAfterBreakAt ?? null);
+  meta.thesis = { text: inp.text.trim(), setAt: inp.date, source: inp.source, version: (prev?.version ?? 0) + 1, afterBreak, lastAfterBreakAt };
   meta.premises = mapping.premises;
   meta.premiseSeq = mapping.premiseSeq;
   const changed = mapping.added.length > 0 || mapping.retired.length > 0;
   if (changed) meta.thesisReviewDue = inp.date;
   return { acct, mapping, before, changed };
+}
+
+/** 可以用「修正論點」結案的乙類項目：還沒回覆的通知裡、這檔還沒取消的乙類（own_thesis §1.10）。 */
+export function revisableBreak(acct: Pick<Account, 'notifs'>, id: number, ticker: string): { n: Notif; it: Item } | null {
+  const n = acct.notifs.find((x) => x.id === id);
+  if (!n || n.status !== 'PENDING') return null;
+  const it = n.items.find((i) => i.ticker === ticker && !i.cancelled && i.brk?.type === 'B');
+  return it ? { n, it } : null;
+}
+
+/**
+ * 乙類的「修正論點」（own_thesis §1.10 的 REVISE）：論點已經用 setThesis 存好（afterBreak 加過 1），這裡讓通知結案。
+ *   那一項取消（部位不動、不用下單），記下修正的日子；沒照 AI 的那筆照樣進「沒照規則做的」紀錄。
+ *   通知只剩取消的項目 → 結案（DONE）；月報裡還有別的項目 → 通知留著等你回覆其他項。
+ *   新的前提還留著被判不成立的那一條（同一個 id）→ 當成不同意：那條前提進靜默期（理由「修正論點但保留這條前提」）。
+ * 找不到可以結案的項目（已經回覆過、不是這檔的乙類）→ ok = false，帳戶不變。
+ */
+export function reviseBreak(acct0: Account, view: MarketView, id: number, ticker: string): { acct: Account; ok: boolean; premiseId: string | null; kept: boolean } {
+  const acct = clone(acct0);
+  const hit = revisableBreak(acct, id, ticker);
+  const meta = acct.own[ticker];
+  if (!hit || !meta || hit.it.brk?.type !== 'B') return { acct: acct0, ok: false, premiseId: null, kept: false };
+  const { n, it } = hit;
+  const pid = hit.it.brk.premiseId;
+  const kept = meta.premises.some((p) => p.id === pid);
+  const md = `${Number(view.date.slice(5, 7))}/${Number(view.date.slice(8, 10))}`;
+  it.cancelled = true;
+  it.revised = view.date;
+  it.note = `你在 ${md} 修正了論點（失效後修改第 ${meta.thesis?.afterBreak ?? 1} 次），部位不動${kept ? `。新的論點還留著前提 ${pid}，當成不同意：這條前提進靜默期` : ''}`;
+  const ai = it.choices.find((c) => c.id === 'AI');
+  acct.shadow.push({
+    date: view.date,
+    f: it.f,
+    ticker,
+    title: it.title,
+    rule: 0,
+    ai: ai ? sumFor(ai.lines, ticker) : null,
+    actual: 0,
+    price: view.close[ticker] ? priceOf(view, ticker) : 0,
+    choice: 'SKIP',
+    notif: n.id,
+    ...(it.runIds?.length ? { runIds: [...it.runIds] } : {}),
+    note: kept ? KEPT_REASON : '修正論點',
+  });
+  if (kept) addDispute(meta, pid, view.date, KEPT_REASON, n.id);
+  if (n.items.every((i) => i.cancelled)) {
+    // 結案：沒有要下的單，核心也不另外吸收現金（不然通知頁會列出「買 VOO」）
+    n.coreAbsorb = false;
+    n.status = 'DONE';
+    n.respondedAt = view.date;
+    n.respondedSeq = view.i;
+  }
+  n.preview = composeNotif(acct, view, n);
+  return { acct, ok: true, premiseId: pid, kept };
 }
 
 /** 改一檔自選的標準比重（持股頁；設計 §2.2「系統推薦，使用者可改」）。只改之後加回、入金用的目標，不下單。 */

@@ -605,8 +605,49 @@ const calDays = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse
 const mdOf = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
 const defaultOnly = (meta: Pick<OwnMeta, 'premises'>) => meta.premises.every((p) => p.origin === 'SYSTEM_DEFAULT');
 
+/** 靜默期最長幾個日曆天；滿幾天之後的第一份財報類申報結束靜默期（§1.10「靜默期」）。 */
+export const DISPUTE_MAX_DAYS = 100;
+export const DISPUTE_MIN_DAYS = 45;
+/** 月報裡的乙類項目沒動它（沒按照 AI、沒寫理由）→ 記成 SKIPPED，和不同意一樣進靜默期（§1.10）。 */
+export const SKIPPED_REASON = '月報裡沒有動它（AI 的建議是一次性的）';
+/** 修正論點、但新的論點還留著被判不成立的那條前提 → 當成不同意（§1.10）。 */
+export const KEPT_REASON = '修正論點但保留這條前提';
+const plusDays = (d: string, n: number) => new Date(Date.parse(d) + n * 86400_000).toISOString().slice(0, 10);
+
 /**
- * 這條前提在靜默期內嗎（§1.10「靜默期」）：disputes 裡同一條前提、until ≥ 這一天（disputes 由 T30 寫入）。
+ * 這條前提進靜默期（§1.10）：since = 這一天，until = 加 100 天。同一條前提還在靜默中的那一筆換成這一筆（過期的留著給網站顯示）。
+ */
+export function addDispute(meta: OwnMeta, premiseId: string, date: string, reason: string, notif: number | null): void {
+  const keep = (meta.disputes ?? []).filter((d) => d.premiseId !== premiseId || d.until < date);
+  meta.disputes = [...keep, { premiseId, since: date, until: plusDays(date, DISPUTE_MAX_DAYS), reason, notif }];
+}
+
+/** 財報類申報（§1.10「靜默期」）：10-Q、10-K、8-K Item 2.02。修正版（/A）是舊的期間，不算。 */
+export const endsSilence = (f: { form: string; items?: string[] }): boolean => f.form === '10-Q' || f.form === '10-K' || (f.form === '8-K' && (f.items ?? []).includes('2.02'));
+
+/**
+ * 每日流程看到這檔有新的財報類申報（§1.10「靜默期」的實作）：還在靜默中、距 since 已滿 45 天的 → until 改成那份申報的前一天。
+ * 也就是到下一季的數字出來為止。沒有變動時回傳原本的帳戶。
+ */
+export function endDisputes(acct0: Account, ticker: string, filings: { form: string; items?: string[]; filingDate: string }[]): { acct: Account; ended: { premiseId: string; until: string }[] } {
+  const ds = acct0.own[ticker]?.disputes ?? [];
+  const fin = filings.filter(endsSilence).map((f) => f.filingDate).sort();
+  const ended: { premiseId: string; until: string }[] = [];
+  const next = ds.map((d) => {
+    const first = fin.find((day) => day <= d.until && calDays(d.since, day) >= DISPUTE_MIN_DAYS);
+    if (!first) return d;
+    const until = plusDays(first, -1);
+    ended.push({ premiseId: d.premiseId, until });
+    return { ...d, until };
+  });
+  if (!ended.length) return { acct: acct0, ended };
+  const acct = clone(acct0);
+  acct.own[ticker].disputes = next;
+  return { acct, ended };
+}
+
+/**
+ * 這條前提在靜默期內嗎（§1.10「靜默期」）：disputes 裡同一條前提、until ≥ 這一天。
  * 例外：AI 的檔位比不同意時更重（減半 → 出清）照常給。不同意時的檔位取那則通知上「照 AI」的檔位；找不到就當成一樣重（照樣靜默）。
  */
 export function silenced(acct: Pick<Account, 'own' | 'notifs'>, ticker: string, premiseId: string, date: string, tier: Tier): boolean {

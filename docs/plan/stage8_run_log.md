@@ -21,6 +21,7 @@
 | T29a | 完成 | （見 git log） | 481 通過、1 略過 |
 | T29b | 完成 | （見 git log） | 494 通過、1 略過 |
 | T29c | 完成 | （見 git log） | 514 通過、1 略過 |
+| T30 | 完成 | （見 git log） | 526 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -137,6 +138,13 @@
 - T29c｜新聞稿結果和新的 10-Q 落在同一次套用時，用 `ctx.met` 讓 XBRL 比對跳過剛成立的那條，免得通知兩次（那條這次不核對）。
 - T29c｜開擷取失敗（XBRL 抓不到、找不到新聞稿）只寫流程紀錄，不推告警、不算審查失敗（只是等 10-Q）。
 - T29c｜已知限制：損益表標題不叫 statements of operations／income／earnings 時（例如 MSFT 的 INCOME STATEMENTS）改取前 60,000 字；實際抓的新聞稿都在 4 萬字內。
+- T30｜修正論點讓通知結案：那一項標取消並記 `revised`；整則只剩取消的項目時改成已完成，而且不讓核心吸收現金（免得結案頁列出「買 VOO」）；影子紀錄照寫（選項不做，備註「修正論點」）。別的選項：用 `respond` 選不做（狀態會變「這次不做」，字面不對）。
+- T30｜修正論點但保留被判不成立的前提：RESPONSE 記 DISAGREE（理由「修正論點但保留這條前提」），`afterBreak` 照樣加 1。
+- T30｜`replyTo` 指到已回覆或不是這檔乙類的通知 → 409、論點不存（試算不檢查）；慢規則通知不能用修正論點結案。
+- T30｜NONE 在下一次審查開始時才記（通知提醒過、還在等決定、還沒有回應），只記一次；之後才回覆的以後來那筆為準。
+- T30｜靜默期：同一條前提還在靜默中又不同意，換成新的那一筆；結束用申報日距開始滿 45 天、`until` 改成申報日前一天；財報類申報只算 10-Q、10-K、8-K 2.02，不算 /A（和 `isEarningsFiling` 不同）。
+- T30｜乙類的 RESPONSE 多一個 `premiseId`（設計沒寫）；持股頁多顯示靜默中的那一句（派工單沒要求，一小行）。
+- T30｜範圍外留著：被 BREAK_UPDATE 更新過的通知，BREAK_NOTICE 的 runIds 還是最早那次，之後那次審查的 note 看不到回應；`ai/discussion.ts` 回應的白話沒和論點 note 統一（留給 T34）。
 
 ## 要使用者親手做的事
 
@@ -175,6 +183,9 @@
 | T29a | 甲類通知頁（桌機／手機） | `records/stage8/screens/T29a/typeA-desktop.png、typeA-phone.png` |
 | T29a | 甲類選「這次不做」、理由欄（桌機） | `records/stage8/screens/T29a/typeA-skip-desktop.png` |
 | T29a | 乙類通知頁：預設不動、理由欄、拿去討論（桌機／手機） | `records/stage8/screens/T29a/typeB-desktop.png、typeB-phone.png` |
+| T30 | 從通知來的編輯論點頁：回應勾選、保留前提的警告（桌機／手機） | `records/stage8/screens/T30/edit-reply-desktop.png、edit-reply-phone.png` |
+| T30 | 修正論點之後的通知頁（桌機／手機） | `records/stage8/screens/T30/notif-revised-desktop.png、notif-revised-phone.png` |
+| T30 | 持股頁：失效後修改第 1 次、靜默中的前提（桌機／手機） | `records/stage8/screens/T30/holding-desktop.png、holding-phone.png` |
 
 ## 卡住的任務
 

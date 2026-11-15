@@ -1,6 +1,7 @@
 // 每日流程的 AI 段（T10、T11）。每次每日流程（src/app/flow.ts）都會呼叫：
 //   1. 這次有處理新的交易日（startNew）：持股、候選股的新申報 → 規則分類（F18 規則段）；自選股的新財報 → XBRL
 //   2. 套用（和帳戶同一筆存檔，和網站同時存檔時重來）：
+//        新的財報類申報結束靜默期（own_thesis §1.10，T30）
 //        已經有結論、還沒套用的 AI 執行（各功能的 applier）
 //        財報條件（程式比對 XBRL）、規則直接提出的硬事件（動能持股被收購、持股的 NT 10-K／10-Q）
 //   3. startNew 而且雲端排程設定好了：開新的執行
@@ -33,6 +34,7 @@ import { annotate } from './site/explain';
 import type { AiNote } from './site/types';
 import { startStrategyRun } from './strategyAi';
 import { breakLogs } from './thesis';
+import { endDisputes } from '../engine';
 
 export type { StepResult as AiStepResult } from './aiCtx';
 
@@ -89,7 +91,15 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
     rebaseNotifSeq(loaded.acct, axis);
     const before = new Set(loaded.acct.notifs.map((n) => n.id));
     const ctx: ApplyCtx = { db, acct: loaded.acct, view, axis, session, now, stmts: [], log: [], alerts: [] };
-    const done = (await db.prepare("SELECT run_id FROM ai_runs WHERE status = 'DONE' AND applied_at IS NULL ORDER BY completed_at").all<{ run_id: string }>()).results;
+    // 靜默期：這檔出現新的財報類申報、距不同意滿 45 天 → 到那份申報的前一天結束（own_thesis §1.10）；在套用審查之前
+    for (const c of checks) {
+      if (!ctx.acct.own[c.ticker]?.disputes?.length) continue;
+      const r = endDisputes(ctx.acct, c.ticker, c.fresh);
+      if (!r.ended.length) continue;
+      ctx.acct = r.acct;
+      ctx.log.push(...r.ended.map((x) => `${c.ticker} 前提 ${x.premiseId} 的靜默期到 ${x.until} 結束（有新的財報類申報）`));
+    }
+    const done =(await db.prepare("SELECT run_id FROM ai_runs WHERE status = 'DONE' AND applied_at IS NULL ORDER BY completed_at").all<{ run_id: string }>()).results;
     for (const { run_id } of done) {
       const run = await getRun(db, run_id);
       if (!run) continue;
