@@ -127,7 +127,7 @@ export const dataRunsSection: SectionFn = async (db, p) => {
   return { id: 'data_runs', title: '資料抓取（依結果）', rows: withTotal(rows, { status: '合計', avg_ms: null }, ['runs', 'no_signal', 'no_rebalance']) };
 };
 
-/** 每日流程：依 FIRST／FINAL／MANUAL 與結果的次數。 */
+/** 每日流程：依 FIRST／FINAL／APPLY／MANUAL 與結果的次數。 */
 export const flowRunsSection: SectionFn = async (db, p) => {
   const c = atCond(p, 'at');
   const rows = await query(db, `SELECT attempt, status, COUNT(*) AS runs FROM flow_runs WHERE ${c.sql} GROUP BY attempt, status ORDER BY attempt, status`, c.args);

@@ -13,6 +13,14 @@ export const TASK_TIMEOUT_MS = 45 * 60 * 1000;
 
 export type TaskStatus = 'PENDING' | 'FETCHED' | 'DONE' | 'REJECTED' | 'TIMEOUT' | 'FIRE_FAILED';
 
+/**
+ * 逾時的兩種原因（T23 的溝通修補）：看 fetched_at 有沒有值。寫進「照規則」結論的原因（aiRuns.closeStaleRuns）與 AI_TIMEOUT 告警；
+ * 其他「沒有結論」的告警要寫逾時原因時用同一句。
+ */
+export function timeoutReason(fetched: boolean): string {
+  return fetched ? `雲端排程取了證據包，但 ${TASK_TIMEOUT_MS / 60000} 分鐘內沒有送回結果` : '雲端排程沒有來取證據包（多半是額度用完或 session 沒開成）';
+}
+
 export interface AiTaskRow {
   id: string;
   kind: string;
@@ -140,7 +148,6 @@ export async function readEvidence(db: D1Database, id: string, now: Date): Promi
 export async function acceptResult(db: D1Database, id: string, bodyText: string, now: Date, onDone?: (task: AiTaskRow, result: Record<string, unknown>) => Promise<unknown>): Promise<Response> {
   const t = await getTask(db, id);
   if (!t) return Response.json({ error: 'not_found' }, { status: 404 });
-  if (t.status !== 'PENDING' && t.status !== 'FETCHED') return Response.json({ error: 'task_closed', status: t.status }, { status: 409 });
   // 被退回或太晚送到的輸出整份留下（ai_rejections），和任務狀態同一筆交易寫
   const keepRaw = (status: 'REJECTED' | 'LATE', why: string, httpStatus: number) => {
     const raw = clipUtf8(bodyText, MAX_REJECTED_RAW_BYTES);
@@ -148,6 +155,12 @@ export async function acceptResult(db: D1Database, id: string, bodyText: string,
       .prepare('INSERT INTO ai_rejections (task_id, kind, at, status, reason, http_status, raw, raw_bytes, truncated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .bind(id, t.kind, now.toISOString(), status, why.slice(0, 2000), httpStatus, raw.text, raw.bytes, raw.truncated ? 1 : 0);
   };
+  // 逾時已經標記（sweepTimeouts）之後才送到：也留下（LATE），不套用。用途：看時限夠不夠
+  if (t.status === 'TIMEOUT') {
+    await keepRaw('LATE', '逾時已經標記之後才送到', 410).run();
+    return Response.json({ error: 'task_expired' }, { status: 410 });
+  }
+  if (t.status !== 'PENDING' && t.status !== 'FETCHED') return Response.json({ error: 'task_closed', status: t.status }, { status: 409 });
   const reject = async (why: string, status = 422) => {
     await db.batch([db.prepare("UPDATE ai_tasks SET status = 'REJECTED', error = ?, completed_at = ? WHERE id = ?").bind(why.slice(0, 500), now.toISOString(), id), keepRaw('REJECTED', why, status)]);
     return Response.json({ error: 'rejected', why }, { status });
@@ -192,13 +205,32 @@ export function clipUtf8(s: string, max: number): { text: string; bytes: number;
   return { text: new TextDecoder().decode(b.subarray(0, end)), bytes: b.length, truncated: true };
 }
 
-/** 把逾時還沒有結果的任務標成 TIMEOUT，回傳這次標了哪些（給缺席告警用）。 */
-export async function sweepTimeouts(db: D1Database, now: Date): Promise<string[]> {
+export interface TimedOutTask {
+  id: string;
+  /** 雲端排程來取過證據包（fetched_at 有值）。 */
+  fetched: boolean;
+}
+
+/** 把逾時還沒有結果的任務標成 TIMEOUT，回傳這次標了哪些、各自取過證據包沒有（給 AI_TIMEOUT 告警用）。 */
+export async function sweepTimeoutTasks(db: D1Database, now: Date): Promise<TimedOutTask[]> {
   const cutoff = new Date(now.getTime() - TASK_TIMEOUT_MS).toISOString();
-  const rows = await db.prepare("SELECT id FROM ai_tasks WHERE status IN ('PENDING', 'FETCHED') AND created_at < ?").bind(cutoff).all<{ id: string }>();
-  const ids = rows.results.map((r) => r.id);
-  for (const id of ids) await db.prepare("UPDATE ai_tasks SET status = 'TIMEOUT', completed_at = ? WHERE id = ?").bind(now.toISOString(), id).run();
-  return ids;
+  const rows = (await db.prepare("SELECT id, fetched_at FROM ai_tasks WHERE status IN ('PENDING', 'FETCHED') AND created_at < ? ORDER BY created_at").bind(cutoff).all<{ id: string; fetched_at: string | null }>()).results;
+  for (const r of rows) await db.prepare("UPDATE ai_tasks SET status = 'TIMEOUT', completed_at = ? WHERE id = ?").bind(now.toISOString(), r.id).run();
+  return rows.map((r) => ({ id: r.id, fetched: !!r.fetched_at }));
+}
+
+/** 同上，只回傳任務編號。 */
+export async function sweepTimeouts(db: D1Database, now: Date): Promise<string[]> {
+  return (await sweepTimeoutTasks(db, now)).map((t) => t.id);
+}
+
+/** AI_TIMEOUT 告警的文字：依兩種原因分開列。 */
+export function timeoutAlert(tasks: TimedOutTask[]): string {
+  const parts = [false, true]
+    .map((fetched) => ({ fetched, ids: tasks.filter((t) => t.fetched === fetched).map((t) => t.id) }))
+    .filter((g) => g.ids.length)
+    .map((g) => `${timeoutReason(g.fetched)}：${g.ids.length} 個（${g.ids.join('、')}）`);
+  return `${tasks.length} 個 AI 任務逾時，已照規則處理：${parts.join('；')}。`;
 }
 
 /** 任務的時間紀錄（T5 要量從觸發到收到結果多久）。 */

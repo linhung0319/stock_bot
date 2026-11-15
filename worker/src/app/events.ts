@@ -18,7 +18,7 @@ import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
 import { startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
-import { handledStmt, insertHitStmts, loadEvents, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
+import { fetchFilingChecks, handledStmt, insertHitStmts, loadEvents, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { docOf, loadConditions, newsDoc, xbrlDoc } from './ownAi';
 
 /** 每日掃描的對象：自選、動能持股、排名 6～10 的候選（還沒持有的）。 */
@@ -110,20 +110,27 @@ export async function applyEventScan(ctx: ApplyCtx, run: AiRun): Promise<void> {
 
 // ---------------------------------------------------------------- 開新的執行
 
-/** 持股的待處理事件 → 開 F19 法庭（同一檔一次一個）。 */
-async function startCourts(sc: StartCtx, targets: ScanTarget[]): Promise<void> {
+const isNewsEvent = (e: SecEventRow) => e.accession.startsWith('nasdaq-rss:') || e.form === 'NEWS';
+
+/**
+ * 持股的待處理事件 → 開 F19 法庭（同一檔一次一個）。
+ * fetchChecks：這次流程沒有看新申報（01:30 的 finalStarts，sc.checks 是空的）時，有申報類事件的那幾檔另外抓申報清單來取原文；
+ * 只抓清單、不推「看過」的標記。
+ */
+export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fetchChecks?: boolean } = {}): Promise<void> {
   const { env, fetcher, acct, view, axis, session, now, res } = sc;
   const role = new Map(targets.map((t) => [t.ticker, t.role]));
   const pending = (await loadEvents(env.DB, { status: 'NEW' })).filter((e) => role.get(e.ticker) && role.get(e.ticker) !== 'CAND' && ['PENDING_MA', 'ACCOUNTING', 'REGULATORY'].includes(e.code));
   const byTicker = new Map<string, SecEventRow[]>();
   for (const e of pending) byTicker.set(e.ticker, [...(byTicker.get(e.ticker) ?? []), e]);
   for (const [t, evs] of byTicker) {
-    const check = sc.checks.find((c) => c.ticker === t);
+    let check = sc.checks.find((c) => c.ticker === t);
+    if (!check && opt.fetchChecks && env.EDGAR_USER_AGENT && evs.some((e) => !isNewsEvent(e))) check = (await fetchFilingChecks(env, fetcher, [t], session, res.log))[0];
     const docs: PackDoc[] = [];
     const dq: Record<string, 'ok' | 'partial' | 'missing'> = {};
     try {
       for (const e of evs) {
-        if (e.accession.startsWith('nasdaq-rss:') || e.form === 'NEWS') {
+        if (isNewsEvent(e)) {
           const n = await newsDoc(fetcher, t, session).catch(() => null);
           if (n && !docs.some((d) => d.source_id === n.source_id)) docs.push(n);
           dq.news = 'partial';

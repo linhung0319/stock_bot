@@ -462,7 +462,7 @@ const EIGHTK_402 = '<html><body><p>Item 4.02 Non-Reliance on Previously Issued F
 // ---------------------------------------------------------------- 整條流程
 
 describe('整條流程：F18 → F19', () => {
-  it('動能持股的 NT 10-Q 規則直接提出；自選的 8-K 4.02 開法庭 → 3 票建議出場 → 當天通知；每日掃描標記 → 隔天開法庭', async () => {
+  it('動能持股的 NT 10-Q 規則直接提出；自選的 8-K 4.02 開法庭 → 3 票建議出場 → 當天通知；每日掃描標記 → 同一次 01:30 就開法庭（T36）', async () => {
     await withWorld(
       async ({ db, sec, cik, run }) => {
         // 之前就有的申報（第一次看只記下最新的一筆，不追溯）
@@ -507,14 +507,17 @@ describe('整條流程：F18 → F19', () => {
         expect(hard.items[0].choices[0]).toMatchObject({ id: 'AI', tier: 'EXIT' });
         expect(acct.own.NVDA.flags).toEqual(['ACCOUNTING']);
         expect(sec.line.slice(lineBefore).find((t) => t.includes('NVDA 硬事件'))).toContain('另有 1 項 AI 建議（預設不做）');
-        expect((await loadEvents(db, { ticker: 'AAPL', status: 'NEW' })).map((e) => e.sub)).toEqual(['SCAN_REGULATORY_CANDIDATE']);
-
-        // 隔天：每日掃描標記的監管候選 → 動能持股（還沒賣）開法庭
-        await run('2026-11-24');
+        // 每日掃描標記的監管候選 → 同一次 01:30 套用之後就對動能持股（還沒賣）開法庭，不等到隔天（T36，own_thesis §2.7）
+        expect((await loadEvents(db, { ticker: 'AAPL', status: 'NEW' })).map((e) => e.sub)).toEqual([]);
+        expect((await loadEvents(db, { ticker: 'AAPL', status: 'HANDLED' })).map((e) => e.sub)).toContain('SCAN_REGULATORY_CANDIDATE');
         const courts = await runsOf(db, 'HARD_EVENT');
         const aapl = courts.find((r) => r.ticker === 'AAPL')!;
+        expect(aapl.createdAt).toBe('2026-11-24T01:30:00.000Z');
         expect(aapl.pack.rule.detail).toMatchObject({ codes: ['REGULATORY'], role: 'MOM' });
         expect(aapl.pack.premises.map((p) => p.id)).toEqual(['P2', 'P4']);
+        // 隔天的流程不會再開一次
+        await run('2026-11-24');
+        expect((await runsOf(db, 'HARD_EVENT')).filter((r) => r.ticker === 'AAPL')).toHaveLength(1);
       },
       { mom: ['AAPL'] },
     );

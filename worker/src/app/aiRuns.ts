@@ -2,7 +2,7 @@
 // 沒有結果（觸發失敗、逾時、結果被退回）也存一份「照規則」的結論，所以每一次執行最後都有結論可以看。
 import { judge, noResult, packHash, type EvidencePack, type Outcome } from '../ai/check';
 import { PAYLOAD_HOOKS } from '../ai/hooks';
-import { TASK_TIMEOUT_MS, createTask, fireRoutine, type AiTaskRow } from './aiTasks';
+import { TASK_TIMEOUT_MS, createTask, fireRoutine, timeoutReason, type AiTaskRow } from './aiTasks';
 import type { Env, Fetcher } from './env';
 
 export interface ProcessStep {
@@ -115,15 +115,15 @@ export async function finalizeRun(db: D1Database, task: AiTaskRow, result: Recor
 export async function closeStaleRuns(db: D1Database, now: Date): Promise<number> {
   const rows = (
     await db
-      .prepare("SELECT r.run_id, r.pack, r.created_at, t.status AS task_status, t.error AS task_error FROM ai_runs r LEFT JOIN ai_tasks t ON t.id = r.task_id WHERE r.status = 'PENDING'")
-      .all<{ run_id: string; pack: string; created_at: string; task_status: string | null; task_error: string | null }>()
+      .prepare("SELECT r.run_id, r.pack, r.created_at, t.status AS task_status, t.error AS task_error, t.fetched_at AS task_fetched FROM ai_runs r LEFT JOIN ai_tasks t ON t.id = r.task_id WHERE r.status = 'PENDING'")
+      .all<{ run_id: string; pack: string; created_at: string; task_status: string | null; task_error: string | null; task_fetched: string | null }>()
   ).results;
   let n = 0;
   for (const r of rows) {
     const pack = JSON.parse(r.pack) as EvidencePack;
     const expired = now.getTime() - Date.parse(r.created_at) > TASK_TIMEOUT_MS;
     let out: Outcome | null = null;
-    if (r.task_status === 'TIMEOUT' || ((r.task_status === 'PENDING' || r.task_status === 'FETCHED') && expired)) out = noResult(pack, 'TIMEOUT', `超過 ${TASK_TIMEOUT_MS / 60000} 分鐘沒有收到結果`);
+    if (r.task_status === 'TIMEOUT' || ((r.task_status === 'PENDING' || r.task_status === 'FETCHED') && expired)) out = noResult(pack, 'TIMEOUT', `超過 ${TASK_TIMEOUT_MS / 60000} 分鐘沒有收到結果：${timeoutReason(!!r.task_fetched)}`);
     else if (r.task_status === 'REJECTED') out = noResult(pack, 'NO_RESULT', `送回的結果被退回（${r.task_error ?? '格式不合格'}）`);
     else if (r.task_status === 'FIRE_FAILED') out = noResult(pack, 'NO_RESULT', `雲端排程沒有觸發成功（${r.task_error ?? ''}）`);
     else if (!r.task_status && expired) out = noResult(pack, 'NO_RESULT', '沒有建立任務');

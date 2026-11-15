@@ -30,7 +30,7 @@ Worker 端是 `GET /admin/export`（`ADMIN_TOKEN` 的 Bearer；`worker/src/app/e
 | `notifications` | 通知依種類的次數與處理狀態（待回覆、已回覆、略過、已讀、被取代、取消） |
 | `choices` | 照做／沒照做：已回覆的通知裡每一項選的選項 vs 規則的選項（依觸發功能；`same_as_rule`、`took_ai`、`skipped`、`other`） |
 | `shadow` | 沒照做的紀錄（`shadow_records`，濾掉被「改決定」作廢的）：手動交易、做錯就這樣、有 AI 建議的、照 AI 的次數。只有「和規則不同或有 AI 建議」的項目才有紀錄，全部項目的比例看 `choices` |
-| `data_runs`、`flow_runs`、`alerts` | 資料抓取的結果（不能出訊號、不能換股的次數）、每日流程（FIRST／FINAL／MANUAL × 結果）、告警依種類（推出去、已解除、太舊略過、還沒推） |
+| `data_runs`、`flow_runs`、`alerts` | 資料抓取的結果（不能出訊號、不能換股的次數）、每日流程（FIRST／FINAL／APPLY／MANUAL × 結果）、告警依種類（推出去、已解除、太舊略過、還沒推） |
 | `pushes` | LINE 推播依種類的次數與失敗；`never_delivered` = 通知重試之後一直沒推成功的則數 |
 | `ai_runs` | AI 執行依功能的結論狀態；`usable_ratio` = 有結論的執行裡，送回的輸出通過檢查（AGREED／SPLIT／INSUFFICIENT／DATA_MISSING）的比例，INVALID、TIMEOUT、NO_RESULT 算沒通過 |
 | `ai_votes` | AI 的每一票，格式合格的比例 |
@@ -97,7 +97,7 @@ records/                         ← .gitignore，不進 repo
 | 表 | 內容 | 拉法 |
 |---|---|---|
 | `data_runs` | 每次抓資料：OK／DEGRADED／FAILED、能不能出訊號與換股、耗時 | 只增加 |
-| `flow_runs` | 每次每日流程：FIRST／FINAL／MANUAL、DONE／ERROR…、處理了哪幾天 | 只增加 |
+| `flow_runs` | 每次每日流程：FIRST（23:30）／FINAL（01:30）／APPLY（03:30，只套用與推播，狀態一律 SKIPPED）／MANUAL、DONE／ERROR…、處理了哪幾天 | 只增加 |
 | `pushes` | 每次 LINE 推播與結果（`kind`：NOTIF 通知、ALERT 告警、TEST 測試、REPLY 關鍵字回覆；REPLY 不算推播額度） | 只增加 |
 | `alerts` | 告警與推播時間 | 會改 |
 | `flow_state` | 流程進度（最後處理到的交易日、上線日…） | 會改 |

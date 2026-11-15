@@ -47,7 +47,16 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 ## 每日流程與 LINE（T7）
 
 - 程式：`src/app/flow.ts`（抓資料 → 每日檢查 → 月底出月報 → 寫理由 → 存檔 → 推播；漏掉的交易日照順序補做）、`src/app/line.ts`（LINE 的文字與送出）。
-- 排程：UTC 23:30 第一次、UTC 01:30 再試一次（沒跑完就重跑，還是不行就推告警）。同一個交易日只會處理一次。
+- 排程：一天三次，各做什麼集中寫在 `src/app/schedule.ts` 的 `SCHEDULE`（`wrangler.jsonc` 的 `triggers.crons` 要和 `CRONS` 相同；星期用英文縮寫，Cloudflare 的數字 1 = 星期日）。同一個交易日只會處理一次。
+
+  | 排程（UTC） | 台灣 | 做什麼 |
+  |---|---|---|
+  | `30 23 * * MON-FRI` | 07:30 | 抓資料 → 每日檢查 → 月底出月報 → 套用 AI 結論 → 看新申報、開這一天所有新的 AI 執行 → 推播（第一次失敗的告警先不推） |
+  | `30 1 * * TUE-SAT` | 09:30 | 今天沒跑完就重跑，還是不行就推缺席告警；套用 AI 結論之後接著開 `finalStarts`（現在是硬事件法庭：掃描標到的硬事件候選不等到隔天）；標記逾時的 AI 任務 |
+  | `30 3 * * TUE-SAT` | 11:30 | 只套用回來的 AI 結論、推新通知與告警、標記逾時。不抓資料、不跑每日檢查、不開新的執行；今天的每日流程沒做完就不套用 |
+
+  01:30 要多開的執行（掃描重開、提前審查、動能 `momRecheck`、崩盤 `crashNeeds`）加在 `finalStarts`。
+- AI 任務逾時（45 分鐘）分兩種原因寫進「照規則」的結論與 `AI_TIMEOUT` 告警：雲端排程沒有來取證據包（`fetched_at` 是空的），或取了沒有送回。逾時標記之後才送到的結果回 410、存進 `ai_rejections`（`LATE`），不套用。
 - 手動：`POST /admin/flow`；狀態：`GET /admin/flow/status`；測試推播：`POST /admin/line/test`、`POST /admin/alert/test`。
 - 用真實資料在本機預覽 LINE 會收到的文字（含一份假裝今天是月底的月報，不會真的送）：`npx tsx scripts/flow-local.ts`。
 - 新帳戶的依波動度減碼起始歷史：`src/engine/volSeed.ts`，由 `npx tsx scripts/vol-seed.ts` 從重放固定檔產生。

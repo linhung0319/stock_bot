@@ -23,15 +23,13 @@ import { handleLineWebhook } from './app/lineWebhook';
 import { probeSummary, runProbe, saveProbe } from './app/probe';
 import { handleSite } from './app/site/api';
 import { handleLineLogin } from './app/site/lineLogin';
+import { APPLY_CRON, FINAL_CRON, INGEST_CRON, attemptOfCron } from './app/schedule';
 import { loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
 export const VERSION = '0.13.1';
 
-/** 每日流程（美股收盤後；UTC 23:30 = 美東 18:30 或 19:30 = 台灣早上 7:30）：抓資料、每日檢查、月報、LINE。 */
-// 星期用英文縮寫：Cloudflare 的數字是 1 = 星期日（不是一般 cron 的 1 = 星期一），2026-11-13 因此漏跑過一次週五
-export const INGEST_CRON = '30 23 * * MON-FRI';
-/** 兩小時後再試一次（UTC 01:30，週二到週六）：今天沒跑完就重跑，還是不行就告警；AI 任務逾時也在這裡查。 */
-export const FINAL_CRON = '30 1 * * TUE-SAT';
+// 三次排程（UTC 23:30、01:30、03:30）各做什麼寫在 src/app/schedule.ts
+export { APPLY_CRON, FINAL_CRON, INGEST_CRON };
 
 const realFetch: Fetcher = (url, init) => fetch(url, init);
 
@@ -180,7 +178,7 @@ export default {
   },
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const now = new Date(controller.scheduledTime);
-    const attempt = controller.cron === FINAL_CRON ? 'FINAL' : 'FIRST';
+    const attempt = attemptOfCron(controller.cron);
     const r = await runFlow(env, realFetch, { now, attempt });
     console.log(JSON.stringify({ flow: r.session, attempt, status: r.status, processed: r.processed, created: r.created, monthly: r.monthly, alerts: r.alerts, push: r.push, error: r.error, ms: r.ms }));
   },

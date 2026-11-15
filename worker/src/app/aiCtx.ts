@@ -1,6 +1,7 @@
-// 每日流程 AI 段的共用型別（避免模組互相 import）。
+// 每日流程 AI 段的共用型別與小工具（避免模組互相 import）。
 import type { CalendarOverrides } from '../data/calendar';
 import type { Alert } from '../data/store';
+import { errText } from '../data/util';
 import type { Account, MarketView } from '../engine';
 import type { AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
@@ -42,6 +43,16 @@ export interface StartCtx {
   res: StepResult;
   /** 這次每日流程裡發生、要開 AI 的事（F7 新的減半、F21 策略檢討提醒）。 */
   extras: FlowExtras;
+}
+
+/** 一段出錯只記在紀錄裡，不擋其他段。 */
+export async function guard(res: StepResult, label: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    console.error(label, e);
+    res.log.push(`${label}出錯：${errText(e)}`);
+  }
 }
 
 export interface FlowExtras {

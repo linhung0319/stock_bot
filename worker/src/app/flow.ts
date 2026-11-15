@@ -1,6 +1,7 @@
-// 每日與每月流程（T7）。排程每天跑兩次：
+// 每日與每月流程（T7）。排程每天跑三次（各做什麼集中寫在 src/app/schedule.ts 的 SCHEDULE）：
 //   FIRST  美股收盤後（UTC 23:30 = 台灣早上 7:30）：抓資料 → 每日檢查 → 月底那天出月報 → 寫理由 → 存檔 → LINE
-//   FINAL  兩小時後（UTC 01:30）：今天已經做完就只補推失敗的訊息；沒做完就再試一次，還是不行就告警（缺席告警）
+//   FINAL  兩小時後（UTC 01:30）：今天已經做完就套用結論、開 finalStarts、補推；沒做完就再試一次，還是不行就告警（缺席告警）
+//   APPLY  再兩小時後（UTC 03:30）：只套用回來的結論、推新通知與告警、標記逾時（不抓資料、不開新的執行）
 // 同一個交易日只會處理一次（flow_state.lastSession 和帳戶在同一筆交易裡更新）。
 // 漏掉的交易日（兩次都失敗、排程沒跑）下一次會照順序補做，最多 MAX_CATCHUP 天。
 //
@@ -23,12 +24,13 @@ import { monthOfSignal, prepareEntries, recordReplacements, signalsIn, type Mont
 import { STRATEGY_STATE_KEY, loadStrategyState } from './strategyAi';
 import { noteOfRun } from './site/aiViews';
 import type { AiNote } from './site/types';
-import { sweepTimeouts } from './aiTasks';
+import { sweepTimeoutTasks, timeoutAlert } from './aiTasks';
 import type { Env, Fetcher } from './env';
 import { ConflictError, loadAccount, requiredTickers, saveAccount, shadowTickers } from './ledgerStore';
 import { alertText, lineConfigured, notifLink, notifText, pushLine, type AlertRow } from './line';
+import { SCHEDULE, finalStarts, type Attempt } from './schedule';
 
-export type Attempt = 'FIRST' | 'FINAL' | 'MANUAL';
+export type { Attempt } from './schedule';
 export type FlowStatus = 'DONE' | 'SKIPPED' | 'NO_ACCOUNT' | 'NO_SIGNAL' | 'ERROR';
 
 /** 一次最多補做幾個漏掉的交易日；超過就只做今天並告警。 */
@@ -319,6 +321,7 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
   const t0 = Date.now();
   const db = env.DB;
   const at = opt.now.toISOString();
+  const plan = SCHEDULE[opt.attempt];
   const ov = await loadCalendarOverrides(db);
   const session = lastCompletedSession(opt.now, ov);
   const res: FlowResult = { session, attempt: opt.attempt, status: 'SKIPPED', processed: [], created: [], monthly: null, alerts: [], push: { configured: lineConfigured(env), sent: 0, failed: 0, errors: [] }, ms: 0 };
@@ -327,9 +330,16 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
   let extras: FlowExtras = {};
   /** 月報之前準備 AI 輸入時的紀錄（記在流程紀錄的 ai.log）。 */
   const aiPrep: string[] = [];
+  /** 這個交易日的每日流程做完了（03:30 只在做完時套用；01:30 以前照 status 判斷）。 */
+  let dayDone = true;
 
   try {
-    if (await flowDone(db, session)) {
+    if (!plan.daily) {
+      // 03:30：不抓資料、不跑每日檢查。今天還沒做完就不套用（帳戶還停在前一天，明天的流程會補做）
+      dayDone = await flowDone(db, session);
+      acct = (await loadAccount(db))?.acct ?? null;
+      if (!dayDone) aiPrep.push(`訊號日 ${session} 的每日流程還沒做完，這次不套用 AI 結論`);
+    } else if (await flowDone(db, session)) {
       acct = (await loadAccount(db))?.acct ?? null;
     } else {
       // 資料：同一天已經抓過而且完全正常就沿用，否則重抓
@@ -387,11 +397,12 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
     acct = acct ?? (await loadAccount(db).catch(() => null))?.acct ?? null;
   }
 
-  // AI 那一段（F24、F25）：套用回來的結論、看新申報、開新的執行。資料不完整的日子不做
+  // AI 那一段：套用回來的結論；處理了新的交易日就看新申報、開這一天的執行；01:30 另外開 finalStarts。資料不完整的日子不做
   let aiLog: { log: string[]; started: string[] } | null = null;
-  if (res.status === 'DONE' || res.status === 'SKIPPED') {
+  if ((res.status === 'DONE' || res.status === 'SKIPPED') && dayDone) {
     try {
-      const a = await aiStep(env, fetcher, opt.now, session, ov, res.status === 'DONE' && res.processed.length > 0, extras);
+      const startNew = plan.startNewDay && res.status === 'DONE' && res.processed.length > 0;
+      const a = await aiStep(env, fetcher, opt.now, session, ov, startNew, extras, plan.finalStarts && !startNew ? finalStarts : undefined);
       res.created.push(...a.created);
       alerts.push(...a.alerts);
       aiLog = { log: [...aiPrep, ...a.log], started: a.started };
@@ -400,15 +411,16 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
       console.error('AI 那一段出錯', e);
       alerts.push({ kind: 'FLOW_ERROR', message: `AI 那一段（自選審查、條件監測）出錯：${errText(e)}；規則的部分已經照常做完。` });
     }
-  }
+  } else if (!dayDone) aiLog = { log: aiPrep, started: [] };
 
   const ok = res.status === 'DONE' || res.status === 'NO_ACCOUNT' || res.status === 'SKIPPED';
-  if (opt.attempt !== 'FIRST') {
-    // 缺席告警：再試之後今天還是沒有跑完；AI 任務逾時
-    if (!ok) alerts.push({ kind: 'FLOW_MISSED', message: `今天（訊號日 ${session}）的流程沒有跑完，沒有產生清單${res.status === 'NO_SIGNAL' ? '：資料不完整（原因見上面或網站）' : ''}。明天會補做；要手動重跑用 POST /admin/flow。` });
-    const timedOut = await sweepTimeouts(db, opt.now);
+  // 缺席告警：再試之後今天還是沒有跑完
+  if (plan.missedAlert && !ok) alerts.push({ kind: 'FLOW_MISSED', message: `今天（訊號日 ${session}）的流程沒有跑完，沒有產生清單${res.status === 'NO_SIGNAL' ? '：資料不完整（原因見上面或網站）' : ''}。明天會補做；要手動重跑用 POST /admin/flow。` });
+  // AI 任務逾時：標記、照規則結束那幾次執行（原因分「沒有來取證據包」與「取了沒有送回」）
+  if (plan.sweep) {
+    const timedOut = await sweepTimeoutTasks(db, opt.now);
     await closeStaleRuns(db, opt.now);
-    if (timedOut.length) alerts.push({ kind: 'AI_TIMEOUT', message: `${timedOut.length} 個 AI 任務逾時，已照規則處理（${timedOut.join('、')}）。` });
+    if (timedOut.length) alerts.push({ kind: 'AI_TIMEOUT', message: timeoutAlert(timedOut) });
   }
   await saveAlerts(db, at, session, alerts);
   res.alerts = alerts.map((a) => a.kind);
@@ -417,7 +429,7 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
   const detail = () => JSON.stringify({ processed: res.processed, created: res.created, monthly: res.monthly, alerts: res.alerts, push: res.push, error: res.error, blocked: acct ? blockedMonthly(acct)?.id ?? null : null, ai: aiLog });
   const row = await db.prepare('INSERT INTO flow_runs (session, at, attempt, status, detail) VALUES (?, ?, ?, ?, ?) RETURNING id').bind(session, at, opt.attempt, res.status, detail()).first<{ id: number }>();
   // 第一次失敗先不推告警（兩小時後會再試）；成功了就把通知與告警都推出去
-  res.push = await pushPending(env, fetcher, opt.now, acct, res.created, ok || opt.attempt !== 'FIRST');
+  res.push = await pushPending(env, fetcher, opt.now, acct, res.created, ok || plan.alertOnFailure);
   res.ms = Date.now() - t0;
   await db.prepare('UPDATE flow_runs SET detail = ? WHERE id = ?').bind(detail(), row!.id).run();
   return res;

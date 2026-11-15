@@ -10,7 +10,7 @@ import { realBackend } from '../src/app/site/backend';
 import { buildMarketView } from '../src/data/marketView';
 import { loadRanking, loadSeries, recentAlerts } from '../src/data/store';
 import { applySnapshot, bookShares, classify, createAccount, dailyCheck, monthlyReport, resumeMonthly, type Account } from '../src/engine';
-import { FINAL_CRON, INGEST_CRON, handle } from '../src/index';
+import { APPLY_CRON, FINAL_CRON, INGEST_CRON, handle } from '../src/index';
 import { freshDb } from './helpers/d1';
 import { cronTime, fakeFetcher, newWorld, type World } from './helpers/fakeSources';
 
@@ -393,15 +393,16 @@ describe('端點與排程', () => {
     });
   });
 
-  it('兩個排程都寫在 wrangler 設定裡；網站網址設成 vars', async () => {
+  it('三個排程都寫在 wrangler 設定裡；網站網址設成 vars', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const cfg = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'wrangler.jsonc'), 'utf8');
-    expect(cfg).toContain(`"crons": ["${INGEST_CRON}", "${FINAL_CRON}"]`);
-    // Cloudflare 的星期數字是 1 = 星期日：一律寫英文縮寫，週一到週五收盤後抓、隔天（週二到週六）UTC 早上重試
+    expect(cfg).toContain(`"crons": ["${INGEST_CRON}", "${FINAL_CRON}", "${APPLY_CRON}"]`);
+    // Cloudflare 的星期數字是 1 = 星期日：一律寫英文縮寫，週一到週五收盤後抓、隔天（週二到週六）UTC 早上重試、再兩小時後只套用（T36）
     expect(INGEST_CRON).toBe('30 23 * * MON-FRI');
     expect(FINAL_CRON).toBe('30 1 * * TUE-SAT');
+    expect(APPLY_CRON).toBe('30 3 * * TUE-SAT');
     expect(cfg).toContain('"SITE_URL"');
   });
 });

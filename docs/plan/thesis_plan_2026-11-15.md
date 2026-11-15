@@ -241,7 +241,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 做：照原計畫 T16。報表分段寫，每一段一個函式（回傳標題與列），因為 T31a、T32d、T33b 會各加一段。
 - 完成條件：構造幾則通知、失敗紀錄、推播失敗、AI 執行與回覆 → 各段的數字正確；可以指定期間；匯出腳本存一份到 `records/reports/`。
 
-#### [ ] T36 三次排程、Worker 與雲端排程的溝通修補
+#### [x] T36 三次排程、Worker 與雲端排程的溝通修補
 - 讀：`own_thesis` §2.7（§3.5 的 03:30 那一列當背景）；`momentum_ai` §3.9、`core_ai` §3.12（只是知道後面的任務會在三次排程掛什麼）；這份文件 T23 的「Worker 與雲端排程溝通的小修補」；`progress_log.md` 2026-11-14 關於 cron 星期寫法的那一條。檔案：`worker/wrangler.jsonc`、`src/index.ts`、`app/flow.ts`、`app/aiStep.ts`、`app/aiTasks.ts`、`app/aiRuns.ts`、`ai/prompts/run.md`、`ping.md`。
 - 做：
   1. 第三次排程 `30 3 * * TUE-SAT`：只套用回來的結論、推新通知與告警、標記逾時。不抓資料、不跑每日檢查、不開新的執行。

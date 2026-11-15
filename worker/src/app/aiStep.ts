@@ -6,16 +6,16 @@
 //   3. startNew 而且雲端排程設定好了：開新的執行
 //        F25／F24（自選）、F19 法庭與 F18 掃描、F1 否決法庭與擬事件打分（月報前一天）、
 //        F5／F6 崩盤規則檢視（月報前一天；切換了卻沒預估到時補開）、F7 減半檢視、F20 大跌說明、F21 策略檢討說明
+//      沒有 startNew 時只開 afterApply 的那幾種（01:30 的 finalStarts，src/app/schedule.ts）；03:30 兩者都沒有，只套用
 // 每一段出錯只記在紀錄裡，不擋其他段；規則的部分在這之前已經照常做完。
 import { buildMarketView, rebaseNotifSeq } from '../data/marketView';
 import type { CalendarOverrides } from '../data/calendar';
 import { loadRanking, loadSeries } from '../data/store';
-import { errText } from '../data/util';
 import { DROP_EXPLAIN, OWN_DROP } from '../ai/drops';
-import { EVENT_SCAN, HARD_EVENT } from '../ai/events';
+import { EVENT_SCAN, HARD_EVENT, type ScanTarget } from '../ai/events';
 import { MOM_ENTRY } from '../ai/momEntry';
 import { OWN_CONDITION, OWN_REVIEW } from '../ai/ownReview';
-import type { Applier, ApplyCtx, FlowExtras, StartCtx, StepResult } from './aiCtx';
+import { guard, type Applier, type ApplyCtx, type FlowExtras, type StartCtx, type StepResult } from './aiCtx';
 import { getRun, listRuns } from './aiRuns';
 import { startCrashRuns } from './crashAi';
 import { applyDropExplain, applyOwnDrop, startDropRuns } from './dropAi';
@@ -43,16 +43,10 @@ export const APPLIERS: Record<string, Applier> = {
   [DROP_EXPLAIN]: applyDropExplain,
 };
 
-async function guard(res: StepResult, label: string, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-  } catch (e) {
-    console.error(label, e);
-    res.log.push(`${label}出錯：${errText(e)}`);
-  }
-}
+/** 套用之後、沒有 startNew 時另外開的執行（01:30 的 finalStarts）。 */
+export type AfterApply = (sc: StartCtx, targets: ScanTarget[]) => Promise<void>;
 
-export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: string, ov: CalendarOverrides, startNew: boolean, extras: FlowExtras = {}): Promise<StepResult> {
+export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: string, ov: CalendarOverrides, startNew: boolean, extras: FlowExtras = {}, afterApply?: AfterApply): Promise<StepResult> {
   const db = env.DB;
   const res: StepResult = { created: [], started: [], log: [], alerts: [] };
   const first = await loadAccount(db);
@@ -112,7 +106,16 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
     break;
   }
 
-  if (!startNew) return res;
+  if (!startNew) {
+    if (!afterApply) return res;
+    if (!routineReady(env)) {
+      res.log.push('雲端排程還沒設定，不開新的 AI 執行');
+      return res;
+    }
+    const acct = (await loadAccount(db))!.acct;
+    await afterApply({ env, fetcher, acct, view, axis, session, ov, now, checks: [], res, extras }, targets);
+    return res;
+  }
   await markSeen(db, checks, now);
   if (!routineReady(env)) {
     res.log.push('雲端排程還沒設定，不開新的 AI 執行');
