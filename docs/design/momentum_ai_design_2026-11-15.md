@@ -366,6 +366,8 @@ momEvidence(env, fetcher, view, axis, ticker, benchmark, want: { docs: boolean, 
 
 03:30 照 `own_thesis` §2.7 不開新的執行。
 
+月報訊號日這個月崩盤規則切換、而且檢視是月報之後才補開的時候，月報的 LINE 會等到 01:30 才推（T22 定的，`core_ai_design_2026-11-15.md` §3.2）；月報本身 23:30 就產生並出現在網站，上表的動作不受影響，§3.3「月報之後才回來的否決」的補推照舊。
+
 ### 3.10 新欄位與 prompt（彙整）
 
 | 在哪裡 | 欄位 | 節 |
