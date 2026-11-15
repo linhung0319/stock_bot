@@ -5,9 +5,13 @@ import {
   DEFAULT_ONLY_WHY,
   SLOW,
   TIER_NAME,
+  CORE_OWE_SNAPSHOT_REASON,
   bookShares,
   bucketValue,
   composeNotif,
+  coreContext,
+  coreOweMonth,
+  owedCoreLines,
   drawdownFromHigh,
   liveShadow,
   momSlotTarget,
@@ -26,7 +30,7 @@ import {
 } from '../../engine';
 import type { SiteData } from './backend';
 import { accountBubble, todoBubble, type Bubble } from './bubble';
-import { coreLineWhy, explainItem, findNote, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
+import { coreLineWhy, crashReasonText, explainItem, findNote, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
 import { labelOf, meter, place, scaleOf, type Meter } from './meter';
 import { BUCKET_NAME, type AiNote, type Explain, type Gauge, type RankRow } from './types';
 
@@ -133,6 +137,8 @@ export interface ItemView {
   reasonRequired: boolean;
   /** 回覆時寫的理由。 */
   reason: string | null;
+  /** 理由欄的提示文字與先填的字（崩盤項目，core_ai §3.6）；沒有 = 用網頁預設的文字。 */
+  reasonText: { placeholder: string; hint: string; prefill: string } | null;
   /** 乙類、慢規則減半項目上帶「AI 建議出清」的：可以「拿去討論」（複製 BREAK 討論包）。 */
   discuss: boolean;
   /** 慢規則項目上 AI 的那一行（減半：論點檢查的結果；加回：審查認為前提不成立時的建議；own_thesis §3.4）。沒有是 null。 */
@@ -285,7 +291,13 @@ export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: st
       kind = on ? 'stop' : 'go';
       sc = { ...sc, hit: on ? g.value < 0 : g.value > 0 };
       capText = `${cfg.coreTicker} 收盤相對 200 日均線`;
-      say = on ? `${cfg.coreTicker} 跌破 200 日均線（${g.valueLabel}）→ 崩盤規則啟動：核心一半換短債、動能減半` : `${cfg.coreTicker} 回到 200 日均線之上（${g.valueLabel}）→ 崩盤規則解除：換回來`;
+      say = it.relist
+        ? on
+          ? `${cfg.coreTicker} 仍在 200 日均線之下（${g.valueLabel}）→ 上次沒換的核心，這次再列一次`
+          : `${cfg.coreTicker} 仍在 200 日均線之上（${g.valueLabel}）→ 上次沒換回的短債，這次再列一次`
+        : on
+          ? `${cfg.coreTicker} 跌破 200 日均線（${g.valueLabel}）→ 崩盤規則啟動：核心一半換短債、動能減半`
+          : `${cfg.coreTicker} 回到 200 日均線之上（${g.valueLabel}）→ 崩盤規則解除：換回來`;
       break;
     }
     case 'F7': {
@@ -374,7 +386,7 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   });
   return {
     key: it.key,
-    label: it.f === 'F25' && it.kind !== 'OWN_COND' ? 'AI 的條件成立' : it.brk?.type === 'B' && !it.brk.withRule ? 'AI 判斷前提不成立' : (ITEM_LABEL[it.f] ?? it.f),
+    label: it.relist ? '上次沒做，再列一次' : it.f === 'F25' && it.kind !== 'OWN_COND' ? 'AI 的條件成立' : it.brk?.type === 'B' && !it.brk.withRule ? 'AI 判斷前提不成立' : (ITEM_LABEL[it.f] ?? it.f),
     bucket,
     bucketName: bucket === 'mixed' ? '多桶' : BUCKET_NAME[bucket],
     ticker: it.ticker ?? null,
@@ -391,6 +403,7 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
     meter: itemMeter(d, n, it, x, headline),
     reasonRequired: !!it.reasonRequired,
     reason: it.reason ?? null,
+    reasonText: crashReasonText(it),
     discuss: it.brk?.type === 'B' && !!it.ticker && !!d.acct.own[it.ticker],
     // 只有預設前提的股票：那一行後面接「這檔還沒有你的論點，AI 只檢查系統預設前提。」（引擎寫在這一項的理由裡）
     aiLine: (it.kind === 'OWN_RULE' || it.lateVeto) && it.aiLine ? `${it.aiLine}${it.why?.includes(DEFAULT_ONLY_WHY) ? `。${DEFAULT_ONLY_WHY}` : ''}` : null,
@@ -645,6 +658,23 @@ function crashMeter(acct: Account, rel: number): Meter | null {
   return meter({ start: span, th: 0, end: -span / 3, value: rel, hit: rel < 0 }, { zone: '啟動', label: `${core} 收盤${rel >= 0 ? '高於' : '低於'} 200 日均線 ${fmtPct(Math.abs(rel), 1)}；月報日跌破均線會啟動崩盤規則` });
 }
 
+/**
+ * 崩盤項目選了「這次不做」、核心還沒換時，狀態後面加的那一句（core_ai §3.6，狀態要是真的）：
+ * `（核心還沒換：你 2027-01 選了這次不做）`／`（短債還沒換回：…）`。用現在的持股重算一次，已經沒有要動的（例如自己補做了）就不寫。
+ */
+export function coreOweText(d: Ready): string {
+  const owe = d.acct.coreOwe;
+  if (!owe || d.acct.rule.crash !== (owe.direction === 'ON')) return '';
+  try {
+    if (!owedCoreLines(coreContext(d.acct, d.view), owe.direction).length) return '';
+  } catch {
+    // 缺價格：照記下的寫
+  }
+  const what = owe.direction === 'ON' ? '核心還沒換' : '短債還沒換回';
+  const month = coreOweMonth(d.acct, owe);
+  return owe.reason === CORE_OWE_SNAPSHOT_REASON ? `（${what}：${month} 月報的單快照顯示沒有做）` : `（${what}：你 ${month} 選了這次不做）`;
+}
+
 function coreHoldings(d: Ready, total: number): HoldingView[] {
   const { acct, view } = d;
   const out: HoldingView[] = [];
@@ -719,8 +749,8 @@ export function accountView(d: Ready): AccountView {
     status: [
       {
         label: '崩盤規則',
-        value: acct.rule.crash ? '啟動中' : '未啟動',
-        tone: acct.rule.crash ? 'warn' : 'ok',
+        value: (acct.rule.crash ? '啟動中' : '未啟動') + coreOweText(d),
+        tone: acct.rule.crash || coreOweText(d) ? 'warn' : 'ok',
         detail: Number.isFinite(rel) ? `${acct.cfg.coreTicker} 收盤${rel >= 0 ? '高於' : '低於'} 200 日均線 ${fmtPct(Math.abs(rel), 1)}。每月第一個交易日判斷一次。` : '每月第一個交易日判斷一次。',
         meter: crashMeter(acct, rel),
       },

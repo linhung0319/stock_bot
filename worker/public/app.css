@@ -439,7 +439,8 @@ a.step-in:hover, button.step-in:hover { color: #fff; }
 .pick input { margin: 0; accent-color: #5b6bff; translate: 0 2px; }
 .pick .lab { font-weight: 600; }
 .pick .dflt { font-weight: 400; font-size: 12px; color: var(--ink-3); margin-left: 8px; }
-.pick .what { font-family: var(--font-num); font-size: 14px; color: var(--ink-2); white-space: nowrap; }
+.pick .what { font-family: var(--font-num); font-size: 14px; color: var(--ink-2); text-align: right; }
+.pick .dflt { white-space: nowrap; }
 .pick .note { grid-column: 2 / -1; font-size: 13px; line-height: 1.65; color: var(--ink-3); }
 .pick.plain { grid-template-columns: auto 1fr; }
 .picked { font-size: 14.5px; color: var(--ink-2); }

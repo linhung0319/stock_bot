@@ -25,6 +25,7 @@
 | T31b | 完成 | （見 git log） | 552 通過、1 略過 |
 | T32c | 完成 | （見 git log） | 566 通過、1 略過 |
 | T32b | 完成 | （見 git log） | 579 通過、1 略過 |
+| T33c | 完成 | （見 git log） | 586 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -178,6 +179,14 @@
 - T32b｜`event_scan_v2.md` 直接加 ENTRY 一節、不升 v3（§3.10 指定在 v2 加，而且 v2 還沒 push 過）——不照共用規則第 7 點的字面。
 - T32b｜F1 不用 T28 的 `eventHits`、`hits502`（不是 F1 的失效模式）。擬事件打分（MOM_SCORE）照留，T32d 拿掉。
 - T32b｜範圍外留著：排在被否決股票後面的每一檔都寫「被否決後遞補」（舊判斷）；畫面上方的逾時告警顯示一串雜湊；回看寫進 `mom_reviews.note` 的說明之後重審會被覆蓋。
+- T33c｜只有「照做」裡有核心的行才寫 `coreOwe`（F6 時沒有短債就不記），動能的欠單照常寫。別的選項：一律寫。
+- T33c｜重列時股數 0 的行拿掉；動到的金額不到總資產 0.25%（`orderMin`）就不重列；帳戶頁「還沒換」用同一個函式即時重算。
+- T33c｜重列標題與帳戶頁的月份用被跳過那份月報的月份（找不到用訊號日的年月）。
+- T33c｜快照判斷沒做：已回覆清單上 VOO 或短債差超過 1 股、同一則通知有照做的 F5／F6 而且那一檔是核心的行（合併後的 VOO 含「錢交給核心」的部分，是近似判斷）；帳戶頁寫「快照顯示沒有做」。
+- T33c｜解除當月 F6 備註分兩種：沒有短債時寫設計那句；有後來放進去的短債時寫「這次只換回後來放進短債的部分」。未啟動的重列也比照寫「上次沒做，這份再列」。
+- T33c｜理由欄先填「照 AI 檢視：延後」用 `aiLine === 'AI 檢視：延後'` 判斷（T33b 還沒做 `crashReview`）。重列項目的影子紀錄照現有寫法，`ai` 欄留給 T33b。
+- T33c｜全站共用的 `.pick .what` 拿掉 `nowrap`（長的股數文字會把「沒選就是這個」擠成直排）；短的選項看起來不變。
+- T33c｜範圍外留著：月報裡有 F5（即使選了這次不做）時 `composeNotif` 照樣一半一半分多的錢（T33a 的 `halfUpTo`），短債可能多一些；下個月重列用現值重算，結果不會錯。
 
 ## 要使用者親手做的事
 
@@ -229,6 +238,9 @@
 | T32b | 月報展開：AI 那一行、附註、沿用否決的遞補說明（桌機／手機） | `records/stage8/screens/T32b/monthly-expanded-desktop.png、monthly-expanded-phone.png` |
 | T32b | 排除時理由欄先填（手機） | `records/stage8/screens/T32b/exclude-prefill-phone.png` |
 | T32b | AI 紀錄的進場審查表（桌機／手機） | `records/stage8/screens/T32b/ai-reviews-desktop.png、ai-reviews-phone.png` |
+| T33c | 重列的 F6 項目與月報狀態文字（桌機／手機） | `records/stage8/screens/T33c/relist-desktop.png、relist-phone.png` |
+| T33c | 重列項目選「這次不做」的理由欄（桌機／手機） | `records/stage8/screens/T33c/relist-skip-reason-desktop.png、relist-skip-reason-phone.png` |
+| T33c | 帳戶頁崩盤規則那一格「短債還沒換回」（桌機／手機） | `records/stage8/screens/T33c/account-desktop.png、account-phone.png` |
 
 ## 卡住的任務
 

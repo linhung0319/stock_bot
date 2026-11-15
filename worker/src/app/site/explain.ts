@@ -386,6 +386,23 @@ function crash(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const when = sig ? `${md(sig.date)} 收盤` : '前一日收盤';
   const rel = px / ma - 1;
   const note = noteByRun(ctx.aiNotes, 'CRASH', it.runIds);
+  if (it.relist) {
+    // 上次選了「這次不做」、規則還在同一個狀態 → 核心的單再列一次（core_ai §3.6）
+    const month = /上次（(\d{4}-\d{2})）/.exec(it.title)?.[1];
+    const last = month ? `上次（${month} 月報）` : '上次';
+    return {
+      short: on ? `上次沒做，核心的一半換短債再列一次` : `上次沒做，短債換回 ${core} 再列一次`,
+      why: on
+        ? `崩盤規則還在啟動中：${core} ${when} ${fmtPx(px)}，仍低於 200 日均線 ${fmtPx(ma)}（${fmtSigned(rel, 1)}）。${last}你選了這次不做，核心還沒有換成短債。這次用現在的市值重算，把核心的一半換成短債（${acct.bondTicker}）再列一次。${it.why ?? ''}`
+        : `崩盤規則已經解除：${core} ${when} ${fmtPx(px)}，仍在 200 日均線 ${fmtPx(ma)} 之上（${fmtSigned(rel, 1)}）。${last}你選了這次不做，短債還沒有換回來。這次用現在的市值重算，把短債全部換回 ${core} 再列一次。${it.why ?? ''}`,
+      gauge: maGauge(rel, `${core} 收盤相對 200 日均線`, on),
+      rule: `${RULE.crash} 崩盤項目選「這次不做」等於延後一個月：下個月規則還在同一個狀態就再列一次，已經翻回去就不用做。`,
+      facts: [{ label: '上次沒做', value: month ?? '—', note: it.why ?? '' }],
+      math: it.choices[0].lines.map((l) => `${BUCKET_NAME[l.bucket]} ${l.ticker}：${sharesText(l.shares)}`),
+      chart: core,
+      choiceNotes: { DO: on ? '核心的一半換成短債；動能那幾檔上次沒減的，另外列在「上次的策略單沒照做」。' : '短債全部換回核心 ETF；動能那幾檔上次沒加回的，另外列在「上次的策略單沒照做」。', SKIP: CRASH_SKIP },
+    };
+  }
   return {
     short: on ? `${core} 跌破 200 日均線（${fmtSigned(rel, 1)}）` : `${core} 回到 200 日均線之上（${fmtSigned(rel, 1)}）`,
     why: on
@@ -401,7 +418,20 @@ function crash(ctx: ExplainContext, n: Notif, it: Item): Explain {
     chart: core,
     ai: note,
     aiMissing: !!it.aiLine && !note,
-    choiceNotes: { DO: on ? '核心與動能一起減半；全系統只有這條規則會把錢放到短債。' : '短債全部換回核心 ETF，動能買回原本的比例。', SKIP: SKIP.strategy },
+    choiceNotes: { DO: on ? '核心與動能一起減半；全系統只有這條規則會把錢放到短債。' : '短債全部換回核心 ETF，動能買回原本的比例。', SKIP: CRASH_SKIP },
+  };
+}
+
+/** 崩盤項目「這次不做」的說明（core_ai §3.6）。 */
+const CRASH_SKIP = '要寫一句理由。等於延後一個月：下個月規則還在同一個狀態，核心的單會再列一次；已經翻回去就不用做。動能那幾檔的差額照樣下個月再列。';
+
+/** 崩盤項目「這次不做」的理由欄（網站用；core_ai §3.6）。prefill：AI 檢視三票一致說延後時先填的字。 */
+export function crashReasonText(it: Item): { placeholder: string; hint: string; prefill: string } | null {
+  if (it.f !== 'F5' && it.f !== 'F6') return null;
+  return {
+    placeholder: '為什麼這次不照崩盤規則做（1～200 字）',
+    hint: '這句話會記在紀錄裡，下個月重列時也會帶著。規則的狀態照樣記成已經切換；下個月還在同一個狀態，核心的單會再列一次。',
+    prefill: it.aiLine === 'AI 檢視：延後' ? '照 AI 檢視：延後' : '',
   };
 }
 

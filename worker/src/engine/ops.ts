@@ -1,6 +1,7 @@
 // 使用者的操作：回覆清單、填快照、入金、出金、改比例、新增／移除自選、轉入自選、認養、排除、分類。
 // 設計：§2.1.1（快照式帳本、入金出金）、§2.3（操作方式）、§2.3.1（操作和清單不同時）。
 import {
+  CORE_OWE_SNAPSHOT_REASON,
   SYSTEM_DEFAULT_PREMISES,
   addLot,
   bookShares,
@@ -30,7 +31,7 @@ import {
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
-import { KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, composeNotif, monthlyReport, monthlyWait, recordExternalFlow, refreshOwnAiChoice, type MonthlyResult } from './report';
+import { KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, composeNotif, monthlyReport, monthlyWait, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
 import type { Bucket } from './types';
 
@@ -60,6 +61,20 @@ const finalChoice = (it: Item, input: ResponseInput) => {
 /** 選了「這次不做」、卻沒寫理由的項目（要寫理由的：甲類、當天的乙類；own_thesis §1.10）。網站回覆前檢查，沒寫不能送出。 */
 export function missingReasons(n: Notif, input: ResponseInput): Item[] {
   return n.items.filter((it) => !it.cancelled && it.reasonRequired && finalChoice(it, input) === 'SKIP' && !(input.reasons?.[it.key] ?? '').trim());
+}
+
+/** 崩盤規則的項目（F5 啟動／F6 解除，含重列的）。 */
+const isCrashItem = (it: Item) => it.f === 'F5' || it.f === 'F6';
+
+/**
+ * 填快照時，已回覆清單上的這一檔和清單差超過 1 股：如果是崩盤項目（照做的）核心那兩檔的單 → 記成 coreOwe（core_ai §3.6）。
+ * 已經有同一則通知的 coreOwe 就不重寫。
+ */
+function crashCoreNotDone(acct: Account, n: Notif, ticker: string): void {
+  if (ticker !== acct.cfg.coreTicker && ticker !== acct.bondTicker) return;
+  const it = n.items.find((i) => isCrashItem(i) && !i.cancelled && i.choice !== 'SKIP' && (i.choices.find((c) => c.id === i.choice)?.lines ?? []).some((l) => l.ticker === ticker && l.bucket === 'core' && l.shares));
+  if (!it || acct.coreOwe?.notif === n.id) return;
+  acct.coreOwe = { direction: it.f === 'F5' ? 'ON' : 'OFF', since: n.date, notif: n.id, reason: CORE_OWE_SNAPSHOT_REASON };
 }
 
 /** f：產生這個選項的項目（F19 硬事件、F25 條件成立…），出清時記論點檔結案的原因用。 */
@@ -168,8 +183,15 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
       };
       // 慢規則項目上 AI 的那一行可能只是「同意減半」「沒有一致結論」（沒有另一個選項）：照規則做了就不用記
       if (rec.ai !== null || rec.actual !== rec.rule || (it.aiLine && it.kind !== 'OWN_RULE')) acct.shadow.push(rec);
-      // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒
-      if (it.kind === 'STRATEGY' && it.choice === 'SKIP' && rec.rule !== 0) acct.mom.owe[tk] = { since: view.date, notif: n.id };
+      // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒（崩盤項目在下面另外記）
+      if (it.kind === 'STRATEGY' && it.choice === 'SKIP' && rec.rule !== 0 && !isCrashItem(it)) acct.mom.owe[tk] = { since: view.date, notif: n.id };
+    }
+    // 崩盤項目（F5／F6，含重列的）這次不做（core_ai §3.6）：動能那幾檔照舊寫進 mom.owe（下個月「策略單補做」）；
+    // 核心的代號不進 mom.owe，記成 coreOwe（下個月規則還在同一個狀態就重列）
+    if (isCrashItem(it) && it.choice === 'SKIP') {
+      const lines = rule?.lines ?? [];
+      for (const l of lines) if (l.bucket === 'mom' && l.shares) acct.mom.owe[l.ticker] = { since: view.date, notif: n.id };
+      if (lines.some((l) => l.bucket === 'core' && l.shares)) acct.coreOwe = { direction: it.f === 'F5' ? 'ON' : 'OFF', since: n.date, notif: n.id, reason: it.reason ?? '' };
     }
   }
   // 乙類沒有照 AI（不同意並寫了理由，或月報裡沒動它）→ 那條前提進靜默期（own_thesis §1.10）
@@ -216,6 +238,8 @@ export function reopen(acct0: Account, view: MarketView, id: number): { acct: Ac
   delete n.respondedSeq;
   delete n.fillReminded;
   for (const [tk, o] of Object.entries(acct.mom.owe)) if (o.notif === id) delete acct.mom.owe[tk];
+  // 崩盤項目這次不做寫的核心欠單一起收回（core_ai §3.6）
+  if (acct.coreOwe?.notif === id) delete acct.coreOwe;
   // 回覆時乙類「不同意」寫的靜默期一起收回（修正論點寫的那一項已經取消，不在這裡）
   for (const it of n.items) {
     if (it.cancelled || it.brk?.type !== 'B' || !it.ticker) continue;
@@ -358,6 +382,8 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
           if (n.items.some((i) => i.kind === 'STRATEGY' && !i.cancelled && i.choice !== 'SKIP' && (i.choices.find((c) => c.id === i.choice)?.lines ?? []).some((l) => l.ticker === m.ticker && l.bucket === 'mom'))) {
             acct.mom.owe[m.ticker] = { since: view.date, notif: n.id };
           }
+          // 崩盤項目核心那兩檔沒做 → 下個月規則還在同一個狀態就重列（core_ai §3.6）
+          crashCoreNotDone(acct, n, m.ticker);
         }
       }
       if (n.withdraw) {
@@ -509,6 +535,8 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
           if (n.items.some((i) => i.kind === 'STRATEGY' && !i.cancelled && i.choice !== 'SKIP' && (i.choices.find((c) => c.id === i.choice)?.lines ?? []).some((l) => l.ticker === m.ticker && l.bucket === 'mom'))) {
             acct.mom.owe[m.ticker] = { since: view.date, notif: n.id };
           }
+          // 崩盤項目核心那兩檔沒做 → 下個月規則還在同一個狀態就重列（core_ai §3.6）
+          crashCoreNotDone(acct, n, m.ticker);
         }
       }
       if (n.withdraw) {
@@ -625,9 +653,7 @@ export function deposit(acct0: Account, view: MarketView, amount: number): { acc
     const base = clone(acct0);
     const old = base.notifs.find((n) => n.id === pendingMonthly.id)!;
     old.status = 'SUPERSEDED';
-    base.rule = clone(old.monthly!.before.rule);
-    base.own = clone(old.monthly!.before.own);
-    base.mom.owe = clone(old.monthly!.before.owe);
+    restoreSaved(base, old.monthly!.before);
     const r = monthlyReport(base, view, old.monthly!.input, { kind: '入金', amount });
     return { acct: r.acct, notif: r.notif, mergedIntoMonthly: true };
   }
@@ -1028,9 +1054,7 @@ export function itemAction(acct0: Account, view: MarketView, notifId: number, it
   acct.mom.excluded[tk] = { reason: input.reason, date: view.date };
   acct.shadow.push({ date: view.date, f: 'F16', ticker: tk, title: '排除（如果沒排除）', rule: listed, ai: null, actual: 0, price: priceOf(view, tk), choice: 'EXCLUDE', note: input.reason });
   n.status = 'SUPERSEDED';
-  acct.rule = clone(n.monthly.before.rule);
-  acct.own = clone(n.monthly.before.own);
-  acct.mom.owe = clone(n.monthly.before.owe);
+  restoreSaved(acct, n.monthly.before);
   const ctx = { ...n.monthly.input, vetoed: [...new Set([...(n.monthly.input.vetoed ?? []), ...(input.vetoed ?? [])])] };
   const flow = n.deposit ? ({ kind: '入金', amount: n.deposit } as const) : undefined;
   const r: MonthlyResult = monthlyReport(acct, view, ctx, flow, true);

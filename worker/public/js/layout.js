@@ -81,6 +81,12 @@ function bucketNote(a, id) {
   return [`${rows.length} 檔，`, hot ? h('span', { class: 'hot' }, `${hot} 檔碰到門檻`) : near ? h('span', { class: 'warn' }, `${near} 檔接近門檻`) : '都正常'];
 }
 
+/** 崩盤規則那一格括號裡的那一句（核心還沒換：你 2027-01 選了這次不做；core_ai §3.6）：大字只放狀態，這句放下面一行。 */
+function crashOwe(value) {
+  const m = /（(.*)）$/.exec(value);
+  return m ? h('p', { class: 'meter-note', style: 'margin:2px 0 8px;color:var(--ink-2)' }, m[1]) : null;
+}
+
 export function tiles(st) {
   const a = st.account;
   if (!a) return null;
@@ -117,7 +123,7 @@ export function tiles(st) {
             'section',
             { class: 'tile', 'aria-label': '崩盤規則' },
             h('div', { class: 'tile-head' }, h('h2', null, '崩盤規則')),
-            h('div', { class: 'tile-body' }, h('div', { class: 'meter-v' }, h('i', { class: 'led', style: `--tc:${crash.tone === 'warn' ? 'var(--hot)' : 'var(--core)'}` }), crash.value), meterEl(crash.meter), h('p', { class: 'meter-note' }, crash.detail)),
+            h('div', { class: 'tile-body' }, h('div', { class: 'meter-v' }, h('i', { class: 'led', style: `--tc:${crash.tone === 'warn' ? 'var(--hot)' : 'var(--core)'}` }), crash.value.replace(/（.*）$/, '')), crashOwe(crash.value), meterEl(crash.meter), h('p', { class: 'meter-note' }, crash.detail)),
           )
         : null,
       vol

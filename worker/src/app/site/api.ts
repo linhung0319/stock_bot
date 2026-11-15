@@ -518,9 +518,9 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       const r = await mutate(backend, `回覆通知 #${id}`, [], (d) => {
         const n = findNotif(d.acct, id);
         if (n.status !== 'PENDING') throw new SiteError(409, '這則通知已經回覆過了');
-        // 甲類的「這次不做」、當天乙類的「不同意，不動」、慢規則減半項目的「這次不做」要寫一句理由（own_thesis §1.10、§3.4）
+        // 甲類的「這次不做」、當天乙類的「不同意，不動」、慢規則減半項目與崩盤項目的「這次不做」要寫一句理由（own_thesis §1.10、§3.4；core_ai §3.6）
         const miss = missingReasons(n, { mode, choices, reasons });
-        if (miss.length) throw new SiteError(422, `${miss.map((it) => `「${it.ticker ?? it.title}」`).join('、')}選了不做，要寫一句理由（1～${REASON_MAX} 字）`);
+        if (miss.length) throw new SiteError(422, `${miss.map((it) => `「${it.f === 'F5' || it.f === 'F6' ? '崩盤規則' : (it.ticker ?? it.title)}」`).join('、')}選了不做，要寫一句理由（1～${REASON_MAX} 字）`);
         const long = n.items.find((it) => (reasons[it.key] ?? '').length > REASON_MAX);
         if (long) throw new SiteError(422, `理由最多 ${REASON_MAX} 個字`);
         const acct = respond(d.acct, d.view, id, { mode, choices, reasons });

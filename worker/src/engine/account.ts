@@ -349,8 +349,25 @@ export interface SavedState {
   rule: RuleState;
   own: Record<string, OwnMeta>;
   owe: Account['mom']['owe'];
+  /** 月報產生前的 coreOwe（core_ai §3.6）：暫停後、入金合併、排除重算時還原。沒有這個欄位 = 那時沒有欠的。 */
+  coreOwe?: CoreOwe;
   cash: number;
 }
+
+/**
+ * 崩盤項目（F5／F6，含重列的）選了「這次不做」、或快照顯示核心的單沒做（core_ai §3.6）：
+ * 下一份月報規則還在同一個狀態就再列一次核心的單，已經翻回去就不用做。月報讀了就清掉。
+ * direction：那一項是啟動（ON）還是解除（OFF）；since：那則通知的訊號日；notif：通知編號；reason：使用者寫的理由。
+ */
+export interface CoreOwe {
+  direction: 'ON' | 'OFF';
+  since: string;
+  notif: number;
+  reason: string;
+}
+
+/** 快照顯示崩盤項目核心的單沒做時，coreOwe 記的理由（§3.6）。 */
+export const CORE_OWE_SNAPSHOT_REASON = '快照顯示沒有做';
 
 export interface ShadowRecord {
   date: string;
@@ -405,6 +422,8 @@ export interface Account {
      */
     hardTold?: Record<string, Record<string, string>>;
   };
+  /** 崩盤項目選了「這次不做」之後欠的核心的單（core_ai §3.6）；沒有這個欄位的舊帳戶當成沒有。 */
+  coreOwe?: CoreOwe;
   notifs: Notif[];
   nextId: number;
   shadow: ShadowRecord[];

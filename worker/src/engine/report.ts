@@ -14,6 +14,7 @@ import {
   type Account,
   type Choice,
   type CondNotice,
+  type CoreOwe,
   type DropStatus,
   type Item,
   type MarketView,
@@ -21,6 +22,7 @@ import {
   type Notif,
   type OwnMeta,
   type ReviewTrigger,
+  type SavedState,
   type Tier,
 } from './account';
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
@@ -380,6 +382,8 @@ function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values
         aiLine: ctx.crashOpinion ? `AI 檢視：${ctx.crashOpinion}` : undefined,
         ...(ctx.crashOpinion && ctx.runIds?.crash ? { runIds: [ctx.runIds.crash] } : {}),
         why: on ? '核心 ETF 前一日收盤低於 200 日均線' : '核心 ETF 前一日收盤回到 200 日均線之上',
+        // 「這次不做」要寫一句理由（core_ai §3.6；整則月報選這次不做時也要）
+        reasonRequired: true,
       }),
     );
   } else if (crashLines.length) {
@@ -389,6 +393,71 @@ function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values
     items.push(makeItem({ f: 'F4', kind: 'STRATEGY', title: '動能部位調整（依波動度減碼）', choices: [{ id: 'DO', label: '照做', lines: volLines }], why: plan.vol?.ratio != null ? `σ̃/σ = ${plan.vol.ratio.toFixed(2)}` : undefined }));
   }
   return items;
+}
+
+// ---------------------------------------------------------------- 崩盤項目「這次不做」之後（core_ai §3.6）
+
+/**
+ * 欠的核心的單（coreOwe）重列時的行：用現在的市值重算（啟動：核心的一半減掉已經有的短債；解除：短債全部換回）。
+ * 股數是 0 的行拿掉；動到的金額不到總資產的 orderMin（0.25%）就當成沒有要動的（例如之後自己補做了、只剩零頭）。
+ */
+export function owedCoreLines(ctx: CoreContext, direction: CoreOwe['direction']): OrderLine[] {
+  const lines = crashCoreLines(ctx, direction === 'ON').filter((l) => l.shares !== 0);
+  const moved = lines.reduce((a, l) => Math.max(a, Math.abs(l.shares * ctx.price(l.ticker))), 0);
+  return moved > ctx.cfg.orderMin * ctx.total ? lines : [];
+}
+
+/** 欠的那一次是哪一份月報（月份標籤，例如 2027-01）；找不到通知就用訊號日的年月。 */
+export function coreOweMonth(acct: Pick<Account, 'notifs'>, owe: CoreOwe): string {
+  return acct.notifs.find((n) => n.id === owe.notif)?.monthly?.input.month ?? owe.since.slice(0, 7);
+}
+
+/** 解除那個月：上次啟動沒做時 F6 的備註（§3.6 的表）。 */
+export const RELIST_OFF_NOTE = '上次啟動你沒有做，這次沒有短債要換回';
+export const RELIST_OFF_NOTE_PART = '上次啟動你沒有做；這次只換回後來放進短債的部分';
+
+/** 重列的 F5／F6（relist）：預設照做、不開檢視（§3.1 的 MAKEUP 排除它）、「這次不做」仍要寫理由。沒有要動的行 → null。 */
+function relistItem(acct: Account, owe: CoreOwe, ctx: CoreContext): Item | null {
+  const lines = owedCoreLines(ctx, owe.direction);
+  if (!lines.length) return null;
+  const on = owe.direction === 'ON';
+  const month = coreOweMonth(acct, owe);
+  return makeItem({
+    f: on ? 'F5' : 'F6',
+    kind: 'STRATEGY',
+    ticker: acct.cfg.coreTicker,
+    title: on ? `崩盤規則啟動中：上次（${month}）沒做，核心的一半換短債再列一次` : `崩盤規則已解除：上次（${month}）沒做，短債換回核心 ETF 再列一次`,
+    choices: [{ id: 'DO', label: '照做', lines }],
+    why: `上次的理由：${owe.reason || '（沒有寫）'}`,
+    relist: true,
+    reasonRequired: true,
+  });
+}
+
+/**
+ * 月報產生時讀 coreOwe（§3.6 的表），讀完清掉（使用者再選「這次不做」會再寫一次）：
+ *   ON、仍在啟動中 → 加一項重列的 F5；ON、這個月解除 → 不加，F6 加備註；
+ *   OFF、仍是未啟動 → 加一項重列的 F6；OFF、這個月啟動 → 不加（F5 照常，會扣掉已經有的短債）。
+ * 回傳有沒有重列。
+ */
+function applyCoreOwe(acct: Account, items: Item[], crashChanged: boolean, ctx: CoreContext): boolean {
+  const owe = acct.coreOwe;
+  if (!owe) return false;
+  delete acct.coreOwe;
+  const on = owe.direction === 'ON';
+  if (!crashChanged) {
+    if (acct.rule.crash !== on) return false;
+    const it = relistItem(acct, owe, ctx);
+    if (!it) return false;
+    items.unshift(it);
+    return true;
+  }
+  const f6 = on && !acct.rule.crash ? items.find((i) => i.f === 'F6' && !i.relist) : undefined;
+  if (f6) {
+    const note = f6.choices[0].lines.some((l) => l.bucket === 'core') ? RELIST_OFF_NOTE_PART : RELIST_OFF_NOTE;
+    f6.note = f6.note ? `${f6.note}；${note}` : note;
+  }
+  return false;
 }
 
 function excessVolOf(view: MarketView, benchmark: string) {
@@ -558,6 +627,20 @@ export function monthlyWait(acct: Account): { kind: 'UNC' } | { kind: 'FILL'; no
   return open ? { kind: 'FILL', notif: open } : null;
 }
 
+/** 月報前的狀態（暫停後、入金合併、排除重算時還原；restoreSaved）。 */
+function savedState(acct: Account): SavedState {
+  return { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), ...(acct.coreOwe ? { coreOwe: clone(acct.coreOwe) } : {}), cash: acct.cash };
+}
+
+/** 還原月報前的狀態（規則、自選、策略單與核心的欠單）；舊的 SavedState 沒有 coreOwe = 那時沒有欠的。 */
+export function restoreSaved(acct: Account, before: SavedState): void {
+  acct.rule = clone(before.rule);
+  acct.own = clone(before.own);
+  acct.mom.owe = clone(before.owe);
+  if (before.coreOwe) acct.coreOwe = clone(before.coreOwe);
+  else delete acct.coreOwe;
+}
+
 export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyContext, flow?: FlowInput, flowCashAlreadyIn = false): MonthlyResult {
   const acct = clone(acct0);
   const input = withSignalCrash(acct, view, input0);
@@ -570,11 +653,11 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
         ? newNotif(acct, view, { kind: 'INFO', title: '月報暫停：有未分類的持股變動', text: '請先回答那筆變動是手動交易、新增自選還是轉入自選，屬於哪一桶。分類後會重算月報。', coreAbsorb: false })
         : newNotif(acct, view, { kind: 'INFO', title: `月報暫停：清單 #${wait.notif.id} 決定了還沒填快照`, text: `「${wait.notif.title}」（${wait.notif.date}）決定了還沒填快照，帳本還是下單前的樣子，這時出月報會叫你重複下單。下單了就去填快照；沒下單就回上一步改「這次不做」。之後會用今天的排名重算月報。`, ref: wait.notif.id, coreAbsorb: false });
     // 留下這份月報的輸入（訊號日的排名與超額波動），分類後用它重算（resumeMonthly）
-    notif.monthly = { input: withSignalVol(acct, view, input), before: { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), cash: acct.cash } };
+    notif.monthly = { input: withSignalVol(acct, view, input), before: savedState(acct) };
     return { acct, notif, plan: null };
   }
   acct.monthlyBlocked = false;
-  const before = { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), cash: acct.cash };
+  const before = savedState(acct);
   // 入金遇到月報日：合成一份（規則引擎先把入金加進總資產，再跑月報規則）
   if (flow?.kind === '入金' && flowCashAlreadyIn) acct.cash -= flow.amount;
   const values = cellValues(acct, view);
@@ -615,6 +698,8 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   for (const tk of Object.keys(ownActions)) acct.own[tk].pending = null;
   acct.mom.owe = {};
   let items = itemsFromPlan(acct, view, plan, values, { coreBefore, ownNotes, crashOpinion: input.crashOpinion, runIds: input.runIds });
+  // 崩盤項目上次選了「這次不做」（core_ai §3.6）：規則還在同一個狀態就再列一次核心的單
+  const relisted = applyCoreOwe(acct, items, plan.crashChanged, coreBefore);
   // 任務 A：進場那一項的說明（准許，附註、法庭的結論、沿用、還在審…；momentum_ai §3.3）。舊月報只有觀察理由
   for (const it of items) {
     if (it.f !== 'F1' || !it.ticker) continue;
@@ -684,7 +769,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
     }
     if (old.items.every((i) => i.cancelled)) old.status = 'READ';
   }
-  const status = `崩盤規則：${acct.rule.crash ? '啟動中' : '未啟動'}；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '') + (input.notes?.length ? `\n${input.notes.join('\n')}` : '');
+  const status = `崩盤規則：${acct.rule.crash ? '啟動中' : '未啟動'}${relisted ? '（上次沒做，這份再列）' : ''}；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '') + (input.notes?.length ? `\n${input.notes.join('\n')}` : '');
   const probe: Notif = { id: 0, kind: 'MONTHLY', date: view.date, seq: view.i, title: '', items, status: 'PENDING', coreAbsorb: true, reminded: false };
   const preview = composeNotif(acct, view, probe);
   if (!items.length && preview.lines.length) {

@@ -339,19 +339,24 @@ function slip(it, v, ui) {
         ),
       ),
     );
-    // 甲類的「這次不做」、當天乙類的「不同意，不動」、慢規則減半的「這次不做」：要寫一句理由（own_thesis §1.10、§3.4），選了才出現。
+    // 甲類的「這次不做」、當天乙類的「不同意，不動」、慢規則減半與崩盤規則的「這次不做」：要寫一句理由（own_thesis §1.10、§3.4；core_ai §3.6），選了才出現。
     // 月報裡的乙類：理由可以不寫，不寫記成「月報裡沒有動它」；兩種都會讓這條前提進靜默期（T30）
     let reasonBox = null;
     const rule = it.kind === 'OWN_RULE';
     const optional = !it.reasonRequired && it.discuss && !rule;
     if (it.reasonRequired || optional) {
       const skipIt = it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做';
-      const ta = h('textarea', { rows: 2, maxlength: 200, 'aria-label': '一句理由', placeholder: rule ? '為什麼這次不照規則減半（1～200 字）' : skipIt ? '為什麼這次不照當時的決定做（1～200 字）' : '為什麼不同意（1～200 字）' });
+      const rt = it.reasonText;
+      const ta = h('textarea', { rows: 2, maxlength: 200, 'aria-label': '一句理由', placeholder: rt ? rt.placeholder : rule ? '為什麼這次不照規則減半（1～200 字）' : skipIt ? '為什麼這次不照當時的決定做（1～200 字）' : '為什麼不同意（1～200 字）' });
+      // 崩盤項目：AI 檢視三票一致說延後時先填「照 AI 檢視：延後」，可以改（core_ai §3.6）
+      if (rt?.prefill && ui.reasons && !ui.reasons[it.key]) ui.reasons[it.key] = rt.prefill;
       ta.value = ui.reasons?.[it.key] ?? '';
       ta.addEventListener('input', () => {
         if (ui.reasons) ui.reasons[it.key] = ta.value;
       });
-      const hint = rule
+      const hint = rt
+        ? rt.hint
+        : rule
         ? it.drop === 'EXIT'
           ? '下一次審查會看到這句話。規則的狀態照樣記成已經減半。沒有照 AI 出清：那條前提會進靜默期，到下一季財報出來（最長 100 天）不再為它通知你。'
           : '下一次審查會看到這句話。規則的狀態照樣記成已經減半。'
@@ -530,7 +535,7 @@ export async function notifPage(ctx, id) {
       // 要寫理由的項目選了不做卻沒寫：先在這裡擋下，打開那一張單（伺服器也會再檢查）
       const miss = v.items.filter((it) => !it.cancelled && it.reasonRequired && (mode === 'SKIP' || choices[it.key] === 'SKIP') && !(reasons[it.key] ?? '').trim());
       if (miss.length) {
-        msg.replaceChildren(errBox({ message: mode === 'SKIP' ? `${miss.map((it) => it.ticker ?? it.headline).join('、')} 這次不做要寫一句理由：先在那一項選「這次不做」（或「不同意，不動」）、寫下理由，再按一次。` : `${miss.map((it) => it.ticker ?? it.headline).join('、')} 選了不做，要寫一句理由。` }));
+        msg.replaceChildren(errBox({ message: mode === 'SKIP' ? `${miss.map((it) => (it.reasonText ? '崩盤規則' : (it.ticker ?? it.headline))).join('、')} 這次不做要寫一句理由：先在那一項選「這次不做」（或「不同意，不動」）、寫下理由，再按一次。` : `${miss.map((it) => (it.reasonText ? '崩盤規則' : (it.ticker ?? it.headline))).join('、')} 選了不做，要寫一句理由。` }));
         if (mode === 'SKIP') return msg.scrollIntoView({ block: 'center' });
         const el = [...document.querySelectorAll('details.slip')][v.items.indexOf(miss[0])];
         if (el) {

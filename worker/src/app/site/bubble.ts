@@ -68,25 +68,27 @@ export function choiceEffect(ch: ChoiceChange): Bubble {
   const { item, before, after } = ch;
   const toC = item.choices.find((c) => c.id === ch.to);
   const fromC = item.choices.find((c) => c.id === ch.from);
-  const name = item.ticker ?? item.headline;
+  // 一項動到好幾檔（崩盤規則：核心 ETF、短債、動能）時用項目的標題，不用代號
+  const tk = item.choices.every((c) => c.lines.every((l) => l.ticker === item.ticker)) ? item.ticker : null;
+  const name = tk ?? item.headline;
   const k = `${name}：${shortLabel(toC?.label ?? ch.to)}`;
   const say: Seg[] = [];
 
   // 1. 這個選項本身做什麼
   if (ch.to === 'SKIP') {
-    const was = fromC ? fromC.lines.filter((l) => !item.ticker || l.ticker === item.ticker).reduce((a, l) => a + l.shares, 0) : 0;
+    const was = fromC && tk ? fromC.lines.reduce((a, l) => a + l.shares, 0) : 0;
     say.push(`${name} 這次`, em(`不${was < 0 ? '賣' : was > 0 ? '買' : '做'}`), '。');
   } else if (toC) {
-    const mine = toC.lines.filter((l) => !item.ticker || l.ticker === item.ticker);
+    const mine = toC.lines.filter((l) => !tk || l.ticker === tk);
     const n = mine.reduce((a, l) => a + l.shares, 0);
-    const what = item.ticker && mine.length ? `${verb(n)} ${item.ticker} ${Math.abs(n)} 股` : toC.text;
+    const what = tk && mine.length ? `${verb(n)} ${tk} ${Math.abs(n)} 股` : toC.text;
     say.push(ch.to === 'AI' ? '照 AI：' : '', em(what), '。');
   }
 
   // 2. 右邊的單差幾張；其他檔被連帶改到的
   const rest: Seg[][] = [];
   const diff = orderCount(after) - orderCount(before);
-  const others = [...new Set([...before.orders, ...after.orders].map((o) => o.ticker))].filter((t) => t !== item.ticker);
+  const others = [...new Set([...before.orders, ...after.orders].map((o) => o.ticker))].filter((t) => t !== tk);
   const gone = others.filter((t) => sharesOf(before, t) !== 0 && sharesOf(after, t) === 0);
   const added = others.filter((t) => sharesOf(before, t) === 0 && sharesOf(after, t) !== 0);
   const changed = others.filter((t) => sharesOf(before, t) !== 0 && sharesOf(after, t) !== 0 && sharesOf(before, t) !== sharesOf(after, t));
@@ -194,7 +196,10 @@ export function accountBubble(a: Pick<AccountView, 'buckets' | 'holdings' | 'cas
     say.push('。');
   } else say.push('沒有持股碰到規則的門檻。');
   const crash = a.status.find((s) => s.label === '崩盤規則');
-  if (crash && crash.value !== '未啟動') say.push('崩盤規則', neg('啟動中'), '。');
+  if (crash?.value.startsWith('啟動中')) say.push('崩盤規則', neg('啟動中'), '。');
+  // 崩盤項目選了「這次不做」、核心還沒換（core_ai §3.6）
+  const owe = crash ? /（((?:核心還沒換|短債還沒換回)[^）]*)）$/.exec(crash.value) : null;
+  if (owe) say.push(owe[1].replace(/：.*/, ''), '（崩盤規則上次選了這次不做，下一份月報會再列）。');
   if (a.cash < NEG_CASH) say.push('帳上現金是 ', neg(money(a.cash)), '。');
   return { k: '現在的狀況', say: tidy(say), mood: alerts.length ? 'alert' : 'watch' };
 }
