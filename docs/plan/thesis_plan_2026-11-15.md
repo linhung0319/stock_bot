@@ -80,7 +80,7 @@
 > 討論到要推翻已決定的設計（回測過的規則參數、通知頻率、AI 的權限）時，明確標出來請使用者決定。
 > **T18～T20 是連動的，建議在同一個工作階段連續做**（順序 L2 → L1 → L0）。每一章定了就寫進設計文件、打勾、commit，再進下一章；後面的章節發現前面要改，直接回去改那一章。工作階段太長（開始忘記前面的細節）時，可以在章與章之間換新的工作階段，新的從設計文件已寫好的章節接著做。T21、T22 各自獨立開。
 
-### [ ] T18 自選股：L2 與論點檔
+### [x] T18 自選股：L2 與論點檔
 - **難度：高**。**建議：Fable 5.2，effort high**。影響最大，最先做。
 - 讀：這份文件、`ai_layer_design` 的 F14／F24／F25／F7／F19 卡片、`worker/src/ai/ownReview.ts`、`worker/src/app/ownAi.ts`、`worker/src/app/dropAi.ts`、`worker/migrations/0006_own_ai.sql`、`ai/prompts/own_*.md`。
 - 要定的：
