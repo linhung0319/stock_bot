@@ -390,7 +390,8 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
   it('財報條件：新的 10-Q 出來，程式直接比對 XBRL（不用 AI）→ 降級條件成立就當天通知', async () => {
     await withWorld(async ({ db, e, run }) => {
       await run('2026-11-20');
-      await db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at) VALUES ('NVDA', 'r0', 'C1', 'DOWN', 'XBRL', '毛利率低於 55%', ?, 'HALF', 'ACTIVE', '2026-11-01')").bind(JSON.stringify({ type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55, quarters: 1 })).run();
+      // T25：條件屬於這檔現在的論點檔（file_id）
+      await db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, file_id) VALUES ('NVDA', 'r0', 'C1', 'DOWN', 'XBRL', '毛利率低於 55%', ?, 'HALF', 'ACTIVE', '2026-11-01', ?)").bind(JSON.stringify({ type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55, quarters: 1 }), (await loadAccount(db))!.acct.own.NVDA.fileId).run();
       // 新的 10-Q（10-Q/A 修正前一季：毛利率 50%）
       e.facts = facts({
         quarters: [

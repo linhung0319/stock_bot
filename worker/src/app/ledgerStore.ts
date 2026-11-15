@@ -3,6 +3,7 @@
 //   notifications    每則通知一列（含回覆）
 //   ledger_events、shadow_records  只增加：引擎只會往這兩個陣列加東西，載入時給空陣列，存檔時把新增的寫進去
 //   snapshots        使用者填的快照原文
+//   own_thesis_log   論點檔的開檔與結案：存檔時比較存檔前後的自選（fileId），和帳戶同一筆交易寫（own_thesis §1.2）
 import type { Account, LedgerEvent, Notif, ShadowRecord } from '../engine/account';
 import type { Snapshot } from '../engine/ops';
 import { CASH } from '../engine/types';
@@ -14,6 +15,8 @@ export interface LoadedAccount {
   rev: number;
   /** 載入時每則通知的內容，存檔時只寫有變的。 */
   notifJson: Map<number, string>;
+  /** 載入時每檔自選的論點檔編號（存檔時比較，寫開檔與結案）。 */
+  ownFiles?: Record<string, string | undefined>;
 }
 
 type StateOnly = Omit<Account, 'notifs' | 'events' | 'shadow'>;
@@ -24,7 +27,50 @@ export async function loadAccount(db: D1Database): Promise<LoadedAccount | null>
   const notifRows = (await db.prepare('SELECT id, body FROM notifications ORDER BY id').all<{ id: number; body: string }>()).results;
   const state = JSON.parse(row.state) as StateOnly;
   const acct: Account = { ...state, notifs: notifRows.map((r) => JSON.parse(r.body) as Notif), events: [], shadow: [] };
-  return { acct, rev: row.rev, notifJson: new Map(notifRows.map((r) => [r.id, r.body])) };
+  return { acct, rev: row.rev, notifJson: new Map(notifRows.map((r) => [r.id, r.body])), ownFiles: ownFilesOf(acct) };
+}
+
+const ownFilesOf = (acct: Pick<Account, 'own'>): Record<string, string | undefined> => Object.fromEntries(Object.entries(acct.own ?? {}).map(([t, m]) => [t, m.fileId]));
+
+export type ThesisLogKind = 'OPEN' | 'THESIS' | 'BREAK_NOTICE' | 'RESPONSE' | 'CONDITION' | 'CLOSE';
+export interface ThesisLogInput {
+  ticker: string;
+  fileId: string;
+  session: string;
+  kind: ThesisLogKind;
+  ref?: string | null;
+  body: Record<string, unknown>;
+}
+/** 寫一列 own_thesis_log（accountVersion：和哪一版帳戶一起存，復原快照時用來刪）。 */
+export const thesisLogStmt = (db: D1Database, l: ThesisLogInput, accountVersion: number | null, at: string) =>
+  db.prepare('INSERT INTO own_thesis_log (ticker, file_id, at, session, kind, ref, body, account_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(l.ticker, l.fileId, at, l.session, l.kind, l.ref ?? null, JSON.stringify(l.body), accountVersion);
+
+/**
+ * 存檔前後的自選比一比（own_thesis §1.2）：新的論點檔 → OPEN；不見的（移出、出清、股數改 0）→ CLOSE。
+ * 沒有 fileId 的舊資料不寫。
+ */
+export function fileChanges(before: Record<string, string | undefined>, acct: Account, now: Date): ThesisLogInput[] {
+  const out: ThesisLogInput[] = [];
+  const own = acct.own ?? {};
+  const after = new Set(Object.values(own).map((m) => m.fileId).filter(Boolean));
+  for (const [t, fid] of Object.entries(before)) {
+    if (!fid || after.has(fid)) continue;
+    const c = acct.ownClosed?.[t];
+    const hit = c?.fileId === fid ? c : null;
+    out.push({ ticker: t, fileId: fid, session: hit?.date ?? now.toISOString().slice(0, 10), kind: 'CLOSE', body: { reason: hit?.reason ?? 'REMOVED' } });
+  }
+  const had = new Set(Object.values(before).filter(Boolean));
+  for (const [t, m] of Object.entries(own)) {
+    if (!m.fileId || had.has(m.fileId)) continue;
+    out.push({
+      ticker: t,
+      fileId: m.fileId,
+      session: m.fileId.slice(t.length + 1, t.length + 11),
+      kind: 'OPEN',
+      body: { origin: m.origin, premises: m.premises, startState: m.opened?.startState ?? m.slow.state, drawdownAtOpen: m.opened?.drawdownAtOpen ?? null },
+    });
+  }
+  return out;
 }
 
 /**
@@ -51,6 +97,8 @@ export async function saveAccount(db: D1Database, acct: Account, prev: LoadedAcc
   for (const e of events) stmts.push(ev.bind(rev, e.date, e.kind, e.ticker ?? null, e.bucket ?? null, e.shares ?? null, e.amount ?? null, e.reason ?? null, e.notif ?? null));
   const sh = db.prepare('INSERT INTO shadow_records (rev, date, f, ticker, body) VALUES (?, ?, ?, ?, ?)');
   for (const s of shadow) stmts.push(sh.bind(rev, s.date, s.f, s.ticker, JSON.stringify(s)));
+  // 論點檔的開檔與結案（和這一版帳戶一起存，復原快照時一起刪）
+  for (const l of fileChanges(prev ? (prev.ownFiles ?? ownFilesOf(prev.acct)) : {}, acct, now)) stmts.push(thesisLogStmt(db, l, rev, at));
   // 和帳戶同一筆交易一起寫的（例如每日流程處理到哪一天）
   stmts.push(...extra);
   try {
@@ -163,6 +211,8 @@ export async function undoSnapshot(db: D1Database, now: Date): Promise<{ ok: tru
     db.prepare('DELETE FROM ledger_events WHERE rev = ?').bind(row.rev),
     db.prepare('DELETE FROM shadow_records WHERE rev = ?').bind(row.rev),
     db.prepare('DELETE FROM snapshots WHERE rev = ?').bind(row.rev),
+    // 那一版寫的論點檔紀錄（開檔、結案…）：帳戶回到之前，論點檔編號與條件也就接回來（own_thesis §1.2）
+    db.prepare('DELETE FROM own_thesis_log WHERE account_version = ?').bind(row.rev),
     db.prepare("DELETE FROM snapshot_undo WHERE mode = 'real'"),
   ];
   try {

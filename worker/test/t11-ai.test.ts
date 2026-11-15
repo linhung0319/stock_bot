@@ -874,7 +874,8 @@ describe('F14：新增自選健檢 → 確認出場條件 → 之後的 F24 不�
       expect(await acceptOwnConditions(env, 'NVDA', r.runId, ['U1', 'U2'], now)).toBe(2);
       expect(await acceptOwnConditions(env, 'NVDA', r.runId, ['U1'], now)).toBe(0); // 不重複寫
       // 之後一次 F24（3 票減半）整組替換：使用者的兩條留著
-      await db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at) VALUES ('NVDA', 'old', 'C9', 'DOWN', 'XBRL', '舊的 AI 條件', '{}', 'HALF', 'ACTIVE', 'x')").run();
+      // T25：條件屬於這檔現在的論點檔（file_id）
+      await db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, file_id) VALUES ('NVDA', 'old', 'C9', 'DOWN', 'XBRL', '舊的 AI 條件', '{}', 'HALF', 'ACTIVE', 'x', ?)").bind(loaded.acct.own.NVDA.fileId).run();
       const tenq = { id: 'D1', source_id: 'edgar:x', kind: 'filing' as const, date: '2026-10-30', title: '10-Q', text: 'Gross margin was 60.0%, down from 70.0% a year ago' };
       const pack = ownReviewPack({ acct: loaded.acct, view, axis, ticker: 'NVDA', runId: 'rev1', trigger: 'MONTHLY', xbrl: null, filings: [tenq], news: null, previous: [], dataQuality: { filings: 'ok' }, now }).pack;
       const vote = { verdict: 'HALF', premise_checks: [{ premise_id: 'P1', status: 'BROKEN', evidence_ids: ['E1'] }], evidence: [{ id: 'E1', source_id: 'edgar:x', date: '2026-10-30', quote: 'Gross margin was 60.0%, down from 70.0% a year ago', claim: '毛利率下滑' }], payload: { tier: 'HALF', conditions: [{ id: 'C1', direction: 'DOWN', kind: 'XBRL', text: '毛利率低於 55%', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55 }, basis: ['E1'], tier_if_met: 'EXIT' }] } };

@@ -9,7 +9,14 @@ import { errText } from '../data/util';
 import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { entryEvidence } from './momAi';
-import { gatherOwnEvidence, insertConditionStmts, loadConditions, routineReady } from './ownAi';
+import { loadAccount } from './ledgerStore';
+import { gatherOwnEvidence, insertConditionStmts, routineReady } from './ownAi';
+import { fileConditions } from './thesis';
+
+/** 這檔現在的論點檔編號（帳戶沒有、不是自選、T25 之前的自選 → null）。 */
+async function currentFileId(db: D1Database, ticker: string): Promise<string | null> {
+  return (await loadAccount(db))?.acct.own[ticker]?.fileId ?? null;
+}
 
 /** 一年日報酬的相關係數（和既有持股的題材重疊，F14 卡片的 theme_overlap）。 */
 export function corr1y(view: MarketView, a: string, b: string): number | null {
@@ -78,7 +85,9 @@ export async function ownCheckView(env: Env, runId: string, now: Date): Promise<
   const run = await getRun(env.DB, runId, now);
   if (!run || run.fn !== OWN_CHECK) return null;
   const r = ownCheckResult(run.outcome, run.ticker ?? '');
-  const accepted = (await env.DB.prepare("SELECT cond_id FROM own_conditions WHERE run_id = ? AND origin = 'USER'").bind(runId).all<{ cond_id: string }>()).results.map((x) => x.cond_id);
+  // 只算現在這份論點檔勾過的（移出再加回之後，同一次健檢的條件可以重新勾）
+  const fileId = await currentFileId(env.DB, run.ticker ?? '');
+  const accepted = (await env.DB.prepare(`SELECT cond_id FROM own_conditions WHERE run_id = ? AND origin = 'USER' AND ${fileId ? 'file_id = ?' : 'file_id IS NULL'}`).bind(runId, ...(fileId ? [fileId] : [])).all<{ cond_id: string }>()).results.map((x) => x.cond_id);
   return { ...r, runId, status: run.status, mode: (run.pack.rule.detail as { mode: 'DRAFT' | 'REWRITE' }).mode, accepted };
 }
 
@@ -94,7 +103,7 @@ export async function acceptOwnConditions(env: Env, ticker: string, runId: strin
   if (!v || v.status !== 'DONE') throw new Error('這次健檢還沒有結果');
   const pick = v.conditions.filter((c) => ids.includes(c.condId) && !v.accepted.includes(c.condId));
   if (!pick.length) return 0;
-  const stmts = insertConditionStmts(env.DB, ticker, runId, pick, now.toISOString(), 'USER');
+  const stmts = insertConditionStmts(env.DB, ticker, runId, pick, now.toISOString(), 'USER', await currentFileId(env.DB, ticker));
   await env.DB.batch(stmts);
   return pick.length;
 }
@@ -102,7 +111,8 @@ export async function acceptOwnConditions(env: Env, ticker: string, runId: strin
 /** 持股頁要顯示的監測條件。 */
 export async function monitorView(env: Env, ticker: string): Promise<{ text: string; kind: string; origin: string; status: string; note: string | null }[]> {
   try {
-    return (await loadConditions(env.DB, ticker)).map((c) => ({ text: c.text, kind: { XBRL: '財報', EVENT: '事件', PRICE: '價格' }[c.kind] ?? c.kind, origin: c.origin === 'USER' ? '你寫的' : 'AI 寫的', status: { ACTIVE: '監測中', MET: '已成立', MANUAL: '只記錄', REVIEW_ONLY: '只在定期審查時檢查', REPLACED: '已替換' }[c.status] ?? c.status, note: c.note }));
+    const acct = (await loadAccount(env.DB))?.acct;
+    return (acct ? await fileConditions(env.DB, acct, ticker) : []).map((c) => ({ text: c.text, kind: { XBRL: '財報', EVENT: '事件', PRICE: '價格' }[c.kind] ?? c.kind, origin: c.origin === 'USER' ? '你寫的' : 'AI 寫的', status: { ACTIVE: '監測中', MET: '已成立', MANUAL: '只記錄', REVIEW_ONLY: '只在定期審查時檢查', REPLACED: '已替換' }[c.status] ?? c.status, note: c.note }));
   } catch (e) {
     return [{ text: `讀不到：${errText(e)}`, kind: '', origin: '', status: '', note: null }];
   }

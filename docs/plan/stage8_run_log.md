@@ -12,6 +12,7 @@
 | T24 | 完成 | （見 git log） | 365 通過、1 略過 |
 | T32a | 完成 | （見 git log） | 375 通過、1 略過 |
 | T33a | 完成 | （見 git log） | 387 通過、1 略過 |
+| T25 | 完成 | （見 git log） | 399 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -45,6 +46,18 @@
 - T33a｜`halfUpTo` 設成選填、預設 0（設計寫必填），免得改既有直接建 `CoreContext` 的測試；實際呼叫點一定給值。
 - T33a｜C14 只減合成後的清單，項目本身的選項股數不動；F5 的核心行在最前面，最後才被減到。上限 98%、減到整股。
 - T33a｜說明的日期用網站現有的 `12/31 收盤` 寫法，不是設計範例的 `11-30`。
+- T25｜`fileId` 型別是選填（設計寫 `string`）：沒有的自選讀 `file_id IS NULL` 的舊列，不丟錯。
+- T25｜同一天結案又重開會撞號：加 `#2`、`#3`；為此 `Account` 加 `ownClosed`（每檔最近一次結案的 fileId、原因、日期），`saveAccount` 也靠它知道 CLOSE 的原因。別的選項：不處理撞號（會在邊角重現 N8）。
+- T25｜`OwnMeta.opened` 在 `newOwnMeta` 時先算好開檔的狀態與跌幅（`saveAccount` 沒有價格）。
+- T25｜CLOSE 原因：移除自選 `REMOVED`、F19 出清 `HARD_EVENT`、F25 出清 `EXIT_CONDITION`、其他照 AI 出清 `EXIT_AI`、快照或分類賣光 `SOLD_OUT`，找不到原因時 `REMOVED`。
+- T25｜「有結論的審查」= `OWN_REVIEW` 結論是 `AGREED` 或 `INSUFFICIENT`；「之後」看日期，同一天看事件建立時間或申報接受時間是否晚於那次審查開始。
+- T25｜論點那一份 note 在沒有論點本文、沒做過 F24、沒有靜默中的前提時不放（第一次審查的證據包和以前相同）。
+- T25｜F24 保留原本的「120 天內最新的 2.02 新聞稿」，和新的 8-K 清單去重、算在 5 份裡；新增的數字一律接在原本的後面。
+- T25｜F7 的申報時間範圍不變（上次審查之後，沒有就 45 天），只改挑選順序；只有預設前提的股票 F7 另外抓 XBRL 算 D2、D3。
+- T25｜`addPremises` 只有預設前提時照舊取代，但新編號接著 `premiseSeq`（第一條自己的前提是 P4）。
+- T25｜D2、D3：最近兩季要相連（差 120 天內），否則資料不足；去年同季是期末差 365 天 ±20 天。
+- T25｜`thesisFile` 遇到已結案的檔回 null；看舊論點檔的畫面留給 T34。
+- T25｜主持者：`own_thesis` §3.11 歸給 T25 的「只有預設前提的股票 F7 拿掉 HOLD」改到 T31b（T31b 本來就要做「只能選減半或出清」，而且它會改 policy 與題目，和 T25 的完成條件「F7 證據包除了新增的部分不變」衝突）；T31b 的派工單已補一句。
 
 ## 要使用者親手做的事
 
@@ -54,6 +67,7 @@
 - T36｜把 `ai/prompts/run.md`、`ai/prompts/ping.md` 的「排程的 prompt」重新貼到 claude.ai 的雲端排程。
 - T36｜`wrangler deploy` 之後新的 03:30 cron 才生效。
 - T32a｜部署前套用遠端 migration（或照 T17 重建資料庫）：`npx wrangler d1 migrations apply stock-bot --remote`（這次新增 `0010_mom_reviews_data_missing.sql`）。
+- T25｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0011_thesis_file.sql`。
 
 ## 畫面截圖
 

@@ -5,13 +5,14 @@ import { attribution, highIndex } from '../ai/detect';
 import { DROP_EXPLAIN, MONTH_DROP, OWN_DROP, dropDecision, dropExplainPack, explainLine, ownDropPack } from '../ai/drops';
 import { newRunId } from '../ai/pack';
 import { recordAiTier, refreshOwnAiChoice, type MarketView } from '../engine';
-import { fetchFilingDoc } from '../data/edgar';
+import { fetchCompanyFacts, fetchFilingDoc, quarterTable, type QuarterRow } from '../data/edgar';
 import type { FilingHit } from '../data/secEvents';
 import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
 import { startRun, type AiRun } from './aiRuns';
 import { insertHitStmts, sectorEtfs } from './filings';
 import { docOf, lastReview, newsDoc } from './ownAi';
+import { defaultFacts, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote } from './thesis';
 
 const ret = (view: MarketView, t: string, n: number) => {
   const c = view.close[t];
@@ -37,11 +38,13 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
   const core = acct.cfg.coreTicker;
   const holdings = [...new Set([...Object.keys(acct.own), ...Object.keys(acct.lots.mom).filter((t) => (acct.lots.mom[t] ?? 0) > 0)])];
   const sectors = await sectorEtfs(env.DB, holdings);
-  const filingDocs = async (t: string, since: string, n: number): Promise<PackDoc[]> => {
+  /** since 之後的 8-K、10-Q、10-K 最多 n 份。flagged：給了就照論點檔的順序挑（最新的 2.02、有標記的、其餘；own_thesis §3.3），否則新到舊。 */
+  const filingDocs = async (t: string, since: string, n: number, flagged?: Set<string>): Promise<PackDoc[]> => {
     const c = sc.checks.find((x) => x.ticker === t);
     if (!c || !env.EDGAR_USER_AGENT) return [];
     const out: PackDoc[] = [];
-    for (const f of c.all.filter((x) => x.filingDate > since && (x.form.startsWith('8-K') || /^10-[QK]/.test(x.form))).slice(0, n)) {
+    const cands = c.all.filter((x) => x.filingDate > since && (x.form.startsWith('8-K') || /^10-[QK]/.test(x.form)));
+    for (const f of flagged ? pickFilings(cands, flagged, n) : cands.slice(0, n)) {
       try {
         out.push(docOf(await fetchFilingDoc(fetcher, c.cik, f, env.EDGAR_USER_AGENT)));
       } catch (e) {
@@ -50,7 +53,7 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
     }
     return out;
   };
-  // F7：這次新觸發減半的自選股
+  // F7：這次新觸發減半的自選股（證據包由論點檔組，own_thesis §3.3）
   for (const r of sc.extras.reduced ?? []) {
     const t = r.ticker;
     if (!acct.own[t] || (await recentRun(env.DB, OWN_DROP, t, r.session))) continue;
@@ -59,11 +62,24 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
       const attr = c ? attribution(axis, view.close, t, core, sectors[t] ?? null, highIndex(c, view.i), view.i) : null;
       const base = await lastReview(env.DB, t);
       const since = base?.asOf ?? new Date(Date.parse(session) - 45 * 86400_000).toISOString().slice(0, 10);
-      const docs = await filingDocs(t, since, 3);
+      const tf = await thesisFile(env.DB, acct, t, session);
+      const docs = await filingDocs(t, since, 3, tf ? flaggedAccessions(tf) : undefined);
       const news = await newsDoc(fetcher, t, session, since).catch(() => null);
       if (news) docs.push(news);
       const urgent = acct.own[t].pending?.action !== 'REDUCE';
-      const { pack, notes } = ownDropPack({ acct, view, axis, ticker: t, runId: newRunId(session, OWN_DROP, t), attr, base: baseDoc(base, t), baseRunId: base?.runId ?? null, docs, urgent, dataQuality: { filings: 'ok', news: 'partial', ...(base ? {} : { review: 'partial' }) }, now });
+      // 只有預設前提的股票：D1～D3 要季度數字（F7 原本不抓 XBRL）
+      let rows: QuarterRow[] | null = null;
+      const chk = sc.checks.find((x) => x.ticker === t);
+      if (tf?.kind === 'DEFAULT_ONLY' && chk && env.EDGAR_USER_AGENT) {
+        try {
+          rows = quarterTable(await fetchCompanyFacts(fetcher, chk.cik, env.EDGAR_USER_AGENT), session);
+        } catch (e) {
+          res.log.push(`${t} 的 XBRL 抓不到：${errText(e)}`);
+        }
+      }
+      const note = tf ? thesisNote(tf, session) : null;
+      const extraFacts = tf ? [...thesisFacts(tf), ...defaultFacts(tf, rows, session)] : [];
+      const { pack, notes } = ownDropPack({ acct, view, axis, ticker: t, runId: newRunId(session, OWN_DROP, t), attr, base: baseDoc(base, t), baseRunId: base?.runId ?? null, docs, urgent, dataQuality: { filings: 'ok', news: 'partial', ...(base ? {} : { review: 'partial' }) }, extraFacts, extraDocs: note ? [note] : [], now });
       res.started.push((await startRun(env, fetcher, pack, now, notes)).runId);
     } catch (e) {
       res.log.push(`${t} 的減半檢視沒有開成：${errText(e)}`);

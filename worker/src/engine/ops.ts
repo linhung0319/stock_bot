@@ -11,11 +11,13 @@ import {
   makeItem,
   newNotif,
   newOwnMeta,
+  nextPremiseSeq,
   priceOf,
   recommendStdWeights,
   shareCells,
   totalValue,
   type Account,
+  type CloseReason,
   type Effect,
   type Item,
   type MarketView,
@@ -41,23 +43,24 @@ export interface ResponseInput {
   choices?: Record<string, 'RULE' | 'AI' | 'DO' | 'SKIP'>;
 }
 
-function applyEffects(acct: Account, view: MarketView, effects: Effect[] | undefined): void {
+/** f：產生這個選項的項目（F19 硬事件、F25 條件成立…），出清時記論點檔結案的原因用。 */
+function applyEffects(acct: Account, view: MarketView, effects: Effect[] | undefined, f?: string): void {
   for (const e of effects ?? []) {
-    if (e.type === 'REMOVE_OWN') removeOwnPick(acct, e.ticker);
+    if (e.type === 'REMOVE_OWN') removeOwnPick(acct, e.ticker, 'REMOVED', view.date);
     else if (e.type === 'MOM_DROP') acct.rule.heldMom = acct.rule.heldMom.filter((t) => t !== e.ticker);
     else if (e.type === 'CLEAR_FLAG') {
       if (acct.own[e.ticker]) acct.own[e.ticker].flags = [];
-    } else applyTier(acct, view, e.ticker, e.tier);
+    } else applyTier(acct, view, e.ticker, e.tier, f === 'F19' ? 'HARD_EVENT' : f === 'F25' ? 'EXIT_CONDITION' : 'EXIT_AI');
   }
 }
 
-/** 照 AI 檔位做之後，慢規則狀態跟著改（設計 §2.2，2026-11-11 定案）。 */
-export function applyTier(acct: Account, view: MarketView, ticker: string, tier: Tier): void {
+/** 照 AI 檔位做之後，慢規則狀態跟著改（設計 §2.2，2026-11-11 定案）。exitReason：出清時論點檔結案的原因。 */
+export function applyTier(acct: Account, view: MarketView, ticker: string, tier: Tier, exitReason: CloseReason = 'EXIT_AI'): void {
   const meta = acct.own[ticker];
   const rule = acct.rule.own[ticker];
   if (!meta || !rule) return;
   if (tier === 'EXIT') {
-    removeOwnPick(acct, ticker); // 照 AI 出清 = 移出自選（同 F15）
+    removeOwnPick(acct, ticker, exitReason, view.date); // 照 AI 出清 = 移出自選（同 F15）
   } else if (tier === 'HALF' || tier === 'STANDARD') {
     const st = tier === 'HALF' ? 'HALF' : 'STD';
     meta.slow = { ...meta.slow, state: st, sinceSwitch: 0 }; // 切換日重新起算
@@ -69,7 +72,10 @@ export function applyTier(acct: Account, view: MarketView, ticker: string, tier:
   }
 }
 
-function removeOwnPick(acct: Account, ticker: string): void {
+/** 移出自選 = 論點檔結案（own_thesis §1.2）：記下結案的論點檔與原因，存檔時寫 log 的 CLOSE。 */
+function removeOwnPick(acct: Account, ticker: string, reason: CloseReason, date: string): void {
+  const fileId = acct.own[ticker]?.fileId;
+  if (fileId) acct.ownClosed = { ...(acct.ownClosed ?? {}), [ticker]: { fileId, reason, date } };
   delete acct.own[ticker];
   delete acct.rule.own[ticker];
 }
@@ -146,7 +152,7 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
     n.status = 'SKIPPED';
   } else if (nothingToTrade && !n.withdraw) {
     // 選的選項不用下單（例如 AI「維持減半」）→ 直接完成（出金除外：快照時才記出金）
-    for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects);
+    for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects, it.f);
     n.status = 'DONE';
   } else {
     n.status = 'RESPONDED';
@@ -307,7 +313,7 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
         expectedCash -= n.withdraw;
         withdrawn += n.withdraw;
       }
-      for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects);
+      for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects, it.f);
       n.status = 'DONE';
       completed.push(n.id);
       if (fu.length) {
@@ -457,7 +463,7 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
         expectedCash -= n.withdraw;
         withdrawn += n.withdraw;
       }
-      for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects);
+      for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects, it.f);
       n.status = 'DONE';
       completed.push(n.id);
       if (fu.length) {
@@ -502,7 +508,7 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
     const reason = [note ? `自選的手動交易：${note}` : '自選的手動交易', soldOut ? '賣光，移出自選' : ''].filter(Boolean).join('；');
     assign('own', t, q, reason);
     if (soldOut) {
-      removeOwnPick(acct, t);
+      removeOwnPick(acct, t, 'SOLD_OUT', view.date);
       removedOwn.push(t);
     }
     acct.shadow.push({ date: view.date, f: 'F17', ticker: t, title: soldOut ? '手動交易：賣光並移出自選（如果繼續持有）' : '手動交易（自選）', rule: 0, ai: null, actual: q, price: px(t), choice: 'MANUAL', ...(note ? { note } : {}) });
@@ -690,7 +696,7 @@ export interface AddOwnResult {
 export function addOwn(acct0: Account, view: MarketView, ticker: string, premises?: Premise[], stdWeight?: number): AddOwnResult {
   const acct = clone(acct0);
   const recommended = recommendStdWeights(view, [...Object.keys(acct.rule.own), ticker], acct.cfg.ratio.own);
-  const meta = newOwnMeta(view, ticker, 'NEW', premises?.length ? premises : clone(SYSTEM_DEFAULT_PREMISES));
+  const meta = newOwnMeta(view, ticker, 'NEW', premises?.length ? premises : clone(SYSTEM_DEFAULT_PREMISES), acct.ownClosed?.[ticker]?.fileId);
   const std = stdWeight ?? recommended[ticker];
   const half = meta.slow.state === 'HALF';
   acct.own[ticker] = meta;
@@ -735,13 +741,16 @@ export function removeOwn(acct0: Account, view: MarketView, ticker: string): { a
 /**
  * 幫一檔自選加前提（持股頁，2026-11-15 起取代新增自選頁的前提欄）。
  * 原本只有系統預設前提時，換成新寫的（三層備案：你寫的 → 勾選的 AI 草稿 → 系統預設）；否則接在後面。
+ * 新的前提從 premiseSeq 接著編號；既有的編號不變、拿掉的編號不再用（own_thesis §1.2，修 N7）。date：加入的訊號日。
  */
-export function addPremises(acct0: Account, ticker: string, premises: Omit<Premise, 'id'>[]): Account {
+export function addPremises(acct0: Account, ticker: string, premises: Omit<Premise, 'id'>[], date: string): Account {
   const acct = clone(acct0);
   const meta = acct.own[ticker];
   if (!meta || !premises.length) return acct0;
+  let seq = nextPremiseSeq(meta);
   const keep = meta.premises.every((p) => p.origin === 'SYSTEM_DEFAULT') ? [] : meta.premises;
-  meta.premises = [...keep, ...premises].map((p, k) => ({ ...p, id: `P${k + 1}` }));
+  meta.premises = [...keep, ...premises.map((p) => ({ ...p, id: `P${seq++}`, addedAt: p.addedAt ?? date }))];
+  meta.premiseSeq = seq;
   return acct;
 }
 
@@ -755,11 +764,11 @@ export function setStdWeight(acct0: Account, ticker: string, stdWeight: number):
 
 function ensureOwnMeta(acct: Account, view: MarketView, ticker: string, origin: 'TRANSFER' | 'ADOPT' | 'MANUAL', reason?: string): void {
   if (acct.own[ticker]) {
-    if (reason) acct.own[ticker].premises = addPremises(acct, ticker, [{ text: reason, origin: 'USER' }]).own[ticker].premises;
+    if (reason) acct.own[ticker] = addPremises(acct, ticker, [{ text: reason, origin: 'USER' }], view.date).own[ticker];
     return;
   }
   const rec = recommendStdWeights(view, [...Object.keys(acct.rule.own), ticker], acct.cfg.ratio.own);
-  const meta = newOwnMeta(view, ticker, origin, reason ? [{ id: 'P1', text: reason, origin: 'USER' }] : clone(SYSTEM_DEFAULT_PREMISES));
+  const meta = newOwnMeta(view, ticker, origin, reason ? [{ id: 'P1', text: reason, origin: 'USER' }] : clone(SYSTEM_DEFAULT_PREMISES), acct.ownClosed?.[ticker]?.fileId);
   acct.own[ticker] = meta;
   acct.rule.own[ticker] = { applied: meta.slow.state, stdWeight: rec[ticker] };
 }
@@ -880,7 +889,7 @@ export function classify(acct0: Account, view: MarketView, notifId: number, inpu
   acct.units[input.bucket] = flowUnits(acct.units[input.bucket], vBefore, q * px);
   acct.units.core = flowUnits(acct.units.core, coreBefore + q * px, -q * px);
   if (input.bucket === 'mom') delete acct.mom.owe[tk];
-  if (removing) removeOwnPick(acct, tk);
+  if (removing) removeOwnPick(acct, tk, 'SOLD_OUT', view.date);
   const why = removing ? (input.reason ? `${input.reason}（賣光並移出自選）` : '賣光並移出自選') : input.reason;
   acct.events.push({ date: view.date, kind: 'CLASSIFIED', ticker: tk, bucket: input.bucket, shares: q, reason: why });
   acct.shadow.push({ date: view.date, f: 'F17', ticker: tk, title: removing ? '手動交易：賣光並移出自選（如果繼續持有）' : '手動交易', rule: 0, ai: null, actual: q, price: px, choice: 'MANUAL', note: why });

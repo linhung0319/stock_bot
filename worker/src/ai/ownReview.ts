@@ -55,6 +55,10 @@ export interface OwnReviewInput {
   /** 上一次 F24 寫下、還在監測的條件。 */
   previous: OwnCondition[];
   dataQuality: EvidencePack['data_quality'];
+  /** 由論點檔組的數字（T0、事件 V、預設前提的 D1～D3；own_thesis §1.6），接在原本的數字後面。 */
+  extraFacts?: EvidencePack['facts'];
+  /** 由論點檔組的原文（論點那一份 note），放在最後。 */
+  extraDocs?: PackDoc[];
   now: Date;
 }
 
@@ -66,7 +70,7 @@ export function ownReviewPack(inp: OwnReviewInput) {
   const raise = raiseAllowed(acct, ticker, view.date);
   const state = acct.rule.own[ticker]?.applied ?? 'STD';
   const verdicts: Tier[] = ['EXIT', 'HALF', 'HOLD', 'STANDARD', ...(raise.ok ? (['RAISE'] as Tier[]) : [])];
-  const docs = [priceDoc(view, inp.axis, ticker, 60), inp.xbrl, ...inp.filings, inp.news].filter((d): d is PackDoc => !!d);
+  const docs = [priceDoc(view, inp.axis, ticker, 60), inp.xbrl, ...inp.filings, inp.news, ...(inp.extraDocs ?? [])].filter((d): d is PackDoc => !!d);
   const prev = inp.previous.filter((c) => c.status === 'ACTIVE' || c.status === 'MET' || c.status === 'REVIEW_ONLY');
   return buildPack({
     runId: inp.runId,
@@ -88,6 +92,7 @@ export function ownReviewPack(inp: OwnReviewInput) {
       ...priceFacts(view, ticker),
       ...ownRuleFacts(acct, view, ticker),
       ...prev.map((c, k) => ({ id: `C${k + 1}`, label: `上一次的條件 ${c.condId}（${c.kind === 'XBRL' ? '財報' : c.kind === 'EVENT' ? '事件' : '價格'}，${c.direction === 'DOWN' ? '降級' : '升級'}）`, value: c.text, note: c.status === 'MET' ? `已成立（${c.metAt}）` : c.status === 'REVIEW_ONLY' ? '只在定期審查時檢查' : '監測中' })),
+      ...(inp.extraFacts ?? []),
     ],
     premises: ownPremises(acct, ticker),
     documents: docs,

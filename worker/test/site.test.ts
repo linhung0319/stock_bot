@@ -892,7 +892,8 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     let acct = (await loadAccount(db))!.acct;
     expect(acct.lots.own.ORCL).toBe(2);
     expect(acct.lots.own.MU).toBe(lots.own.MU - 1);
-    expect(acct.own.ORCL.premises).toEqual([{ id: 'P1', text: '雲端資料庫訂單成長', origin: 'USER' }]);
+    // T25：前提多記加入的訊號日（own_thesis §1.2）
+    expect(acct.own.ORCL.premises).toEqual([{ id: 'P1', text: '雲端資料庫訂單成長', origin: 'USER', addedAt: '2026-12-09' }]);
     expect((await web.state()).todo).toEqual([]);
     const hist = await web.get<HistoryView>('/history');
     expect(hist.events.some((e) => e.text === '成交：自選 ORCL +2 股（自選的手動交易：換股）')).toBe(true);

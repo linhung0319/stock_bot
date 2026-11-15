@@ -516,7 +516,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     if (!ps.length) throw new SiteError(422, '至少寫一條前提');
     await mutate(backend, `${tk} 加前提`, [], (d) => {
       if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
-      return { acct: addPremises(d.acct, tk, ps) };
+      return { acct: addPremises(d.acct, tk, ps, d.view.date) };
     });
     return json({ ok: true });
   }

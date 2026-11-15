@@ -15,14 +15,29 @@ export interface Premise {
   text: string;
   origin: 'USER' | 'AI_DRAFT_ACCEPTED' | 'SYSTEM_DEFAULT';
   breaksIf?: string;
+  /** 加入的訊號日（own_thesis §1.2；T25 之前的前提沒有這個欄位）。 */
+  addedAt?: string;
 }
 
+/** 系統預設前提（own_thesis §1.12；2026-11-15 起三條，拿掉原本的第四條「慢規則本身」）。證據包另附程式算好的 D1～D3。 */
 export const SYSTEM_DEFAULT_PREMISES: Premise[] = [
-  { id: 'P1', text: '沒有硬事件（重編、換會計師、被收購、重大監管）', origin: 'SYSTEM_DEFAULT' },
-  { id: 'P2', text: '營收年增率沒有連兩季轉負', origin: 'SYSTEM_DEFAULT' },
-  { id: 'P3', text: '稀釋 EPS 沒有連兩季年減', origin: 'SYSTEM_DEFAULT' },
-  { id: 'P4', text: '慢規則本身（距高點 -20% 減半）', origin: 'SYSTEM_DEFAULT' },
+  { id: 'P1', text: '財報可信、沒有硬事件（重編、會計師辭任、延遲申報、被收購、重大監管處分）', origin: 'SYSTEM_DEFAULT' },
+  { id: 'P2', text: '營收年增率沒有連兩季是負的', origin: 'SYSTEM_DEFAULT' },
+  { id: 'P3', text: '稀釋每股盈餘沒有連兩季低於去年同季', origin: 'SYSTEM_DEFAULT' },
 ];
+
+/** 論點本文（own_thesis §1.2；編輯在 T27）。 */
+export interface Thesis {
+  text: string;
+  setAt: string;
+  source: 'TYPED' | 'DISCUSSION';
+  version: number;
+  afterBreak: number;
+  lastAfterBreakAt: string | null;
+}
+
+/** 論點檔結案的原因（own_thesis §1.2 的 own_thesis_log `CLOSE`）。 */
+export type CloseReason = 'REMOVED' | 'SOLD_OUT' | 'EXIT_AI' | 'EXIT_CONDITION' | 'HARD_EVENT';
 
 export interface OwnMeta {
   /** 慢規則狀態機（每天收盤後前進）。 */
@@ -41,6 +56,19 @@ export interface OwnMeta {
   f25Sent: Record<string, number>;
   /** 上一次 F24 之後已成立、還沒被新的審查處理的降級條件（F8 加回時註明）。 */
   metConds?: string[];
+  /**
+   * 論點檔的編號 `<代號>@<開檔的訊號日>`（own_thesis §1.2）；同一天結案又重開的加 `#2`、`#3`。
+   * 條件與 own_thesis_log 都帶這個編號，讀條件時只讀現在這份的。T25 之前建立的自選沒有這個欄位。
+   */
+  fileId?: string;
+  /** 論點本文；還沒寫是 null（T27 編輯）。 */
+  thesis?: Thesis | null;
+  /** 下一條前提的編號：前提的 id 發出去就不重用、不重排（修 N7）。 */
+  premiseSeq?: number;
+  /** 開檔時的慢規則狀態與距 52 週高點的跌幅（寫 log 的 OPEN 用；own_thesis §3.8）。 */
+  opened?: { startState: 'STD' | 'HALF'; drawdownAtOpen: number | null };
+  /** 「不同意」之後的靜默期（own_thesis §1.10；由 T30 寫入，論點檔與證據包會列出來）。 */
+  disputes?: { premiseId: string; since: string; until: string; reason: string; notif: number | null }[];
 }
 
 export interface Lots {
@@ -248,6 +276,11 @@ export interface Account {
   monthlyBlocked: boolean;
   /** 上一份快照的日期。 */
   snapshotDate: string | null;
+  /**
+   * 每檔最近一次結案的論點檔（own_thesis §1.2）：存檔時寫 log 的 `CLOSE` 用它的原因；
+   * 同一天結案又重新加入時，用它避免論點檔編號重複。
+   */
+  ownClosed?: Record<string, { fileId: string; reason: CloseReason; date: string }>;
 }
 
 /** 市場資料：到訊號日為止的收盤（所有代號對齊同一組交易日）。i 是訊號日的位置。 */
@@ -394,11 +427,47 @@ export function recommendStdWeights(view: MarketView, tickers: string[], ownBudg
   return out;
 }
 
-export function newOwnMeta(view: MarketView, ticker: string, origin: OwnMeta['origin'], premises: Premise[]): OwnMeta {
+/** 前提 id 的數字部分（P3 → 3；不是 P 開頭的數字就是 0）。 */
+const premiseNo = (id: string) => (/^P(\d+)$/.test(id) ? Number(id.slice(1)) : 0);
+
+/** 下一條前提的編號：帳戶狀態有記就用它，否則（T25 之前的資料）用現有最大的編號加 1。 */
+export function nextPremiseSeq(meta: Pick<OwnMeta, 'premises' | 'premiseSeq'>): number {
+  return Math.max(meta.premiseSeq ?? 0, ...meta.premises.map((p) => premiseNo(p.id) + 1), 1);
+}
+
+/** 論點檔編號：`<代號>@<訊號日>`；這一檔上一次結案的也是同一天開的，就加 `#2`、`#3`。 */
+export function newFileId(ticker: string, date: string, lastClosed?: string): string {
+  const base = `${ticker}@${date}`;
+  if (!lastClosed || (lastClosed !== base && !lastClosed.startsWith(base + '#'))) return base;
+  const n = lastClosed === base ? 1 : Number(lastClosed.slice(base.length + 1)) || 1;
+  return `${base}#${n + 1}`;
+}
+
+/**
+ * 開一份新的論點檔（新增自選、轉入、認養、手動買進、上線那天）。
+ * lastClosed：這一檔上一次結案的論點檔編號（Account.ownClosed），同一天又加回時編號才不會重複。
+ */
+export function newOwnMeta(view: MarketView, ticker: string, origin: OwnMeta['origin'], premises: Premise[], lastClosed?: string): OwnMeta {
   const dd = drawdownFromHigh(view.close[ticker], view.i);
-  const slow = initialSlowState(initialStateForNewPick(dd));
+  const startState = initialStateForNewPick(dd);
+  const slow = initialSlowState(startState);
   slow.sinceSwitch = 0;
-  return { slow, pending: null, r1: null, premises, origin, aiTier: null, raisedAt: null, flags: [], f25Sent: {} };
+  const ps = premises.map((p) => ({ ...p, addedAt: p.addedAt ?? view.date }));
+  return {
+    slow,
+    pending: null,
+    r1: null,
+    premises: ps,
+    origin,
+    aiTier: null,
+    raisedAt: null,
+    flags: [],
+    f25Sent: {},
+    fileId: newFileId(ticker, view.date, lastClosed),
+    thesis: null,
+    premiseSeq: nextPremiseSeq({ premises: ps }),
+    opened: { startState, drawdownAtOpen: Number.isFinite(dd) ? dd : null },
+  };
 }
 
 export interface InitialAccount {
@@ -444,6 +513,7 @@ export function createAccount(init: InitialAccount, view: MarketView): Account {
     // 「連續站上 200 日均線幾天」從歷史暖機
     const meta = newOwnMeta(view, t, 'INITIAL', o.premises ?? clone(SYSTEM_DEFAULT_PREMISES));
     meta.slow = warmSlowState(view, t, state);
+    meta.opened = { startState: state, drawdownAtOpen: meta.opened?.drawdownAtOpen ?? null };
     acct.own[t] = meta;
   }
   rule.heldMom = init.momModel ?? Object.keys(init.mom ?? {});

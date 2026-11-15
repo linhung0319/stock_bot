@@ -19,7 +19,8 @@ import type { ApplyCtx, StartCtx } from './aiCtx';
 import { startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { accOf, fetchFilingChecks, handledStmt, insertHitStmts, loadEvents, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
-import { docOf, loadConditions, newsDoc, xbrlDoc } from './ownAi';
+import { docOf, newsDoc, xbrlDoc } from './ownAi';
+import { fileConditions, filePremises, thesisFile } from './thesis';
 
 /** 每日掃描的對象：自選、動能持股、排名 6～10 的候選（還沒持有的）。 */
 export async function scanTargets(db: D1Database, acct: { own: Record<string, unknown>; rule: { heldMom: string[] }; lots: { mom: Record<string, number> } }): Promise<ScanTarget[]> {
@@ -171,7 +172,10 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
       }
       const refs: HardEventRef[] = evs.map((e) => ({ code: e.code, sub: e.sub, form: e.form, date: e.event_date, detail: e.detail, source: e.source }));
       const own = (acct.lots.own[t] ?? 0) > 0 && !!acct.own[t];
-      const { pack, notes } = hardEventPack({ acct, view, axis, ticker: t, runId: newRunId(session, HARD_EVENT, t), role: own ? 'OWN' : 'MOM', events: refs, docs, xbrl, dataQuality: dq, now });
+      // 自選股的前提由論點檔取（T25）
+      const tf = own ? await thesisFile(env.DB, acct, t, session) : null;
+      const ownPremises = tf ? filePremises(tf) : undefined;
+      const { pack, notes } = hardEventPack({ acct, view, axis, ticker: t, runId: newRunId(session, HARD_EVENT, t), role: own ? 'OWN' : 'MOM', events: refs, docs, xbrl, dataQuality: dq, ...(ownPremises ? { ownPremises } : {}), now });
       const run = await startRun(env, fetcher, pack, now, notes);
       res.started.push(run.runId);
       await handledStmt(env.DB, evs.map((e) => e.id), `開法庭 ${run.runId}`).run();
@@ -214,7 +218,7 @@ async function startScan(sc: StartCtx, targets: ScanTarget[]): Promise<void> {
   }
   if (!docs.length) return void res.log.push('每日掃描：沒有新的 8-K 或新聞標題，不開');
   const conditions = [];
-  for (const t of targets.filter((x) => x.role === 'OWN')) for (const c of (await loadConditions(env.DB, t.ticker)).filter((x) => x.kind === 'EVENT' && x.status === 'ACTIVE')) conditions.push({ ticker: t.ticker, condId: c.condId, text: c.text });
+  for (const t of targets.filter((x) => x.role === 'OWN')) for (const c of (await fileConditions(env.DB, sc.acct, t.ticker)).filter((x) => x.kind === 'EVENT' && x.status === 'ACTIVE')) conditions.push({ ticker: t.ticker, condId: c.condId, text: c.text });
   const { pack, notes } = eventScanPack({ runId: newRunId(session, EVENT_SCAN), asOf: session, targets, docs, conditions, dataQuality: dq, now });
   res.started.push((await startRun(env, fetcher, pack, now, notes)).runId);
   if (seen.length) await env.DB.batch(seen);

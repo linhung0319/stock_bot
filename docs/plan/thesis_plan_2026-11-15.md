@@ -266,7 +266,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 做：照 §5 那一列。C14 先寫一個測試確認「核心不夠付時買單會不會超過現金」：成立就比照入金的 `capBuys` 從最後一行往回減、清單上寫明；不成立就留著測試、回報。
 - 完成條件：§5 那一列的測試；C14 的測試與結論；重放驗收不變。§3.8 會改到的既有情境測試照新行為更新並在回報說明。
 
-#### [ ] T25 論點檔與證據包
+#### [x] T25 論點檔與證據包
 - 讀：`own_thesis` §1.2～§1.4、§1.6「證據包」、§1.12 的預設前提、§3.3「證據包」、§3.8。檔案：`engine/account.ts`（`OwnMeta`、`newOwnMeta`、`SYSTEM_DEFAULT_PREMISES`）、`engine/ops.ts`（`addPremises`、`removeOwnPick`）、`app/ownAi.ts`（`gatherOwnEvidence`、`startOwnReview`）、`app/dropAi.ts`（`filingDocs`）、`app/ledgerStore.ts`（`saveAccount`）、`ai/pack.ts`、`migrations/0006_own_ai.sql`。
 - 做：
   1. `worker/src/app/thesis.ts` 的 `thesisFile(db, acct, ticker)`，組出 §1.3 的每個區塊。
@@ -347,7 +347,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 #### [ ] T31b 減半檢視與慢規則通知
 - 讀：`own_thesis` §3.2～§3.5、§1.9 表裡和慢規則通知有關的三列；問題 K1～K5。檔案：`ai/drops.ts`（`dropDecision`）、`app/dropAi.ts`（`applyOwnDrop`、`startDropRuns`）、`engine/report.ts`（`ownAiChoice`、`refreshOwnAiChoice`）、`app/flow.ts`（`pushPending`）、`ai/prompts/own_drop_v1.md`。
 - 做：
-  1. `own_drop_v2.md`；只有預設前提的股票只能選減半或出清；`dropDecision` 的五種結果；`dropReview`。
+  1. `own_drop_v2.md`；只有預設前提的股票只能選減半或出清（`own_thesis` §3.11 歸給 T25 的「F7 拿掉 HOLD」也在這裡做，T25 執行時移過來）；`dropDecision` 的五種結果；`dropReview`。
   2. `ownAiChoice`、`refreshOwnAiChoice` 改寫：減半項目照 §3.4 的表、觸發之後另外有審查回來的三種情況、靜默中的註記、LINE 多的一行；加回項目只在有 `premiseId` 時列「照 AI」。
   3. 減半項目選「這次不做」要寫理由：做成每個項目都能帶理由的欄位（T33c 會用同一個）。
   4. log：`BREAK_NOTICE`（`withRule`）、`RESPONSE`（`type: 'R'`）；AI 建議出清而使用者沒照做 → 那條前提進靜默期；還沒回覆的乙類通知併進慢規則通知（`SUPERSEDED`）。

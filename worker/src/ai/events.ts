@@ -145,6 +145,8 @@ export interface HardEventInput {
   /** XBRL 季度表（重大性的數字從這裡取）。 */
   xbrl: PackDoc | null;
   dataQuality: EvidencePack['data_quality'];
+  /** 自選股的前提（由論點檔取，T25）；不給就讀帳戶狀態。 */
+  ownPremises?: PackPremise[];
   now: Date;
 }
 
@@ -161,7 +163,7 @@ export function hardEventPack(inp: HardEventInput) {
   const { acct, view, ticker } = inp;
   const codes = [...new Set(inp.events.map((e) => e.code).filter((c): c is HardCode => HARD_CODES.includes(c as HardCode)))];
   const shares = inp.role === 'OWN' ? (acct.lots.own[ticker] ?? 0) : (acct.lots.mom[ticker] ?? 0);
-  const premises = inp.role === 'OWN' ? [...ownPremises(acct, ticker), TRUST_PREMISE] : MOM_HOLD_PREMISES;
+  const premises = inp.role === 'OWN' ? [...(inp.ownPremises ?? ownPremises(acct, ticker)), TRUST_PREMISE] : MOM_HOLD_PREMISES;
   return buildPack({
     runId: inp.runId,
     fn: HARD_EVENT,

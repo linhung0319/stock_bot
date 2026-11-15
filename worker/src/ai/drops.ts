@@ -43,6 +43,10 @@ export interface OwnDropInput {
   /** 這次減半的通知是當天（≥ 5%）還是併入月報。 */
   urgent: boolean;
   dataQuality: EvidencePack['data_quality'];
+  /** 由論點檔組的數字（T0、事件 V、預設前提的 D1～D3；own_thesis §3.3），接在原本的數字後面。 */
+  extraFacts?: EvidencePack['facts'];
+  /** 由論點檔組的原文（論點那一份 note），放在最後。 */
+  extraDocs?: PackDoc[];
   now: Date;
 }
 
@@ -60,9 +64,9 @@ export function ownDropPack(inp: OwnDropInput) {
       '區分「論點壞了」和「價格跌了」。最後選一個檔位：EXIT（出清）、HALF（減半，等於照規則）、HOLD（不動）。拿不定主意就選 HALF（照規則）。',
     policy: { level: 'A3', verdicts: ['EXIT', 'HALF', 'HOLD'], abstain: 'HALF', min_evidence: 1, samples: 3 },
     rule: { action: '減半（賣掉一半）', detail: { urgent: inp.urgent, baseReview: inp.baseRunId } },
-    facts: [...priceFacts(view, ticker), ...ownRuleFacts(acct, view, ticker), ...attrFacts(inp.attr)],
+    facts: [...priceFacts(view, ticker), ...ownRuleFacts(acct, view, ticker), ...attrFacts(inp.attr), ...(inp.extraFacts ?? [])],
     premises: ownPremises(acct, ticker),
-    documents: [inp.base, ...inp.docs, priceDoc(view, inp.axis, ticker, 120)].filter((d): d is PackDoc => !!d),
+    documents: [inp.base, ...inp.docs, priceDoc(view, inp.axis, ticker, 120), ...(inp.extraDocs ?? [])].filter((d): d is PackDoc => !!d),
     dataQuality: inp.dataQuality,
     now: inp.now,
   });

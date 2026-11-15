@@ -182,7 +182,8 @@ describe('分桶快照：變動放哪一桶由使用者決定，不再問分類'
     expect(s.created).toEqual([]);
     expect(s.acct.lots.own.AAPL).toBe(10);
     expect(s.acct.own.AAPL).toMatchObject({ origin: 'MANUAL' });
-    expect(s.acct.own.AAPL.premises).toEqual([{ id: 'P1', text: '服務收入穩定成長', origin: 'USER' }]);
+    // T25：前提多記加入的訊號日（own_thesis §1.2）
+    expect(s.acct.own.AAPL.premises).toEqual([{ id: 'P1', text: '服務收入穩定成長', origin: 'USER', addedAt: sim.pre.date }]);
     expect(Number.isFinite(s.acct.rule.own.AAPL.stdWeight) && s.acct.rule.own.AAPL.stdWeight > 0).toBe(true);
     // 沒寫為什麼買 → 系統預設前提
     const s2 = applySnapshot(sim.acct, sim.pre, bucketSnap(sim.acct, sim.pre, { own: { AAPL: 10 } }));
@@ -273,7 +274,7 @@ describe('分桶快照：變動放哪一桶由使用者決定，不再問分類'
 });
 
 describe('持股頁：改標準比重、加前提', () => {
-  it('改標準比重只改目標；加前提時原本只有系統預設就取代，否則接在後面', () => {
+  it('改標準比重只改目標；加前提時原本只有系統預設就取代，否則接在後面（T25：編號接著 premiseSeq，拿掉的編號不再用、不重排）', () => {
     const sim = calm();
     const a = setStdWeight(sim.acct, 'MU', 0.07);
     expect(a.rule.own.MU.stdWeight).toBe(0.07);
@@ -281,13 +282,16 @@ describe('持股頁：改標準比重、加前提', () => {
     expect(setStdWeight(sim.acct, 'ZZZ', 0.07)).toBe(sim.acct);
     const base = structuredClone(sim.acct);
     base.own.MU.premises = [{ id: 'P1', text: '預設', origin: 'SYSTEM_DEFAULT' }];
-    const p1 = addPremises(base, 'MU', [{ text: '我的理由', origin: 'USER' }]);
-    expect(p1.own.MU.premises).toEqual([{ id: 'P1', text: '我的理由', origin: 'USER' }]);
-    const p2 = addPremises(p1, 'MU', [{ text: 'AI 草稿', origin: 'AI_DRAFT_ACCEPTED', breaksIf: '毛利率跌破 50%' }]);
-    expect(p2.own.MU.premises.map((p) => [p.id, p.origin])).toEqual([
-      ['P1', 'USER'],
-      ['P2', 'AI_DRAFT_ACCEPTED'],
+    base.own.MU.premiseSeq = 2;
+    const p1 = addPremises(base, 'MU', [{ text: '我的理由', origin: 'USER' }], '2026-12-10');
+    // 被取代的預設前提用過 P1，新的從 P2 起（編號不重用）
+    expect(p1.own.MU.premises).toEqual([{ id: 'P2', text: '我的理由', origin: 'USER', addedAt: '2026-12-10' }]);
+    const p2 = addPremises(p1, 'MU', [{ text: 'AI 草稿', origin: 'AI_DRAFT_ACCEPTED', breaksIf: '毛利率跌破 50%' }], '2026-12-11');
+    expect(p2.own.MU.premises.map((p) => [p.id, p.origin, p.addedAt])).toEqual([
+      ['P2', 'USER', '2026-12-10'],
+      ['P3', 'AI_DRAFT_ACCEPTED', '2026-12-11'],
     ]);
+    expect(p2.own.MU.premiseSeq).toBe(4);
   });
 });
 
