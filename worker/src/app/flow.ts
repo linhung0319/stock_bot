@@ -25,9 +25,9 @@ import { STRATEGY_STATE_KEY, loadStrategyState } from './strategyAi';
 import { noteOfRun } from './site/aiViews';
 import type { AiNote } from './site/types';
 import { sweepTimeoutTasks, timeoutAlert } from './aiTasks';
-import { monthOwnAttention } from './thesis';
+import { breakLogs, monthOwnAttention } from './thesis';
 import type { Env, Fetcher } from './env';
-import { ConflictError, loadAccount, requiredTickers, saveAccount, shadowTickers } from './ledgerStore';
+import { ConflictError, loadAccount, requiredTickers, saveAccount, shadowTickers, thesisLogStmt } from './ledgerStore';
 import { alertText, lineConfigured, notifLink, notifText, pushLine, type AlertRow } from './line';
 import { SCHEDULE, finalStarts, type Attempt } from './schedule';
 
@@ -388,7 +388,9 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
           const p = await processSessions(db, loaded.acct, plan.sessions, ov, aiNotes, monthInputs);
           alerts.push(...p.alerts);
           try {
-            await saveAccount(db, p.acct, loaded, `每日流程 ${session}${p.monthly !== null ? '（含月報）' : ''}`, opt.now, [setFlowStateStmt(db, 'lastSession', session, at), setFlowStateStmt(db, STRATEGY_STATE_KEY, JSON.stringify(p.strategy), at)]);
+            // 月報裡的失效通知項目（甲類、乙類）→ 論點檔的 BREAK_NOTICE（own_thesis §1.10）
+            const brk = breakLogs(p.acct, p.acct.notifs.filter((n) => p.created.includes(n.id))).map((l) => thesisLogStmt(db, l, null, at));
+            await saveAccount(db, p.acct, loaded, `每日流程 ${session}${p.monthly !== null ? '（含月報）' : ''}`, opt.now, [setFlowStateStmt(db, 'lastSession', session, at), setFlowStateStmt(db, STRATEGY_STATE_KEY, JSON.stringify(p.strategy), at), ...brk]);
           } catch (e) {
             if (e instanceof ConflictError && tryNo < 2) continue;
             throw e;

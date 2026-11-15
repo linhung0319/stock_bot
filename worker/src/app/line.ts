@@ -64,6 +64,11 @@ export function notifText(acct: Account, n: Notif, link: string | null): string 
   const tag = n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY' ? '月報' : n.kind === 'URGENT' ? '當天' : '提醒';
   const out: string[] = [`${acct.paper ? '【紙上】' : ''}【${tag}】${n.title}`];
   if (n.text) out.push(n.text);
+  // 乙類的當天通知（own_thesis §1.10）：標題、哪條前提、AI 建議（要不要做由你決定）、連結；預設不動，沒有要下的單
+  if (isBreakNotice(n)) {
+    if (link) out.push(link);
+    return out.join('\n');
+  }
   const merged = (n.preview?.merged ?? []).filter((m) => m.shares !== 0);
   if (merged.length) {
     out.push('', '今晚美股開盤下單（市價、整股）：');
@@ -86,6 +91,9 @@ export function notifText(acct: Account, n: Notif, link: string | null): string 
   if (link) out.push(link);
   return out.join('\n');
 }
+
+/** 乙類的當天通知：只有 AI 判斷前提不成立的那一項（月報裡的乙類項目照月報的格式）。 */
+export const isBreakNotice = (n: Pick<Notif, 'kind' | 'items'>): boolean => n.kind === 'URGENT' && n.items.length > 0 && n.items.every((it) => it.brk?.type === 'B');
 
 /** 月報的「要看的事」那一行：`持股有 3 件事要看（不用下單），在持股頁。`；不是月報或沒有就是 null。 */
 export function attentionLine(n: Pick<Notif, 'kind' | 'attention'>): string | null {

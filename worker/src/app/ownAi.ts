@@ -1,17 +1,19 @@
 // T10：F24 自選定期審查、F25 自選條件監測（每日流程的 AI 段在 src/app/aiStep.ts）。
 //
-//   套用（applyOwnReview／applyOwnCondition）：F24 → 引擎記下檔位（月報並列建議）＋建議的條件（PROPOSED，勾選才監測）＋審查確認你定的條件成立；
-//                                              F25 → 條件成立的當天通知
-//   財報條件（ownXbrlConditions）：新的 10-Q／10-K → 程式直接比對 XBRL（不用 LLM），寫進度；你定的條件成立 → 當天通知
+//   套用（applyOwnReview／applyOwnCondition）：F24 → 引擎記下檔位，照 own_thesis §1.9 決定當天通知（乙類）、進月報或只放網站
+//                                              ＋建議的條件（PROPOSED，勾選才監測）＋審查確認你定的條件成立（甲類）；
+//                                              F25 → 你定的條件成立（甲類，當天通知）
+//   財報條件（ownXbrlConditions）：新的 10-Q／10-K → 程式直接比對 XBRL（不用 LLM），寫進度；你定的條件成立 → 甲類當天通知
+//   甲類（§1.10）：動作是重新審查 → 不通知、記 condReviewDue 開一次審查（觸發原因 CONDITION）；換算出來不用賣 → 不通知（列進「要看的事」）
 //   開新的執行（startOwnRuns）：新申報是事件條件指定的確認來源 → F25；新的財報（10-Q、10-K、8-K 2.02）→ F24（財報後的審查）；
 //                               月報前一天（當月倒數第二個交易日）= 月底檢查點：上次有結論的審查之後有新證據才開 F24（own_thesis §3.7），
 //                               沒有就不審、記 reviewSkip（月報那天用上一次的結論）；
 //                               前提有增減（thesisReviewDue）→ 論點變動後的審查（每檔 30 天 1 次，own_thesis §3.6.5）
 // 雲端排程（ROUTINE_FIRE_URL／ROUTINE_TOKEN）還沒設定時不開新的執行；EDGAR 的 User-Agent 沒設定時不看申報。
-import type { PackDoc } from '../ai/check';
+import type { CheckedSample, PackDoc } from '../ai/check';
 import { OWN_CONDITION, OWN_REVIEW, confirmMode, conditionDecision, conditionPack, ownReviewPack, reviewDecision, type ConditionDraft, type ProposedDraft } from '../ai/ownReview';
 import { newRunId } from '../ai/pack';
-import { TIER_NAME, clone, conditionMet, recordAiTier, type Account, type MarketView, type OwnMeta, type Tier } from '../engine';
+import { TIER_NAME, clone, condMetNotice, routeReview, type Account, type CondNotice, type MarketView, type OwnMeta, type ReviewTrigger } from '../engine';
 import { ConflictError, loadAccount, saveAccount } from './ledgerStore';
 import { isLastTradingDayOfMonth, nextTradingDay } from '../data/calendar';
 import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlines, isEarningsFiling, quarterTable, quarterTableText, xbrlConditionMet, XBRL_METRICS, type QuarterRow } from '../data/edgar';
@@ -22,7 +24,7 @@ import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { cikFor, setStateStmt, type FilingCheck } from './filings';
 import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
-import { EVIDENCE_TEXT, MAX_PROPOSED, MAX_REVIEW_8K, afterLastReview, condFacts, defaultAction, defaultFacts, fileConditions, flaggedAccessions, isOwned, newEvidence, notifyTier, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type ThesisFile } from './thesis';
+import { EVIDENCE_TEXT, MAX_PROPOSED, MAX_REVIEW_8K, afterLastReview, condFacts, defaultAction, defaultFacts, fileConditions, flaggedAccessions, fmtMetric, isOwned, newEvidence, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
 
 export { cikFor } from './filings';
 export { loadConditions } from './thesis';
@@ -170,7 +172,7 @@ export async function reviewThesisEvidence(env: Env, fetcher: Fetcher, tf: Thesi
 }
 
 /** 開一次 F24（證據包由論點檔組，T25）。reasons：月底檢查點的新證據原因（記在 rule.detail，T31a）。 */
-export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: 'MONTHLY' | 'EARNINGS' | 'MANUAL' | 'THESIS', now: Date, evidence?: OwnEvidence, reasons?: EvidenceReason[]): Promise<AiRun> {
+export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: ReviewTrigger, now: Date, evidence?: OwnEvidence, reasons?: EvidenceReason[]): Promise<AiRun> {
   const ev = evidence ?? (await gatherOwnEvidence(env, fetcher, ticker, view.date));
   const tf = await thesisFile(env.DB, acct, ticker, view.date);
   // 你定的條件 C、觀察項 W（T26；財報類觀察項用這次的 XBRL 比對）
@@ -182,16 +184,79 @@ export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, 
 
 // ---------------------------------------------------------------- 套用結論
 
-/** 降級條件成立 → 當天通知（引擎每檔每月最多 1 則）。 */
-function notifyCondition(ctx: ApplyCtx, ticker: string, tier: Tier, text: string, label: string, runIds: string[]): void {
-  const r = conditionMet(ctx.acct, ctx.view, ticker, tier, text, ctx.view.date.slice(0, 7), 1, runIds);
-  ctx.acct = r.acct;
-  ctx.log.push(`${label} → ${r.notif ? `當天通知 #${r.notif.id}` : `不通知（${r.why}）`}`);
+/** 申報或財報表的簡稱（失效通知的理由用）：`8-K 2027-01-06`、`財報數字表（XBRL，2027-01-08）`。 */
+export function docLabel(doc: Pick<PackDoc, 'kind' | 'title' | 'date'> | undefined): string | null {
+  if (!doc) return null;
+  if (doc.kind === 'xbrl') return `財報數字表（XBRL，${doc.date}）`;
+  const form = /^([^\s（：]+)/.exec(doc.title)?.[1] ?? '申報';
+  return `${form} ${doc.date}`;
 }
 
 /**
- * F24 → 引擎記下檔位（月報並列建議）與不成立的前提；條件只在三票一致（含一致選「不動」）時動（own_thesis §1.5、§1.6）：
- *   你定的條件（REVIEW_ONLY、申報確認的 ACTIVE）三票確認成立 → MET（met_basis = REVIEW_VOTE），沿用條件成立的通知（文字在 T29a 改）
+ * 三票裡第一份通過逐字檢查、來源是申報原文或財報表的引用（理由寫「依據：8-K 2027-01-06」用）。
+ * pick：從一票裡取出那件事的引用編號（例如某條前提的 evidence_ids）；回傳 null = 這一票的任何引用都可以。
+ */
+export function citedDoc(run: Pick<AiRun, 'outcome' | 'pack'>, pick: (s: CheckedSample) => unknown = () => null): string | null {
+  const hard = new Map(run.pack.documents.filter((d) => d.kind === 'filing' || d.kind === 'xbrl').map((d) => [d.source_id, d]));
+  for (const s of run.outcome?.samples.filter((x) => x.valid) ?? []) {
+    const ids = pick(s);
+    const list = Array.isArray(ids) ? ids.map(String) : null;
+    const ev = s.evidence.find((e) => e.ok && hard.has(e.source_id) && (!list || list.includes(e.id)));
+    if (ev) return docLabel(hard.get(ev.source_id));
+  }
+  return null;
+}
+
+/** 財報類條件成立的理由（met_basis = XBRL）：`最新一季毛利率 68.4%（10-Q 2027-01-08）`。 */
+export function xbrlWhy(check: Record<string, unknown>, values: (number | null)[], latest: Pick<QuarterRow, 'form' | 'filed'>): string {
+  const metric = String(check.metric);
+  const label = XBRL_METRICS[metric]?.label ?? metric;
+  const vs = values.map((v) => fmtMetric(metric, v));
+  return `${vs.length > 1 ? `最近 ${vs.length} 季${label} ${vs.join('、')}（新到舊）` : `最新一季${label} ${vs[0]}`}（${latest.form} ${latest.filed}）`;
+}
+
+/**
+ * 你定的條件成立（甲類，own_thesis §1.10）：
+ *   動作是重新審查 → 不發通知，記 condReviewDue（下一次開執行時開一次審查，觸發原因 CONDITION）
+ *   動作是出清或減半 → 當天通知（不設上限）；monthly = 月審確認成立的 → 進隔天的月報（項目相同）
+ *   換算出來不用賣 → 不發通知，條件照樣是成立（「要看的事」的 COND_MET_NO_SELL 由論點檔判斷）
+ * why：理由（依 met_basis）；AI 建議、你勾選的條件另外寫一句是誰哪天勾的。
+ */
+function notifyOwnCondition(ctx: ApplyCtx, c: FileCondition, why: string, runIds: string[], label: string, monthly = false): void {
+  const t = c.ticker;
+  if (!ctx.acct.own[t]) return;
+  const tier = notifyTier(c);
+  if (!tier) {
+    ctx.acct = clone(ctx.acct);
+    ctx.acct.own[t].condReviewDue = ctx.session;
+    return void ctx.log.push(`${label}（成立時重新審查）→ 不通知，開一次審查（觸發原因：你定的條件）`);
+  }
+  if (tier !== 'EXIT' && tier !== 'HALF') return void ctx.log.push(`${label}（舊資料的檔位 ${TIER_NAME[tier]}，不是出清或減半）→ 不通知`);
+  const spec: CondNotice = {
+    id: c.id,
+    text: c.text,
+    action: tier,
+    setAt: (c.acceptedAt ?? c.createdAt).slice(0, 10),
+    aiProposed: c.origin !== 'USER',
+    why: c.origin !== 'USER' && c.acceptedAt ? `${why}。這條是${ownerText(c)}。` : why,
+    premiseId: c.premiseId,
+    runIds,
+  };
+  if (monthly) {
+    ctx.acct = clone(ctx.acct);
+    const m = ctx.acct.own[t];
+    m.condMonthly = [...(m.condMonthly ?? []), spec];
+    return void ctx.log.push(`${label} → 月審確認的，進隔天的月報`);
+  }
+  const r = condMetNotice(ctx.acct, ctx.view, t, spec);
+  ctx.acct = r.acct;
+  ctx.log.push(`${label} → ${r.notif ? `當天通知 #${r.notif.id}` : `不通知（${r.why}），列進要看的事`}`);
+}
+
+/**
+ * F24 → 引擎記下檔位與不成立的前提，照 own_thesis §1.9 決定怎麼給（routeReview：當天通知乙類、進月報、更新還沒回覆的通知、只放網站）；
+ * 條件只在三票一致（含一致選「不動」）時動（own_thesis §1.5、§1.6）：
+ *   你定的條件（REVIEW_ONLY、申報確認的 ACTIVE）三票確認成立 → MET（met_basis = REVIEW_VOTE），甲類通知（月審確認的進隔天的月報）
  *   財報類的你定的條件以程式比對為準，審查的看法只記錄；觀察項（W）成立與否只是給下一次審查的輸入
  *   建議新增的條件 → PROPOSED（有寫入時舊的建議 EXPIRED，沒提時留著）。你定的條件不會被換掉。
  */
@@ -201,14 +266,18 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
   await reviewHealthStmts(ctx, run);
   if (!run.outcome || !ctx.acct.own[t]) return void ctx.log.push(`${run.runId}：${ctx.acct.own[t] ? '沒有結論' : '已經不是自選股'}，不套用`);
   const d = reviewDecision(run.outcome, ctx.acct, t, run.asOf, run.pack);
+  const detail = (run.pack.rule.detail ?? {}) as { conds?: Record<string, number>; trigger?: string };
+  const trigger = (detail.trigger || 'MANUAL') as ReviewTrigger;
   if (d.tier) {
-    ctx.acct = recordAiTier(ctx.acct, t, d.tier, run.asOf, d.suggest, run.runId, d.premiseId ? { premiseId: d.premiseId } : undefined);
+    const basis = d.premiseId ? citedDoc(run, (s) => s.premises.find((p) => p.premise_id === d.premiseId && p.status === 'BROKEN')?.evidence_ids ?? []) : null;
+    const r = routeReview(ctx.acct, ctx.view, t, { tier: d.tier, suggest: d.suggest, consensus: d.consensus, premiseId: d.premiseId, trigger, date: run.asOf, runId: run.runId, basis });
+    ctx.acct = r.acct;
     // 上一次成立的降級條件已經被這次審查處理過（F8 不再註明）
-    ctx.acct.own[t].metConds = [];
-  }
-  ctx.log.push(`${run.runId}：${d.tier ? TIER_NAME[d.tier] : '不更新'}${d.suggest ? '（月報並列）' : ''}。${d.why}`);
+    if (r.route !== 'KEPT') ctx.acct.own[t].metConds = [];
+    ctx.log.push(`${run.runId}：${TIER_NAME[d.tier]}。${d.why} → ${r.why}`);
+  } else ctx.log.push(`${run.runId}：不更新。${d.why}`);
   if (!d.consensus) return void ctx.log.push(`${run.runId}：沒有三票一致的結論，條件不動`);
-  const map = ((run.pack.rule.detail ?? {}) as { conds?: Record<string, number> }).conds ?? {};
+  const map = detail.conds ?? {};
   const conds = await fileConditions(ctx.db, ctx.acct, t);
   const at = ctx.now.toISOString();
   for (const pid of d.metChecks) {
@@ -220,9 +289,10 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
     }
     if (!(c.status === 'REVIEW_ONLY' || (c.status === 'ACTIVE' && confirmMode(c) === 'FILING'))) continue;
     ctx.stmts.push(metStmt(ctx.db, c.id, at, `定期審查 ${run.runId} 3 票確認`, 'REVIEW_VOTE'));
-    const tier = notifyTier(c);
-    if (tier) notifyCondition(ctx, t, tier, c.text, `${run.runId}：你定的條件 ${c.condId} 由審查 3 票確認成立`, [run.runId, c.runId]);
-    else ctx.log.push(`${run.runId}：你定的條件 ${c.condId} 由審查 3 票確認成立（成立時重新審查）→ 下一次審查會看到`);
+    const label = `${run.runId}：你定的條件 ${c.condId} 由審查 3 票確認成立`;
+    // 動作是重新審查：確認它成立的就是這次審查，結論照 §1.9 處理，不再另外開
+    if (!notifyTier(c)) ctx.log.push(`${label}（成立時重新審查）→ 這次審查就是重新審查，結論照建議的規則處理`);
+    else notifyOwnCondition(ctx, c, `${run.asOf} 的審查 3 票確認（引用在網站）`, [run.runId, c.runId], label, trigger === 'MONTHLY');
   }
   if (d.proposed.length) {
     ctx.stmts.push(...proposeStmts(ctx.db, t, ctx.acct.own[t].fileId ?? null, run.runId, d.proposed, at, map));
@@ -230,7 +300,7 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
   }
 }
 
-/** F25 → 條件成立的當天通知。 */
+/** F25 → 你定的條件成立（甲類，當天通知）。 */
 export async function applyOwnCondition(ctx: ApplyCtx, run: AiRun): Promise<void> {
   const t = run.ticker ?? '';
   if (!run.outcome || !ctx.acct.own[t]) return void ctx.log.push(`${run.runId}：${ctx.acct.own[t] ? '沒有結論' : '已經不是自選股'}，不套用`);
@@ -240,9 +310,7 @@ export async function applyOwnCondition(ctx: ApplyCtx, run: AiRun): Promise<void
   if (!cond) return void ctx.log.push(`${run.runId}：條件 ${d.condId} 已經不在監測中（已撤下或已成立），不通知`);
   ctx.stmts.push(metStmt(ctx.db, cond.id, ctx.now.toISOString(), `F25 ${run.runId} 3 票確認`, 'FILING_VOTE'));
   // run_id：確認條件成立的 F25，和寫下條件的那次執行
-  const tier = notifyTier(cond);
-  if (tier) notifyCondition(ctx, t, tier, cond.text, `${run.runId}：條件 ${d.condId} 成立`, [run.runId, cond.runId]);
-  else ctx.log.push(`${run.runId}：條件 ${d.condId} 成立（成立時重新審查）→ 下一次審查會看到`);
+  notifyOwnCondition(ctx, cond, `${citedDoc(run) ?? '新申報'} 的原文，3 票確認（引用在網站）`, [run.runId, cond.runId], `${run.runId}：條件 ${d.condId} 成立`);
 }
 
 /**
@@ -262,9 +330,7 @@ export async function ownXbrlConditions(ctx: ApplyCtx, facts: Map<string, Quarte
         continue;
       }
       ctx.stmts.push(metStmt(ctx.db, c.id, ctx.now.toISOString(), `新財報（${rows[0].form} ${rows[0].filed}）：${m.values.map((v) => (v === null ? '—' : v.toFixed(4))).join('、')}`, 'XBRL'));
-      const tier = notifyTier(c);
-      if (tier) notifyCondition(ctx, t, tier, c.text, `${t} 財報條件 ${c.condId} 成立（程式比對 XBRL）`, [c.runId]);
-      else ctx.log.push(`${t} 財報條件 ${c.condId} 成立（成立時重新審查）→ 下一次審查會看到`);
+      notifyOwnCondition(ctx, c, xbrlWhy(c.check, m.values, rows[0]), [c.runId], `${t} 財報條件 ${c.condId} 成立（程式比對 XBRL）`);
     }
   }
 }
@@ -374,6 +440,42 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
     }
   }
   if (checkpoint) await setStateStmt(env.DB, checkpointKey(session), JSON.stringify(record), now.toISOString()).run();
+  if (Object.keys(patch).length) await patchOwn(env.DB, now, patch, res.log);
+  // 你定的「重新審查」條件成立（§1.10）：今天還沒有審查的開一次
+  await startCondReviews(sc);
+}
+
+/**
+ * 你定的條件成立、動作是「重新審查」（own_thesis §1.10 甲類）：condReviewDue 有值的開一次審查，觸發原因 CONDITION，
+ * 不受提前審查的頻率上限限制。今天已經有這檔的審查（例如財報後的）→ 只清掉。沒開成 → 留著，下一次開執行時再試。
+ * 每日第一次流程（startOwnRuns 最後）與 01:30 的 finalStarts 都呼叫：01:30 才套用的條件確認當天就開。
+ */
+export async function startCondReviews(sc: StartCtx): Promise<void> {
+  const { env, fetcher, acct, view, axis, session, ov, now, res } = sc;
+  const patch: Record<string, Partial<OwnMeta>> = {};
+  for (const [t, m] of Object.entries(acct.own)) {
+    if (!m.condReviewDue) continue;
+    const same = await env.DB.prepare("SELECT 1 AS x FROM ai_runs WHERE fn = 'OWN_REVIEW' AND ticker = ? AND as_of = ? LIMIT 1").bind(t, session).first();
+    if (same) {
+      patch[t] = { condReviewDue: null };
+      res.log.push(`${t} 你定的條件成立（重新審查）：今天已經有審查，不另外開`);
+      continue;
+    }
+    try {
+      res.started.push((await startOwnReview(env, fetcher, acct, view, axis, t, 'CONDITION', now)).runId);
+      patch[t] = { condReviewDue: null, ...(m.reviewSkip ? { reviewSkip: null } : {}) };
+      res.log.push(`${t} 你定的條件成立（重新審查）→ 開審查`);
+    } catch (e) {
+      res.log.push(`${t} 的審查（你定的條件成立）沒有開成：${errText(e)}`);
+      res.alerts.push({ kind: 'FLOW_ERROR', message: `${t} 的 AI 審查（你定的條件成立、動作是重新審查）沒有開成：${errText(e)}` });
+      try {
+        const alert = await reviewStartFailed(env.DB, t, m.fileId ?? null, session, now, ov);
+        if (alert) res.alerts.push(alert);
+      } catch (e2) {
+        res.log.push(`${t} 的審查失敗次數沒有記成：${errText(e2)}`);
+      }
+    }
+  }
   if (Object.keys(patch).length) await patchOwn(env.DB, now, patch, res.log);
 }
 

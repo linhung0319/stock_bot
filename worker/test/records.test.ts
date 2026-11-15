@@ -13,7 +13,7 @@ import type { Env, Fetcher } from '../src/app/env';
 import { EXPORT_TABLES, exportPage } from '../src/app/export';
 import { findNote } from '../src/app/site/explain';
 import type { AiNote } from '../src/app/site/types';
-import { conditionMet, hardEvent, liveShadow, monthlyReport, recordAiTier, refreshOwnAiChoice, type Item, type Notif } from '../src/engine';
+import { condMetNotice, hardEvent, liveShadow, monthlyReport, recordAiTier, refreshOwnAiChoice, type Item, type Notif } from '../src/engine';
 import { VERSION, handle } from '../src/index';
 import { freshDb } from './helpers/d1';
 import { ranksAt } from './helpers/market';
@@ -170,20 +170,21 @@ describe('② 雲端排程回報的 repo commit', () => {
 // ---------------------------------------------------------------- ③ run_id
 
 describe('③ AI 建議產生的通知項目、通知、影子紀錄帶 run_id', () => {
-  it('F25：項目與通知帶 run_id；照 AI 回覆後影子紀錄也帶', () => {
+  it('F25：項目與通知帶 run_id；這次不做（寫理由）之後影子紀錄也帶', () => {
     const sc = scenarios.s1();
     const sim = new Sim(sc.market, sc.init);
     sim.runUntil('2026-12-10');
     sim.day();
     const ticker = Object.keys(sim.acct.own)[0];
-    const r = conditionMet(sim.acct, sim.pre, ticker, 'EXIT', '假的條件', '2026-12', 1, ['run-f25', 'run-f24']);
+    // T29a：F25 是甲類（你定的條件成立），預設照當時的決定；照做和規則相同不留影子紀錄，所以這裡選這次不做
+    const r = condMetNotice(sim.acct, sim.pre, ticker, { id: 1, text: '假的條件', action: 'EXIT', setAt: '2026-12-01', aiProposed: false, why: '測試', runIds: ['run-f25', 'run-f24'] });
     sim.acct = r.acct;
     const it25 = item(r.notif!, 'F25', ticker);
     expect(it25.runIds).toEqual(['run-f25', 'run-f24']);
     expect(r.notif!.runIds).toEqual(['run-f25', 'run-f24']);
-    sim.respond(r.notif!.id, { mode: 'DO', choices: { [it25.key]: 'AI' } });
+    sim.respond(r.notif!.id, { mode: 'DO', choices: { [it25.key]: 'SKIP' }, reasons: { [it25.key]: '測試的理由' } });
     const rec = liveShadow(sim.acct.shadow).find((s) => s.f === 'F25');
-    expect(rec).toMatchObject({ ticker, notif: r.notif!.id, runIds: ['run-f25', 'run-f24'] });
+    expect(rec).toMatchObject({ ticker, notif: r.notif!.id, runIds: ['run-f25', 'run-f24'], note: '測試的理由' });
   });
 
   it('F19：AI 法庭提出的帶 run_id；規則直接提出的沒有', () => {

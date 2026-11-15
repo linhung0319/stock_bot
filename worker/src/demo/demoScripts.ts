@@ -17,8 +17,10 @@ export interface DemoScript {
   vetoes?: Record<string, string[]>;
   /** on 那一天早上（月報之前）記下的 F24 檔位。 */
   aiTiers?: { on: string; ticker: string; tier: Tier; date: string; suggest: boolean }[];
-  /** on 那一天收盤後成立的條件（F25）。 */
-  conditions?: { on: string; ticker: string; tier: Tier; text: string }[];
+  /** on 那一天收盤後成立的你定的條件（甲類通知，own_thesis §1.10）：setAt 哪天勾選的、why 怎麼確認的。 */
+  conditions?: { on: string; ticker: string; action: 'EXIT' | 'HALF'; text: string; setAt: string; why: string }[];
+  /** on 那一天收盤後 AI 審查判前提不成立的當天通知（乙類，own_thesis §1.10）。 */
+  breaks?: { on: string; ticker: string; tier: 'EXIT' | 'HALF'; premiseId: string; basis: string }[];
   notes: AiNote[];
 }
 
@@ -78,15 +80,16 @@ export const DEMO_SCRIPTS: Record<DemoId, DemoScript> = {
   s2: {
     id: 's2',
     title: '自選股大跌',
-    summary: 'MU 占帳戶約 14%。財報後下跌，12/24 觸發慢規則減半（當天通知）；1 月 AI 的條件成立、建議出清；META 也跌破 -20% 但部位小，併入 1 月月報，AI 說不動。',
-    tips: ['MU 減半：規則和 AI 這次是同一個動作，只有一行', '跳到 1/4 的月報：META 規則說減半、AI 說不動，兩個並列', '跳到 1/7：AI 的條件成立，建議出清 MU（規則沒有動作）'],
+    summary: 'MU 占帳戶約 14%。財報後下跌，12/24 觸發慢規則減半（當天通知）；1 月你定的出場條件成立、照當時的決定出清；META 也跌破 -20% 但部位小，併入 1 月月報，AI 說不動；1/21 AI 審查認為 NVDA 的前提不成立。',
+    tips: ['MU 減半：規則和 AI 這次是同一個動作，只有一行', '跳到 1/4 的月報：META 規則說減半、AI 說不動，兩個並列', '跳到 1/7：你定的出場條件成立，預設照當時的決定出清 MU', '跳到 1/21：AI 審查認為 NVDA 的前提不成立，可以照 AI、拿去討論或不同意'],
     startAt: '2026-12-28',
     aiTiers: [
       { on: '2026-12-18', ticker: 'MU', tier: 'HALF', date: '2026-12-18', suggest: true },
       { on: '2026-12-31', ticker: 'META', tier: 'HOLD', date: '2026-12-31', suggest: false },
       { on: '2027-02-26', ticker: 'MU', tier: 'HALF', date: '2027-02-26', suggest: false },
     ],
-    conditions: [{ on: '2027-01-06', ticker: 'MU', tier: 'EXIT', text: 'DRAM/HBM 合約價走平或下跌' }],
+    conditions: [{ on: '2027-01-06', ticker: 'MU', action: 'EXIT', text: 'DRAM/HBM 合約價走平或下跌', setAt: '2026-12-20', why: '8-K 2027-01-06 的原文，3 票確認（引用在網站）。這條是 AI 建議，你在 12/20 勾選。' }],
+    breaks: [{ on: '2027-01-20', ticker: 'NVDA', tier: 'HALF', premiseId: 'P1', basis: '10-Q 2027-01-20' }],
     notes: [
       {
         kind: 'REVIEW',
@@ -125,11 +128,22 @@ export const DEMO_SCRIPTS: Record<DemoId, DemoScript> = {
         kind: 'CONDITION',
         ticker: 'MU',
         date: '2027-01-06',
-        verdict: '條件成立，建議出清',
+        verdict: '條件成立',
         votes: '3 票確認',
-        summary: '12/18 審查時寫下的條件「DRAM/HBM 合約價走平或下跌」成立：產業報告指出第一季 DRAM 合約價季減 8%，HBM3E 報價首度鬆動。',
-        quotes: [{ source: '產業新聞（TrendForce，虛構）', date: '2027-01-06', quote: '第一季 DRAM 合約價季減 8%，HBM3E 報價首度鬆動' }],
+        summary: '你在 12/20 勾選的條件「DRAM/HBM 合約價走平或下跌」成立：公司在 8-K 寫明第一季 DRAM 合約價季減 8%，HBM3E 報價首度鬆動。',
+        quotes: [{ source: '8-K Item 7.01（虛構）', date: '2027-01-06', quote: 'DRAM contract prices declined 8% sequentially; HBM3E pricing softened for the first time' }],
         conditions: MU_CONDITIONS,
+        fake: true,
+      },
+      {
+        kind: 'REVIEW',
+        ticker: 'NVDA',
+        date: '2027-01-20',
+        verdict: '減半',
+        votes: '3 票一致',
+        summary: '財報後的審查：你的前提「資料中心 GPU 的領先地位兩年內不會被追上」不成立。10-Q 寫明前兩大雲端客戶開始量產自研加速器，資料中心營收季減。',
+        premises: [{ text: '資料中心 GPU 的領先地位兩年內不會被追上', origin: 'USER', status: 'BROKEN', evidence: '10-Q：「two of our largest cloud customers began volume deployment of internally developed accelerators」（虛構）' }],
+        quotes: [{ source: '10-Q（虛構）', date: '2027-01-20', quote: 'two of our largest cloud customers began volume deployment of internally developed accelerators' }],
         fake: true,
       },
       {

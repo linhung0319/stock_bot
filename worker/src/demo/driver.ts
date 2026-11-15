@@ -4,8 +4,9 @@
 // 真正的系統裡這些由 Worker 的排程做（T7）；這裡只給示範模式與驗收測試用。
 import {
   bookShares,
+  breakNotice,
   composeNotif,
-  conditionMet,
+  condMetNotice,
   createAccount,
   dailyCheck,
   excessVol,
@@ -73,12 +74,20 @@ function morning(st: DemoState, m: Market, script: DemoScript, on?: OnNotifs): v
   on?.(st.acct, view, order);
 }
 
-/** 收盤後：每日檢查，再看腳本裡這一天有沒有成立的條件（F25）。 */
+/** 收盤後：每日檢查，再看腳本裡這一天有沒有成立的你定的條件（甲類）、AI 判斷前提不成立的當天通知（乙類）。 */
 function evening(st: DemoState, m: Market, script: DemoScript, on?: OnNotifs): void {
   const view = viewAt(m, st.d);
   const date = m.days[st.d];
   st.acct = dailyCheck(st.acct, view).acct;
-  for (const c of script.conditions ?? []) if (c.on === date) st.acct = conditionMet(st.acct, view, c.ticker, c.tier, c.text, date.slice(0, 7)).acct;
+  (script.conditions ?? []).forEach((c, k) => {
+    if (c.on === date) st.acct = condMetNotice(st.acct, view, c.ticker, { id: 9000 + k, text: c.text, action: c.action, setAt: c.setAt, aiProposed: true, why: c.why }).acct;
+  });
+  for (const b of script.breaks ?? []) {
+    if (b.on !== date || !st.acct.own[b.ticker]) continue;
+    const r = breakNotice(st.acct, view, b.ticker, { tier: b.tier, premiseId: b.premiseId, basis: b.basis });
+    st.acct = r.acct;
+    if (r.notif) st.acct.own[b.ticker].aiNotifiedAt = date;
+  }
   on?.(st.acct, view, ranksAt(m, st.d));
 }
 

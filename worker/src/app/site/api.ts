@@ -24,6 +24,8 @@ import {
   removeOwn,
   reopen,
   resolveFollowUp,
+  REASON_MAX,
+  missingReasons,
   respond,
   resumeMonthly,
   totalValue,
@@ -495,9 +497,25 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     if (act === 'respond') {
       const mode = b.mode === 'SKIP' ? 'SKIP' : 'DO';
       const choices = (b.choices ?? {}) as Record<string, 'RULE' | 'AI' | 'DO' | 'SKIP'>;
+      const raw = b.reasons && typeof b.reasons === 'object' && !Array.isArray(b.reasons) ? (b.reasons as Record<string, unknown>) : {};
+      const reasons = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, String(v ?? '').trim()]));
       const r = await mutate(backend, `回覆通知 #${id}`, [], (d) => {
-        if (findNotif(d.acct, id).status !== 'PENDING') throw new SiteError(409, '這則通知已經回覆過了');
-        return { acct: respond(d.acct, d.view, id, { mode, choices }) };
+        const n = findNotif(d.acct, id);
+        if (n.status !== 'PENDING') throw new SiteError(409, '這則通知已經回覆過了');
+        // 甲類的「這次不做」、當天乙類的「不同意，不動」要寫一句理由（own_thesis §1.10）
+        const miss = missingReasons(n, { mode, choices, reasons });
+        if (miss.length) throw new SiteError(422, `${miss.map((it) => `「${it.ticker ?? it.title}」`).join('、')}選了不做，要寫一句理由（1～${REASON_MAX} 字）`);
+        const long = n.items.find((it) => (reasons[it.key] ?? '').length > REASON_MAX);
+        if (long) throw new SiteError(422, `理由最多 ${REASON_MAX} 個字`);
+        const acct = respond(d.acct, d.view, id, { mode, choices, reasons });
+        // 甲類的回應寫進論點檔（照當時的決定 FOLLOW／這次不做 SKIPPED＋理由）；乙類的回應在 T30
+        const after = acct.notifs.find((x) => x.id === id)!;
+        const log: ThesisLogInput[] = after.items.flatMap((it) => {
+          const fileId = it.brk?.type === 'A' && it.ticker ? d.acct.own[it.ticker]?.fileId : undefined;
+          if (!fileId || it.cancelled) return [];
+          return [{ ticker: it.ticker!, fileId, session: d.view.date, kind: 'RESPONSE' as const, ref: String(id), body: { notif: id, type: 'A', outcome: it.choice === 'SKIP' ? 'SKIPPED' : 'FOLLOW', reason: it.reason ?? null } }];
+        });
+        return { acct, log };
       });
       return json({ ok: true, status: findNotif(r.after.acct, id).status });
     }

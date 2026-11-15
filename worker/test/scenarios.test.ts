@@ -7,7 +7,7 @@ import {
   bucketValue,
   changeRatio,
   classify,
-  conditionMet,
+  condMetNotice,
   deposit,
   halveShares,
   hardEvent,
@@ -214,25 +214,26 @@ describe('情境 ② 自選股大跌（MU）', () => {
     expect(sim.acct.shadow.find((s) => s.f === 'F7' && s.ticker === 'META')).toMatchObject({ rule: -3, ai: 0, actual: 0 });
   });
 
-  it('F25：條件成立 → 當天通知只有 AI 一行＋不做；每檔每月最多 1 則；照 AI 出清 = 移出自選', () => {
+  // T29a 改了這個行為（own_thesis §1.9、§1.10）：你定的條件成立是甲類，預設照當時的決定、不設每月上限
+  it('F25：你定的條件成立 → 當天通知預設「照當時的決定」＋這次不做；同一個月第二條也通知；照做出清 = 移出自選', () => {
     const sim = start();
     sim.runUntil('2027-01-06');
     sim.day();
-    // 1/6 收盤後：事件條件 C2 成立（3 票確認）→ AI 建議出清
-    const r = conditionMet(sim.acct, sim.pre, 'MU', 'EXIT', 'DRAM/HBM 合約價走平或下跌', '2027-01');
+    // 1/6 收盤後：你定的事件條件成立（3 票確認）→ 照當時的決定出清
+    const r = condMetNotice(sim.acct, sim.pre, 'MU', { id: 1, text: 'DRAM/HBM 合約價走平或下跌', action: 'EXIT', setAt: '2026-12-20', aiProposed: false, why: '8-K 2027-01-06 的原文，3 票確認（引用在網站）' });
     sim.acct = r.acct;
     const n = r.notif!;
     expect(n.kind).toBe('URGENT');
     const it25 = item(n, 'F25', 'MU');
-    expect(it25.choices.map((c) => c.id)).toEqual(['AI', 'SKIP']);
-    expect(it25.choice).toBe('SKIP'); // 使用者不選時照規則 = 不動
-    expect(sharesOf(it25, 'AI')).toBe(-sim.acct.lots.own.MU);
-    // 1/8 財報條件也成立，但本月已經發過
-    const again = conditionMet(sim.acct, sim.pre, 'MU', 'HALF', '毛利率低於 80%', '2027-01');
-    expect(again.notif).toBeNull();
-    expect(again.why).toContain('本月已發過');
-    // 照 AI 出清：全部賣出、錢回核心，這檔不再有規則或 AI 追蹤
-    sim.respond(n.id, { mode: 'DO', choices: { [it25.key]: 'AI' } });
+    expect(it25.kind).toBe('OWN_COND');
+    expect(it25.choices.map((c) => c.id)).toEqual(['DO', 'SKIP']);
+    expect(it25.choice).toBe('DO'); // 預設照當時的決定
+    expect(sharesOf(it25, 'DO')).toBe(-sim.acct.lots.own.MU);
+    // 1/8 另一條你定的條件也成立：不設每月上限，照樣當天通知
+    const again = condMetNotice(sim.acct, sim.pre, 'MU', { id: 2, text: '毛利率低於 80%', action: 'EXIT', setAt: '2026-12-20', aiProposed: false, why: '最新一季毛利率 78.0%（10-Q 2027-01-08）' });
+    expect(again.notif).not.toBeNull();
+    // 照當時的決定出清：全部賣出、錢回核心，這檔不再有規則或 AI 追蹤
+    sim.respond(n.id, { mode: 'DO' });
     sim.open();
     expect(sim.acct.lots.own.MU).toBeUndefined();
     expect(sim.acct.own.MU).toBeUndefined();

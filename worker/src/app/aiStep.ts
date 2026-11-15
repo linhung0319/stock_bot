@@ -22,13 +22,14 @@ import { applyDropExplain, applyOwnDrop, startDropRuns } from './dropAi';
 import type { Env, Fetcher } from './env';
 import { applyEventScan, applyHardEvent, applyRuleEvents, classifyFresh, scanTargets, startEventRuns, type Classified } from './events';
 import { fetchFilingChecks, markSeen, sectorEtfs, type FilingCheck } from './filings';
-import { ConflictError, loadAccount, requiredTickers, saveAccount } from './ledgerStore';
+import { ConflictError, loadAccount, requiredTickers, saveAccount, thesisLogStmt } from './ledgerStore';
 import { applyMomEntry, momPreview } from './momAi';
 import { applyOwnCondition, applyOwnReview, ownFacts, ownXbrlConditions, routineReady, startOwnRuns } from './ownAi';
 import { noteOfRun } from './site/aiViews';
 import { annotate } from './site/explain';
 import type { AiNote } from './site/types';
 import { startStrategyRun } from './strategyAi';
+import { breakLogs } from './thesis';
 
 export type { StepResult as AiStepResult } from './aiCtx';
 
@@ -94,6 +95,8 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
     }
     await ownXbrlConditions(ctx, facts);
     await applyRuleEvents(ctx, classified);
+    // 新的失效通知（甲類、乙類）→ 論點檔的 BREAK_NOTICE（own_thesis §1.10），和帳戶同一筆存
+    ctx.stmts.push(...breakLogs(ctx.acct, ctx.acct.notifs.filter((n) => !before.has(n.id))).map((l) => thesisLogStmt(db, l, null, now.toISOString())));
     if (!ctx.stmts.length && ctx.acct === loaded.acct) break;
     const notes = (await listRuns(db, now, { limit: 200 })).map(noteOfRun).filter((n): n is AiNote => n !== null);
     annotate({ acct: ctx.acct, view, axis, rankOrder: ranking?.order ?? [], aiNotes: notes }, (n) => !before.has(n.id));

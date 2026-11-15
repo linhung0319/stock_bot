@@ -50,7 +50,8 @@ export async function breakInfo(db: D1Database | null, acct: Account, file: Thes
   const tier = (item?.choices.find((c) => c.id === 'AI')?.tier as Tier | undefined) ?? meta?.aiTier?.tier ?? null;
   const runId = item?.runIds?.[0] ?? meta?.aiTier?.runId ?? null;
   const review = runId ? file.reviews.find((r) => r.runId === runId) : undefined;
-  const premiseId = review?.brokenPremises[0] ?? meta?.aiTier?.premiseId ?? null;
+  // 乙類的項目記著是哪一條前提（T29a）；舊的月報建議項目從那次審查或 aiTier 找
+  const premiseId = (item?.brk?.type === 'B' ? item.brk.premiseId : null) ?? review?.brokenPremises[0] ?? meta?.aiTier?.premiseId ?? null;
   const premiseText = premiseId ? (file.premises.find((p) => p.id === premiseId)?.text ?? null) : null;
   let quote: string | null = null;
   let source: string | null = null;

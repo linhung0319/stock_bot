@@ -51,13 +51,20 @@ export interface OwnMeta {
   /**
    * 最近一次 F24 的檔位（AI 層給的輸入）。suggest = 3 票一致、和目前不同、有一條不成立的前提 → 月報並列。
    * premiseId：三票都判不成立（有申報或財報引用）的那條前提，有多條時取編號最小的（own_thesis §1.6 第 1 點）。
+   * trigger：那次審查的觸發原因（§1.9 決定當天通知還是等月報）；basis：判不成立的依據（例如「8-K 2027-01-06」，乙類通知的理由用）。
    */
-  aiTier: { tier: Tier; date: string; runId?: string; suggest: boolean; premiseId?: string } | null;
+  aiTier: { tier: Tier; date: string; runId?: string; suggest: boolean; premiseId?: string; trigger?: ReviewTrigger; basis?: string } | null;
   raisedAt: string | null;
   /** 未解除的硬事件標記。 */
   flags: string[];
-  /** 每個月已發幾則 F25 當天通知。 */
+  /** 每個月已發幾則 F25 當天通知。2026-11-15 起不再使用（own_thesis §1.9：你定的條件成立不設上限），欄位留著不讀。 */
   f25Sent: Record<string, number>;
+  /** 最近一次「AI 發起的當天通知」（乙類，own_thesis §1.10）的訊號日：每檔 30 個日曆天最多 1 則，超過的進月報。沒有 = 還沒發過。 */
+  aiNotifiedAt?: string | null;
+  /** 月審確認成立的你定的條件（甲類）：不當天通知，進隔天的月報（own_thesis §1.10）。月報產生時清掉。 */
+  condMonthly?: CondNotice[];
+  /** 你定的條件成立、動作是「重新審查」的訊號日：當天（或下一次開執行時）開一次審查，觸發原因 CONDITION（own_thesis §1.10）。開了或略過就清掉。 */
+  condReviewDue?: string | null;
   /** 上一次 F24 之後已成立、還沒被新的審查處理的降級條件（F8 加回時註明）。 */
   metConds?: string[];
   /**
@@ -110,7 +117,27 @@ export interface Lots {
   unc: Record<string, number>;
 }
 
-export type ItemKind = 'STRATEGY' | 'OWN_RULE' | 'AI_ONLY' | 'HARD' | 'CASHFLOW' | 'FIX';
+/** 定期審查的觸發原因（own_thesis §1.9、§3.6.5；EARLY 是 T29b 的提前審查、DROP 是減半檢視）。 */
+export type ReviewTrigger = 'MONTHLY' | 'EARNINGS' | 'EARLY' | 'CONDITION' | 'DROP' | 'THESIS' | 'MANUAL';
+
+/**
+ * 甲類通知（own_thesis §1.10）：你定的條件成立。項目由引擎照當時的持股換算股數。
+ * setAt：誰哪天定的（勾選日；舊資料用建立日）；aiProposed：AI 建議、你勾選的；why：理由（依 met_basis）。
+ */
+export interface CondNotice {
+  /** own_conditions 的列編號。 */
+  id: number;
+  text: string;
+  action: 'EXIT' | 'HALF';
+  setAt: string;
+  aiProposed: boolean;
+  why: string;
+  premiseId?: string | null;
+  runIds?: string[];
+}
+
+/** OWN_COND：甲類（你定的條件成立）的項目（own_thesis §1.10）。 */
+export type ItemKind = 'STRATEGY' | 'OWN_RULE' | 'AI_ONLY' | 'HARD' | 'CASHFLOW' | 'FIX' | 'OWN_COND';
 export type ChoiceId = 'RULE' | 'AI' | 'DO' | 'SKIP';
 
 /** 清單上的選項做完之後，帳戶狀態要跟著改的事（存成資料，不存函式）。 */
@@ -152,6 +179,15 @@ export interface Item {
   runIds?: string[];
   /** F5／F6：上次選了「這次不做」、這份月報重列的那一項（core_ai §3.6，由 T33c 產生；重列的不開檢視）。 */
   relist?: boolean;
+  /**
+   * 失效通知（own_thesis §1.10）：A = 你定的條件成立（conditionId 是 own_conditions 的列編號）；B = AI 判斷前提不成立、沒有對應的條件。
+   * 寫 own_thesis_log 的 BREAK_NOTICE、網站的「拿去討論」用。
+   */
+  brk?: { type: 'A'; conditionId: number; premiseId: string | null } | { type: 'B'; premiseId: string };
+  /** 選「這次不做」（SKIP）時要寫一句理由（1～200 字），沒寫不能送出。 */
+  reasonRequired?: boolean;
+  /** 回覆時寫的理由（選了不做的那一句）。 */
+  reason?: string;
 }
 
 export type NotifKind = 'MONTHLY' | 'MONTHLY_EMPTY' | 'URGENT' | 'CASHFLOW' | 'FIX' | 'INFO' | 'CLASSIFY' | 'CASH_DIFF';

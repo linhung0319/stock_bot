@@ -8,7 +8,8 @@
 // 8-K 的挑選順序、論點那一份 note）。讀 D1，所以不在引擎裡。
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
 import { confirmMode, type OwnCondition } from '../ai/ownReview';
-import { clone, type Account, type Attention, type MarketView, type OwnMeta, type Thesis, type Tier } from '../engine';
+import { clone, type Account, type Attention, type MarketView, type Notif, type OwnMeta, type Thesis, type Tier } from '../engine';
+import type { ThesisLogInput } from './ledgerStore';
 import { XBRL_METRICS, type QuarterRow } from '../data/edgar';
 import type { Filing } from '../data/sources';
 import { accOf, loadEvents, type SecEventRow } from './filings';
@@ -644,7 +645,8 @@ export function xbrlProgress(rows: QuarterRow[], check: Record<string, unknown>,
   return { at, basis: 'XBRL', period: rows[0].end, values, level, streak: Math.min(streak, need), need };
 }
 
-const fmtMetric = (metric: string, v: number | null) => {
+/** 財報指標的顯示：比率寫百分比、金額大的寫 M。 */
+export const fmtMetric = (metric: string, v: number | null) => {
   if (v === null) return '—';
   const m = XBRL_METRICS[metric];
   if (m?.pct) return `${(v * 100).toFixed(1)}%`;
@@ -764,7 +766,7 @@ const cnNum = (n: number) => CN_NUM[n] ?? String(n);
 const ownedLive = (f: Pick<ThesisFile, 'conditions'>) => f.conditions.filter((c) => isOwned(c) && OWNED_LIVE.includes(c.status));
 
 /**
- * 自選股的「要看的事」，一種一個物件。加一種 = 在這裡加一個物件（T29a 的 COND_MET_NO_SELL、T29b 的 PRICE_NO_FILING、
+ * 自選股的「要看的事」，一種一個物件。加一種 = 在這裡加一個物件（T29a 的 COND_MET_NO_SELL 已加；T29b 的 PRICE_NO_FILING、
  * T29c 的 PRESS_MISMATCH、T35 的 SIZE_2X；T31a 的 NO_CONSENSUS 已加）；判斷需要的資料先放進論點檔或帳戶狀態。
  * 月報的頻率用「月」算（月報一個月一份；設計寫的「90 天」「6 個月」「每年」= 3、6、12 個月）。
  */
@@ -839,7 +841,50 @@ export const OWN_ATTN: AttnKind[] = [
       return [{ key: `NO_CONSENSUS@${s.first}`, every: null, since: s.reachedAt ?? view.date, text: `${file.ticker} 最近 ${s.count} 次審查都沒有一致結論，論點可能寫得不夠具體，可以拿去討論` }];
     },
   },
+  {
+    // 你定的條件成立、但換算出來不用賣（§1.10 甲類）：沒有發通知（log 沒有這條的 BREAK_NOTICE）、也不是等著進月報的。
+    // 成立後的第一份月報列一次；持股頁列到那份月報產生為止（之後有成立日之後的月報就不再算）
+    kind: 'COND_MET_NO_SELL',
+    detect({ file, meta, acct }) {
+      const told = new Set(file.log.filter((l) => l.kind === 'BREAK_NOTICE' && l.body.type === 'A').map((l) => Number(l.body.conditionId)));
+      const queued = new Set((meta.condMonthly ?? []).map((q) => q.id));
+      const half = acct.rule.own[file.ticker]?.applied === 'HALF';
+      return file.conditions
+        .filter((c) => {
+          if (c.status !== 'MET' || !c.metAt || !isOwned(c) || told.has(c.id) || queued.has(c.id)) return false;
+          const tier = notifyTier(c);
+          if (tier !== 'EXIT' && tier !== 'HALF') return false;
+          const day = c.metAt.slice(0, 10);
+          return !acct.notifs.some((n) => (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY') && n.date > day);
+        })
+        .map((c) => ({ key: `COND_MET_NO_SELL:${c.id}`, every: null, since: c.metAt!.slice(0, 10), text: `${file.ticker}：你定的條件「${c.text}」成立；${half ? '目前已經是減半，不用再賣' : '目前沒有要賣的股數'}` }));
+    },
+  },
 ];
+
+/**
+ * 新的通知裡的失效通知項目（Item.brk）→ own_thesis_log 的 BREAK_NOTICE（own_thesis §1.10）。沒有論點檔編號的舊自選不寫。
+ * sameDay：當天通知（月報裡的是 false）。每日流程的套用段（當天通知）與月報產生時各寫一次。
+ */
+export function breakLogs(acct: Pick<Account, 'own'>, notifs: Notif[]): ThesisLogInput[] {
+  const out: ThesisLogInput[] = [];
+  for (const n of notifs) {
+    for (const it of n.items) {
+      if (!it.brk || !it.ticker || it.cancelled) continue;
+      const fileId = acct.own[it.ticker]?.fileId;
+      if (!fileId) continue;
+      out.push({
+        ticker: it.ticker,
+        fileId,
+        session: n.date,
+        kind: 'BREAK_NOTICE',
+        ref: String(n.id),
+        body: { type: it.brk.type, notif: n.id, runIds: it.runIds ?? [], conditionId: it.brk.type === 'A' ? it.brk.conditionId : null, premiseId: it.brk.premiseId, tier: it.choices.find((c) => c.id !== 'SKIP')?.tier ?? null, sameDay: n.kind === 'URGENT' },
+      });
+    }
+  }
+  return out;
+}
 
 /**
  * 自選股的「要看的事」（own_thesis §3.6.6）：每份論點檔逐種判斷，回傳現在成立的全部（不看頻率；持股頁就是這一份）。

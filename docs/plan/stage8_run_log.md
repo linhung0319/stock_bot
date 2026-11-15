@@ -18,6 +18,7 @@
 | T28 | 完成 | （見 git log） | 433 通過、1 略過 |
 | T27 | 完成 | （見 git log） | 453 通過、1 略過 |
 | T31a | 完成 | （見 git log） | 468 通過、1 略過 |
+| T29a | 完成 | （見 git log） | 481 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -106,6 +107,16 @@
 - T31a｜告警的「下一次審查」寫成「12-30 的月底檢查點，有新財報時會提早」，日期用空的休市表算。
 - T31a｜持股頁那一句跨月後改寫成「11 月底檢查時沒有新證據，沿用 … 的審查」；之後有更新的審查結論就不顯示。
 - T31a｜多標了一處：`design_v2` §2.2 的 R1 那一列（設計 §3.9 有寫，派工單沒列）。
+- T29a｜乙類的依據放 `aiTier.basis`（設計只有 `premiseId`、`trigger`）：月報的乙類項目要寫「依據：8-K …」，引擎讀不到 AI 的票。取三票裡第一張通過逐字檢查、來源是申報或財報表的引用。
+- T29a｜月審確認的甲類記在 `OwnMeta.condMonthly`，隔天出月報時轉成項目再清掉（引擎保持純函式）。
+- T29a｜「重新審查」動作記在 `OwnMeta.condReviewDue`，23:30 與 01:30 會開；當天已有這檔的審查就只清掉；03:30 才成立的隔天 23:30 開。審查三票確認的條件、動作又是重新審查時不另開（確認它的就是這次審查）。
+- T29a｜`COND_MET_NO_SELL` 不另存資料，由論點檔推出（已成立、你定的、動作出清或減半、沒有這條的甲類 `BREAK_NOTICE`、也沒在等月報）。副作用：T29a 之前已成立的舊條件可能被列出（開發階段可接受）。
+- T29a｜靜默期例外「檔位比不同意時更重」：不同意時的檔位取那則通知上「照 AI」的檔位，找不到就當成一樣重（照樣靜默）。
+- T29a｜有還沒回覆的乙類時更新那一則、不另寫 `BREAK_NOTICE`。
+- T29a｜§1.9 表的判斷順序：資格與靜默 → 回到標準或提高只進月報 → 有還沒回覆的慢規則通知或乙類 → 觸發原因與 30 天上限；兩個「不另發」也套用在月審上。
+- T29a｜只寫了甲類的 `RESPONSE`；乙類的三種回應在 T30，理由已存在項目上。乙類只有當天通知要寫理由（月報裡沒動的記 SKIPPED 是 T30）。
+- T29a｜甲類標題一律「你在 <勾選日> 定的條件」，沒有勾選日用建立日；AI 建議、你勾選的另加一句。LINE：乙類照設計四行、不列清單；甲類多 `n.text` 那一行。
+- T29a｜乙類項目標題列仍寫「賣 NVDA 13 股」（預設是不動），通知上方說明和項目內容有點重複，都留給 T34。
 
 ## 要使用者親手做的事
 
@@ -119,6 +130,7 @@
 - T26｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0012_condition_ownership.sql`。`own_review_v2.md` 由雲端排程從 repo 讀，push 之後生效。
 - T28｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0013_event_detail.sql`。`event_scan_v2.md` 由雲端排程從 repo 讀，push 之後生效。
 - T27｜`own_check_v2.md` 由雲端排程從 repo 讀，push 之後生效。想在 claude.ai 開專案整理討論的話，步驟在 `worker/SETUP.md` 的 T27 一節（可以不做）。
+- T29a｜部署後才生效：01:30 多了「你定的條件成立後的審查」。沒有 migration、沒有改 prompt。
 
 ## 畫面截圖
 
@@ -138,6 +150,9 @@
 | T27 | 持股頁：論點、編輯論點、複製討論包（桌機／手機） | `records/stage8/screens/T27/holding-desktop.png、holding-phone.png` |
 | T31a | 持股頁：沿用上次審查的那一句、NO_CONSENSUS（桌機） | `records/stage8/screens/T31a/holding-desktop.png` |
 | T31a | 同上（手機） | `records/stage8/screens/T31a/holding-phone.png` |
+| T29a | 甲類通知頁（桌機／手機） | `records/stage8/screens/T29a/typeA-desktop.png、typeA-phone.png` |
+| T29a | 甲類選「這次不做」、理由欄（桌機） | `records/stage8/screens/T29a/typeA-skip-desktop.png` |
+| T29a | 乙類通知頁：預設不動、理由欄、拿去討論（桌機／手機） | `records/stage8/screens/T29a/typeB-desktop.png、typeB-phone.png` |
 
 ## 卡住的任務
 

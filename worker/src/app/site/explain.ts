@@ -642,6 +642,24 @@ function aiOnly(ctx: ExplainContext, n: Notif, it: Item): Explain {
     };
   }
   const note = findNote(ctx.aiNotes, 'REVIEW', t, n.date, it.runIds);
+  if (it.brk?.type === 'B') {
+    // 乙類（own_thesis §1.10）：AI 判斷前提不成立、你沒有為這件事定過出場條件
+    const premise = /前提「(.+)」3 票/.exec(it.title)?.[1] ?? it.brk.premiseId;
+    return {
+      gauge: c ? contextDrawdown(c, view.i) : undefined,
+      short: `AI 審查 3 票都判前提「${premise}」不成立`,
+      why: `規則沒有動作。AI 審查 ${t} 時，3 票都判前提「${premise}」不成立，建議${tier ? TIER_NAME[tier] : ''}（${sharesText(sh)}）。${it.why ?? ''}`,
+      rule: `${RULE.ai}AI 判斷的是論點有沒有壞，不是股價會不會繼續跌。`,
+      math: [tier === 'EXIT' ? `自選持有 ${cur} 股 → 全部賣出` : `目前 ${cur} 股 → ${sharesText(sh)}`],
+      chart: t,
+      ai: note,
+      aiMissing: !note,
+      choiceNotes: {
+        AI: tier === 'EXIT' ? '全部賣出、錢回核心，這檔移出自選，論點檔結案。' : '賣一半，錢回核心；慢規則的狀態跟著變成減半。',
+        SKIP: it.reasonRequired ? '部位不動。要寫一句為什麼不同意，下一次審查會看到。想改論點可以先按「拿去討論」。' : `${SKIP.ai}想改論點可以先按「拿去討論」。`,
+      },
+    };
+  }
   const raise = tier === 'RAISE';
   return {
     gauge: c ? (raise ? aboveMaGauge(c, view.i) : contextDrawdown(c, view.i)) : undefined,
@@ -655,6 +673,32 @@ function aiOnly(ctx: ExplainContext, n: Notif, it: Item): Explain {
     ai: note,
     aiMissing: !note,
     choiceNotes: { AI: raise ? '買進後，這檔的標準比重就變成原本的 125%。等於提高自選的預算，由你決定。' : '照 AI 的檔位調整，慢規則的狀態跟著改。', SKIP: SKIP.ai },
+  };
+}
+
+/** 甲類（own_thesis §1.10）：你定的條件成立 → 照當時的決定（預設），不重新討論。 */
+function ownCond(ctx: ExplainContext, n: Notif, it: Item): Explain {
+  const { acct, view } = ctx;
+  const t = it.ticker!;
+  const doIt = it.choices.find((c) => c.id === 'DO');
+  const tier = doIt?.tier;
+  const sh = sharesOf(doIt?.lines ?? [], t);
+  const c = closeOf(view, t);
+  const cur = acct.lots.own[t] ?? 0;
+  const m = /你在 (\d{4}-\d{2}-\d{2}) 定的條件「(.+)」成立/.exec(it.title);
+  const note = findNote(ctx.aiNotes, 'CONDITION', t, n.date, it.runIds);
+  return {
+    gauge: c ? contextDrawdown(c, view.i) : undefined,
+    short: `你定的條件成立：${m?.[2] ?? ''}`,
+    why: `規則沒有動作。這是你${m ? `在 ${md(m[1])} ` : '之前'}定的條件「${m?.[2] ?? ''}」，當時決定成立時${tier ? TIER_NAME[tier] : ''}。確認：${it.why ?? ''}`,
+    rule: '你事先定的條件成立時，照你當時的決定做，不重新討論；系統只負責確認它成立了，股數由程式換算。每條條件只會成立一次。',
+    math: [tier === 'EXIT' ? `自選持有 ${cur} 股 → 全部賣出` : `目前 ${cur} 股 → ${sharesText(sh)}`],
+    chart: t,
+    ai: note,
+    choiceNotes: {
+      DO: tier === 'EXIT' ? '全部賣出、錢回核心，這檔移出自選，論點檔結案。' : '賣一半，錢回核心；慢規則的狀態跟著變成減半。',
+      SKIP: '要寫一句為什麼這次不做。這條條件不會再觸發；要再監測就重新定一條。',
+    },
   };
 }
 
@@ -696,6 +740,7 @@ function owed(ctx: ExplainContext, _n: Notif, it: Item): Explain {
 /** 一項建議的理由。 */
 export function explainItem(ctx: ExplainContext, n: Notif, it: Item): Explain {
   try {
+    if (it.kind === 'OWN_COND') return ownCond(ctx, n, it);
     if (it.kind === 'AI_ONLY') return aiOnly(ctx, n, it);
     if (it.kind === 'HARD') return hard(ctx, n, it);
     switch (it.f) {

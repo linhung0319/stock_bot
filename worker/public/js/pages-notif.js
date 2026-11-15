@@ -4,6 +4,7 @@ import { aiOverview, runRow, shadowLines } from './pages-ai.js';
 import { actionText, day, h, money, put, qty, toast } from './dom.js';
 import { consoleBox, glass, icon, longDay, menuList, page, tiles } from './layout.js';
 import { actParts, attentionList, bucketTag, chevron, headline, orderRows, whyBlock } from './parts.js';
+import { copyPackButton } from './pages-thesis.js';
 import { say } from './slime.js';
 
 const errBox = (e) => h('p', { class: 'err', role: 'alert' }, e?.message ?? String(e));
@@ -309,7 +310,7 @@ function slip(it, v, ui) {
     /* 試算：還沒有決定可以顯示 */
   } else if (!editable) {
     const c = it.choices.find((x) => x.id === it.choice);
-    pick = h('p', { class: 'picked' }, '你的決定：', h('b', null, c?.label ?? it.choice), c && c.id !== 'SKIP' && !multiLines ? `（${c.text}）` : '');
+    pick = [h('p', { class: 'picked' }, '你的決定：', h('b', null, c?.label ?? it.choice), c && c.id !== 'SKIP' && !multiLines ? `（${c.text}）` : ''), it.reason ? h('p', { class: 'small dim' }, '你寫的理由：', it.reason) : null];
   } else {
     const name = `pick-${v.id}-${it.key}`;
     const picks = h(
@@ -326,6 +327,7 @@ function slip(it, v, ui) {
             checked: ui.choices[it.key] === c.id,
             onchange: () => {
               setChip(c.id);
+              syncReason(c.id);
               ui.choose(it.key, c.id);
             },
           }),
@@ -335,6 +337,24 @@ function slip(it, v, ui) {
         ),
       ),
     );
+    // 甲類的「這次不做」、當天乙類的「不同意，不動」：要寫一句理由（own_thesis §1.10），選了才出現
+    let reasonBox = null;
+    if (it.reasonRequired) {
+      const ta = h('textarea', { rows: 2, maxlength: 200, 'aria-label': '一句理由', placeholder: it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做' ? '為什麼這次不照當時的決定做（1～200 字）' : '為什麼不同意（1～200 字）' });
+      ta.value = ui.reasons?.[it.key] ?? '';
+      ta.addEventListener('input', () => {
+        if (ui.reasons) ui.reasons[it.key] = ta.value;
+      });
+      reasonBox = h('label', { class: 'field', style: 'margin-top:10px' }, h('span', null, it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做' ? '這次不做的理由（必填）' : '不同意的理由（必填）'), ta, h('small', null, '下一次審查會看到這句話。'));
+    }
+    function syncReason(id) {
+      if (reasonBox) reasonBox.hidden = id !== 'SKIP';
+    }
+    syncReason(ui.choices[it.key]);
+    // 乙類：拿去討論（複製 BREAK 討論包；通知留在「等你決定」）
+    const discuss = it.discuss && it.ticker
+      ? h('div', { class: 'extra' }, h('div', { class: 'btn-row' }, copyPackButton(it.ticker, v.id, '拿去討論')), h('p', { class: 'small dim', style: 'margin-top:6px' }, '把討論包貼到 claude.ai 討論。這則通知會留在「等你決定」；改了論點，回來在「編輯論點」頁貼回、勾「這是對這則通知的回應」。'))
+      : null;
     const formBox = h('div');
     const extra = it.actions.length
       ? h(
@@ -367,7 +387,7 @@ function slip(it, v, ui) {
           ),
         )
       : null;
-    pick = [picks, extra, formBox];
+    pick = [picks, reasonBox, discuss, extra, formBox];
   }
   const sum = h(
     'summary',
@@ -485,13 +505,26 @@ export async function notifPage(ctx, id) {
   if (v.step === 1) {
     // ---------- 第一步：每張建議單左邊是做什麼、右邊是為什麼；右邊的主控台隨時顯示合起來要下的單
     const choices = Object.fromEntries(v.items.map((it) => [it.key, it.choice]));
+    const reasons = {};
     let composed = v.composed;
     const trayBox = h('div', { style: 'display:contents' });
     const sumBox = h('div', { class: 'sum' });
     const msg = h('div');
     const submit = async (mode) => {
+      // 要寫理由的項目選了不做卻沒寫：先在這裡擋下，打開那一張單（伺服器也會再檢查）
+      const miss = v.items.filter((it) => !it.cancelled && it.reasonRequired && (mode === 'SKIP' || choices[it.key] === 'SKIP') && !(reasons[it.key] ?? '').trim());
+      if (miss.length) {
+        msg.replaceChildren(errBox({ message: `${miss.map((it) => it.ticker ?? it.headline).join('、')} 選了不做，要寫一句理由。` }));
+        if (mode === 'SKIP') return msg.scrollIntoView({ block: 'center' });
+        const el = [...document.querySelectorAll('details.slip')][v.items.indexOf(miss[0])];
+        if (el) {
+          el.open = true;
+          el.querySelector('textarea')?.focus();
+        }
+        return;
+      }
       try {
-        const r = await api.post(`/notif/${v.id}/respond`, { mode, choices });
+        const r = await api.post(`/notif/${v.id}/respond`, { mode, choices, reasons });
         toast(r.status === 'RESPONDED' ? '已記下你的決定' : r.status === 'SKIPPED' ? '這次不做，已記下' : '完成');
         await ctx.refresh();
       } catch (e) {
@@ -509,6 +542,7 @@ export async function notifPage(ctx, id) {
     const ui = {
       editable: true,
       choices,
+      reasons,
       async choose(key, c) {
         const from = choices[key];
         choices[key] = c;
@@ -534,7 +568,7 @@ export async function notifPage(ctx, id) {
         steps: stepBar(1),
         bubble: { k: '改決定的時候', say: ['點任何一個選項，我會馬上告訴你', em('那樣做的結果'), '。按下去只是記下決定，我不會替你下單。'], mood: 'watch' },
       }),
-      pane: [reminded, v.text ? h('p', { class: 'dim', style: 'margin-bottom:12px' }, v.text) : null, slips(v, ui, `${live.length} 項建議，點開看完整的理由、改決定。沒改的就照每一張右上角寫的做。`), msg, attentionBox(v)],
+      pane: [reminded, v.text ? h('p', { class: 'dim', style: 'margin-bottom:12px;white-space:pre-line' }, v.text) : null, slips(v, ui, `${live.length} 項建議，點開看完整的理由、改決定。沒改的就照每一張右上角寫的做。`), msg, attentionBox(v)],
       rail: trayBox,
       cta: h('div', { class: 'sticky-cta' }, sumBox, actionButton('決定好了', 'primary', () => submit('DO'))),
     });

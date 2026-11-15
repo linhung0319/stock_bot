@@ -59,7 +59,7 @@ const ITEM_LABEL: Record<string, string> = {
   F19: '硬事件',
   F23: 'AI 建議提高比重',
   F24: 'AI 審查的建議',
-  F25: 'AI 的條件成立',
+  F25: '你定的條件成立',
   CORE: '閒置現金',
 };
 
@@ -126,6 +126,12 @@ export interface ItemView {
   explain: Explain;
   /** 門檻條（沒有門檻的建議是 null）。 */
   meter: Meter | null;
+  /** 選「這次不做」要寫一句理由（甲類、當天的乙類；own_thesis §1.10）。 */
+  reasonRequired: boolean;
+  /** 回覆時寫的理由。 */
+  reason: string | null;
+  /** 乙類：可以「拿去討論」（複製 BREAK 討論包）。 */
+  discuss: boolean;
 }
 
 export interface OrderView {
@@ -313,7 +319,8 @@ export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: st
       zone = '減半';
       capText = '規則這邊：收盤距 52 週高點';
       const hit = g.value <= sc.th;
-      say = hit ? `規則也到了減半的範圍（比高點低 ${pctTxt(g.value)}）` : `規則沒有動作（比高點低 ${pctTxt(g.value)}，門檻 20%）→ 這是 AI 的建議，預設不做`;
+      const own = it.kind === 'OWN_COND';
+      say = hit ? `規則也到了減半的範圍（比高點低 ${pctTxt(g.value)}）` : `規則沒有動作（比高點低 ${pctTxt(g.value)}，門檻 20%）→ ${own ? '這是你事先定的條件，預設照當時的決定' : '這是 AI 的建議，預設不做'}`;
       break;
     }
     default:
@@ -357,7 +364,7 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   });
   return {
     key: it.key,
-    label: ITEM_LABEL[it.f] ?? it.f,
+    label: it.f === 'F25' && it.kind !== 'OWN_COND' ? 'AI 的條件成立' : it.brk?.type === 'B' ? 'AI 判斷前提不成立' : (ITEM_LABEL[it.f] ?? it.f),
     bucket,
     bucketName: bucket === 'mixed' ? '多桶' : BUCKET_NAME[bucket],
     ticker: it.ticker ?? null,
@@ -372,6 +379,9 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
     actions: (it.actions ?? []).map((a) => ({ id: a, ...ACTIONS[a] })),
     explain: x,
     meter: itemMeter(d, n, it, x, headline),
+    reasonRequired: !!it.reasonRequired,
+    reason: it.reason ?? null,
+    discuss: it.brk?.type === 'B' && !!it.ticker && !!d.acct.own[it.ticker],
   };
 }
 
@@ -896,11 +906,11 @@ function reviewSkipOf(meta: Account['own'][string], date: string): string | null
   return `${when}沒有新證據，沿用 ${s.since} 的審查。`;
 }
 
-/** 還沒回覆、建議這檔照 AI 調整的通知（月報或當天通知上的自選審查建議；乙類通知的文字在 T29a）。 */
+/** 還沒回覆的乙類（AI 判斷前提不成立；當天通知或月報裡的，own_thesis §1.10）。T29a 之前的月報建議項目（沒有 brk）也算。 */
 function pendingBreakOf(acct: Account, ticker: string): { notif: number; tier: string | null } | null {
   for (const n of [...acct.notifs].reverse()) {
     if (n.status !== 'PENDING') continue;
-    const it = n.items.find((i) => i.ticker === ticker && i.f === 'F24' && !i.cancelled);
+    const it = n.items.find((i) => i.ticker === ticker && i.f === 'F24' && i.kind === 'AI_ONLY' && !i.cancelled);
     if (it) return { notif: n.id, tier: it.choices.find((c) => c.id === 'AI')?.tier ?? null };
   }
   return null;

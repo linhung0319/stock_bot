@@ -246,7 +246,8 @@ describe('T26：審查只寫建議，你定的條件換不掉', () => {
         ['N2', 'PROPOSED'],
       ]);
       expect(after.find((x) => x.condId === 'N1')).toMatchObject({ origin: 'AI', acceptedAt: null, premiseId: 'P2', supersedes: mine, tierIfMet: 'HALF', auto: true, runId: pack.run_id });
-      expect(ctx.acct.notifs.filter((n) => n.kind === 'URGENT')).toEqual([]); // 建議不發通知
+      // 建議不發通知（T29a：這次審查 3 票判 P2 不成立，發的是乙類的當天通知，和建議的條件無關）
+      expect(ctx.acct.notifs.filter((n) => n.kind === 'URGENT' && !n.items.every((i) => i.brk?.type === 'B'))).toEqual([]);
 
       // 下一次審查（一致不動）一條都沒提 → 建議留著
       const pack2 = await reviewPack(c.db, ctx.acct, view, axis);
@@ -314,7 +315,9 @@ describe('T26：不成立的前提（§1.6 第 1 點）', () => {
       expect(both).toMatchObject({ premiseId: 'P1', brokenPremises: ['P1', 'P2'] });
       // 套用：aiTier 記下那條前提
       const ctx = await apply(c.db, acct, view, axis, pack, three({ premises: [['P2', 'BROKEN', 'filing']] }));
-      expect(ctx.acct.own.NVDA.aiTier).toMatchObject({ tier: 'HALF', suggest: true, premiseId: 'P2' });
+      // T29a：財報後的審查有資格 → 當天發了乙類，所以不再記著進月報（suggest = false）
+      expect(ctx.acct.own.NVDA.aiTier).toMatchObject({ tier: 'HALF', suggest: false, premiseId: 'P2', trigger: 'EARNINGS' });
+      expect(ctx.acct.notifs.find((n) => n.kind === 'URGENT')!.items[0].brk).toEqual({ type: 'B', premiseId: 'P2' });
       const ctx2 = await apply(c.db, acct, view, axis, pack, three({ premises: [['P2', 'BROKEN', 'news']] }));
       expect(ctx2.acct.own.NVDA.aiTier).toMatchObject({ tier: 'HALF', suggest: false });
       expect(ctx2.acct.own.NVDA.aiTier!.premiseId).toBeUndefined();
@@ -347,10 +350,10 @@ describe('T26：審查三票確認你定的條件成立（§1.6 第 2 點）', (
       expect((await byId(c.db, xb)).status).toBe('ACTIVE'); // 財報類以程式比對為準
       expect(ctx.log.join('\n')).toContain('以程式比對財報數字為準，只記錄');
       expect((await byId(c.db, w)).status).toBe('PROPOSED'); // 觀察項成立與否只是輸入
-      // 通知（先沿用現有的條件成立通知；文字與選項在 T29a 改）：減半，賣一半
+      // 通知（T29a 改成甲類）：減半，預設照當時的決定
       const n = ctx.acct.notifs.find((x) => x.kind === 'URGENT')!;
-      expect(n.title).toBe('NVDA 條件成立（F25）');
-      expect(n.items[0]).toMatchObject({ f: 'F25', title: 'NVDA：條件「法說會上下修財測」成立' });
+      expect(n.title).toBe('NVDA：你定的出場條件成立');
+      expect(n.items[0]).toMatchObject({ f: 'F25', kind: 'OWN_COND', choice: 'DO', title: 'NVDA：你在 2026-11-20 定的條件「法說會上下修財測」成立' });
       expect(n.items[0].choices[0].tier).toBe('HALF');
       expect(n.items[0].runIds).toEqual([pack.run_id, 'r0']);
       // 一張票沒寫 MET → 不成立（另一份世界的狀態不用；這裡用純函式看）
@@ -385,7 +388,8 @@ describe('T26：勾選、撤下、改動作', () => {
       // 成立 → 通知
       const b = await xbrl(acct);
       const n = b.acct.notifs.find((x) => x.kind === 'URGENT')!;
-      expect(n.items[0]).toMatchObject({ f: 'F25', title: 'NVDA：條件「毛利率低於 55%」成立' });
+      // T29a：甲類，文字有誰哪天定的（AI 建議、你勾選）
+      expect(n.items[0]).toMatchObject({ f: 'F25', kind: 'OWN_COND', title: 'NVDA：你在 2026-11-24 定的條件「毛利率低於 55%」成立' });
       expect(n.items[0].choices[0].tier).toBe('EXIT');
       expect(await byId(c.db, p)).toMatchObject({ status: 'MET', metBasis: 'XBRL' });
     });

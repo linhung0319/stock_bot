@@ -28,7 +28,7 @@ import { loadConditions, metaFile, type ThesisFile } from '../src/app/thesis';
 import type { CompanyFacts, QuarterRow, XbrlFact } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
-import { SYSTEM_DEFAULT_PREMISES, conditionMet, createAccount, mapPremises, setThesis, type Account, type MarketView } from '../src/engine';
+import { SYSTEM_DEFAULT_PREMISES, breakNotice, createAccount, mapPremises, setThesis, type Account, type MarketView } from '../src/engine';
 import { handle } from '../src/index';
 import { freshDb } from './helpers/d1';
 import { cronTime, fakeFetcher, newWorld, type World } from './helpers/fakeSources';
@@ -516,7 +516,8 @@ describe('T27：replyTo、BREAK 情境、開檔時是減半的那一句', () => 
     await withWorld(async (c) => {
       const loaded = (await loadAccount(c.db))!;
       const { view } = await c.viewAt('2026-11-19');
-      const n = conditionMet(loaded.acct, view, 'NVDA', 'HALF', '測試用的通知', '2026-11', 1, []);
+      // T29a 起用乙類的當天通知（之前借用條件成立的通知）
+      const n = breakNotice(loaded.acct, view, 'NVDA', { tier: 'HALF', premiseId: 'P1', basis: '8-K 2026-11-18' });
       await saveAccount(c.db, n.acct, loaded, '測試', new Date('2026-11-19T13:00:00Z'));
       const id = n.notif!.id;
       expect((await c.api('POST', 'ops/own-thesis', { ticker: 'NVDA', thesis: 'x', premises: USER_PREMISES, exitConditions: [], replyTo: 9999 })).status).toBe(404);

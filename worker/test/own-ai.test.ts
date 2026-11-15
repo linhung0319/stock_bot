@@ -341,7 +341,8 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       acct = (await loadAccount(db))!.acct;
       const monthly = acct.notifs.find((n) => n.id === m.monthly)!;
       const ai = monthly.items.find((i) => i.f === 'F24')!;
-      expect(ai).toMatchObject({ kind: 'AI_ONLY', ticker: 'NVDA', title: 'NVDA 自選定期審查的建議', choice: 'SKIP' });
+      // T29a：月報裡的審查建議是乙類項目（哪條前提 3 票都判不成立），預設不動
+      expect(ai).toMatchObject({ kind: 'AI_ONLY', ticker: 'NVDA', title: 'NVDA：前提「毛利率維持在 65% 以上」3 票都判不成立', choice: 'SKIP', brk: { type: 'B', premiseId: 'P2' } });
       expect(ai.choices[0].lines[0].shares).toBe(-Math.round((acct.lots.own.NVDA ?? 0) / 2));
       expect((ai as { x?: { ai?: { kind: string; verdict: string } } }).x?.ai).toMatchObject({ kind: 'REVIEW', verdict: '減半' });
       // T28：每日掃描（新聞標題）一直沒有結果 → 同一次也推 SCAN_FAILED 告警，月報那一則不一定是最後一則
@@ -374,14 +375,17 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       const lineBefore = e.line.length;
       const fin2 = await run('2026-12-01', 'FINAL');
       acct = (await loadAccount(db))!.acct;
-      const urgent = acct.notifs.find((n) => n.kind === 'URGENT' && n.title === 'NVDA 條件成立（F25）')!;
+      // T29a：你勾選的條件成立是甲類，預設照當時的決定（出清）
+      const urgent = acct.notifs.find((n) => n.kind === 'URGENT' && n.title === 'NVDA：你定的出場條件成立')!;
       expect(fin2.created).toContain(urgent.id);
-      expect(urgent.items[0]).toMatchObject({ f: 'F25', choice: 'SKIP' });
+      expect(urgent.items[0]).toMatchObject({ f: 'F25', kind: 'OWN_COND', choice: 'DO' });
       expect(urgent.items[0].choices[0].lines[0].shares).toBe(-(acct.lots.own.NVDA ?? 0));
+      expect(urgent.items[0].why).toContain('8-K 2026-12-01 的原文，3 票確認');
       expect((await loadConditions(db, 'NVDA')).find((c) => c.condId === 'C2')!.status).toBe('MET');
-      const pushed = e.line.slice(lineBefore).find((t) => t.includes('NVDA 條件成立'))!;
-      expect(pushed.split('\n')[0]).toBe('【紙上】【當天】NVDA 條件成立（F25）');
-      expect(pushed).toContain('另有 1 項 AI 建議（預設不做），到網站決定。');
+      const pushed = e.line.slice(lineBefore).find((t) => t.includes('NVDA：你定的出場條件成立'))!;
+      expect(pushed.split('\n')[0]).toBe('【紙上】【當天】NVDA：你定的出場條件成立');
+      expect(pushed.split('\n')[1]).toMatch(/^你在 11\/30 定的「.+」→ 出清$/);
+      expect(pushed).not.toContain('另有 1 項 AI 建議');
       expect(pushed).toContain(`https://bot.example/?openExternalBrowser=1#/n/${urgent.id}`);
     });
   });
@@ -408,13 +412,15 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       e.filings.push({ accession: '0001045810-26-000320', form: '10-Q/A', items: '', acceptanceDateTime: '2026-11-23T21:00:00.000Z', filingDate: '2026-11-23', primaryDocument: 'a.htm', html: TENQ });
       const r = await run('2026-11-23');
       const acct = (await loadAccount(db))!.acct;
-      const n = acct.notifs.find((x) => x.title === 'NVDA 條件成立（F25）')!;
+      // T29a：甲類的文字（舊資料沒有勾選日，用建立日）；理由寫程式比對的數字
+      const n = acct.notifs.find((x) => x.title === 'NVDA：你定的出場條件成立')!;
       expect(r.created).toContain(n.id);
-      expect(n.items[0].title).toBe('NVDA：條件「毛利率低於 55%」成立');
+      expect(n.items[0].title).toBe('NVDA：你在 2026-11-01 定的條件「毛利率低於 55%」成立');
+      expect(n.items[0].why).toBe('最新一季毛利率 50.0%（10-Q/A 2026-11-23）');
       const c = (await loadConditions(db, 'NVDA'))[0];
       expect(c).toMatchObject({ status: 'MET' });
       expect(c.note).toContain('0.5000');
-      expect(e.line.some((t) => t.includes('NVDA 條件成立'))).toBe(true);
+      expect(e.line.some((t) => t.includes('NVDA：你定的出場條件成立'))).toBe(true);
     });
   });
 

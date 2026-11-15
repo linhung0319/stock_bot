@@ -43,6 +43,23 @@ export interface ResponseInput {
   mode: 'DO' | 'SKIP';
   /** 每一項選哪個選項（item key → RULE／AI／DO／SKIP）；沒給的用預設。 */
   choices?: Record<string, 'RULE' | 'AI' | 'DO' | 'SKIP'>;
+  /** 每一項的一句理由（item key → 文字）：選了「這次不做」才記下（甲類、當天的乙類一定要寫，見 missingReasons）。 */
+  reasons?: Record<string, string>;
+}
+
+/** 理由最多幾個字（own_thesis §1.10）。 */
+export const REASON_MAX = 200;
+
+/** 這次回覆最後選的選項（整則不做 = SKIP；沒給或不認得的用目前的）。 */
+const finalChoice = (it: Item, input: ResponseInput) => {
+  if (input.mode === 'SKIP') return 'SKIP';
+  const c = input.choices?.[it.key];
+  return c && it.choices.some((x) => x.id === c) ? c : it.choice;
+};
+
+/** 選了「這次不做」、卻沒寫理由的項目（要寫理由的：甲類、當天的乙類；own_thesis §1.10）。網站回覆前檢查，沒寫不能送出。 */
+export function missingReasons(n: Notif, input: ResponseInput): Item[] {
+  return n.items.filter((it) => !it.cancelled && it.reasonRequired && finalChoice(it, input) === 'SKIP' && !(input.reasons?.[it.key] ?? '').trim());
 }
 
 /** f：產生這個選項的項目（F19 硬事件、F25 條件成立…），出清時記論點檔結案的原因用。 */
@@ -120,6 +137,10 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
   for (const it of n.items) {
     const c = input.mode === 'SKIP' ? 'SKIP' : input.choices?.[it.key];
     if (c && it.choices.some((x) => x.id === c)) it.choice = c;
+    // 選了不做的那一句理由（改決定之後再回覆時以這次的為準）
+    const why = (input.reasons?.[it.key] ?? '').trim().slice(0, REASON_MAX);
+    if (it.choice === 'SKIP' && why) it.reason = why;
+    else delete it.reason;
   }
   n.respondedAt = view.date;
   n.respondedSeq = view.i;
@@ -143,6 +164,7 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
         choice: it.choice,
         notif: n.id,
         ...(it.runIds?.length ? { runIds: [...it.runIds] } : {}),
+        ...(it.reason ? { note: it.reason } : {}),
       };
       if (rec.ai !== null || rec.actual !== rec.rule || it.aiLine) acct.shadow.push(rec);
       // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒

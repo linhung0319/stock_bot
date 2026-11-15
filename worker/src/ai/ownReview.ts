@@ -1,6 +1,6 @@
 // T10：F24 自選定期審查、F25 自選條件監測（ai_layer_design 的 F24、F25、F23 卡片）。
 // 純函式：證據包、payload 的逐欄檢查、結論怎麼變成引擎的輸入。資料抓取與排程在 src/app/ownAi.ts。
-import { TIER_NAME, type Account, type MarketView, type Tier } from '../engine';
+import { TIER_NAME, type Account, type MarketView, type ReviewTrigger, type Tier } from '../engine';
 import { keptByChoice, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
 import { buildPack, ownPremises, ownRuleFacts, priceDoc, priceFacts } from './pack';
 
@@ -52,7 +52,7 @@ export interface OwnReviewInput {
   axis: string[];
   ticker: string;
   runId: string;
-  trigger: 'MONTHLY' | 'EARNINGS' | 'MANUAL' | 'THESIS';
+  trigger: ReviewTrigger;
   /** XBRL 季度表（quarterTableText 的輸出）。 */
   xbrl: PackDoc | null;
   filings: PackDoc[];

@@ -656,7 +656,7 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
 
 describe('示範情境 ② 自選股大跌：規則和 AI 並列', () => {
   const web = new Web('/demo/api');
-  it('整個情境從頭走到尾不出錯；MU 減半只有一行、META 兩行並列、F25 只有 AI 一行', async () => {
+  it('整個情境從頭走到尾不出錯；MU 減半只有一行、META 兩行並列、你定的條件成立預設照當時的決定、乙類要寫理由', async () => {
     await web.post('/reset', { scenario: 's2' });
     let st = await web.state();
     expect(st.today).toBe('2026-12-28');
@@ -686,20 +686,27 @@ describe('示範情境 ② 自選股大跌：規則和 AI 並列', () => {
     await web.post(`/notif/${jan.id}/respond`, { mode: 'DO', choices: { [meta.key]: 'AI' } });
     await web.fill();
 
-    // 1/7 早上：AI 的條件成立，規則沒有動作
+    // 1/7 早上：你定的條件成立（T29a 起是甲類：預設照當時的決定、規則沒有動作）
     let created: number[] = [];
     while (!created.length) created = (await web.post<{ created: number[] }>('/advance', { mode: 'notif' })).created;
     const f25 = await web.notif(created[0]);
-    const it25 = itemOf(f25, 'AI 的條件成立', 'MU');
-    expect(it25.choice).toBe('SKIP');
+    const it25 = itemOf(f25, '你定的條件成立', 'MU');
+    expect(it25.choice).toBe('DO');
+    expect(it25.reasonRequired).toBe(true);
     expect(it25.explain.why).toContain('規則沒有動作');
     expect(it25.explain.ai!.quotes![0].quote).toContain('DRAM');
+    // 「這次不做」沒寫理由送不出去
+    expect(await web.fail(`/notif/${f25.id}/respond`, { mode: 'DO', choices: { [it25.key]: 'SKIP' } })).toMatchObject({ status: 422 });
 
-    // 一路走到情境結束
+    // 一路走到情境結束（乙類的「不同意，不動」要寫理由：每一項都帶一句）
     for (let k = 0; k < 80; k++) {
       st = await web.state();
       if (st.demo!.atEnd) break;
-      for (const t of st.todo) if (t.type === 'DECIDE' || t.type === 'INFO') await web.post(`/notif/${t.id}/respond`, { mode: 'DO' });
+      for (const t of st.todo) {
+        if (t.type !== 'DECIDE' && t.type !== 'INFO') continue;
+        const nv = await web.notif(t.id);
+        await web.post(`/notif/${t.id}/respond`, { mode: 'DO', reasons: Object.fromEntries(nv.items.map((i) => [i.key, '示範：先不動'])) });
+      }
       await web.fill();
       await web.post('/advance', { mode: 'notif' });
     }

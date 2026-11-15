@@ -321,7 +321,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 做：`newEvidence`；月報前一天有新證據才審，沒有就記 `reviewSkip`、持股頁那一句；證據包記原因清單與 `thesisVersion`；運作統計加「月底審了幾檔、跳過幾檔」。`REVIEW_FAILED` 告警與兩個計數；`NO_CONSENSUS` 加進「要看的事」。拿掉 R1（`R5` 的編號不變）；`design_v2` §2.0 的 F9 與 `ai_layer_design` 的 F9 卡片標「2026-11-15 拿掉」。
 - 完成條件：六種「新證據」的原因各一個測試；一項都沒有時不開審查；新聞標題不算新證據；連續 2 次失敗告警、票數不一致不算失敗、跑完一次歸零；連續 3 次票數不一致列進清單；拿掉 R1 之後重放驗收的數字完全相同。
 
-#### [ ] T29a 審查的建議與兩種失效通知
+#### [x] T29a 審查的建議與兩種失效通知
 - 讀：`own_thesis` §1.9、§1.10 的甲類與乙類（回應的效果與靜默期是 T30，但按鈕要先有）、§1.6「程式怎麼用結論」第 3 點；問題 P2、N2、N3、N6。檔案：`engine/report.ts`（`conditionMet`、`recordAiTier`、`ownAiChoice`、`refreshOwnAiChoice`）、`app/ownAi.ts`（`applyOwnReview`、`applyOwnCondition`）、`app/line.ts`、`site/explain.ts`、`site/aiViews.ts`、`public/js/pages-notif.js`。
 - 做：
   1. §1.9 的資格與那張表：當天通知、進月報、記著等月報、有還沒回覆的通知時不另發；`aiNotifiedAt` 的 30 天上限；月中的建議不被沒有一致結論的月審蓋掉。靜默期先讀 `disputes`（T30 才會寫入）。
