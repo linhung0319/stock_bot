@@ -382,6 +382,15 @@ momEvidence(env, fetcher, view, axis, ticker, benchmark, want: { docs: boolean, 
 | 告警種類 | `F1_LOOKBACK_FAILED`、`F1_COURT_FAILED`、`HARD_COURT_FAILED` | §3.2、§3.3、§3.5 |
 | prompt | `mom_entry_v2`（§3.3）；`event_scan_v2` 加 `ENTRY` 角色（§3.2）；`mom_score_v1`、`drop_explain_v1` 不再使用；`hard_event_v1`、`strategy_review_v1` 不變 | — |
 
+### 3.11 月報暫停後重算時的依波動度減碼（T23 定，2026-11-15）
+
+`core_ai_design_2026-11-15.md` §3.7 留給 T23 的那一件：月報暫停後重算時（`resumeMonthly`、入金合併、排除後重算），依波動度減碼現在用重算那天的資料（`excessVolOf(view)`）。決定比照崩盤規則，**用訊號日的值**（T23 照建議定；記在計畫的「T23 定稿時做的決定」）。
+
+- `MonthlyContext` 加 `excessVol?: number | null`。`monthlyReport` 第一次產生時用當時的 view 算好寫進 `input`（算不出來存 null）；之後的重算用 `input.excessVol`（null 就當成算不出來，和第一次的結果相同）。沒有這個欄位的舊月報照舊當場算。
+- 股數照舊用重算那天的價格。
+- 理由：同一份月報的規則判斷（排名、崩盤規則、依波動度減碼）都用同一天的資料；重算只是把分類、入金或排除的變動套上去，不應該順便換一次規則的判斷。重放驗收不受影響（重放不暫停月報）。
+- 排進 T32a。完成條件：月報暫停期間超額波動越過門檻 → 重算後的減碼和訊號日相同。
+
 ## 4. 不做的與理由
 
 | 項目 | 理由 |
