@@ -8,7 +8,8 @@
 // 8-K 的挑選順序、論點那一份 note）。讀 D1，所以不在引擎裡。
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
 import { confirmMode, type OwnCondition } from '../ai/ownReview';
-import { clone, type Account, type Attention, type MarketView, type Notif, type OwnMeta, type Thesis, type Tier } from '../engine';
+import { DEFAULT_CONFIG, clone, type Account, type Attention, type MarketView, type Notif, type OwnMeta, type Thesis, type Tier } from '../engine';
+import { concentrationHits, sizeText } from './concentration';
 import type { ThesisLogInput } from './ledgerStore';
 import { XBRL_METRICS, type QuarterRow } from '../data/edgar';
 import type { Filing } from '../data/sources';
@@ -775,7 +776,8 @@ export interface AttnHit extends Attention {
 export interface AttnCtx {
   file: ThesisFile;
   meta: OwnMeta;
-  acct: Pick<Account, 'own' | 'rule' | 'notifs'>;
+  /** cfg 只有 SIZE_2X 要用（單檔上限）；沒給用預設值。 */
+  acct: Pick<Account, 'own' | 'rule' | 'notifs'> & Partial<Pick<Account, 'cfg'>>;
   view: Pick<MarketView, 'date'>;
 }
 
@@ -902,6 +904,17 @@ export const OWN_ATTN: AttnKind[] = [
           const how = idio ? `比${ref}多跌 ${idio.replace('-', '')}%` : '個股自身大跌';
           return { key: `PRICE_NO_FILING:${e.id}`, every: null, since: e.date, text: `${file.ticker} 最近 21 個交易日${how}，沒有新的申報可以檢查。可以複製討論包到 claude.ai 討論` };
         });
+    },
+  },
+  {
+    // 部位大小（§3.6.3）：往上越過標準比重 2 倍時一次（鍵帶越過的那一天；跌回 1.5 倍以下之後再越過才是新的一次）。
+    // 到了單檔上限的不列（F10 會處理）。旗與最新的占比由每日流程更新（concentration.ts 的 updateSizeFlags）
+    kind: 'SIZE_2X',
+    detect({ file, meta, acct }) {
+      const s = meta.sizeInfo;
+      const cfg = acct.cfg ?? DEFAULT_CONFIG;
+      if (!meta.sizeFlag || !s || s.weight >= cfg.ownCapHi) return [];
+      return [{ key: `SIZE_2X@${s.at}`, every: null, since: s.at, text: sizeText(file.ticker, s.weight, s.ratio, cfg) }];
     },
   },
   {
@@ -1068,8 +1081,17 @@ export const toAttention = (x: AttnHit): Attention => ({ ticker: x.ticker, kind:
  */
 export async function monthOwnAttention(db: D1Database, acct: Account, view: MarketView): Promise<{ acct: Account; items: Attention[] }> {
   const files = (await Promise.all(Object.keys(acct.own).map((t) => thesisFile(db, acct, t, view.date)))).filter((f): f is ThesisFile => !!f);
+  // 集中度（T35）：每個月算一次，是一件事不屬於哪一份論點檔，所以不在 OWN_ATTN 裡；算不出來（價格不齊）這個月不列
+  const conc = (() => {
+    try {
+      return concentrationHits(acct, view);
+    } catch (e) {
+      console.error('集中度算不出來', e);
+      return [];
+    }
+  })();
   const { due, shown } = dueAttention(
-    ownAttention(files, acct, view),
+    [...ownAttention(files, acct, view), ...conc],
     Object.fromEntries(Object.entries(acct.own).map(([t, m]) => [t, m.attnShown])),
     view.date,
   );
@@ -1079,8 +1101,16 @@ export async function monthOwnAttention(db: D1Database, acct: Account, view: Mar
   return { acct: next, items: due.map(toAttention) };
 }
 
-/** 持股頁：這一檔現在成立的全部（不看頻率）。不是自選回傳空的。 */
-export async function holdingAttention(db: D1Database, acct: Account, view: Pick<MarketView, 'date'>, ticker: string): Promise<Attention[]> {
+/** 持股頁：這一檔現在成立的全部（不看頻率；集中度那一件組內每一檔自選都顯示）。不是自選回傳空的。 */
+export async function holdingAttention(db: D1Database, acct: Account, view: MarketView, ticker: string): Promise<Attention[]> {
   const file = await thesisFile(db, acct, ticker, view.date);
-  return file ? ownAttention([file], acct, view).map(toAttention) : [];
+  if (!file) return [];
+  const conc = (() => {
+    try {
+      return concentrationHits(acct, view).filter((x) => x.members.includes(ticker));
+    } catch {
+      return [];
+    }
+  })();
+  return [...ownAttention([file], acct, view), ...conc].map(toAttention);
 }

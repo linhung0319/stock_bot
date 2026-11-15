@@ -11,40 +11,13 @@ import type { Env, Fetcher } from './env';
 import { entryEvidence } from './momAi';
 import { loadAccount, thesisLogStmt } from './ledgerStore';
 import { gatherOwnEvidence, insertConditionStmts, routineReady } from './ownAi';
+import { CONC, corr1y } from './concentration';
 import { checkCap } from './ownConds';
 import { ACTION_TEXT, COND_ACTIONS, acceptStatus, condFacts, confirmText, defaultAction, fileConditions, isOwned, ownerText, progressText, thesisFile, type CondAction } from './thesis';
 
 /** 這檔現在的論點檔編號（帳戶沒有、不是自選、T25 之前的自選 → null）。 */
 async function currentFileId(db: D1Database, ticker: string): Promise<string | null> {
   return (await loadAccount(db))?.acct.own[ticker]?.fileId ?? null;
-}
-
-/** 一年日報酬的相關係數（和既有持股的題材重疊，F14 卡片的 theme_overlap）。 */
-export function corr1y(view: MarketView, a: string, b: string): number | null {
-  const ca = view.close[a];
-  const cb = view.close[b];
-  if (!ca || !cb) return null;
-  const xs: number[] = [];
-  const ys: number[] = [];
-  for (let k = Math.max(1, view.i - 251); k <= view.i; k++) {
-    const x = ca[k] / ca[k - 1] - 1;
-    const y = cb[k] / cb[k - 1] - 1;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    xs.push(x);
-    ys.push(y);
-  }
-  if (xs.length < 120) return null;
-  const mx = xs.reduce((s, v) => s + v, 0) / xs.length;
-  const my = ys.reduce((s, v) => s + v, 0) / ys.length;
-  let sxy = 0;
-  let sxx = 0;
-  let syy = 0;
-  for (let k = 0; k < xs.length; k++) {
-    sxy += (xs[k] - mx) * (ys[k] - my);
-    sxx += (xs[k] - mx) ** 2;
-    syy += (ys[k] - my) ** 2;
-  }
-  return sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : null;
 }
 
 /**
@@ -79,7 +52,7 @@ export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, v
   const facts = [
     ...priceFacts(view, ticker),
     ...(rec ? [{ id: 'W1', label: '建議的標準比重', value: `${(rec * 100).toFixed(1)}%` }] : []),
-    ...overlap.map((x, k) => ({ id: `O${k + 1}`, label: `和 ${x.t} 的一年日報酬相關係數`, value: x.c.toFixed(2), note: x.c > 0.7 ? '高度相關：可能是同一個題材' : undefined })).map((f) => (f.note === undefined ? { id: f.id, label: f.label, value: f.value } : f)),
+    ...overlap.map((x, k) => ({ id: `O${k + 1}`, label: `和 ${x.t} 的一年日報酬相關係數`, value: x.c.toFixed(2), note: x.c >= CONC.corr ? '高度相關：可能是同一個題材' : undefined })).map((f) => (f.note === undefined ? { id: f.id, label: f.label, value: f.value } : f)),
   ];
   const docs = [priceDoc(view, axis, ticker, 60), ev.xbrl, ...ev.docs, ev.news, thesisDoc].filter((d): d is PackDoc => !!d);
   const { pack, notes } = ownCheckPack({

@@ -19,6 +19,7 @@ import { errText } from '../data/util';
 import type { FlowExtras } from './aiCtx';
 import { closeStaleRuns, listRuns } from './aiRuns';
 import { aiStep } from './aiStep';
+import { updateSizeFlags } from './concentration';
 import { crashDirection, crashReviewFor } from './crashAi';
 import { routineReady } from './ownAi';
 import { sectorEtfs } from './filings';
@@ -169,6 +170,12 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
       }
     }
     acct = dailyCheck(acct, view).acct;
+    // 部位大小旗標（own_thesis §3.6.3，T35）：只用來列「要看的事」與討論包，規則不看；價格不齊算不出來就維持原樣
+    try {
+      acct = updateSizeFlags(acct, view);
+    } catch (e) {
+      console.error('部位大小旗標算不出來', e);
+    }
     // 核心 ETF 的資料檢查（core_ai §3.10）：對不上就告警，每日訊號照常產生、不擋流程
     const issues = coreDataCheck(view, core, BENCHMARK, acct.bondTicker);
     const names = { core, bench: BENCHMARK, bond: acct.bondTicker };

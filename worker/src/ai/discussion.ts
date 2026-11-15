@@ -4,6 +4,7 @@
 // 純函式：不讀資料庫、網路、時鐘。固定指示和解析器要同一個版本，所以指示放在這裡（Worker 讀不到 repo 的 md）。
 // 討論包只放比重，不放金額與股數。
 import { SLOW, TIER_NAME, bucketValue, rollingMax, sma, totalValue, trailingReturn, type Account, type MarketView, type Tier } from '../engine';
+import { sizeOf } from '../app/concentration';
 import type { CondAction, ThesisFile } from '../app/thesis';
 
 export const DISCUSSION_VERSION = 'discussion_v1';
@@ -68,7 +69,7 @@ export interface DiscussionNumbers {
   xbrl: string | null;
   /** 開檔時就是減半（§3.8）：加入時距 52 週高點的跌幅（負數）；不是或不知道是 null。 */
   openedHalf: number | null;
-  /** 部位達標準比重 2 倍以上（§3.6.3，T35 填）：占總資產、是標準比重的幾倍。 */
+  /** 部位達標準比重 2 倍以上（§3.6.3；sizeFlag 成立時才有）：占總資產（自選桶）、是標準比重的幾倍。 */
   size?: { weight: number; ratio: number } | null;
 }
 
@@ -99,7 +100,10 @@ export function discussionNumbers(acct: Account, view: MarketView, ticker: strin
     ownBudget: acct.cfg.ratio.own,
     xbrl,
     openedHalf: opened?.startState === 'HALF' && opened.drawdownAtOpen !== null ? opened.drawdownAtOpen : null,
-    size: null,
+    size: (() => {
+      const s = meta?.sizeFlag ? sizeOf(acct, view, ticker) : null;
+      return s ? { weight: s.weight, ratio: s.ratio } : null;
+    })(),
   };
 }
 

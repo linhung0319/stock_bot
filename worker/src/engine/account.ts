@@ -111,6 +111,13 @@ export interface OwnMeta {
   dropReview?: DropReview | null;
   /** 最近一次觸發減半那天距 52 週高點的跌幅（例如 -0.224）：減半項目的標題用（併入月報的項目要寫觸發那天的數字）。舊資料沒有。 */
   reduceDd?: number | null;
+  /**
+   * 部位大小旗標（own_thesis §3.6.3，T35）：自選市值占總資產 ≥ 標準比重 2 倍（而且還沒到單檔上限）時設成 true，跌回 1.5 倍以下設回 false。
+   * 每個交易日由 `app/concentration.ts` 的 updateSizeFlags 更新；只用來列「要看的事」與討論包的那一句，規則不看它。沒有這個欄位 = false。
+   */
+  sizeFlag?: boolean;
+  /** 設旗時的訊號日，與最近一次更新的占比、倍數（比例是小數）；旗收回時是 null。 */
+  sizeInfo?: { at: string; weight: number; ratio: number } | null;
 }
 
 /** 減半檢視的結果（own_thesis §3.3 的五種）：還沒有結果／建議不動／建議出清／同意減半／沒有可用的結論。 */
