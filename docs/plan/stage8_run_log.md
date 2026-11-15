@@ -24,6 +24,7 @@
 | T30 | 完成 | （見 git log） | 526 通過、1 略過 |
 | T31b | 完成 | （見 git log） | 552 通過、1 略過 |
 | T32c | 完成 | （見 git log） | 566 通過、1 略過 |
+| T32b | 完成 | （見 git log） | 579 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -166,6 +167,17 @@
 - T32c｜180 天的判斷放引擎 `hardEvent`（純函式）；期間用日曆天，差 < 180 擋、剛好 180 天再通知。
 - T32c｜為了不露英文代號，AI 紀錄頁的事件表與論點檔的狀態白話加了 `IN_COURT`（審查中）。
 - T32c｜部署前就開的舊法庭回來時找不到 `IN_COURT` 的事件（開發階段可接受）。
+- T32b｜F1 法庭票數不一致算跑完了、不重開（§3.4：重抽三票是雜訊），有上一次結論就沿用，沒有就照規則准許。
+- T32b｜沒有結論（逾時、沒觸發成功、整份退回、三票格式都不合格、資料缺漏）最多重開一次；沒有上一次結論可沿用時才推 `F1_COURT_FAILED`，月報時只跑過 1 次也推（文字不寫「連續」）。
+- T32b｜「沿用」= 比這個月早、source = AI、有 run_id、不是沿用的那一列；晚到的否決算否決。已知限制：同月先有結論、回看又帶新命中重開而沒有結論時，不會退回同月前一次的結論。
+- T32b｜月報當天審的列都標 `late = 1`；月報之後開法庭的用說明裡的記號辨認；月報之後開的法庭與重審不改 decision。
+- T32b｜晚到否決的提醒做成 LINE 補推（`PUSH_WAITERS` 的 followUp），不另新增一則通知；影子紀錄 actual 用當下狀態，還沒回覆時先記規則股數並註明回覆時另記。
+- T32b｜`LATE_VETO` 列進「要看的事」留給 T32d（資料在 `mom_reviews.late_verdict`）。
+- T32b｜法庭的動能證據用 `momEvidence` 只取這批事件的申報原文、不重跑規則偵測，最多 6 份。
+- T32b｜01:30 的順序：`momRecheck` 排在提前審查之前（否則回看寫的財測下修事件會先被 T29b 標成「不是自選股」）。回看的 run_id 帶 `_LOOKBACK_`，失敗次數記 `lookback:fails:<交易日>`。
+- T32b｜`event_scan_v2.md` 直接加 ENTRY 一節、不升 v3（§3.10 指定在 v2 加，而且 v2 還沒 push 過）——不照共用規則第 7 點的字面。
+- T32b｜F1 不用 T28 的 `eventHits`、`hits502`（不是 F1 的失效模式）。擬事件打分（MOM_SCORE）照留，T32d 拿掉。
+- T32b｜範圍外留著：排在被否決股票後面的每一檔都寫「被否決後遞補」（舊判斷）；畫面上方的逾時告警顯示一串雜湊；回看寫進 `mom_reviews.note` 的說明之後重審會被覆蓋。
 
 ## 要使用者親手做的事
 
@@ -183,6 +195,7 @@
 - T29b｜部署後才生效：第一次排程與 01:30 多了提前審查；自選股不再開單月大跌說明（F20）。
 - T29c｜`own_earnings_v1.md` 由雲端排程從 repo 讀，push 之後生效；部署後才開始跑。
 - T31b｜`own_drop_v2.md` 由雲端排程從 repo 讀，push 之後生效。部署後減半通知在 23:30 可能先不推、01:30 才推，03:30 可能補推一行。
+- T32b｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0014_mom_reviews_entry.sql`。`mom_entry_v2.md` 與修改過的 `event_scan_v2.md` 由雲端排程從 repo 讀，push 之後生效。
 
 ## 畫面截圖
 
@@ -212,6 +225,10 @@
 | T31b | 減半項目選「這次不做」的理由欄（桌機／手機） | `records/stage8/screens/T31b/reduce-skip-reason-desktop.png、reduce-skip-reason-phone.png` |
 | T31b | 加回通知（照 AI：維持減半）（桌機／手機） | `records/stage8/screens/T31b/readd-desktop.png、readd-phone.png` |
 | T31b | 月報裡只有預設前提的減半項目（桌機／手機） | `records/stage8/screens/T31b/monthly-default-only-desktop.png、monthly-default-only-phone.png` |
+| T32b | 月報收合：晚到的否決那一行（桌機／手機） | `records/stage8/screens/T32b/monthly-desktop.png、monthly-phone.png` |
+| T32b | 月報展開：AI 那一行、附註、沿用否決的遞補說明（桌機／手機） | `records/stage8/screens/T32b/monthly-expanded-desktop.png、monthly-expanded-phone.png` |
+| T32b | 排除時理由欄先填（手機） | `records/stage8/screens/T32b/exclude-prefill-phone.png` |
+| T32b | AI 紀錄的進場審查表（桌機／手機） | `records/stage8/screens/T32b/ai-reviews-desktop.png、ai-reviews-phone.png` |
 
 ## 卡住的任務
 

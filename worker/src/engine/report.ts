@@ -615,8 +615,12 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   for (const tk of Object.keys(ownActions)) acct.own[tk].pending = null;
   acct.mom.owe = {};
   let items = itemsFromPlan(acct, view, plan, values, { coreBefore, ownNotes, crashOpinion: input.crashOpinion, runIds: input.runIds });
-  // 任務 A 准許但觀察：進場那一項註明觀察理由
-  for (const it of items) if (it.f === 'F1' && it.ticker && input.watch?.[it.ticker]) it.note = `准許但觀察：${input.watch[it.ticker]}`;
+  // 任務 A：進場那一項的說明（准許，附註、法庭的結論、沿用、還在審…；momentum_ai §3.3）。舊月報只有觀察理由
+  for (const it of items) {
+    if (it.f !== 'F1' || !it.ticker) continue;
+    const note = input.entryNotes ? input.entryNotes[it.ticker] : input.watch?.[it.ticker] ? `准許，附註：${input.watch[it.ticker]}` : undefined;
+    if (note) it.note = note;
+  }
   if (flow) {
     // 入金合併在月報裡：入金補的格子併成一項
     const flowLines = items.filter((i) => i.f === 'SYS').flatMap((i) => i.choices[0].lines);

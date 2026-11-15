@@ -24,6 +24,8 @@ import type { ApplyCtx, StartCtx } from './aiCtx';
 import { closeStaleRuns, getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { accOf, fetchFilingChecks, handledStmt, insertHitStmts, loadEvents, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
+import { momEvidence } from './momEvidence';
+import { NOT_LOOKBACK_SQL, applyLookback } from './momLookback';
 import { docOf, newsDoc, xbrlDoc } from './ownAi';
 import { fileConditions, filePremises, thesisFile } from './thesis';
 
@@ -200,6 +202,8 @@ function courtFailsClear(ctx: ApplyCtx, ticker: string): void {
  *     標到條件 → 每一條一筆 CONDITION_HINT（細項 = 條件的列編號）：申報原文 → NEW，新聞標題 → INFO
  */
 export async function applyEventScan(ctx: ApplyCtx, run: AiRun): Promise<void> {
+  // 進場前回看（momentum_ai §3.2，T32b）：分開套用，不動每日掃描的標記與失敗次數
+  if ((run.pack.rule.detail as { kind?: string } | undefined)?.kind === 'LOOKBACK') return applyLookback(ctx, run);
   const detail = (run.pack.rule.detail ?? {}) as { targets?: ScanTarget[]; cursors?: ScanCursors; batch?: ScanBatchItem[]; conds?: Record<string, number> };
   const at = ctx.now.toISOString();
   if (!run.outcome || !scanQualified(run.outcome)) {
@@ -357,7 +361,7 @@ async function forwardedDocs(db: D1Database, e: SecEventRow): Promise<PackDoc[]>
  * 轉交來的事件（form = 'AI'）：原文取自那次執行的證據包裡的申報。
  * fetchChecks：這次流程沒有看新申報（01:30 的 finalStarts，sc.checks 是空的）時，有申報類事件的那幾檔另外抓申報清單來取原文；
  * 只抓清單、不推「看過」的標記。
- * 動能持股的證據之後改用 momEvidence（T32b 才有）；這裡照舊用 accOf 取申報原文。
+ * 動能持股的證據由 momEvidence 組（T32b；最多 6 份申報原文、略過的寫進備註）；自選股照舊用 accOf 取申報原文。
  */
 export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fetchChecks?: boolean } = {}): Promise<void> {
   const { env, fetcher, acct, view, axis, session, now, res } = sc;
@@ -414,14 +418,29 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
     }
     if (!evs.length) continue;
 
-    let check = sc.checks.find((c) => c.ticker === t);
-    if (!check && opt.fetchChecks && env.EDGAR_USER_AGENT && evs.some((e) => accOf(e.accession).kind === 'FILING')) check = (await fetchFilingChecks(env, fetcher, [t], session, res.log))[0];
+    const own = (acct.lots.own[t] ?? 0) > 0 && !!acct.own[t];
     const docs: PackDoc[] = [];
     const dq: Record<string, 'ok' | 'partial' | 'missing'> = {};
+    const evNotes: string[] = [];
     // 有要讀申報原文的事件（申報、轉交）時才記申報有沒有缺；只有新聞標題的不算缺漏（否則三票一致「不動」會變成資料缺漏、一直重開）
     let wantFiling = false;
+    let xbrl: PackDoc | null = null;
     try {
-      for (const e of evs) {
+      if (!own) {
+        // 動能持股：證據由 momEvidence 組（momentum_ai §3.1、§3.5；T32b）：這批事件的申報原文最多 6 份，略過的記在證據包的備註
+        const focus = evs.filter((e) => accOf(e.accession).kind === 'FILING').map((e) => e.accession);
+        const me = await momEvidence(env, fetcher, view, axis, t, acct.cfg.coreTicker, { docs: true, xbrlTable: true, hits: false, focus, news: evs.some(isNewsEvent) });
+        docs.push(...me.docs);
+        for (const e of evs) for (const d of fwd.get(e.id) ?? []) if (!docs.some((x) => x.source_id === d.source_id || x.id === d.id)) docs.push(d);
+        wantFiling = focus.length > 0 || evs.some((e) => e.form === 'AI');
+        if (evs.some(isNewsEvent)) dq.news = 'partial';
+        if (me.dataQuality.xbrl) dq.xbrl = me.dataQuality.xbrl;
+        xbrl = me.xbrl;
+        evNotes.push(...me.notes);
+      }
+      let check = own ? sc.checks.find((c) => c.ticker === t) : undefined;
+      if (own && !check && opt.fetchChecks && env.EDGAR_USER_AGENT && evs.some((e) => accOf(e.accession).kind === 'FILING')) check = (await fetchFilingChecks(env, fetcher, [t], session, res.log))[0];
+      for (const e of own ? evs : []) {
         if (isNewsEvent(e)) {
           const n = await newsDoc(fetcher, t, session).catch(() => null);
           if (n && !docs.some((d) => d.source_id === n.source_id)) docs.push(n);
@@ -447,8 +466,7 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
         }
       }
       if (wantFiling || docs.some((d) => d.kind === 'filing')) dq.filings = docs.some((d) => d.kind === 'filing') ? 'ok' : 'missing';
-      let xbrl: PackDoc | null = null;
-      if (check) {
+      if (own && check) {
         try {
           xbrl = xbrlDoc(t, quarterTable(await fetchCompanyFacts(fetcher, check.cik, env.EDGAR_USER_AGENT!), session));
           dq.xbrl = xbrl ? 'ok' : 'missing';
@@ -458,12 +476,11 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
         }
       }
       const refs: HardEventRef[] = evs.map((e) => ({ code: e.code, sub: e.sub, form: e.form, date: e.event_date, detail: e.detail, source: e.source }));
-      const own = (acct.lots.own[t] ?? 0) > 0 && !!acct.own[t];
       // 自選股的前提由論點檔取（T25）
       const tf = own ? await thesisFile(env.DB, acct, t, session) : null;
       const ownPremises = tf ? filePremises(tf) : undefined;
       const { pack, notes } = hardEventPack({ acct, view, axis, ticker: t, runId: newRunId(session, HARD_EVENT, t), role: own ? 'OWN' : 'MOM', events: refs, docs, xbrl, dataQuality: dq, ...(ownPremises ? { ownPremises } : {}), now });
-      const run = await startRun(env, fetcher, pack, now, notes);
+      const run = await startRun(env, fetcher, pack, now, [...evNotes, ...notes]);
       res.started.push(run.runId);
       await inCourtStmt(env.DB, evs.map((e) => e.id), run.runId).run();
     } catch (e) {
@@ -508,7 +525,7 @@ export async function startScan(sc: StartCtx, targets: ScanTarget[]): Promise<bo
   const { env, fetcher, session, now, res } = sc;
   const at = now.toISOString();
   await closeStaleRuns(env.DB, now);
-  const waiting = await env.DB.prepare("SELECT run_id FROM ai_runs WHERE fn = ? AND status = 'PENDING' LIMIT 1").bind(EVENT_SCAN).first<{ run_id: string }>();
+  const waiting = await env.DB.prepare(`SELECT run_id FROM ai_runs WHERE fn = ? AND status = 'PENDING' AND ${NOT_LOOKBACK_SQL} LIMIT 1`).bind(EVENT_SCAN).first<{ run_id: string }>();
   if (waiting) {
     res.log.push(`每日掃描：${waiting.run_id} 還在等結果，不開新的`);
     return false;
@@ -613,7 +630,7 @@ export async function rescanEvents(sc: StartCtx, targets: ScanTarget[]): Promise
   const { env, session, res } = sc;
   const fails = await loadScanFails(env.DB);
   if (!fails || fails.count < 1 || fails.session !== session) return;
-  const runs = (await env.DB.prepare('SELECT COUNT(*) AS n FROM ai_runs WHERE fn = ? AND as_of = ?').bind(EVENT_SCAN, session).first<{ n: number }>())?.n ?? 0;
+  const runs = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM ai_runs WHERE fn = ? AND as_of = ? AND ${NOT_LOOKBACK_SQL}`).bind(EVENT_SCAN, session).first<{ n: number }>())?.n ?? 0;
   if (runs >= 2) return void res.log.push('今天的每日掃描已經重掃過，留給下一次流程');
   res.log.push(`今天的每日掃描沒有結論（連續第 ${fails.count} 次）→ 重掃一次`);
   const checks = sc.checks.length || !env.EDGAR_USER_AGENT ? sc.checks : await fetchFilingChecks(env, sc.fetcher, targets.map((t) => t.ticker), session, res.log);

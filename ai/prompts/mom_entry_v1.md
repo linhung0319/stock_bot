@@ -1,3 +1,5 @@
+> 不再使用（2026-11-15）：T32b 起改用 mom_entry_v2.md。
+
 # mom_entry_v1：動能新股進場的否決法庭（F1，任務 A）
 
 共用的取證據包、外殼格式與送回方式見 `run.md`；這份只寫這個功能怎麼判斷。設計依據：`docs/design/design_v2_momentum_2026-11-07.md` §6.2、`docs/design/ai_layer_design_2026-11-08.md` 的 F1 卡片（2026-11-11 更新）、`docs/test-records/backtest_B9_2026-11-08.md` §7.4。

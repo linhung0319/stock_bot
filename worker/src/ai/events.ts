@@ -34,7 +34,8 @@ export const SCAN_SUBS: Partial<Record<ScanClass, readonly string[]>> = {
 
 export interface ScanTarget {
   ticker: string;
-  role: 'OWN' | 'MOM' | 'CAND';
+  /** ENTRY：進場前回看的對象（這個月會進場的動能股；momentum_ai §3.2，T32b）。 */
+  role: 'OWN' | 'MOM' | 'CAND' | 'ENTRY';
 }
 
 /**
@@ -78,7 +79,7 @@ export interface EventScanInput {
   now: Date;
 }
 
-const ROLE = { OWN: '自選持股', MOM: '動能持股', CAND: '動能候選（排名 6～10）' };
+const ROLE = { OWN: '自選持股', MOM: '動能持股', CAND: '動能候選（排名 6～10）', ENTRY: '動能進場候選（本月）' };
 
 /** F18 的證據包（一天一份，所有對象一起）。 */
 export function eventScanPack(inp: EventScanInput) {

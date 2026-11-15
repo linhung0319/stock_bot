@@ -162,6 +162,8 @@ export type AlertKind =
   | 'F25_OVERFLOW' // 條件確認的新申報超過 8 份，寫出哪幾份沒放進去（own_thesis §2.6）
   | 'REVIEW_FAILED' // 同一檔的自選定期審查連續 2 次以上沒有結論（own_thesis §3.6.4）
   | 'HARD_COURT_FAILED' // 同一檔的硬事件法庭連續 2 次以上沒有結論；事件過期停止重試時再推一次（momentum_ai §3.5）
+  | 'F1_LOOKBACK_FAILED' // 進場前回看連續 2 次沒有結論，寫出哪些 8-K 還沒被 AI 看過（momentum_ai §3.2）
+  | 'F1_COURT_FAILED' // 進場審查的法庭 2 次都沒有結論，月報照規則准許（momentum_ai §3.3）
   | 'TEST'; // 手動測試告警的推播（/admin/alert/test）
 /** 只表示「今天沒有產生訊號」的告警：同一個交易日後來再試成功了，就不必推播。 */
 export const NO_SIGNAL_ALERTS: ReadonlySet<string> = new Set(['PRICE_MISSING', 'PRICE_STALE', 'INGEST_ERROR', 'FLOW_ERROR']);

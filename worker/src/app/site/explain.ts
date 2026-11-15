@@ -1,6 +1,7 @@
 // 每一項建議的「為什麼」：用訊號日的價格、排名與帳戶狀態，寫成帶數字的理由。
 // 通知產生的當下算好，存在通知裡（item.x），之後價格變了理由也不會跟著變。
 // 引擎不知道這個欄位（它只會原樣帶著走）；讀通知時發現沒有，就用當下的資料補算。
+import { ENTRY_CODE_TEXT } from '../../ai/momEntry';
 import {
   SLOW,
   TIER_NAME,
@@ -234,7 +235,9 @@ function momEntry(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const excluded = Object.keys(acct.mom.excluded).filter((v) => order.indexOf(v) >= 0 && (idx < 0 || order.indexOf(v) < idx));
   let why = rank ? `${t} 過去一年漲 ${fmtSigned(ret)}，在 50 檔大型股裡排第 ${rank}。動能規則買前 5 名，這個月有空位，所以進場。` : `${t} 在這個月的動能名單上，目前還沒持有。`;
   if (rank && rank > acct.cfg.momSlots) why = `${t} 過去一年漲 ${fmtSigned(ret)}，排第 ${rank}。排在前面的不是已經持有，就是不能買，所以輪到它遞補。`;
-  if (vetoed.length) why += `排在它前面的 ${vetoed.join('、')} 這個月被 AI 否決，由下一名遞補。`;
+  // 沿用的否決（momentum_ai §3.3、§3.4）：後面加「（沿用 2026-11 的審查）」
+  const carried = n.monthly?.input.vetoCarried ?? {};
+  if (vetoed.length) why += `排在它前面的 ${vetoed.map((v) => (carried[v] ? `${v}（沿用 ${carried[v]} 的審查）` : v)).join('、')} 這個月被 AI 否決，由下一名遞補。`;
   if (excluded.length) why += `你排除了排在前面的 ${excluded.join('、')}。`;
   const { math } = slotMath(ctx, t, sh);
   const vetoRun = vetoed.length ? n.monthly?.input.runIds?.entry?.[vetoed[0]] : undefined;
@@ -243,7 +246,12 @@ function momEntry(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const ownVal = (acct.lots.own[t] ?? 0) * (c ? c[view.i] : 0);
   if (ownVal > 0) facts.push({ label: '自選已經持有', value: fmtMoney(ownVal), note: `同一檔合計最多買到總資產 ${fmtPct(acct.cfg.crossCapBuy ?? 0.1)}，被擋下的部分留在核心` });
   return {
-    short: rank ? `一年報酬排第 ${rank}${vetoed.length ? `，${vetoed.join('、')} 被否決後遞補` : ''}` : '在動能名單上',
+    // 月報之後才回來的否決（momentum_ai §3.3）：收合時那一行先講它
+    short: it.lateVeto
+      ? `進場審查在月報之後回來：3 票否決（${ENTRY_CODE_TEXT[it.lateVeto.code] ?? it.lateVeto.code}），預設仍是買進`
+      : rank
+        ? `一年報酬排第 ${rank}${vetoed.length ? `，${vetoed.join('、')} 被否決後遞補` : ''}`
+        : '在動能名單上',
     why,
     gauge: rankGauge(rank, acct.cfg.momSlots, '一年報酬排名（越左邊越強）'),
     rule: RULE.momentum,

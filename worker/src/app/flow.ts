@@ -300,13 +300,14 @@ export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: A
     if (pushed.length || followed.length) {
       await patchAccount(db, now, '推播之後記下講過的 AI 結果', (a0) => {
         const a = structuredClone(a0);
-        const before = JSON.stringify(a.own);
+        // 自選的減半檢視記在 own、晚到的進場否決記在月報的項目上（momentum_ai §3.3）
+        const before = JSON.stringify([a.own, a.notifs]);
         for (const id of pushed) {
           const n = a.notifs.find((x) => x.id === id);
           if (n) for (const w of PUSH_WAITERS) w.told?.(a, n);
         }
         for (const f of followed) f.told(a);
-        return JSON.stringify(a.own) === before ? null : { acct: a };
+        return JSON.stringify([a.own, a.notifs]) === before ? null : { acct: a };
       }).catch((e) => console.error('推播之後記下講過的 AI 結果', e));
     }
   }
@@ -350,10 +351,11 @@ export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: A
  * 月報訊號日、出月報之前：任務 A 的否決與遞補（還沒審過的跑規則偵測）、崩盤規則檢視的意見（同方向、3 票一致才有）、
  * 這個月任務 C 的說明。出錯只記下來，月報照規則出（預設准許、沒有 AI 那一行）。
  */
-async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal: string, ov: CalendarOverrides, now: Date, log: string[]): Promise<MonthInputs> {
+async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal: string, ov: CalendarOverrides, now: Date, log: string[], alerts: Alert[]): Promise<MonthInputs> {
   const out: MonthInputs = {};
   try {
-    Object.assign(out, await prepareEntries(env, fetcher, acct, signal, ov, now, log));
+    // 進場審查 2 次都沒有結論的 F1_COURT_FAILED 和流程的告警一起存（momentum_ai §3.3）
+    Object.assign(out, await prepareEntries(env, fetcher, acct, signal, ov, now, log, { alerts }));
   } catch (e) {
     log.push(`任務 A 的月報輸入出錯，照規則准許：${errText(e)}`);
   }
@@ -431,7 +433,7 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
           const aiNotes = (await listRuns(db, opt.now, { limit: 200 })).map(noteOfRun).filter((n): n is AiNote => n !== null);
           // 月報訊號日：先準備 AI 層給月報的輸入（要用網路，所以在純計算的 processSessions 之前）
           const monthInputs = new Map<string, MonthInputs>();
-          for (const s of signalsIn(plan.sessions, ov)) monthInputs.set(s, await monthEndInputs(env, fetcher, loaded.acct, s, ov, opt.now, aiPrep));
+          for (const s of signalsIn(plan.sessions, ov)) monthInputs.set(s, await monthEndInputs(env, fetcher, loaded.acct, s, ov, opt.now, aiPrep, alerts));
           const p = await processSessions(db, loaded.acct, plan.sessions, ov, aiNotes, monthInputs);
           alerts.push(...p.alerts);
           try {

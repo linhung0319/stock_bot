@@ -72,8 +72,38 @@ export const dropWaiter: PushWaiter = {
   },
 };
 
+/**
+ * 月報之後才回來的進場否決（momentum_ai §3.3，T32b）：不留住通知，只補推一則（月報已經推過才補；每個項目一次）。
+ * 文字在套用時寫進項目的 lateVeto.push（還沒回覆、已回覆還沒填快照兩種；已經填快照的不推），推出去之後拿掉。
+ */
+export const lateVetoWaiter: PushWaiter = {
+  name: '晚到的進場否決',
+  waiting: () => false,
+  told(_acct, n) {
+    // 月報整則重推（例如之前推失敗）時，新的內容已經在裡面，不另外補推
+    for (const it of n.items) if (it.lateVeto?.push) delete it.lateVeto.push;
+  },
+  followUps(acct) {
+    const out: PushFollowUp[] = [];
+    for (const n of acct.notifs)
+      for (const it of n.items) {
+        if (it.f !== 'F1' || !it.lateVeto?.push) continue;
+        const key = it.key;
+        out.push({
+          notif: n.id,
+          text: it.lateVeto.push,
+          told: (a) => {
+            const x = a.notifs.find((m) => m.id === n.id)?.items.find((i) => i.key === key);
+            if (x?.lateVeto) delete x.lateVeto.push;
+          },
+        });
+      }
+    return out;
+  },
+};
+
 /** 所有「等到下一次流程再推」的規則通知。T33b：崩盤規則的月報（core_ai §3.2）加在這裡。 */
-export const PUSH_WAITERS: PushWaiter[] = [dropWaiter];
+export const PUSH_WAITERS: PushWaiter[] = [dropWaiter, lateVetoWaiter];
 
 /** 這則新通知要不要等到下一次流程再推。 */
 export const pushWaiting = (acct: Account, n: Notif, waiters: PushWaiter[] = PUSH_WAITERS): boolean => waiters.some((w) => w.waiting(acct, n));

@@ -32,8 +32,8 @@ export interface FilingHit {
 
 export const MA_PROXY_FORMS = ['PREM14A', 'DEFM14A', 'PREM14C', 'DEFM14C'];
 export const B424_FORMS = ['424B1', '424B4', '424B5'];
-/** 有效期間（天）：被收購 365、會計 180、增資 180（B-9 的 WINDOW）。 */
-export const HIT_WINDOW: Record<string, number> = { PENDING_MA: 365, ACCOUNTING: 180, DILUTION: 180 };
+/** 有效期間（天）：被收購 365、會計 180、增資 180（B-9 的 WINDOW）；監管 180（momentum_ai §3.1，T32b）。 */
+export const HIT_WINDOW: Record<string, number> = { PENDING_MA: 365, ACCOUNTING: 180, REGULATORY: 180, DILUTION: 180 };
 /** F18 會轉給 LLM 分類的 8-K 項目（規則分不出輕重的）。 */
 export const SCAN_ITEMS = ['1.01', '1.02', '1.03', '2.05', '2.06', '3.02', '5.02', '7.01', '8.01'];
 

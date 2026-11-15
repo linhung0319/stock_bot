@@ -1,5 +1,6 @@
 // 把帳戶與通知組成畫面要的資料。這裡只讀不寫。
 // 用字原則：不出現功能代號（F1…F25）與權限等級；狀態用一句話寫出「現在怎樣、到哪裡會觸發」。
+import { ENTRY_CODE_TEXT } from '../../ai/momEntry';
 import {
   DEFAULT_ONLY_WHY,
   SLOW,
@@ -123,7 +124,8 @@ export interface ItemView {
   choice: string;
   /** 規則的選項（沒選就照這個）。 */
   ruleChoice: string;
-  actions: { id: string; label: string; hint: string; reasonLabel: string }[];
+  /** prefill：理由欄先填的字（晚到的進場否決按「排除」時是「AI 否決：…」，momentum_ai §3.3）。 */
+  actions: { id: string; label: string; hint: string; reasonLabel: string; prefill?: string }[];
   explain: Explain;
   /** 門檻條（沒有門檻的建議是 null）。 */
   meter: Meter | null;
@@ -384,14 +386,14 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
     choices,
     choice: it.choice,
     ruleChoice: it.ruleChoice,
-    actions: (it.actions ?? []).map((a) => ({ id: a, ...ACTIONS[a] })),
+    actions: (it.actions ?? []).map((a) => ({ id: a, ...ACTIONS[a], ...(a === 'EXCLUDE' && it.lateVeto ? { prefill: `AI 否決：${ENTRY_CODE_TEXT[it.lateVeto.code] ?? it.lateVeto.code}` } : {}) })),
     explain: x,
     meter: itemMeter(d, n, it, x, headline),
     reasonRequired: !!it.reasonRequired,
     reason: it.reason ?? null,
     discuss: it.brk?.type === 'B' && !!it.ticker && !!d.acct.own[it.ticker],
     // 只有預設前提的股票：那一行後面接「這檔還沒有你的論點，AI 只檢查系統預設前提。」（引擎寫在這一項的理由裡）
-    aiLine: it.kind === 'OWN_RULE' && it.aiLine ? `${it.aiLine}${it.why?.includes(DEFAULT_ONLY_WHY) ? `。${DEFAULT_ONLY_WHY}` : ''}` : null,
+    aiLine: (it.kind === 'OWN_RULE' || it.lateVeto) && it.aiLine ? `${it.aiLine}${it.why?.includes(DEFAULT_ONLY_WHY) ? `。${DEFAULT_ONLY_WHY}` : ''}` : null,
     drop: it.drop ?? null,
     revised: it.revised ?? null,
   };

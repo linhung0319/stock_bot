@@ -190,11 +190,13 @@ export function shadowLines(sum) {
 
 // ---------------------------------------------------------------- AI 紀錄上方的總覽（T11）
 
-const DECISION = { ALLOW: '准許', ALLOW_WATCH: '准許但觀察', VETO: '否決', BLOCK: '資料可疑，這個月不進場', PENDING: '等法庭' };
+const DECISION = { ALLOW: '准許', ALLOW_WATCH: '准許，附註', VETO: '否決', BLOCK: '資料可疑，這個月不進場', PENDING: '等法庭' };
 const SOURCE = { RULE: '規則', AI: 'AI 法庭', DEFAULT: '照規則（AI 沒有結論）' };
-const CODE = { PENDING_MA: '被收購', ACCOUNTING: '會計問題', REGULATORY: '監管或訴訟', EARNINGS_DIVERGENCE: '盈餘背離', ONE_OFF_JUMP: '一次性跳漲', DILUTION: '增資', DATA_SUSPECT: '資料可疑', MGMT_CHANGE: '高層異動', GUIDANCE_CUT: '財測', RESTRUCTURING: '重組', MAJOR_CONTRACT: '重大合約', DISTRESS: '財務危機', CYBER: '資安事件', ACTIVIST: '大股東申報（13D）', CONDITION_HINT: '可能和條件有關', PRICE_DROP: '個股自身大跌', FINANCING: '籌資', EARNINGS: '財報', OTHER: '其他', ALLOW_WATCH: '准許但觀察', ALLOW: '准許', VETO: '否決', INSUFFICIENT: '證據不足', EXIT: '建議出場', HOLD: '不用動' };
+const CODE = { PENDING_MA: '被收購', ACCOUNTING: '會計問題', REGULATORY: '監管或訴訟', EARNINGS_DIVERGENCE: '盈餘背離', ONE_OFF_JUMP: '一次性跳漲', DILUTION: '增資', DATA_SUSPECT: '資料可疑', MGMT_CHANGE: '高層異動', GUIDANCE_CUT: '財測', RESTRUCTURING: '重組', MAJOR_CONTRACT: '重大合約', DISTRESS: '財務危機', CYBER: '資安事件', ACTIVIST: '大股東申報（13D）', CONDITION_HINT: '可能和條件有關', PRICE_DROP: '個股自身大跌', FINANCING: '籌資', EARNINGS: '財報', OTHER: '其他', ALLOW_WATCH: '准許，附註', ALLOW: '准許', VETO: '否決', INSUFFICIENT: '證據不足', EXIT: '建議出場', HOLD: '不用動' };
 /** 網站不顯示代碼：把文字裡的代碼換成白話。 */
-const plain = (t) => String(t ?? '').replace(/(PENDING_MA|ACCOUNTING|REGULATORY)_CANDIDATE/g, (_, c) => `${CODE[c]}候選`).replace(/\b(PENDING_MA|ACCOUNTING|REGULATORY|EARNINGS_DIVERGENCE|ONE_OFF_JUMP|DILUTION|DATA_SUSPECT|ALLOW_WATCH|ALLOW|VETO|INSUFFICIENT|EXIT|HOLD)\b/g, (m) => CODE[m]);
+const plain = (t) => String(t ?? '')
+  .replace(/（\d{4}-\d{2}-\d{2}_[A-Z_]+_[0-9a-f]{6}）/g, '')
+  .replace(/\d{4}-\d{2}-\d{2}_[A-Z_]+_[0-9a-f]{6}/g, 'AI 紀錄').replace(/(PENDING_MA|ACCOUNTING|REGULATORY)_CANDIDATE/g, (_, c) => `${CODE[c]}候選`).replace(/\b(PENDING_MA|ACCOUNTING|REGULATORY|EARNINGS_DIVERGENCE|ONE_OFF_JUMP|DILUTION|DATA_SUSPECT|ALLOW_WATCH|ALLOW|VETO|INSUFFICIENT|EXIT|HOLD)\b/g, (m) => CODE[m]);
 const fnum = (x, d = 2) => (x === null || x === undefined || !Number.isFinite(x) ? '—' : x.toFixed(d));
 
 /** 總經儀表板（每月都算）、本月動能新股進場審查、最近的申報事件。真實模式才有內容；載入失敗就不顯示。 */
@@ -208,7 +210,7 @@ export function aiOverview() {
         parts.push(
           details(
             `動能新股進場審查（${o.reviews[0].month} 月報）`,
-            h('table', { class: 'plain' }, h('tbody', null, o.reviews.map((r) => h('tr', null, h('td', { style: 'white-space:nowrap' }, h('span', { class: 'tk' }, r.ticker), r.rank ? h('div', { class: 'small faint' }, `第 ${r.rank} 名`) : null), h('td', null, h('span', { class: 'chip ' + (r.decision === 'VETO' || r.decision === 'BLOCK' ? 'hot' : r.decision === 'ALLOW_WATCH' ? 'warn' : 'ok') }, DECISION[r.decision] ?? r.decision)), h('td', { class: 'small' }, `${SOURCE[r.source] ?? r.source}${r.reasonCode ? ` · ${CODE[r.reasonCode] ?? r.reasonCode}` : ''}${r.replacedBy ? ` · 由 ${r.replacedBy} 遞補` : ''}`, r.watchReason ? h('div', { class: 'faint' }, '觀察：' + r.watchReason) : null, r.note ? h('div', { class: 'faint' }, plain(r.note)) : null))))),
+            h('table', { class: 'plain' }, h('tbody', null, o.reviews.map((r) => h('tr', null, h('td', { style: 'white-space:nowrap' }, h('span', { class: 'tk' }, r.ticker), r.rank ? h('div', { class: 'small faint' }, `第 ${r.rank} 名`) : null), h('td', null, h('span', { class: 'chip ' + (r.decision === 'VETO' || r.decision === 'BLOCK' ? 'hot' : r.decision === 'ALLOW_WATCH' ? 'warn' : 'ok') }, DECISION[r.decision] ?? r.decision), r.lateVerdict === 'VETO' ? h('div', null, h('span', { class: 'chip hot' }, '月報之後回來：否決')) : null), h('td', { class: 'small' }, `${r.carriedFrom ? `沿用 ${r.carriedFrom} 的 AI 法庭` : (SOURCE[r.source] ?? r.source)}${r.reasonCode ? ` · ${CODE[r.reasonCode] ?? r.reasonCode}` : ''}${r.replacedBy ? ` · 由 ${r.replacedBy} 遞補` : ''}`, r.watchReason ? h('div', { class: 'faint' }, '附註：' + plain(r.watchReason)) : null, r.note ? h('div', { class: 'faint' }, plain(r.note)) : null))))),
           ),
         );
       if (o.macro)

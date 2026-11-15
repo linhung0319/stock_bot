@@ -238,6 +238,12 @@ export interface Item {
    * 這一項同時標 cancelled（部位不動、不用下單、回覆時不再算它）。
    */
   revised?: string;
+  /**
+   * F1 進場項目：進場審查在月報之後才回來、三票否決（momentum_ai §3.3「月報之後才回來的否決」）。
+   * 預設仍是照規則買進；按「排除」時理由欄先填「AI 否決：<代碼的中文>」。
+   * push：還沒補推的那一則 LINE（補推之後拿掉）；沒有 = 不用推（已經填快照，或推過了）。
+   */
+  lateVeto?: { code: string; runId: string; date: string; push?: string };
 }
 
 export type NotifKind = 'MONTHLY' | 'MONTHLY_EMPTY' | 'URGENT' | 'CASHFLOW' | 'FIX' | 'INFO' | 'CLASSIFY' | 'CASH_DIFF';
@@ -311,8 +317,12 @@ export interface MonthlyContext {
   company?: Record<string, string>;
   /** 本月暫停換股的原因（成分股名單不一致、排名沒有產生）；order 這時是目前的動能名單，名單不變。 */
   paused?: string;
-  /** 任務 A 准許但觀察（ALLOW_WATCH）的代號 → 觀察理由（月報列出）。 */
+  /** 每個 F1 進場項目的說明（momentum_ai §3.3 的 entryNote）：代號 → 說明，月報寫進那一項的 note。T32b 起取代 watch。 */
+  entryNotes?: Record<string, string>;
+  /** 舊月報（T32b 之前）：准許但觀察的代號 → 觀察理由。沒有 entryNotes 時才讀。 */
   watch?: Record<string, string>;
+  /** 本月的否決是沿用之前的審查（momentum_ai §3.4）：代號 → 沿用的月份。 */
+  vetoCarried?: Record<string, string>;
   /** 附在月報的說明（任務 C：持股單月跌 > 20% 的原因）。 */
   notes?: string[];
   /** 這份月報用到的 AI 執行（ai_runs.run_id，T13）：崩盤規則檢視、F1 每檔的審查、F20 說明。 */

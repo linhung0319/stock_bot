@@ -383,6 +383,7 @@ function slip(it, v, ui) {
                 type: 'button',
                 onclick: () => {
                   const ta = h('textarea', { rows: 2, 'aria-label': a.reasonLabel });
+                  if (a.prefill) ta.value = a.prefill;
                   const msg = h('div');
                   const ok = actionButton(a.label, 'primary', async () => {
                     try {

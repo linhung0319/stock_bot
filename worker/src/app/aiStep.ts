@@ -5,7 +5,8 @@
 //        已經有結論、還沒套用的 AI 執行（各功能的 applier）
 //        財報條件（程式比對 XBRL）、規則直接提出的硬事件（動能持股被收購、持股的 NT 10-K／10-Q）
 //   3. startNew 而且雲端排程設定好了：開新的執行
-//        F25／F24（自選）、財報新聞稿的數字擷取（OWN_EARNINGS，T29c）、F19 法庭與 F18 掃描、F1 否決法庭與擬事件打分（月報前一天）、
+//        F25／F24（自選）、財報新聞稿的數字擷取（OWN_EARNINGS，T29c）、F19 法庭與 F18 掃描、F1 否決法庭、進場前回看與擬事件打分（月報前一天；
+//        月報當天才進榜的在月報之後開，T32b）、
 //        F5／F6 崩盤規則檢視（月報前一天；切換了卻沒預估到時補開）、F7 減半檢視、自選的個股自身大跌（PRICE_DROP）與動能的 F20 大跌說明、
 //        F21 策略檢討說明、提前審查（T29b）
 //      沒有 startNew 時只開 afterApply 的那幾種（01:30 的 finalStarts，src/app/schedule.ts）；03:30 兩者都沒有，只套用
@@ -27,7 +28,7 @@ import type { Env, Fetcher } from './env';
 import { applyEventScan, applyHardEvent, applyRuleEvents, classifyFresh, scanTargets, startEventRuns, type Classified } from './events';
 import { fetchFilingChecks, markSeen, sectorEtfs, type FilingCheck } from './filings';
 import { ConflictError, loadAccount, requiredTickers, saveAccount, thesisLogStmt } from './ledgerStore';
-import { applyMomEntry, momPreview } from './momAi';
+import { applyMomEntry, momLateStart, momPreview } from './momAi';
 import { applyOwnCondition, applyOwnReview, ownFacts, ownXbrlConditions, routineReady, startEarlyReviews, startOwnRuns } from './ownAi';
 import { noteOfRun } from './site/aiViews';
 import { annotate } from './site/explain';
@@ -155,6 +156,8 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
   await guard(res, '財報數字擷取', () => startOwnEarnings(sc));
   await guard(res, '硬事件與每日掃描', () => startEventRuns(sc, targets));
   await guard(res, '動能新股進場審查', () => momPreview(sc));
+  // 月報當天才進榜、要法庭的：月報之後開法庭與進場前回看（momentum_ai §3.2）
+  await guard(res, '動能新股進場審查（月報當天才進榜的）', () => momLateStart(sc));
   await guard(res, '崩盤規則檢視', () => startCrashRuns(sc));
   await guard(res, '減半檢視、個股自身大跌與大跌說明', () => startDropRuns(sc));
   // 提前審查（own_thesis §2.4）：規則段與之前的掃描標到的可提前事件、上面剛寫的個股自身大跌；放在其他自選審查之後（今天已經開了的不另開）

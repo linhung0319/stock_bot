@@ -52,10 +52,10 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
   | 排程（UTC） | 台灣 | 做什麼 |
   |---|---|---|
   | `30 23 * * MON-FRI` | 07:30 | 抓資料 → 每日檢查 → 月底出月報 → 套用 AI 結論 → 看新申報、開這一天所有新的 AI 執行 → 推播（第一次失敗的告警先不推） |
-  | `30 1 * * TUE-SAT` | 09:30 | 今天沒跑完就重跑，還是不行就推缺席告警；套用 AI 結論之後接著開 `finalStarts`（硬事件法庭：掃描標到的硬事件候選不等到隔天；當天的每日掃描沒有合格結論就重掃一次；你定的「重新審查」條件成立後的審查；提前審查：掃描標到的自選股可提前事件不等到隔天）；標記逾時的 AI 任務 |
+  | `30 1 * * TUE-SAT` | 09:30 | 今天沒跑完就重跑，還是不行就推缺席告警；套用 AI 結論之後接著開 `finalStarts`（硬事件法庭：掃描標到的硬事件候選不等到隔天；當天的每日掃描沒有合格結論就重掃一次；你定的「重新審查」條件成立後的審查；提前審查：掃描標到的自選股可提前事件不等到隔天；月報前一天與訊號日的動能進場審查重開 `momRecheck`）；標記逾時的 AI 任務 |
   | `30 3 * * TUE-SAT` | 11:30 | 只套用回來的 AI 結論、推新通知與告警、標記逾時。不抓資料、不跑每日檢查、不開新的執行；今天的每日流程沒做完就不套用 |
 
-  01:30 要多開的執行（動能 `momRecheck`、崩盤 `crashNeeds`）加在 `finalStarts`（掃描重開 T28、條件成立後的審查 T29a、提前審查 T29b 已接）。
+  01:30 要多開的執行（崩盤 `crashNeeds`）加在 `finalStarts`（掃描重開 T28、條件成立後的審查 T29a、提前審查 T29b、動能 `momRecheck` T32b 已接）。
 - AI 任務逾時（45 分鐘）分兩種原因寫進「照規則」的結論與 `AI_TIMEOUT` 告警：雲端排程沒有來取證據包（`fetched_at` 是空的），或取了沒有送回。逾時標記之後才送到的結果回 410、存進 `ai_rejections`（`LATE`），不套用。
 - 手動：`POST /admin/flow`；狀態：`GET /admin/flow/status`；測試推播：`POST /admin/line/test`、`POST /admin/alert/test`。
 - 用真實資料在本機預覽 LINE 會收到的文字（含一份假裝今天是月底的月報，不會真的送）：`npx tsx scripts/flow-local.ts`。
@@ -92,6 +92,7 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 ## 其餘 AI 功能（T11）
 
 - 每日流程的 AI 段：`src/app/aiStep.ts`（看新申報 → 套用 AI 結論、財報條件、規則直接提出的硬事件 → 開新的執行），各功能的套用登記在 `APPLIERS`。
+- 動能進場審查（T32b，`momentum_ai_design_2026-11-15.md` §3.1～§3.4）：證據由 `src/app/momEvidence.ts` 組（F1 與動能持股的 F19 共用，一份最多 6 份申報原文）；進場前回看在 `src/app/momLookback.ts`（月報前一天的 23:30 開、01:30 沒有結論重開一次）；有新證據才重開法庭（沿用上一次的結論）、01:30 的 `momRecheck`、月報之後才回來的否決在 `src/app/momAi.ts`。
 - 規則偵測（不用 LLM）：`src/data/secEvents.ts`（申報分類，移植自 B-9）、`src/ai/detect.ts`（單日漲幅占比、盈餘背離、股數、資料可疑、跌幅拆解、SIC → 產業 ETF）、`src/data/fred.ts`（總經儀表板，fredgraph CSV 不需要金鑰）。
 - 各功能：F18／F19 `src/ai/events.ts`＋`src/app/events.ts`；F1 `src/ai/momEntry.ts`＋`src/app/momAi.ts`；F7／F20 `src/ai/drops.ts`＋`src/app/dropAi.ts`；F5／F6 `src/ai/crash.ts`＋`src/app/crashAi.ts`；F21 `src/ai/strategy.ts`＋`src/app/strategyAi.ts`；F14 `src/ai/ownCheck.ts`＋`src/app/ownCheckAi.ts`。資料表 `migrations/0007_events_entry.sql`。
 - 用真實資料看規則段（不觸發 AI）：`npx tsx scripts/t11-local.ts MU NVDA`（F1 規則偵測、FRED 儀表板、French 動能因子回撤）。

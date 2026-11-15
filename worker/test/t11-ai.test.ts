@@ -193,7 +193,8 @@ describe('F1：規則的結論、遞補、法庭的檢查', () => {
     const dil = v('VETO', { decision: 'VETO', reason_code: 'DILUTION' });
     const o = judge(pack, [dil, dil, dil], hook);
     expect(o.status).toBe('INSUFFICIENT');
-    expect(courtVerdict(o)).toMatchObject({ decision: 'ALLOW', source: 'DEFAULT' });
+    // T32b（momentum_ai §3.4）：三票一致的證據不足也算有結論，記 AI（之後沒有新證據就沿用）；以前記 DEFAULT
+    expect(courtVerdict(o)).toMatchObject({ decision: 'ALLOW', source: 'AI' });
     expect(courtVerdict(judge(pack, [veto, veto, v('ALLOW', { decision: 'ALLOW' })], hook))).toMatchObject({ decision: 'ALLOW', source: 'DEFAULT' });
     const watch = v('ALLOW_WATCH', { decision: 'ALLOW_WATCH', watch_reason: '重編還沒完成' });
     expect(courtVerdict(judge(pack, [watch, watch, watch], hook))).toMatchObject({ decision: 'ALLOW_WATCH', watchReason: '重編還沒完成' });
@@ -963,7 +964,7 @@ describe('引擎的 T11 部分', () => {
     await base((acct, view) => {
       const m = monthlyReport(acct, view, { order: ['AAPL', 'NVDA'], month: '2026-12', watch: { AAPL: '增資（只顯示）' }, notes: ['MU 最近一個月跌 25%：產業一起跌'] });
       const it = m.notif.items.find((i) => i.f === 'F1' && i.ticker === 'AAPL');
-      if (it) expect(it.note).toBe('准許但觀察：增資（只顯示）');
+      if (it) expect(it.note).toBe('准許，附註：增資（只顯示）'); // T32b：「准許但觀察」改叫「准許，附註」（舊月報只有 watch 時照樣顯示）
       expect(m.notif.text).toContain('\nMU 最近一個月跌 25%：產業一起跌');
       const s = strategyReminder(acct, view, '動能相對基準落後超過 20%');
       expect(s.notif).toMatchObject({ kind: 'INFO', title: '策略檢討提醒', items: [] });
