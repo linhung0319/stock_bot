@@ -60,6 +60,7 @@ import { choiceEffect } from './bubble';
 import { annotate } from './explain';
 import { accountView, composedView, crashLogView, ctxOf, historyView, withPreviewNote, holdingDetail, notifView, pendingBreakOf, snapshotForm, stateView } from './views';
 import { demoHolding } from './thesisView';
+import { eventDetail, eventSource } from '../eventText';
 
 type Ready = SiteData & { acct: Account; view: MarketView };
 
@@ -453,7 +454,9 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       const d = await backend.load().catch(() => null);
       if (d?.view) book = bookFromView(d.axis, d.view.close);
     }
-    return json({ ...o, vetoes: o.vetoes.map((v) => vetoView(book, v, BENCHMARK)) });
+    // 申報事件的來源與說明換成白話（和持股頁一樣；掃描寫的類別代號、條件編號不給使用者看）
+    const events = o.events.map((e) => ({ ...e, form: eventSource(e), detail: eventDetail(e.detail) }));
+    return json({ ...o, events, vetoes: o.vetoes.map((v) => vetoView(book, v, BENCHMARK)) });
   }
   if (rest === 'ops/own-check' && post) {
     // 重送出場條件去改寫（編輯論點頁送出失敗、或改寫沒有結果時）

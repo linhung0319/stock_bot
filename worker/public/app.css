@@ -86,7 +86,8 @@ button:disabled { cursor: default; opacity: 0.6; }
 .demo-in button:hover:not(:disabled) { border-color: var(--warn); }
 .demo-tips summary { cursor: pointer; text-decoration: underline; text-decoration-color: rgba(255, 192, 33, 0.35); text-underline-offset: 3px; }
 .demo-tips ul { margin: 6px 0 2px; padding-left: 18px; list-style: disc; color: #d9bf7a; }
-#notices .notice { max-width: var(--page); margin: 10px auto 0; }
+#notices { padding: 0 var(--gutter); }
+#notices .notice { max-width: calc(var(--page) - 2 * var(--gutter)); margin: 10px auto 0; }
 @media (max-width: 999px) { .stack { position: static; } .top { position: sticky; top: 0; z-index: 20; } }
 @media (max-width: 640px) {
   :root { --gutter: 14px; --top-h: 54px; }
@@ -395,7 +396,7 @@ a.step-in:hover, button.step-in:hover { color: #fff; }
 .step-t { display: block; font-size: 13.5px; }
 .step-t small { display: block; font-size: 12px; color: #9fb4ff; text-decoration: underline; text-decoration-color: rgba(159, 180, 255, 0.4); text-underline-offset: 3px; }
 .steps li[aria-current="step"] .step-t { color: #fff; font-size: 15px; font-weight: 700; }
-@media (max-width: 520px) { .step-t { font-size: 12.5px; } .steps li[aria-current="step"] .step-t { font-size: 13.5px; } }
+@media (max-width: 520px) { .steps li { padding-right: 6px; } .step-t { font-size: 12.5px; } .steps li[aria-current="step"] .step-t { font-size: 13px; } }
 
 /* ------------------------------------------------ 建議單 */
 .slip-bar { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; justify-content: space-between; margin-bottom: 14px; color: var(--ink-2); font-size: 14px; }
@@ -415,6 +416,7 @@ a.step-in:hover, button.step-in:hover { color: #fff; }
 .act { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 19px; line-height: 1.3; font-weight: 600; }
 .act .tk, .act .n { font-size: 24px; font-weight: 700; }
 .act small { font-size: 13px; font-weight: 400; color: var(--ink-3); }
+.act-body { min-width: 0; }
 .act .side { width: 28px; height: 28px; font-size: 15px; border-radius: 8px; }
 .slip-grid { display: grid; gap: 14px 28px; padding: 2px 20px 22px 28px; }
 .slip-grid > * { min-width: 0; }
@@ -518,12 +520,16 @@ a.step-in:hover, button.step-in:hover { color: #fff; }
 .plain td { padding: 9px 10px; border-bottom: 1px solid var(--line-2); }
 .plain tr:last-child td { border-bottom: 0; }
 .plain .r { text-align: right; }
+.cond-tbl td:first-child { white-space: nowrap; }
+@media (max-width: 640px) { .scroll-x > .plain td:not(:nth-child(3)) { white-space: nowrap; } .scroll-x > .plain td:nth-child(3) { min-width: 9em; } }
 .plain tr.hl td { background: rgba(80, 110, 255, 0.12); }
 .mk { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 7px; background: rgba(255, 255, 255, 0.08); font-size: 12px; font-weight: 600; white-space: nowrap; }
 .mk.OUT { background: rgba(255, 59, 48, 0.16); color: #ff9a90; }
 .mk.IN { background: rgba(47, 180, 255, 0.16); color: #8fd8ff; }
 .mk.VETO, .mk.EXCLUDED { background: rgba(255, 192, 33, 0.14); color: #ffd36b; }
 .scroll-x { overflow-x: auto; }
+.warn-box:not(:first-child) { margin-top: 16px; }
+.warn-box:not(:last-child) { margin-bottom: 16px; }
 
 /* ------------------------------------------------ 走勢圖 */
 .chart { position: relative; }

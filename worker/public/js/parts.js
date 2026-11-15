@@ -171,7 +171,7 @@ export function aiBlock(note) {
             'div',
             { class: 'more-body' },
             note.conditions?.length
-              ? h('div', null, h('h5', null, '之後每天監測的條件'), h('table', { class: 'plain' }, h('tbody', null, note.conditions.map((c) => h('tr', null, h('td', null, c.kind), h('td', null, c.text), h('td', null, '成立時：' + c.then))))))
+              ? h('div', null, h('h5', null, '之後每天監測的條件'), h('table', { class: 'plain cond-tbl' }, h('tbody', null, note.conditions.map((c) => h('tr', null, h('td', null, c.kind), h('td', null, c.text), h('td', null, '成立時：' + c.then))))))
               : null,
             (note.sections ?? []).map((x) => h('div', null, h('h5', null, x.title), h('p', { class: 'small' }, x.text))),
           ),
@@ -244,7 +244,7 @@ export function actParts(text) {
   const m = /^(.*?)（([^（）]*)）$/.exec(text);
   const body = m ? m[1] : text;
   const sb = /^(賣|買) (.*)$/.exec(body);
-  return [sb ? h('span', { class: 'side ' + (sb[1] === '賣' ? 'sell' : 'buy') }, sb[1]) : null, actionText(sb ? sb[2] : body), m ? h('small', null, m[2]) : null];
+  return [sb ? h('span', { class: 'side ' + (sb[1] === '賣' ? 'sell' : 'buy') }, sb[1]) : null, h('span', { class: 'act-body' }, actionText(sb ? sb[2] : body)), m ? h('small', null, m[2]) : null];
 }
 
 export function headline(text) {

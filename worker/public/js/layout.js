@@ -155,6 +155,7 @@ const ICON = {
   remove: 'M9 2 16 9l-7 7-7-7zM6.2 9h5.6',
   ratio: 'M2.5 5h13M2.5 9h13M2.5 13h13M6 3.5v3M11.5 7.5v3M8 11.5v3',
   setup: 'M9 2v14M2 9h14',
+  undo: 'M4.5 6.5h6.5a4.5 4.5 0 0 1 0 9H6M4.5 6.5 7.5 3.5M4.5 6.5l3 3',
 };
 export const icon = (k) => {
   const NS = 'http://www.w3.org/2000/svg';

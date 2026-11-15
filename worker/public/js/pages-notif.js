@@ -906,6 +906,7 @@ export async function snapshotPage(ctx) {
       // 「為什麼買」只存成一條前提，不送去改寫（出場條件在持股頁的「編輯論點」寫；own_thesis §1.8）
       await ctx.refresh(false);
       form.hidden = true;
+      document.querySelector('.sticky-cta')?.remove();
       // 帳本已經照快照更新，不能再回上一步
       const stepsEl = document.querySelector('.banner .steps');
       if (stepsEl) stepsEl.replaceWith(stepBar(4));
