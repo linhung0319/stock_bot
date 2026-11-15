@@ -72,6 +72,24 @@ export interface OwnMeta {
   opened?: { startState: 'STD' | 'HALF'; drawdownAtOpen: number | null };
   /** 「不同意」之後的靜默期（own_thesis §1.10；由 T30 寫入，論點檔與證據包會列出來）。 */
   disputes?: { premiseId: string; since: string; until: string; reason: string; notif: number | null }[];
+  /**
+   * 「要看的事」上次列進月報的訊號日（own_thesis §3.6.6）：鍵是那一件事的鍵（`NO_THESIS`、`COND_NEAR:<列編號>@<季末日>`…），
+   * 由 `app/thesis.ts` 的 dueAttention 決定多久再列。沒有這個欄位（舊資料）= 都還沒列過。
+   */
+  attnShown?: Record<string, string>;
+}
+
+/**
+ * 「要看的事」的一件（own_thesis §3.6.6；動能的見 momentum_ai §3.6）：不用下單、但值得知道的事。
+ * 不是通知：不提醒、不用回覆。src：哪一段（自選股／動能持股），沒有 = 自選股。
+ */
+export interface Attention {
+  ticker: string;
+  kind: string;
+  text: string;
+  /** 從哪一天起成立（訊號日）。 */
+  since: string;
+  src?: 'own' | 'mom';
 }
 
 export interface Lots {
@@ -177,6 +195,8 @@ export interface Notif {
   userNote?: string;
   /** 這則通知用到的所有 AI 執行（各項目的 runIds，加上不屬於任何項目的：F1 否決、F20 說明；T13 起）。 */
   runIds?: string[];
+  /** 月報：這個月該列的「要看的事」（own_thesis §3.6.6）；沒有就不留這個欄位。 */
+  attention?: Attention[];
 }
 
 /** 月報需要、引擎自己算不出來的輸入。 */
@@ -212,6 +232,11 @@ export interface MonthlyContext {
    * 沒有這個欄位（舊月報）= 當場算。
    */
   crash?: { below: boolean; date: string; close: number | null; ma: number | null; bars?: number };
+  /**
+   * 這個月該列的「要看的事」（own_thesis §3.6.6、momentum_ai §3.6）：每日流程在產生月報前算好（頻率已經過濾）。
+   * 月報照抄到通知的 attention；重算（暫停後、入金合併、排除）沿用這一份。
+   */
+  attention?: Attention[];
 }
 
 export interface SavedState {

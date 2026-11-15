@@ -14,6 +14,7 @@
 | T33a | 完成 | （見 git log） | 387 通過、1 略過 |
 | T25 | 完成 | （見 git log） | 399 通過、1 略過 |
 | T26 | 完成 | （見 git log） | 410 通過、1 略過 |
+| T37 | 完成 | （見 git log） | 420 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -68,6 +69,12 @@
 - T26｜勾選不存帳戶，所以 CONDITION 那筆 log 的 `account_version` 是空的，復原快照不會刪它。
 - T26｜建議的 `supersedes` 指到另一條建議時，同一次寫入先把舊建議標 EXPIRED；勾選時只取代還在 ACTIVE／REVIEW_ONLY／MANUAL／PROPOSED 的列。
 - T26｜建議最多 3 條：`checkOwnReviewPayload` 超過時記一條問題、不作廢那一票，`reviewDecision` 只取前 3 條。
+- T37｜頻率用「月」算：設計的 90 天／6 個月／每年寫成每 3／6／12 個月（月報一個月一份，照天數會因月底日期差幾天跳一個月，例如 11/30 到 2/26 只有 88 天）。動能的「每 30 天」T32d 也建議寫成每 1 個月。別的選項：照字面算天數。
+- T37｜「同一件事」用 `attnShown` 的鍵代表：一次性的把會變的部分放進鍵（`PROPOSED_CONDS@<最新建議的 run_id>`、`COND_NEAR:<列編號>@<季末日>`），列過一次不再列；定期的用固定鍵加月數。舊的鍵不清。
+- T37｜各種的 `since`：建議的寫入日、`progress.at`、開檔日、論點寫的日子加 365 天、最近一則有這檔 F7 的通知日（找不到用開檔日）。
+- T37｜論點檔讀不到時月報照出、這個月不列也不記頻率，只寫 `console.error`、不推告警。月報暫停時照樣記 `attnShown`，清單存在暫停那一則的 input。
+- T37｜`HALF_NO_EXIT` 的「你定的條件」只算 ACTIVE 與 REVIEW_ONLY；`COND_NEAR` 只看監測中、你定的財報條件，動作照 `action`，沒有就看 `notifyTier`，再沒有寫「重新審查」。
+- T37｜示範模式沒有論點檔，月報與持股頁不會出現「要看的事」；要不要讓示範也有留給 T34。
 
 ## 要使用者親手做的事
 
@@ -88,6 +95,10 @@
 | T24 | 持股頁的條件那一塊（手機） | `records/stage8/screens/T24/phone.png` |
 | T26 | 持股頁的條件那一塊：你定的、建議中的、勾選與撤下（桌機） | `records/stage8/screens/T26/desktop.png` |
 | T26 | 同上（手機） | `records/stage8/screens/T26/phone.png` |
+| T37 | 月報頁的「要看的事」兩段（桌機） | `records/stage8/screens/T37/monthly-desktop.png` |
+| T37 | 同上（手機） | `records/stage8/screens/T37/monthly-phone.png` |
+| T37 | 持股頁的「要看的事」（桌機） | `records/stage8/screens/T37/holding-desktop.png` |
+| T37 | 同上（手機） | `records/stage8/screens/T37/holding-phone.png` |
 
 ## 卡住的任務
 

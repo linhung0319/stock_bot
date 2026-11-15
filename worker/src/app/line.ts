@@ -79,9 +79,19 @@ export function notifText(acct: Account, n: Notif, link: string | null): string 
   for (const it of n.items) if (!it.cancelled && it.aiLine?.startsWith('AI 檢視：')) out.push(it.aiLine);
   const optional = n.items.filter((it) => !it.cancelled && it.choice === 'SKIP' && (it.kind === 'AI_ONLY' || (it.kind === 'HARD' && it.choices.some((c) => c.id === 'AI')))).length;
   if (optional) out.push(`另有 ${optional} 項 AI 建議（預設不做），到網站決定。`);
+  // 「要看的事」只加一行（own_thesis §3.6.6）：件數是自選股與動能持股合計；沒有就不加
+  const attn = attentionLine(n);
+  if (attn) out.push(attn);
   if (merged.length || n.items.length) out.push('', '下單前先到網站確認每一張單（照規則／這次不做），做完回來填快照。');
   if (link) out.push(link);
   return out.join('\n');
+}
+
+/** 月報的「要看的事」那一行：`持股有 3 件事要看（不用下單），在持股頁。`；不是月報或沒有就是 null。 */
+export function attentionLine(n: Pick<Notif, 'kind' | 'attention'>): string | null {
+  if (n.kind !== 'MONTHLY' && n.kind !== 'MONTHLY_EMPTY') return null;
+  const k = n.attention?.length ?? 0;
+  return k ? `持股有 ${k} 件事要看（不用下單），在持股頁。` : null;
 }
 
 export interface AlertRow {

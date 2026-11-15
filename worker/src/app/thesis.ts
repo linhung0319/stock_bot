@@ -8,7 +8,7 @@
 // 8-K 的挑選順序、論點那一份 note）。讀 D1，所以不在引擎裡。
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
 import { confirmMode, type OwnCondition } from '../ai/ownReview';
-import type { Account, OwnMeta, Thesis, Tier } from '../engine';
+import { clone, type Account, type Attention, type MarketView, type OwnMeta, type Thesis, type Tier } from '../engine';
 import { XBRL_METRICS, type QuarterRow } from '../data/edgar';
 import type { Filing } from '../data/sources';
 import { accOf, loadEvents, type SecEventRow } from './filings';
@@ -627,4 +627,166 @@ export function condFacts(tf: Pick<ThesisFile, 'conditions' | 'lastReview' | 'ne
       });
     });
   return { facts, map };
+}
+
+// ---------------------------------------------------------------- 「要看的事」（T37，own_thesis §3.6.6；純函式，本身不讀資料庫）
+
+/**
+ * 一件要看的事，加上決定月報多久列一次要用的兩個欄位（存進通知時拿掉，見 toAttention）：
+ *   key    記在 OwnMeta.attnShown 的鍵：同一個鍵就是「同一件事」
+ *   every  同一個鍵隔幾個月可以再列；null = 列過一次就不再列（要再列就換鍵，例如換季、換一次審查）
+ */
+export interface AttnHit extends Attention {
+  key: string;
+  every: number | null;
+}
+
+/** 判斷一種「要看的事」需要的東西：這一檔的論點檔與帳戶狀態、帳戶、訊號日。 */
+export interface AttnCtx {
+  file: ThesisFile;
+  meta: OwnMeta;
+  acct: Pick<Account, 'own' | 'rule' | 'notifs'>;
+  view: Pick<MarketView, 'date'>;
+}
+
+/** 一種「要看的事」：detect 回傳這一檔現在成立的（可以多件，例如每個條件一件；不成立回傳空陣列）。 */
+export interface AttnKind {
+  kind: string;
+  detect(ctx: AttnCtx): Omit<AttnHit, 'ticker' | 'kind' | 'src'>[];
+}
+
+const daysBetween = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86400_000);
+const plusDays = (d: string, n: number) => minusDays(d, -n);
+const CN_NUM = ['零', '一', '兩', '三', '四'];
+const cnNum = (n: number) => CN_NUM[n] ?? String(n);
+
+/** 你定的、會自己發通知的條件（ACTIVE＋REVIEW_ONLY）。 */
+const ownedLive = (f: Pick<ThesisFile, 'conditions'>) => f.conditions.filter((c) => isOwned(c) && OWNED_LIVE.includes(c.status));
+
+/**
+ * 自選股的「要看的事」，一種一個物件。加一種 = 在這裡加一個物件（T29a 的 COND_MET_NO_SELL、T29b 的 PRICE_NO_FILING、
+ * T29c 的 PRESS_MISMATCH、T31a 的 NO_CONSENSUS、T35 的 SIZE_2X）；判斷需要的資料先放進論點檔或帳戶狀態。
+ * 月報的頻率用「月」算（月報一個月一份；設計寫的「90 天」「6 個月」「每年」= 3、6、12 個月）。
+ */
+export const OWN_ATTN: AttnKind[] = [
+  {
+    // 有建議中的條件（§1.5 第 6 點）：審查寫入新建議的那個月列一次（鍵帶最新那次審查的執行編號）
+    kind: 'PROPOSED_CONDS',
+    detect({ file }) {
+      const ps = file.conditions.filter((c) => c.status === 'PROPOSED');
+      if (!ps.length) return [];
+      const last = ps.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
+      return [{ key: `PROPOSED_CONDS@${last.runId}`, every: null, since: last.createdAt.slice(0, 10), text: `${file.ticker} 有 ${ps.length} 條 AI 建議的條件等你看` }];
+    },
+  },
+  {
+    // 你定的財報條件「要連續 N 季（N ≥ 2）、已經 N−1 季」（§3.6.2）：每個條件每季一次（鍵帶季末日）
+    kind: 'COND_NEAR',
+    detect({ file }) {
+      return ownedLive(file)
+        .filter((c) => c.kind === 'XBRL' && c.progress && c.progress.need >= 2 && c.progress.streak === c.progress.need - 1)
+        .map((c) => {
+          const p = c.progress!;
+          const dir = c.check.type === 'xbrl_metric_below' ? '低於' : '高於';
+          const act = c.action ?? notifyTier(c) ?? 'REVIEW';
+          const had = p.streak === 1 ? `已經有一季${dir}門檻` : `已經連續${cnNum(p.streak)}季${dir}門檻`;
+          return {
+            key: `COND_NEAR:${c.id}@${p.period}`,
+            every: null,
+            since: p.at || p.period,
+            text: `${file.ticker}：你定的條件「${c.text}」${had}（${fmtMetric(String(c.check.metric), p.values[0] ?? null)}），下一季也${dir}就會成立 → ${ACTION_TEXT[act as CondAction] ?? act}`,
+          };
+        });
+    },
+  },
+  {
+    // 論點檔是「只有預設」：每檔每 6 個月
+    kind: 'NO_THESIS',
+    detect({ file, view }) {
+      if (file.kind !== 'DEFAULT_ONLY') return [];
+      return [{ key: 'NO_THESIS', every: 6, since: file.openedAt ?? view.date, text: `${file.ticker} 還沒有你的論點，目前用系統預設前提檢查` }];
+    },
+  },
+  {
+    // 論點本文的 setAt（沒有本文時取最新一條使用者前提的 addedAt）距今滿 365 天：每檔每年
+    kind: 'THESIS_OLD',
+    detect({ file, view }) {
+      const userDates = file.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT' && p.addedAt).map((p) => p.addedAt!);
+      const at = file.thesis?.text ? file.thesis.setAt : userDates.sort().at(-1);
+      if (!at) return [];
+      const days = daysBetween(at, view.date);
+      if (days < 365) return [];
+      const years = Math.floor(days / 365);
+      return [{ key: 'THESIS_OLD', every: 12, since: plusDays(at, 365), text: `${file.ticker} 的論點是 ${at} 寫的，已經${years === 1 ? '一年' : ` ${years} 年`}沒有更新` }];
+    },
+  },
+  {
+    // 慢規則減半中，而且沒有任何你定的條件：每檔每 90 天（3 個月）
+    kind: 'HALF_NO_EXIT',
+    detect({ file, acct, view }) {
+      if (acct.rule.own[file.ticker]?.applied !== 'HALF' || ownedLive(file).length) return [];
+      // 從哪天起減半：最近一則有這檔減半單的通知；找不到（一開始就是減半）用開檔日
+      const n = [...acct.notifs].reverse().find((x) => x.items.some((it) => it.f === 'F7' && it.ticker === file.ticker));
+      return [{ key: 'HALF_NO_EXIT', every: 3, since: n?.date ?? file.openedAt ?? view.date, text: `${file.ticker} 減半中：站回 200 日均線之前規則不會再有動作，而你沒有定任何出場條件` }];
+    },
+  },
+];
+
+/**
+ * 自選股的「要看的事」（own_thesis §3.6.6）：每份論點檔逐種判斷，回傳現在成立的全部（不看頻率；持股頁就是這一份）。
+ * files：各檔的論點檔（thesisFile 組好的）；本身不讀資料庫。
+ */
+export function ownAttention(files: ThesisFile[], acct: AttnCtx['acct'], view: AttnCtx['view'], kinds: AttnKind[] = OWN_ATTN): AttnHit[] {
+  const out: AttnHit[] = [];
+  for (const file of files) {
+    const meta = acct.own[file.ticker];
+    if (!meta) continue;
+    for (const k of kinds) for (const x of k.detect({ file, meta, acct, view })) out.push({ ticker: file.ticker, kind: k.kind, src: 'own', ...x });
+  }
+  return out;
+}
+
+/** 兩個訊號日差幾個月（只看年月）。 */
+const monthsBetween = (a: string, b: string) => (Number(b.slice(0, 4)) - Number(a.slice(0, 4))) * 12 + Number(b.slice(5, 7)) - Number(a.slice(5, 7));
+
+/**
+ * 月報該列哪些（own_thesis §3.6.6 的頻率）：沒列過的列；every 是 null 的列過就不再列；其他隔 every 個月才再列。
+ * shown：各檔的 attnShown。回傳該列的，與列完之後各檔的 attnShown（只有變了的檔）。
+ */
+export function dueAttention(hits: AttnHit[], shown: Record<string, Record<string, string> | undefined>, date: string): { due: AttnHit[]; shown: Record<string, Record<string, string>> } {
+  const due: AttnHit[] = [];
+  const next: Record<string, Record<string, string>> = {};
+  for (const x of hits) {
+    const last = (next[x.ticker] ?? shown[x.ticker])?.[x.key];
+    if (last && (x.every === null || monthsBetween(last, date) < x.every)) continue;
+    due.push(x);
+    next[x.ticker] = { ...(next[x.ticker] ?? shown[x.ticker] ?? {}), [x.key]: date };
+  }
+  return { due, shown: next };
+}
+
+/** 存進月報、給畫面的形狀（拿掉頻率用的欄位）。 */
+export const toAttention = (x: AttnHit): Attention => ({ ticker: x.ticker, kind: x.kind, text: x.text, since: x.since, src: x.src ?? 'own' });
+
+/**
+ * 每日流程在產生月報前（own_thesis §3.6.6）：組每檔自選的論點檔、算這個月該列的，並更新 attnShown。
+ * 回傳新的帳戶（acct 不改）與該列的清單。讀資料庫（論點檔），所以不在引擎裡。
+ */
+export async function monthOwnAttention(db: D1Database, acct: Account, view: MarketView): Promise<{ acct: Account; items: Attention[] }> {
+  const files = (await Promise.all(Object.keys(acct.own).map((t) => thesisFile(db, acct, t, view.date)))).filter((f): f is ThesisFile => !!f);
+  const { due, shown } = dueAttention(
+    ownAttention(files, acct, view),
+    Object.fromEntries(Object.entries(acct.own).map(([t, m]) => [t, m.attnShown])),
+    view.date,
+  );
+  if (!due.length) return { acct, items: [] };
+  const next = clone(acct);
+  for (const [t, s] of Object.entries(shown)) if (next.own[t]) next.own[t].attnShown = s;
+  return { acct: next, items: due.map(toAttention) };
+}
+
+/** 持股頁：這一檔現在成立的全部（不看頻率）。不是自選回傳空的。 */
+export async function holdingAttention(db: D1Database, acct: Account, view: Pick<MarketView, 'date'>, ticker: string): Promise<Attention[]> {
+  const file = await thesisFile(db, acct, ticker, view.date);
+  return file ? ownAttention([file], acct, view).map(toAttention) : [];
 }

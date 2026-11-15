@@ -2,7 +2,7 @@
 //   真實：帳本與價格都在 D1（T6 的資料層）。
 //   示範：假市場＋腳本（src/demo），整個狀態存在 D1 的 demo_state 一列；和真實帳本完全分開。
 // 網站的程式只認這個介面，所以兩種模式走同一套畫面與操作。
-import type { Account, LedgerEvent, MarketView, ShadowRecord, Snapshot } from '../../engine';
+import type { Account, Attention, LedgerEvent, MarketView, ShadowRecord, Snapshot } from '../../engine';
 import { lastCompletedSession } from '../../data/calendar';
 import { BENCHMARK } from '../../data/ingest';
 import { buildMarketView, rebaseNotifSeq } from '../../data/marketView';
@@ -21,6 +21,7 @@ import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
 import { loadReviews, type MomReview } from '../momAi';
 import { acceptOwnConditions, latestOwnCheck, monitorView, ownCheckView, startOwnCheck, type OwnCheckView } from '../ownCheckAi';
 import { conditionOp, type CondOp } from '../ownConds';
+import { holdingAttention } from '../thesis';
 import { annotate } from './explain';
 import type { AiNote } from './types';
 
@@ -83,6 +84,8 @@ export interface SiteAi {
   /** 持股頁的條件操作（T26）：勾選 AI 建議的條件、撤下你定的條件、改成立時的動作。 */
   condition(ticker: string, id: number, op: CondOp, action?: unknown): Promise<{ id: number; status: string; action: string | null; retired?: number }>;
   monitor(ticker: string): Promise<Awaited<ReturnType<typeof monitorView>>>;
+  /** 持股頁：這檔現在成立的「要看的事」（全部，不看頻率；own_thesis §3.6.6）。 */
+  attention(ticker: string, acct: Account, view: MarketView): Promise<Attention[]>;
   /** AI 紀錄頁上方：最新的總經儀表板、最近一個月的動能進場審查、最近的申報事件。 */
   overview(): Promise<{ macro: MacroSnapshot | null; reviews: MomReview[]; events: SecEventRow[] }>;
 }
@@ -180,6 +183,7 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
         return conditionOp(env.DB, acct, ticker, id, op, action, lastCompletedSession(now, await loadCalendarOverrides(env.DB)), now);
       },
       monitor: (ticker) => monitorView(env, ticker),
+      attention: (ticker, acct, view) => holdingAttention(env.DB, acct, view, ticker),
       async overview() {
         const macro = await loadSnapshot(env.DB);
         const all = await loadReviews(env.DB);

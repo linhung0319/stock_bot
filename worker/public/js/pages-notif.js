@@ -3,7 +3,7 @@ import { api, getMode } from './api.js';
 import { aiOverview, runRow, shadowLines } from './pages-ai.js';
 import { actionText, day, h, money, put, qty, toast } from './dom.js';
 import { consoleBox, glass, icon, longDay, menuList, page, tiles } from './layout.js';
-import { actParts, bucketTag, chevron, headline, orderRows, whyBlock } from './parts.js';
+import { actParts, attentionList, bucketTag, chevron, headline, orderRows, whyBlock } from './parts.js';
 import { say } from './slime.js';
 
 const errBox = (e) => h('p', { class: 'err', role: 'alert' }, e?.message ?? String(e));
@@ -438,6 +438,18 @@ function notifBanner(v, extra = {}) {
   };
 }
 
+/** 月報的「要看的事」（own_thesis §3.6.6）：不用下單、不用回覆；分自選股與動能持股兩段。 */
+function attentionBox(v) {
+  if (!v.attention?.length) return null;
+  return h(
+    'div',
+    { class: 'glass pad', style: 'margin-top:16px' },
+    h('h2', { class: 'panel-h' }, `持股有 ${v.attention.length} 件事要看（不用下單）`),
+    h('p', { class: 'small dim' }, '這些不是清單上的單，也不用回覆。點一行到那一檔的持股頁看。'),
+    attentionList(v.attention, { groups: true }),
+  );
+}
+
 export async function notifPage(ctx, id) {
   const v = await api.get(`/notif/${id}`);
   const st = ctx.state;
@@ -464,7 +476,7 @@ export async function notifPage(ctx, id) {
           )
         : null,
     );
-    return page({ view: 'page', banner: notifBanner(v, { bubble: { k: v.status === 'PENDING' ? '提醒' : '當時', say: [v.text ?? v.title], mood: v.status === 'PENDING' ? 'alert' : 'watch' } }), pane: body, rail: tiles(st) });
+    return page({ view: 'page', banner: notifBanner(v, { bubble: { k: v.status === 'PENDING' ? '提醒' : '當時', say: [v.text ?? v.title], mood: v.status === 'PENDING' ? 'alert' : 'watch' } }), pane: [body, attentionBox(v)], rail: tiles(st) });
   }
 
   const backToDecide = reopenAndGo(ctx, v.id);
@@ -522,7 +534,7 @@ export async function notifPage(ctx, id) {
         steps: stepBar(1),
         bubble: { k: '改決定的時候', say: ['點任何一個選項，我會馬上告訴你', em('那樣做的結果'), '。按下去只是記下決定，我不會替你下單。'], mood: 'watch' },
       }),
-      pane: [reminded, v.text ? h('p', { class: 'dim', style: 'margin-bottom:12px' }, v.text) : null, slips(v, ui, `${live.length} 項建議，點開看完整的理由、改決定。沒改的就照每一張右上角寫的做。`), msg],
+      pane: [reminded, v.text ? h('p', { class: 'dim', style: 'margin-bottom:12px' }, v.text) : null, slips(v, ui, `${live.length} 項建議，點開看完整的理由、改決定。沒改的就照每一張右上角寫的做。`), msg, attentionBox(v)],
       rail: trayBox,
       cta: h('div', { class: 'sticky-cta' }, sumBox, actionButton('決定好了', 'primary', () => submit('DO'))),
     });
@@ -556,6 +568,7 @@ export async function notifPage(ctx, id) {
         ),
         h('h2', { class: 'sec' }, '你的決定與理由'),
         slips(v, { editable: false }),
+        attentionBox(v),
       ],
       rail: consoleBox(trayTitle(c, '到券商下這'), trayBody(c, { check: true }), [h('a', { class: 'btn primary block', href: '#/snapshot' }, '下完單了，填快照'), h('div', { class: 'linkrow' }, v.cancel ? cancelButton(ctx, v) : linkButton('上一步：改決定', backToDecide), copy)]),
       cta: h('div', { class: 'sticky-cta' }, h('div', { class: 'sum' }, v.cancel ? cancelButton(ctx, v) : linkButton('上一步', backToDecide)), h('a', { class: 'btn primary', href: '#/snapshot' }, '下完單了，填快照')),
@@ -602,7 +615,7 @@ export async function notifPage(ctx, id) {
       glass('pad', h('table', { class: 'orders' }, h('tbody', null, v.filled.map((f) => h('tr', null, h('td', { class: 'sd' }, h('span', { class: 'side ' + (f.shares < 0 ? 'sell' : 'buy') }, f.shares < 0 ? '賣' : '買')), h('td', null, h('span', { class: 'tk' }, f.ticker), ' ', h('span', { class: 'small faint' }, f.bucketName)), h('td', { class: 'q' }, qty(f.shares), h('small', null, '股'))))))),
     );
   }
-  body.push(h('h2', { class: 'sec' }, v.status === 'SKIPPED' ? '當時的建議與理由（這次沒做）' : '當時的建議、你的決定與理由'), slips(v, { editable: false }));
+  body.push(h('h2', { class: 'sec' }, v.status === 'SKIPPED' ? '當時的建議與理由（這次沒做）' : '當時的建議、你的決定與理由'), slips(v, { editable: false }), attentionBox(v));
   return page({
     view: 'page',
     banner: notifBanner(v, { bubble }),

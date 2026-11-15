@@ -251,4 +251,25 @@ export function headline(text) {
   return h('h3', { class: 'act' }, actParts(text));
 }
 
+/**
+ * 「要看的事」（不用下單、不用回覆）：每一件一行，代號連到持股頁、後面是從哪天起。
+ * 月報頁分「自選股」「動能持股」兩段（groups = true）；持股頁只有這一檔的，不分段。
+ */
+export function attentionList(list, opt = {}) {
+  if (!list?.length) return null;
+  // 文字本身就以代號開頭；月報頁整行連到那一檔的持股頁
+  const row = (x) =>
+    h(
+      'li',
+      { style: 'padding:8px 0;border-top:1px solid var(--line)' },
+      opt.link === false ? h('span', null, x.text) : h('a', { href: `#/h/${encodeURIComponent(x.ticker)}` }, x.text),
+      x.since ? h('div', { class: 'small faint' }, `${day(x.since, true)} 起`) : null,
+    );
+  const ul = (xs) => h('ul', { style: 'list-style:none;margin:6px 0 0;padding:0' }, xs.map(row));
+  if (!opt.groups) return ul(list);
+  const own = list.filter((x) => (x.src ?? 'own') === 'own');
+  const mom = list.filter((x) => x.src === 'mom');
+  return [own.length ? [h('h5', { style: 'margin-top:10px' }, '自選股要看的事'), ul(own)] : null, mom.length ? [h('h5', { style: 'margin-top:14px' }, '動能持股要看的事'), ul(mom)] : null];
+}
+
 export { pct };

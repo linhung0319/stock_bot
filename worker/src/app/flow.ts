@@ -25,6 +25,7 @@ import { STRATEGY_STATE_KEY, loadStrategyState } from './strategyAi';
 import { noteOfRun } from './site/aiViews';
 import type { AiNote } from './site/types';
 import { sweepTimeoutTasks, timeoutAlert } from './aiTasks';
+import { monthOwnAttention } from './thesis';
 import type { Env, Fetcher } from './env';
 import { ConflictError, loadAccount, requiredTickers, saveAccount, shadowTickers } from './ledgerStore';
 import { alertText, lineConfigured, notifLink, notifText, pushLine, type AlertRow } from './line';
@@ -178,6 +179,15 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
           const runIds = { ...(ai.runIds?.crash ? { crash: ai.runIds.crash } : {}), ...(ai.runIds?.notes ? { notes: ai.runIds.notes } : {}) };
           input = { order: [...acct.rule.heldMom], month, paused: why, ...(ai.crashOpinion ? { crashOpinion: ai.crashOpinion } : {}), ...(ai.notes ? { notes: ai.notes } : {}), ...(Object.keys(runIds).length ? { runIds } : {}) };
           alerts.push({ kind: 'MONTHLY_PAUSED', message: `${month} 月報照出，但本月暫停換股（${why}），動能名單不變。` });
+        }
+        // 「要看的事」（own_thesis §3.6.6）：用訊號日的帳戶狀態算這個月該列的，記下 attnShown；動能的（momentum_ai §3.6）接在後面
+        try {
+          const att = await monthOwnAttention(db, acct, view);
+          acct = att.acct;
+          if (att.items.length) input = { ...input, attention: att.items };
+        } catch (e) {
+          // 讀不到論點檔不擋月報：這個月不列，頻率也不記，下個月再算
+          console.error('要看的事算不出來', e);
         }
         const m = monthlyReport(acct, view, input);
         acct = m.acct;

@@ -522,6 +522,8 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
     coreAbsorb: items.length > 0,
     monthly: { input: vol.record(input), before },
     deposit: flow?.kind === '入金' ? flow.amount : undefined,
+    // 「要看的事」：「本月不用動」的月報也列（own_thesis §3.6.6）
+    ...(input.attention?.length ? { attention: clone(input.attention) } : {}),
   });
   // 不屬於任何項目的 AI 執行：被否決的代號（F1）、月報的說明（F20）
   syncRunIds(notif, [...(input.vetoed ?? []).map((t) => input.runIds?.entry?.[t]), ...(input.runIds?.notes ?? [])]);

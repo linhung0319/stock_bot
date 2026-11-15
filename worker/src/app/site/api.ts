@@ -274,9 +274,10 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
   const hold = /^holding\/([A-Za-z0-9.-]{1,10})$/.exec(rest);
   if (hold && get) {
     const tk = ticker(hold[1]);
-    const hd = holdingDetail(ready(await backend.load()), tk);
-    // 真實模式：這檔監測中的條件（AI 寫的、你寫的）、最近一次新增自選健檢
-    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), check: await backend.ai.latestCheck(tk) });
+    const d = ready(await backend.load());
+    const hd = holdingDetail(d, tk);
+    // 真實模式：這檔監測中的條件（AI 寫的、你寫的）、最近一次新增自選健檢、要看的事
+    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), check: await backend.ai.latestCheck(tk), attention: await backend.ai.attention(tk, d.acct, d.view).catch(() => []) });
     return json(hd);
   }
 

@@ -289,7 +289,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
   7. `own_review_v2.md`（證據包的新內容與新的輸出）。
 - 完成條件：F24 回來後你定的條件不變；建議的條件沒勾選就不通知；勾選後成立會通知；證據不足、資料缺漏、票數不一致的審查不動條件；第 9 條勾不進去；有 `supersedes` 的勾選後舊的那條變 `RETIRED`；這次審查有寫入時舊的建議變 `EXPIRED`、沒提時留著；只有新聞標題或價格當引用的「不成立」不算；`REVIEW_ONLY` 的條件由三票確認成立；財報類條件每次比對都有 `progress_json`。
 
-#### [ ] T37 「要看的事」清單
+#### [x] T37 「要看的事」清單
 - 讀：`own_thesis` §3.6.6、§1.5 第 6 點、§3.6.2 最後一點；`momentum_ai` §3.6（只是知道動能的清單會放同一個欄位、月報頁分兩段；動能的部分 T32d 做）。檔案：`engine/account.ts`（`MonthlyContext`）、`engine/report.ts`、`app/line.ts`、`app/flow.ts`。
 - 做：`ownAttention`（放 `app/thesis.ts`，本身不讀資料庫）；月報的 `attention` 欄位與 `attnShown` 的頻率；月報 LINE 的那一行；持股頁與月報頁列出來（只求能用）。這個任務做的種類：`PROPOSED_CONDS`、`COND_NEAR`、`NO_THESIS`、`THESIS_OLD`、`HALF_NO_EXIT`。其餘種類由各自的任務加（T29a、T29b、T29c、T31a、T35；動能 T32d），所以加一種要很容易。
 - 完成條件：五種各有成立與不成立的測試；頻率（同一件事下個月不再列、`COND_NEAR` 換季才再列）；「本月不用動」的月報也列；LINE 有與沒有那一行；不產生通知。
