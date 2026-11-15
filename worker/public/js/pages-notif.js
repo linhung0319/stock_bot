@@ -410,6 +410,7 @@ export function trayBody(c, opt = {}) {
       h('span', null, '做完之後現金約', c.withdraw ? `（已扣掉要轉出的 ${money(c.withdraw)}）` : ''),
       h('b', { class: c.cashAfter < -1 ? 'neg num' : 'num' }, money(c.cashAfter)),
       c.shortOfCash ? h('span', { class: 'err' }, '現金不夠：買單的金額超過現金加賣單。要先補錢，或把某一張買單改成這次不做。') : null,
+      c.capNote ? h('span', { class: 'err' }, c.capNote) : null,
     ),
   ];
 }

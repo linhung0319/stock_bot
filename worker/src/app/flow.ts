@@ -182,6 +182,9 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
         const m = monthlyReport(acct, view, input);
         acct = m.acct;
         monthly = m.notif.id;
+        // 均線算不出來（core_ai §3.10）：崩盤規則維持原狀態，另外告警
+        const cr = m.notif.monthly?.input.crash;
+        if (cr && cr.ma === null) alerts.push({ kind: 'CORE_MA_MISSING', message: `${core} 的 200 日均線算不出來（只有 ${cr.bars ?? 0} 根日線）。崩盤規則這個月維持原狀態（${cr.below ? '啟動中' : '未啟動'}）。` });
         rankOrder = input.order;
       }
     }

@@ -150,6 +150,8 @@ export interface CrashInput {
   facts: EvidencePack['facts'];
   dataQuality: EvidencePack['data_quality'];
   now: Date;
+  /** 題目前面加的一句（PREVIEW：依哪一天的收盤預估的，core_ai §3.1）。 */
+  preface?: string;
 }
 
 export function crashPack(inp: CrashInput) {
@@ -166,6 +168,7 @@ export function crashPack(inp: CrashInput) {
     asOf: inp.asOf,
     subject: { name: full ? `崩盤規則${inp.direction === 'ON' ? '啟動' : '解除'}檢視` : '每月總經評語' },
     question:
+      (inp.preface ?? '') +
       q +
       (full
         ? '報告第一段固定寫基準率（過去 17 次啟動中 3 次是真空頭）。正方寫照規則做的理由，反方寫這次只是修正（或空頭中的反彈）的理由，法官逐條判前提，最後給「照做（FOLLOW）」或「延後（DELAY）」的意見。' +

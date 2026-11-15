@@ -52,16 +52,20 @@ function closeOf(view: MarketView, ticker: string): ArrayLike<number> | null {
  * 這一項的 AI 說明：項目帶了 runIds（T13 起）就找那一次執行；沒有（舊的通知）或找不到，照舊取訊號日以前最新的一份。
  */
 export function findNote(notes: AiNote[], kind: AiNote['kind'], ticker: string | undefined, date: string, runIds?: string[]): AiNote | undefined {
-  if (runIds?.length) {
-    const exact = notes.find((n) => n.kind === kind && n.runId !== undefined && runIds.includes(n.runId));
-    if (exact) return exact;
-  }
+  const exact = noteByRun(notes, kind, runIds);
+  if (exact) return exact;
   let best: AiNote | undefined;
   for (const n of notes) {
     if (n.kind !== kind || (ticker && n.ticker !== ticker) || n.date > date) continue;
     if (!best || n.date > best.date) best = n;
   }
   return best;
+}
+
+/** 只用 runIds 找（沒有 runIds 或找不到就沒有）：崩盤規則項目用這個，不取「日期最近的一筆」（core_ai §3.3，修 C4）。 */
+export function noteByRun(notes: AiNote[], kind: AiNote['kind'], runIds?: string[]): AiNote | undefined {
+  if (!runIds?.length) return undefined;
+  return notes.find((n) => n.kind === kind && n.runId !== undefined && runIds.includes(n.runId));
 }
 
 // ---------------------------------------------------------------- 規則的白話文
@@ -365,16 +369,19 @@ function crash(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const { acct, view } = ctx;
   const on = it.f === 'F5';
   const core = acct.cfg.coreTicker;
+  // 月報記下的訊號日數字（core_ai §3.7）；舊月報沒有就用顯示當下的 view
+  const sig = n.monthly?.input.crash;
   const c = closeOf(view, core);
-  const px = c ? c[view.i] : NaN;
-  const ma = c ? sma(c, view.i, 200) : NaN;
+  const px = sig ? (sig.close ?? NaN) : c ? c[view.i] : NaN;
+  const ma = sig ? (sig.ma ?? NaN) : c ? sma(c, view.i, 200) : NaN;
+  const when = sig ? `${md(sig.date)} 收盤` : '前一日收盤';
   const rel = px / ma - 1;
-  const note = findNote(ctx.aiNotes, 'CRASH', undefined, n.date, it.runIds);
+  const note = noteByRun(ctx.aiNotes, 'CRASH', it.runIds);
   return {
     short: on ? `${core} 跌破 200 日均線（${fmtSigned(rel, 1)}）` : `${core} 回到 200 日均線之上（${fmtSigned(rel, 1)}）`,
     why: on
-      ? `${core} 前一日收盤 ${fmtPx(px)}，低於 200 日均線 ${fmtPx(ma)}（${fmtSigned(rel, 1)}）。崩盤規則啟動：核心一半換成短債（${acct.bondTicker}），動能部位減半。`
-      : `${core} 前一日收盤 ${fmtPx(px)}，回到 200 日均線 ${fmtPx(ma)} 之上（${fmtSigned(rel, 1)}）。崩盤規則解除：短債換回 ${core}，動能部位恢復。`,
+      ? `${core} ${when} ${fmtPx(px)}，低於 200 日均線 ${fmtPx(ma)}（${fmtSigned(rel, 1)}）。崩盤規則啟動：核心一半換成短債（${acct.bondTicker}），動能部位減半。`
+      : `${core} ${when} ${fmtPx(px)}，回到 200 日均線 ${fmtPx(ma)} 之上（${fmtSigned(rel, 1)}）。崩盤規則解除：短債換回 ${core}，動能部位恢復。`,
     gauge: maGauge(rel, `${core} 收盤相對 200 日均線`, on),
     rule: RULE.crash,
     facts: [

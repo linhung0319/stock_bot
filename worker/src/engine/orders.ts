@@ -81,6 +81,11 @@ export interface CoreContext {
   total: number;
   /** 要留下不投入的現金（例如等著轉出的出金）。 */
   reserveCash?: number;
+  /**
+   * 崩盤規則啟動中、清單做完有多的錢時，最多多少照「一半核心 ETF、一半短債」分；超過的部分全部放短債（core_ai §3.8）。
+   * 切換那一份（有 F5）給 Infinity；入金給入金金額；其他（沒給也是）0。
+   */
+  halfUpTo?: number;
 }
 
 export interface Composed {
@@ -90,21 +95,45 @@ export interface Composed {
   merged: { ticker: string; shares: number; parts: OrderLine[] }[];
   /** 照清單做完之後估計的現金。 */
   cashAfter: number;
+  /** 核心不夠付時，買單從最後一行往回減了哪些（C14）；沒有減就沒有這個欄位。 */
+  capped?: { ticker: string; cut: number }[];
 }
 
 /** 買單總額的上限：「現有現金＋同一份清單的賣單金額」的 98%（設計 §2.1.1）。 */
 export const BUY_CASH_FRACTION = 0.98;
 
+/** 買單合計不超過預算：從最後面的行開始減（入金：缺口最小的在最後；C14：核心不夠付時）。 */
+export function capBuys(lines: OrderLine[], budget: number, price: (t: string) => number): OrderLine[] {
+  return capLines(lines, budget, price).filter((l) => l.shares !== 0);
+}
+
+/** 同 capBuys，但留下減到 0 的行（和輸入一一對應）。 */
+function capLines(lines: OrderLine[], budget: number, price: (t: string) => number): OrderLine[] {
+  const out = lines.map((l) => ({ ...l }));
+  let spent = out.reduce((a, l) => a + (l.shares > 0 ? l.shares * price(l.ticker) : 0), 0);
+  for (let k = out.length - 1; k >= 0 && spent > budget; k--) {
+    const l = out[k];
+    if (l.shares <= 0) continue;
+    const cut = Math.min(l.shares, Math.ceil((spent - budget) / price(l.ticker)));
+    l.shares -= cut;
+    spent -= cut * price(l.ticker);
+  }
+  return out;
+}
+
 /**
  * 核心吸收差額（設計 §2.1 資金流規則 1、2）：
- *   清單做完有多的錢 → 交給核心（平時買核心 ETF；崩盤規則啟動時一半買核心 ETF、一半放短債）
- *   錢不夠 → 從核心拿（平時賣核心 ETF；崩盤規則啟動時先用短債）
+ *   清單做完有多的錢 → 交給核心（平時買核心 ETF；崩盤規則啟動時：切換那一份與入金金額以內一半買核心 ETF、一半放短債，
+ *                     其餘全部放短債，core_ai §3.8）
+ *   錢不夠 → 從核心拿（平時賣核心 ETF；崩盤規則啟動時先用短債）；核心也不夠付 → 買單從最後一行往回減（C14）
  * 買單合計不超過「現金＋賣單」的 98%，留緩衝給價格差。
  */
-export function composeWithCore(lines: OrderLine[], ctx: CoreContext): Composed {
+export function composeWithCore(lines0: OrderLine[], ctx: CoreContext): Composed {
   const { cfg } = ctx;
   const reserve = ctx.reserveCash ?? 0;
   const vooT = cfg.coreTicker;
+  let lines = lines0;
+  let capped: Composed['capped'];
   let sells = 0;
   let buys = 0;
   for (const l of lines) {
@@ -121,17 +150,19 @@ export function composeWithCore(lines: OrderLine[], ctx: CoreContext): Composed 
     if (net - buffer > cfg.orderMin * ctx.total) {
       const inv = net - buffer;
       if (ctx.crash) {
-        const keepCash = 1 - cfg.crashCut;
-        const a = Math.floor((inv * (1 - keepCash)) / ctx.price(vooT));
-        const b = Math.floor((inv * keepCash) / ctx.price(ctx.bondTicker));
+        // 一半一半只用在切換那一份與入金金額以內；其餘全部放短債（core_ai §3.8）
+        const half = Math.min(inv, Math.max(0, ctx.halfUpTo ?? 0));
+        const a = Math.floor((half * cfg.crashCut) / ctx.price(vooT));
+        const b = Math.floor((half * (1 - cfg.crashCut) + inv - half) / ctx.price(ctx.bondTicker));
         if (a) coreLines.push({ ticker: vooT, bucket: 'core', shares: a, reason: '錢交給核心（崩盤規則啟動中：一半買核心 ETF）' });
-        if (b) coreLines.push({ ticker: ctx.bondTicker, bucket: 'core', shares: b, reason: '錢交給核心（崩盤規則啟動中：一半放短債）' });
+        if (b) coreLines.push({ ticker: ctx.bondTicker, bucket: 'core', shares: b, reason: half > 0 ? '錢交給核心（崩盤規則啟動中：一半放短債）' : '錢交給核心（崩盤規則啟動中：放短債）' });
       } else {
         const a = Math.floor(inv / ctx.price(vooT));
         if (a) coreLines.push({ ticker: vooT, bucket: 'core', shares: a, reason: '錢交給核心（買核心 ETF）' });
       }
     } else if (net < 0) {
       let need = -net / BUY_CASH_FRACTION;
+      let coreSold = 0;
       const order: [string, number][] = ctx.crash
         ? [
             [ctx.bondTicker, ctx.bondShares],
@@ -148,6 +179,17 @@ export function composeWithCore(lines: OrderLine[], ctx: CoreContext): Composed 
         if (n > 0) {
           coreLines.push({ ticker: tk, bucket: 'core', shares: -n, reason: tk === ctx.bondTicker ? '從核心拿錢（先用短債）' : '從核心拿錢（賣核心 ETF）' });
           need -= n * ctx.price(tk);
+          coreSold += n * ctx.price(tk);
+        }
+      }
+      if (need > 1e-6) {
+        // C14：核心賣光了還不夠 → 買單合計壓在「現金＋賣單＋核心賣得」的 98% 以內，從最後一行往回減
+        const budget = BUY_CASH_FRACTION * Math.max(0, cashAvail + coreSold - reserve);
+        const kept = capLines(lines, budget, ctx.price);
+        const out = lines.flatMap((l, k) => (kept[k].shares < l.shares ? [{ ticker: l.ticker, cut: l.shares - kept[k].shares }] : []));
+        if (out.length) {
+          lines = kept.filter((l) => l.shares !== 0);
+          capped = out;
         }
       }
     }
@@ -155,7 +197,7 @@ export function composeWithCore(lines: OrderLine[], ctx: CoreContext): Composed 
   const all = [...lines, ...coreLines];
   let cashAfter = ctx.cash - reserve;
   for (const l of all) cashAfter -= l.shares * ctx.price(l.ticker);
-  return { lines: all, merged: mergeByTicker(all), cashAfter };
+  return { lines: all, merged: mergeByTicker(all), cashAfter, ...(capped ? { capped } : {}) };
 }
 
 /** 按代號合併成淨買賣（設計 §2.3 合併下單）。 */

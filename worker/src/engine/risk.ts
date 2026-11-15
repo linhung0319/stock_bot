@@ -67,3 +67,20 @@ export function crashRuleOn(close: ArrayLike<number>, i: number, maDays = 200): 
   const ma = sma(close, i, maDays);
   return close[i] < ma;
 }
+
+/**
+ * 上線用的崩盤規則判斷（core_ai §3.10）：均線算得出來時和 crashRuleOn 相同；
+ * 算不出來（不滿 maDays 根有效收盤、今天的收盤缺）→ below 維持原狀態 prev、ok = false。重放用 crashRuleOn，不用這個。
+ */
+export function crashDecision(close: ArrayLike<number> | undefined, i: number, prev: boolean, maDays = 200): { below: boolean; ok: boolean; ma: number } {
+  const ma = close ? sma(close, i, maDays) : NaN;
+  if (!close || !Number.isFinite(ma) || !Number.isFinite(close[i])) return { below: prev, ok: false, ma: NaN };
+  return { below: close[i] < ma, ok: true, ma };
+}
+
+/** 到 i 為止有幾根有效的收盤（告警文字用）。 */
+export function validBars(close: ArrayLike<number> | undefined, i: number): number {
+  let n = 0;
+  if (close) for (let k = 0; k <= i && k < close.length; k++) if (Number.isFinite(close[k])) n++;
+  return n;
+}

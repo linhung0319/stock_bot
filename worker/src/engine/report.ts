@@ -22,13 +22,13 @@ import {
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
 import { excessVol, r1 as r1Of } from './indicators';
 import { composeWithCore, crashCoreLines, mergeByTicker, planToLines, type Composed, type CoreContext, type OrderLine } from './orders';
-import { crashRuleOn } from './risk';
+import { crashDecision, validBars } from './risk';
 import { halveShares, slowDayInput, stepSlowRule } from './slowRule';
 import type { OwnAction, OwnState } from './types';
 
 // ---------------------------------------------------------------- 共用
 
-export function coreContext(acct: Account, view: MarketView, reserveCash = 0): CoreContext {
+export function coreContext(acct: Account, view: MarketView, reserveCash = 0, halfUpTo = 0): CoreContext {
   return {
     cfg: acct.cfg,
     price: (t) => priceOf(view, t),
@@ -39,6 +39,7 @@ export function coreContext(acct: Account, view: MarketView, reserveCash = 0): C
     crash: acct.rule.crash,
     total: totalValue(acct, view),
     reserveCash,
+    halfUpTo,
   };
 }
 
@@ -55,7 +56,9 @@ export function composeNotif(acct: Account, view: MarketView, n: Notif): Compose
     for (const l of lines) cashAfter -= l.shares * priceOf(view, l.ticker);
     return { lines, merged: mergeByTicker(lines), cashAfter };
   }
-  return composeWithCore(lines, coreContext(acct, view, n.withdraw ?? 0));
+  // 崩盤規則啟動中多的錢（core_ai §3.8）：切換那一份（有 F5）照舊一半一半；入金在入金金額以內一半一半；其他全部放短債
+  const halfUpTo = n.items.some((i) => i.f === 'F5' && !i.cancelled) ? Infinity : (n.deposit ?? 0);
+  return composeWithCore(lines, coreContext(acct, view, n.withdraw ?? 0, halfUpTo));
 }
 
 /** AI 檔位換成股數（設計 §0：AI 選檔位，程式算股數）。stateBefore 是這次規則動作之前的慢規則狀態。 */
@@ -286,6 +289,18 @@ function withSignalVol(acct: Account, view: MarketView, input: MonthlyContext): 
   return vol.record(input);
 }
 
+/**
+ * 崩盤規則用訊號日的判斷（core_ai §3.7）：input 已經有 crash（重算）→ 照用；沒有（第一次產生、舊月報）→ 用現在的 view 算好寫進去。
+ * 均線算不出來時維持原狀態（§3.10 的 crashDecision）。
+ */
+function withSignalCrash(acct: Account, view: MarketView, input: MonthlyContext): MonthlyContext {
+  if (input.crash) return input;
+  const c = view.close[acct.cfg.coreTicker];
+  const d = crashDecision(c, view.i, acct.rule.crash);
+  const close = c && Number.isFinite(c[view.i]) ? c[view.i] : null;
+  return { ...input, crash: { below: d.below, date: view.date, close, ma: d.ok ? d.ma : null, ...(d.ok ? {} : { bars: validBars(c, view.i) }) } };
+}
+
 // ---------------------------------------------------------------- 每日檢查（收盤後）
 
 export interface DailyResult {
@@ -392,8 +407,9 @@ export function monthlyWait(acct: Account): { kind: 'UNC' } | { kind: 'FILL'; no
   return open ? { kind: 'FILL', notif: open } : null;
 }
 
-export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyContext, flow?: FlowInput, flowCashAlreadyIn = false): MonthlyResult {
+export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyContext, flow?: FlowInput, flowCashAlreadyIn = false): MonthlyResult {
   const acct = clone(acct0);
+  const input = withSignalCrash(acct, view, input0);
   const wait = monthlyWait(acct);
   if (wait) {
     // 先等：未分類的變動、或決定了還沒填快照的清單 → 月報暫停，等完用今天的輸入重算
@@ -437,7 +453,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     monthly: {
       order: input.order,
       excessVol: vol.fn,
-      coreBelow200: crashRuleOn(view.close[core], view.i),
+      coreBelow200: input.crash!.below,
       blocked,
       owed: Object.keys(acct.mom.owe),
       emptySlots: input.emptySlots,

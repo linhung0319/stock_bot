@@ -157,6 +157,7 @@ export type AlertKind =
   | 'FLOW_GAP' // 漏掉太多個交易日，沒有補做
   | 'MONTHLY_PAUSED' // 月報照出，但本月暫停換股
   | 'AI_TIMEOUT' // AI 任務逾時（照規則）
+  | 'CORE_MA_MISSING' // 核心 ETF 的 200 日均線算不出來，崩盤規則維持原狀態（core_ai §3.10）
   | 'TEST'; // 手動測試告警的推播（/admin/alert/test）
 /** 只表示「今天沒有產生訊號」的告警：同一個交易日後來再試成功了，就不必推播。 */
 export const NO_SIGNAL_ALERTS: ReadonlySet<string> = new Set(['PRICE_MISSING', 'PRICE_STALE', 'INGEST_ERROR', 'FLOW_ERROR']);

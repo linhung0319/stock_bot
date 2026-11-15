@@ -25,7 +25,7 @@ import {
   type Tier,
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
-import { BUY_CASH_FRACTION, planToLines, type OrderLine } from './orders';
+import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
 import { composeNotif, monthlyReport, monthlyWait, recordExternalFlow, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
 import type { Bucket } from './types';
@@ -555,20 +555,6 @@ export function resolveFollowUp(acct0: Account, view: MarketView, id: number, fi
 }
 
 // ---------------------------------------------------------------- 入金、出金、改比例
-
-/** 買單合計不超過預算：從最後面（缺口最小）的行開始減。 */
-function capBuys(lines: OrderLine[], budget: number, price: (t: string) => number): OrderLine[] {
-  const out = lines.map((l) => ({ ...l }));
-  let spent = out.reduce((a, l) => a + (l.shares > 0 ? l.shares * price(l.ticker) : 0), 0);
-  for (let k = out.length - 1; k >= 0 && spent > budget; k--) {
-    const l = out[k];
-    if (l.shares <= 0) continue;
-    const cut = Math.min(l.shares, Math.ceil((spent - budget) / price(l.ticker)));
-    l.shares -= cut;
-    spent -= cut * price(l.ticker);
-  }
-  return out.filter((l) => l.shares !== 0);
-}
 
 /**
  * 入金（設計 §2.1.1）：只買不賣，當天給清單。

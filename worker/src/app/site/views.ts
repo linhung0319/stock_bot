@@ -145,6 +145,8 @@ export interface ComposedView {
   /** 清單做完還要從券商轉出的金額（出金）。 */
   withdraw: number;
   shortOfCash: boolean;
+  /** 核心不夠付、買單被往回減時的說明（C14）；沒有減是 null。 */
+  capNote?: string | null;
 }
 
 export interface NotifView {
@@ -378,7 +380,13 @@ export function composedView(d: Ready, n: Notif, c: Composed): ComposedView {
   });
   // 賣的排前面（先賣才有錢買），各自照金額大小
   orders.sort((a, b) => Number(a.shares > 0) - Number(b.shares > 0) || Math.abs(b.amount ?? 0) - Math.abs(a.amount ?? 0));
-  return { orders, cashBefore: d.acct.cash, cashAfter: c.cashAfter, withdraw: n.withdraw ?? 0, shortOfCash: c.cashAfter < -1 };
+  return { orders, cashBefore: d.acct.cash, cashAfter: c.cashAfter, withdraw: n.withdraw ?? 0, shortOfCash: c.cashAfter < -1, capNote: capNoteOf(c) };
+}
+
+/** 核心不夠付時的那一句（C14）：買單從最後一行往回減了哪些。 */
+export function capNoteOf(c: Composed): string | null {
+  if (!c.capped?.length) return null;
+  return `核心的錢不夠付這份清單的買單，已經從最後一張買單往回減：${c.capped.map((x) => `${x.ticker} 少買 ${x.cut} 股`).join('、')}。`;
 }
 
 // 建議單的順序照因果排：先是整個帳戶的規則，再來動能（先出場才有位置進場），然後自選、AI 的建議、現金流

@@ -91,6 +91,8 @@ export interface Item {
   why?: string;
   /** 這一項的 AI 建議或說明來自哪幾次 AI 執行（ai_runs.run_id，T13 起；之前的通知沒有這個欄位）。 */
   runIds?: string[];
+  /** F5／F6：上次選了「這次不做」、這份月報重列的那一項（core_ai §3.6，由 T33c 產生；重列的不開檢視）。 */
+  relist?: boolean;
 }
 
 export type NotifKind = 'MONTHLY' | 'MONTHLY_EMPTY' | 'URGENT' | 'CASHFLOW' | 'FIX' | 'INFO' | 'CLASSIFY' | 'CASH_DIFF';
@@ -173,6 +175,12 @@ export interface MonthlyContext {
    * null = 算不出來；沒有這個欄位（舊月報）= 當場算。
    */
   excessVol?: number | null;
+  /**
+   * 訊號日崩盤規則的判斷（core_ai §3.7）：第一次產生月報時用當時的 view 算好寫進來；之後的重算用 below，不重算。
+   * ma 是 null = 均線算不出來（不滿 200 根有效收盤，§3.10），below 維持原狀態；bars 是那時有幾根有效收盤。
+   * 沒有這個欄位（舊月報）= 當場算。
+   */
+  crash?: { below: boolean; date: string; close: number | null; ma: number | null; bars?: number };
 }
 
 export interface SavedState {
