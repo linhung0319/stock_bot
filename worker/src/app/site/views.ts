@@ -823,7 +823,21 @@ export interface HoldingDetail {
   positions: { bucket: string; bucketName: string; shares: number; value: number; pct: number }[];
   chart: { dates: string[]; close: number[]; ma200: (number | null)[]; halfLine: (number | null)[]; marks: { date: string; label: string }[] } | null;
   facts: { label: string; value: string; note?: string }[];
-  own: { state: string; stdWeight: number; premises: { text: string; origin: string }[]; lastReview: string | null } | null;
+  own: {
+    state: string;
+    stdWeight: number;
+    /** id：前提的編號；system：系統預設前提。 */
+    premises: { id: string; text: string; origin: string; system: boolean }[];
+    lastReview: string | null;
+    /** 論點本文（還沒寫是 null）；afterBreak：失效後修改幾次。 */
+    thesis: { text: string; setAt: string; source: string; version: number; afterBreak: number } | null;
+    /** 有論點／只有預設（系統預設前提）。 */
+    kind: 'THESIS' | 'DEFAULT_ONLY';
+    /** 開檔時就是減半、還沒加回過（own_thesis §3.8）的那一句。 */
+    openNote: string | null;
+    /** 還沒回覆、建議這檔照 AI 調整的通知（編輯論點頁的「這是對通知 #N 的回應」）。 */
+    pendingBreak: { notif: number; tier: string | null } | null;
+  } | null;
   ai: AiNote | null;
   history: { date: string; text: string; notif: number | null }[];
   canRemove: boolean;
@@ -852,6 +866,30 @@ export function chartOf(d: Ready, ticker: string, days = 250): HoldingDetail['ch
   }
   const marks = d.acct.notifs.filter((n) => n.items.some((i) => i.ticker === ticker) && n.date >= dates[0]).map((n) => ({ date: n.date, label: n.title }));
   return { dates, close, ma200, halfLine, marks };
+}
+
+/**
+ * 開檔時就是減半、還沒加回過的股票（own_thesis §3.8）：大跌之後買進，價格的底線已經用掉了。
+ * 「還沒加回過」= 現在還是減半，而且開檔之後沒有這檔的加回單（F8）。
+ */
+function openNoteOf(acct: Account, ticker: string): string | null {
+  const meta = acct.own[ticker];
+  const o = meta?.opened;
+  if (!meta || o?.startState !== 'HALF' || acct.rule.own[ticker]?.applied !== 'HALF') return null;
+  const since = meta.fileId?.slice(ticker.length + 1, ticker.length + 11) ?? '';
+  if (acct.notifs.some((n) => n.date >= since && n.items.some((i) => i.f === 'F8' && i.ticker === ticker))) return null;
+  const dd = o.drawdownAtOpen === null ? '' : `加入時比 52 週高點低 ${Math.round(-o.drawdownAtOpen * 100)}%，`;
+  return `${dd}慢規則從減半開始：站回 200 日均線連續 ${SLOW.aboveRun} 天之前，規則不會再有動作。`;
+}
+
+/** 還沒回覆、建議這檔照 AI 調整的通知（月報或當天通知上的自選審查建議；乙類通知的文字在 T29a）。 */
+function pendingBreakOf(acct: Account, ticker: string): { notif: number; tier: string | null } | null {
+  for (const n of [...acct.notifs].reverse()) {
+    if (n.status !== 'PENDING') continue;
+    const it = n.items.find((i) => i.ticker === ticker && i.f === 'F24' && !i.cancelled);
+    if (it) return { notif: n.id, tier: it.choices.find((c) => c.id === 'AI')?.tier ?? null };
+  }
+  return null;
 }
 
 export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
@@ -898,8 +936,12 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
         ? {
             state: rule.applied === 'HALF' ? '減半中' : '正常',
             stdWeight: rule.stdWeight,
-            premises: meta.premises.map((p) => ({ text: p.text + (p.breaksIf ? `（不成立的訊號：${p.breaksIf}）` : ''), origin: ORIGIN[p.origin] ?? p.origin })),
+            premises: meta.premises.map((p) => ({ id: p.id, text: p.text + (p.breaksIf ? `（不成立的訊號：${p.breaksIf}）` : ''), origin: ORIGIN[p.origin] ?? p.origin, system: p.origin === 'SYSTEM_DEFAULT' })),
             lastReview: meta.aiTier ? `${meta.aiTier.date}：${TIER_NAME[meta.aiTier.tier]}` : null,
+            thesis: meta.thesis?.text ? { text: meta.thesis.text, setAt: meta.thesis.setAt, source: meta.thesis.source === 'DISCUSSION' ? '討論後貼回' : '在網站手寫', version: meta.thesis.version, afterBreak: meta.thesis.afterBreak } : null,
+            kind: meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT') ? 'THESIS' : 'DEFAULT_ONLY',
+            openNote: openNoteOf(acct, ticker),
+            pendingBreak: pendingBreakOf(acct, ticker),
           }
         : null,
     ai: note,

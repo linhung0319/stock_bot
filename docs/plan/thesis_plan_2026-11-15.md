@@ -305,7 +305,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 注意：掃描對象這裡仍包含動能的候選股（T32d 才拿掉）。`classify502` 的測試資料要幾份真實的 5.02：用 repo 既有的抓取程式與它的設定去抓（不要自己另外帶聯絡資訊），存成 `test/fixtures/`；抓不到就手寫樣本並在回報註明。
 - 完成條件：掃描逾時後下一次重掃同一批；5.02 執行長辭任在 Haiku 回「沒有」時仍被規則記下；一般董事異動不是可提前的細項；掃描之後才出現的標題隔天掃得到；一檔 4 份 8-K 都被掃到；連續 2 次失敗的告警寫出哪些文件沒被看過；1.05、2.04、3.01 由規則記下；13D 記成 `ACTIVIST`；F25 有 9 份時取 8 份並告警。
 
-#### [ ] T27 討論包、貼回、編輯論點
+#### [x] T27 討論包、貼回、編輯論點
 - 讀：`own_thesis` §1.7（含整段討論包的文字）、§1.8、§1.12 的「拿掉草擬」、§3.6.5、§3.8、§3.6.3 最後一點；問題 P6、P7、N9。檔案：`ai/functions.ts`（`askPrompt`）、`ai/ownCheck.ts`、`app/ownCheckAi.ts`、`public/js/pages-more.js`（`ownEdit`）、`pages-notif.js`、`pages-ai.js`（`requestDrafts`）、`ai/prompts/own_check_v1.md`、`worker/SETUP.md`。
 - 做：
   1. `worker/src/ai/discussion.ts`：`discussionPack`、`DISCUSSION_V1`、`parseThesisBlock`；`GET /api/own/<代號>/discussion`。

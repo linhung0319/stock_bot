@@ -239,7 +239,7 @@ export function aiOverview() {
   return box;
 }
 
-// ---------------------------------------------------------------- 持股頁：監測條件與新增自選健檢（T11，F14／F25）
+// ---------------------------------------------------------------- 持股頁：條件與出場條件的改寫結果（T11、T26、T27）
 
 const COND_ACTIONS = [
   ['EXIT', '出清'],
@@ -317,53 +317,106 @@ export function ownMonitor(ctx, d) {
       }),
     );
   if (owned.length || proposed.length) out.push(msg);
-  const c = d.check;
-  if (c && c.mode === 'REWRITE') {
-    if (c.status === 'PENDING') out.push(h('p', { class: 'small dim', style: 'margin-top:10px' }, 'AI 正在把你寫的出場條件改寫成可以追蹤的格式，回來之後會出現在這裡。'));
-    else if (c.conditions.length) {
-      const boxes = c.conditions.map((x) => ({ x, box: h('input', { type: 'checkbox', checked: !x.manual && !c.accepted.includes(x.condId), disabled: c.accepted.includes(x.condId) }) }));
-      const msg = h('div');
-      out.push(
-        h('h5', { style: 'margin-top:12px' }, 'AI 改寫的出場條件（勾選的會開始監測，成立時當天通知）'),
-        h('div', null, boxes.map(({ x, box }) => h('label', { style: 'display:block;margin:6px 0' }, box, ' ', x.text, h('span', { class: 'faint small' }, `（${x.then}${c.accepted.includes(x.condId) ? '；已在監測' : ''}）`)))),
-        c.summary ? h('p', { class: 'small faint' }, c.summary) : null,
-        h(
-          'div',
-          { class: 'btn-row', style: 'margin-top:8px' },
-          h(
-            'button',
-            {
-              class: 'btn',
-              type: 'button',
-              onclick: async () => {
-                try {
-                  const ids = boxes.filter((b) => b.box.checked && !b.box.disabled).map((b) => b.x.condId);
-                  const r = await api.post('/ops/own-conditions', { ticker: d.ticker, runId: c.runId, ids });
-                  toast(`開始監測 ${r.added} 條`);
-                  ctx.refresh();
-                } catch (e) {
-                  msg.replaceChildren(h('p', { class: 'small', style: 'color:var(--hot)' }, e.message));
-                }
-              },
-            },
-            '開始監測勾選的條件',
-          ),
-        ),
-        msg,
-      );
-    }
-  }
+  out.push(...rewriteBlock(ctx, d));
   return out;
 }
 
-/** 持股頁：請 AI 草擬前提，等結果（每 15 秒看一次，最多 20 分鐘）。onDrafts(drafts) 收到結果時呼叫。 */
-export async function requestDrafts(ticker, lines, onStatus) {
-  const r = await api.post('/ops/own-check', { ticker, lines });
-  for (let k = 0; k < 80; k++) {
-    await new Promise((res) => setTimeout(res, k ? 15000 : 3000));
-    const v = await api.get('/ai/own-check/' + encodeURIComponent(r.runId));
-    if (v.status === 'DONE') return v;
-    onStatus?.(`AI 還在想（${Math.round(((k + 1) * 15) / 60)} 分鐘）…`);
+/** 把出場條件重新送去改寫（編輯論點頁送出失敗、或改寫沒有結果時）。 */
+export async function resendExits(ticker, exits) {
+  return api.post('/ops/own-check', { ticker, exits });
+}
+
+const ACTION_NAME = Object.fromEntries(COND_ACTIONS);
+const day2 = (iso) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '');
+
+/** 「出場條件還沒送去改寫」與「重送」（own_thesis §1.8 確認的第 3 點：不能沒有提示）。 */
+export function unsentBox(ticker, exits, reason, onSent) {
+  const msg = h('div');
+  return h(
+    'div',
+    { class: 'notice', style: 'margin-top:12px' },
+    h('b', null, '出場條件還沒送去改寫'),
+    h('p', { class: 'small', style: 'margin-top:4px' }, reason),
+    h('ul', { class: 'small', style: 'margin:6px 0 0 1.2em' }, exits.map((x) => h('li', null, `${x.text} → ${ACTION_NAME[x.action] ?? '重新審查'}`))),
+    h('div', { class: 'btn-row', style: 'margin-top:8px' }, h('button', {
+      class: 'btn',
+      type: 'button',
+      onclick: async (ev) => {
+        ev.currentTarget.disabled = true;
+        try {
+          await resendExits(ticker, exits);
+          toast('已重送，AI 通常幾分鐘內回來');
+          onSent?.();
+        } catch (e) {
+          msg.replaceChildren(h('p', { class: 'small', style: 'color:var(--hot);margin-top:6px' }, e.message));
+          ev.currentTarget.disabled = false;
+        }
+      },
+    }, '重送')),
+    msg,
+  );
+}
+
+/** 持股頁：最近 30 天的改寫結果（還沒勾的條件、改寫中、沒有結果）與還沒送出去的出場條件。勾選時可以改成立時的動作。 */
+function rewriteBlock(ctx, d) {
+  const rw = d.rewrites;
+  if (!rw) return [];
+  const out = [];
+  if (rw.unsent) out.push(unsentBox(d.ticker, rw.unsent.exits, `${day2(rw.unsent.at)} 存論點時沒有送出去（AI 層沒設定或送出失敗）。論點與前提已經存好了。`, () => ctx.refresh()));
+  for (const c of rw.results) {
+    if (c.status === 'PENDING') {
+      out.push(h('p', { class: 'small dim', style: 'margin-top:12px' }, `${day2(c.createdAt)} 送出的 ${c.exits.length} 條出場條件，AI 正在改寫成可以追蹤的格式，回來之後會出現在這裡。`));
+      continue;
+    }
+    if (c.failed) {
+      out.push(unsentBox(d.ticker, c.exits, `${day2(c.createdAt)} 送去改寫，但沒有結果（${c.summary ?? '原因不明'}）。`, () => ctx.refresh()));
+      continue;
+    }
+    const msg = h('div');
+    const rows = c.conditions
+      .filter((x) => !c.accepted.includes(x.condId))
+      .map((x) => {
+        let act = x.action;
+        const box = h('input', { type: 'checkbox', checked: !x.manual });
+        return { x, box, get act() { return act; }, sel: x.manual ? null : actionSelect(act, (e) => (act = e.target.value)) };
+      });
+    out.push(
+      h('h5', { style: 'margin-top:16px' }, `AI 改寫的出場條件（${day2(c.createdAt)} 送出，${rows.length} 條還沒勾）`),
+      h('p', { class: 'small dim' }, '勾選的才會開始監測，成立時照你選的動作通知你。'),
+      rows.map((r) =>
+        h(
+          'div',
+          { style: 'padding:10px 0;border-top:1px solid var(--line)' },
+          h('label', { style: 'display:flex;gap:10px;align-items:flex-start' }, r.box, h('span', null, h('b', { style: 'font-weight:500' }, r.x.text), r.x.from ? h('div', { class: 'small faint' }, `你寫的：${r.x.from}`) : null, h('div', { class: 'small dim' }, r.x.then))),
+          r.sel ? h('div', { class: 'btn-row', style: 'margin-top:6px;gap:8px' }, h('span', { class: 'small' }, '成立時'), r.sel) : null,
+        ),
+      ),
+      c.summary ? h('p', { class: 'small faint', style: 'margin-top:6px' }, c.summary) : null,
+      h(
+        'div',
+        { class: 'btn-row', style: 'margin-top:8px' },
+        h(
+          'button',
+          {
+            class: 'btn',
+            type: 'button',
+            onclick: async () => {
+              const pick = rows.filter((r) => r.box.checked);
+              if (!pick.length) return msg.replaceChildren(h('p', { class: 'small', style: 'color:var(--hot)' }, '至少勾一條'));
+              try {
+                const r = await api.post('/ops/own-conditions', { ticker: d.ticker, runId: c.runId, ids: pick.map((p) => p.x.condId), actions: Object.fromEntries(pick.map((p) => [p.x.condId, p.act])) });
+                toast(`開始監測 ${r.added} 條`);
+                ctx.refresh();
+              } catch (e) {
+                msg.replaceChildren(h('p', { class: 'small', style: 'color:var(--hot)' }, e.message));
+              }
+            },
+          },
+          '開始監測勾選的條件',
+        ),
+      ),
+      msg,
+    );
   }
-  throw new Error('等太久了，AI 還沒有回來。之後可以到這檔的持股頁看結果。');
+  return out;
 }

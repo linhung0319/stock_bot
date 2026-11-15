@@ -4,8 +4,8 @@ import {
   SLOW,
   SYSTEM_DEFAULT_PREMISES,
   addOwn,
-  addPremises,
   applySnapshot,
+  setThesis,
   cancelCashflow,
   monthlyWait,
   setStdWeight,
@@ -37,6 +37,11 @@ import {
   type Snapshot,
 } from '../../engine';
 import { VOL_HIST_SEED } from '../../engine/volSeed';
+import { DISCUSSION_MODES, THESIS_LIMITS, parseThesisBlock } from '../../ai/discussion';
+import type { ExitLine } from '../../ai/ownCheck';
+import { demoDiscussion } from '../discussion';
+import type { ThesisLogInput } from '../ledgerStore';
+import type { CondAction } from '../thesis';
 import { errText } from '../../data/util';
 import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
 import { json, type Env, type Fetcher } from '../env';
@@ -129,6 +134,8 @@ interface Mutation {
   dry?: boolean;
   /** 存檔後要留下的快照原文。 */
   snapshot?: Snapshot;
+  /** 和這一版帳戶一起寫的論點檔紀錄（own_thesis_log）。 */
+  log?: ThesisLogInput[];
 }
 
 async function mutate(backend: SiteBackend, cause: string, extra: string[], fn: (d: Ready) => Mutation): Promise<{ after: Ready; result: Record<string, unknown> }> {
@@ -141,7 +148,7 @@ async function mutate(backend: SiteBackend, cause: string, extra: string[], fn: 
   const after: Ready = { ...d, acct: r.acct };
   annotate(ctxOf(after));
   if (!r.dry) {
-    await backend.save(r.acct, cause);
+    await backend.save(r.acct, cause, r.log);
     if (r.snapshot) await backend.recordSnapshot(d.view.date, r.snapshot);
   }
   return { after, result: r.result ?? {} };
@@ -220,6 +227,104 @@ async function createFromSnapshot(backend: SiteBackend, b: Record<string, unknow
   return json({ ok: true });
 }
 
+// ---------------------------------------------------------------- 編輯論點（T27，own_thesis §1.8）
+
+const COND_ACTION_SET: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
+
+/** 出場條件：[{ text, action }]，最多 6 條，每條 300 字；動作不認得的當成重新審查。 */
+function exitsOf(v: unknown): ExitLine[] {
+  if (!Array.isArray(v)) return [];
+  if (v.length > THESIS_LIMITS.exits) throw new SiteError(422, `出場條件最多 ${THESIS_LIMITS.exits} 條`);
+  const out: ExitLine[] = [];
+  for (const x of v) {
+    const o = (x ?? {}) as Record<string, unknown>;
+    const t = text(o.text, '出場條件', THESIS_LIMITS.exit, false);
+    if (!t) continue;
+    out.push({ text: t, action: COND_ACTION_SET.includes(o.action as CondAction) ? (o.action as CondAction) : 'REVIEW' });
+  }
+  return out;
+}
+
+/**
+ * POST /api/ops/own-thesis：{ ticker, thesis, premises: [{ id?, text }], exitConditions: [{ text, action }], source, replyTo?, dry? }
+ *   1. 論點與前提立刻存進帳戶狀態（version 加 1），log 寫 THESIS（含出場條件的原文，免得改寫失敗時不見）
+ *   2. 出場條件送去改寫（一票）；送出失敗或 AI 層沒設定 → 回 rewrite.status = FAILED，頁面顯示「還沒送去改寫」與「重送」
+ *   3. 出場條件不存成前提
+ * dry：只算前提的對應（沿用、新的、會撤下），不存。replyTo：這是對通知 #N 的回應（log 記下；效果在 T30）。
+ */
+async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
+  const tk = ticker(b.ticker);
+  const thesisText = text(b.thesis, '論點', THESIS_LIMITS.thesis, false);
+  const rawPs = Array.isArray(b.premises) ? b.premises : [];
+  if (rawPs.length > THESIS_LIMITS.premises) throw new SiteError(422, `前提最多 ${THESIS_LIMITS.premises} 條`);
+  const premises = rawPs
+    .map((p) => {
+      const o = (p ?? {}) as Record<string, unknown>;
+      return { id: typeof o.id === 'string' && /^P\d{1,4}$/.test(o.id) ? o.id : null, text: text(o.text, '前提', THESIS_LIMITS.premise, false) };
+    })
+    .filter((p) => p.text);
+  const exits = exitsOf(b.exitConditions);
+  const source = b.source === 'DISCUSSION' ? 'DISCUSSION' : 'TYPED';
+  const replyTo = b.replyTo === undefined || b.replyTo === null || b.replyTo === '' ? null : Number(b.replyTo);
+  const dry = b.dry === true;
+  const r = await mutate(backend, `${tk} 編輯論點`, [], (d) => {
+    if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
+    if (replyTo !== null) findNotif(d.acct, Number.isInteger(replyTo) ? replyTo : -1);
+    let out: ReturnType<typeof setThesis>;
+    try {
+      out = setThesis(d.acct, tk, { text: thesisText, source, premises, date: d.view.date });
+    } catch (e) {
+      throw new SiteError(422, errText(e));
+    }
+    const meta = out.acct.own[tk];
+    const brief = (ps: Premise[]) => ps.map((p) => ({ id: p.id, text: p.text, origin: p.origin }));
+    const result = {
+      preview: {
+        kept: out.mapping.premises.filter((p) => out.mapping.kept.includes(p.id)).map((p) => ({ id: p.id, text: p.text })),
+        added: out.mapping.premises.filter((p) => out.mapping.added.includes(p.id)).map((p) => ({ id: p.id, text: p.text })),
+        retired: out.mapping.retired.map((p) => ({ id: p.id, text: p.text, origin: p.origin })),
+        changed: out.changed,
+        version: meta.thesis!.version,
+      },
+    };
+    const log: ThesisLogInput[] = meta.fileId
+      ? [
+          {
+            ticker: tk,
+            fileId: meta.fileId,
+            session: d.view.date,
+            kind: 'THESIS',
+            body: {
+              version: meta.thesis!.version,
+              source,
+              before: { text: out.before.text, premises: brief(out.before.premises) },
+              after: { text: meta.thesis!.text, premises: brief(meta.premises) },
+              retired: out.mapping.retired.map((p) => p.id),
+              afterBreak: false,
+              replyTo,
+              exitLines: exits.map((e) => e.text),
+              exitActions: exits.map((e) => e.action),
+            },
+          },
+        ]
+      : [];
+    return { acct: out.acct, dry, result, log };
+  });
+  if (dry) return json({ ok: true, ...r.result });
+  // 出場條件送去改寫：失敗要明白告訴使用者（N9），之後持股頁也會一直提示到重送為止
+  let rewrite: { status: 'SENT' | 'FAILED' | 'NONE'; runId?: string; error?: string } = { status: 'NONE' };
+  if (exits.length) {
+    if (!backend.ai) rewrite = { status: 'FAILED', error: '示範模式沒有真的 AI，出場條件沒有送去改寫。' };
+    else
+      try {
+        rewrite = { status: 'SENT', runId: (await backend.ai.ownCheck(tk, exits)).runId };
+      } catch (e) {
+        rewrite = { status: 'FAILED', error: errText(e) };
+      }
+  }
+  return json({ ok: true, ...r.result, rewrite, exits });
+}
+
 // ---------------------------------------------------------------- 路由
 
 async function route(req: Request, rest: string, url: URL, backend: SiteBackend): Promise<Response> {
@@ -276,20 +381,44 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const tk = ticker(hold[1]);
     const d = ready(await backend.load());
     const hd = holdingDetail(d, tk);
-    // 真實模式：這檔監測中的條件（AI 寫的、你寫的）、最近一次新增自選健檢、要看的事
-    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), check: await backend.ai.latestCheck(tk), attention: await backend.ai.attention(tk, d.acct, d.view).catch(() => []) });
+    // 真實模式：這檔監測中的條件（AI 寫的、你寫的）、最近 30 天還沒勾的改寫結果、要看的事
+    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), rewrites: await backend.ai.rewrites(tk), attention: await backend.ai.attention(tk, d.acct, d.view).catch(() => []) });
     return json(hd);
   }
 
-  // ---- AI 層（F14 健檢、F1／F5／F18 的總覽）：只有真實模式
-  if (rest === 'ai/overview' && get) return json(backend.ai ? await backend.ai.overview() : { macro: null, reviews: [], events: [] });
-  if (rest === 'ops/own-check' && post) {
-    if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI。');
+  // ---- 論點（T27，own_thesis §1.7、§1.8）：討論包、貼回的解析、編輯論點
+  const disc = /^own\/([A-Za-z0-9.-]{1,10})\/discussion$/.exec(rest);
+  if (disc && get) {
+    const tk = ticker(disc[1]);
+    const d = ready(await backend.load());
+    if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
+    const q = url.searchParams.get('mode');
+    const mode = q ? (DISCUSSION_MODES.find((m) => m === q) ?? null) : null;
+    if (q && !mode) throw new SiteError(422, 'mode 只能是 NEW、ROUTINE 或 BREAK');
+    const nq = url.searchParams.get('notif');
+    const notif = nq ? Number(nq) : null;
+    if (notif !== null) findNotif(d.acct, Number.isInteger(notif) ? notif : -1);
+    const out = backend.ai ? await backend.ai.discussion(tk, d.acct, d.view, mode, notif) : await demoDiscussion(d.acct, d.view, tk, mode, notif);
+    return json(out);
+  }
+  if (rest === 'ops/own-thesis/parse' && post) {
     const b = await body(req);
     const tk = ticker(b.ticker);
-    const lines = Array.isArray(b.lines) ? b.lines.filter((x): x is string => typeof x === 'string').map((x) => x.trim().slice(0, 300)).filter(Boolean).slice(0, 6) : [];
+    return json(parseThesisBlock(text(b.text, '貼上的內容', 30_000, false), tk));
+  }
+  if (rest === 'ops/own-thesis' && post) return saveThesis(backend, await body(req));
+
+  // ---- AI 層（F14 改寫、F1／F5／F18 的總覽）：只有真實模式
+  if (rest === 'ai/overview' && get) return json(backend.ai ? await backend.ai.overview() : { macro: null, reviews: [], events: [] });
+  if (rest === 'ops/own-check' && post) {
+    // 重送出場條件去改寫（編輯論點頁送出失敗、或改寫沒有結果時）
+    if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI，出場條件沒有辦法送去改寫。');
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const exits = exitsOf(b.exits);
+    if (!exits.length) throw new SiteError(422, '沒有要改寫的出場條件');
     try {
-      return json({ ok: true, ...(await backend.ai.ownCheck(tk, lines)) });
+      return json({ ok: true, ...(await backend.ai.ownCheck(tk, exits)) });
     } catch (e) {
       throw new SiteError(422, errText(e));
     }
@@ -515,7 +644,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     return json({ ok: true, date: out.date });
   }
 
-  // ---- 持股頁：改標準比重、加前提（2026-11-15 起取代新增自選頁的這兩項）
+  // ---- 持股頁：改標準比重（2026-11-15 起取代新增自選頁的這一項；前提改在「編輯論點」頁，T27）
   if (rest === 'ops/std-weight' && post) {
     const b = await body(req);
     const tk = ticker(b.ticker);
@@ -523,17 +652,6 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     await mutate(backend, `改標準比重 ${tk} → ${pct(w)}`, [], (d) => {
       if (!d.acct.rule.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
       return { acct: setStdWeight(d.acct, tk, w) };
-    });
-    return json({ ok: true });
-  }
-  if (rest === 'ops/own-premises' && post) {
-    const b = await body(req);
-    const tk = ticker(b.ticker);
-    const ps = premisesOf(b.premises).map(({ id: _id, ...p }) => p);
-    if (!ps.length) throw new SiteError(422, '至少寫一條前提');
-    await mutate(backend, `${tk} 加前提`, [], (d) => {
-      if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
-      return { acct: addPremises(d.acct, tk, ps, d.view.date) };
     });
     return json({ ok: true });
   }
@@ -588,8 +706,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       const out = addOwn(d.acct, d.view, tk, premises, std);
       return { acct: out.acct, dry, result: { notifId: out.notif.id, startsHalved: out.startsHalved, recommended: out.recommended[tk] } };
     });
-    const drafts = r.after.demo ? (DEMO_SCRIPTS[r.after.demo.scenario].drafts?.[tk] ?? null) : null;
-    return json({ ok: true, ...r.result, ...(dry ? { preview: notifView(r.after, findNotif(r.after.acct, r.result.notifId as number)), drafts } : {}) });
+    return json({ ok: true, ...r.result, ...(dry ? { preview: notifView(r.after, findNotif(r.after.acct, r.result.notifId as number)) } : {}) });
   }
   if (rest === 'ops/remove-own' && post) {
     const b = await body(req);

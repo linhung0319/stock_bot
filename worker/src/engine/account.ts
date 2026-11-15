@@ -26,7 +26,7 @@ export const SYSTEM_DEFAULT_PREMISES: Premise[] = [
   { id: 'P3', text: '稀釋每股盈餘沒有連兩季低於去年同季', origin: 'SYSTEM_DEFAULT' },
 ];
 
-/** 論點本文（own_thesis §1.2；編輯在 T27）。 */
+/** 論點本文（own_thesis §1.2；持股頁的「編輯論點」，T27）。 */
 export interface Thesis {
   text: string;
   setAt: string;
@@ -77,6 +77,10 @@ export interface OwnMeta {
    * 由 `app/thesis.ts` 的 dueAttention 決定多久再列。沒有這個欄位（舊資料）= 都還沒列過。
    */
   attnShown?: Record<string, string>;
+  /** 前提有增減的訊號日（編輯論點時記；own_thesis §3.6.5）：下一次每日第一次流程開一次論點變動後的審查，開了或略過就清掉。 */
+  thesisReviewDue?: string | null;
+  /** 最近一次論點變動後的審查（觸發原因 THESIS）的訊號日；每檔 30 個日曆天最多 1 次。 */
+  thesisReviewAt?: string | null;
 }
 
 /**

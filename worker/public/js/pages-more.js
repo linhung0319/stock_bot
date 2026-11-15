@@ -4,7 +4,8 @@ import { actionText, day, h, money, pct, put, qty, toast } from './dom.js';
 import { consoleBox, glass, meterEl, menuList, page, tiles } from './layout.js';
 import { aiBlock, attentionList, bucketTag, chart, fold, rankTable } from './parts.js';
 import { actionButton, errBox, linkButton, planBubble, slips, trayBody, trayTitle, undoButton } from './pages-notif.js';
-import { ownMonitor, requestDrafts } from './pages-ai.js';
+import { ownMonitor } from './pages-ai.js';
+import { copyPackButton } from './pages-thesis.js';
 import { say } from './slime.js';
 
 const em = (t) => ({ t, tone: 'em' });
@@ -131,8 +132,8 @@ export async function holdingPage(ctx, ticker) {
         ? glass(
             'pad',
             h('h2', { class: 'panel-h' }, actionText(`自選：${d.own.state}，標準比重 ${pct(d.own.stdWeight)}`)),
-            h('h5', { style: 'margin-top:10px' }, '這檔的前提（你為什麼持有它）'),
-            h('ul', { class: 'prem' }, d.own.premises.map((p) => h('li', null, h('span', { class: 'st' }, p.origin), h('span', null, p.text)))),
+            d.own.openNote ? h('p', { class: 'notice', style: 'margin-top:10px' }, d.own.openNote) : null,
+            ...thesisBlock(ctx, d),
             d.own.lastReview ? h('p', { class: 'small dim', style: 'margin-top:10px' }, 'AI 最近一次審查：' + d.own.lastReview) : h('p', { class: 'small faint', style: 'margin-top:10px' }, 'AI 還沒有審查過這一檔。'),
             aiBlock(d.ai),
             d.attention?.length ? [h('h5', { style: 'margin-top:12px' }, `要看的事（${d.attention.length} 件，不用下單）`), attentionList(d.attention, { link: false })] : null,
@@ -298,7 +299,23 @@ export const ratioPage = (() => {
   });
 })();
 
-// 持股頁：改標準比重、加前提、請 AI 草擬前提（2026-11-15 起取代新增／移除自選兩頁；新增和賣光都在填快照做）
+/** 持股頁：論點本文、前提、「編輯論點」與「複製討論包」（T27；取代原本的「加前提」與 AI 草擬）。 */
+function thesisBlock(ctx, d) {
+  const o = d.own;
+  const t = o.thesis;
+  return [
+    h('h5', { style: 'margin-top:12px' }, '我的論點'),
+    t
+      ? [h('p', { style: 'margin-top:4px;white-space:pre-wrap' }, t.text), h('p', { class: 'small faint' }, `${day(t.setAt, true)} 定，${t.source}，第 ${t.version} 版${t.afterBreak ? `；失效後修改第 ${t.afterBreak} 次` : ''}`)]
+      : h('p', { class: 'small dim', style: 'margin-top:4px' }, o.kind === 'DEFAULT_ONLY' ? '還沒有論點本文。目前用系統預設前提做一般健康檢查，不是你的論點。' : '還沒有論點本文。'),
+    h('h5', { style: 'margin-top:12px' }, o.kind === 'DEFAULT_ONLY' ? '前提（系統預設）' : '前提（你為什麼持有它）'),
+    h('ul', { class: 'prem' }, o.premises.map((p) => h('li', null, h('span', { class: 'st' }, p.id), h('span', null, p.text, h('span', { class: 'faint small' }, `（${p.origin}）`))))),
+    h('div', { class: 'btn-row', style: 'margin-top:12px' }, h('a', { class: 'btn primary', href: `#/h/${encodeURIComponent(d.ticker)}/thesis` }, '編輯論點'), copyPackButton(d.ticker)),
+    h('p', { class: 'small faint', style: 'margin-top:8px' }, '「複製討論包」把這檔的論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論；說「收尾」後把結果貼回「編輯論點」。'),
+  ];
+}
+
+// 持股頁：改標準比重（2026-11-15 起取代新增／移除自選兩頁；新增和賣光都在填快照做；前提在「編輯論點」頁，T27）
 function ownEdit(ctx, d) {
   const msg = h('div');
   const fail = (e) => msg.replaceChildren(errBox(e));
@@ -314,62 +331,10 @@ function ownEdit(ctx, d) {
       fail(e);
     }
   });
-  const mine = h('textarea', { rows: 2, placeholder: '一行一條，例如：\nAI 伺服器出貨兩年內持續成長\n毛利率跌破 70% 就賣' });
-  const addMine = actionButton('加進前提', '', async () => {
-    const xs = mine.value.split('\n').map((x) => x.trim()).filter(Boolean);
-    if (!xs.length) return fail(new Error('還沒寫前提'));
-    try {
-      await api.post('/ops/own-premises', { ticker: d.ticker, premises: xs.map((text) => ({ text })) });
-      // 請 AI 把你寫的出場條件改寫成可以追蹤的格式（結果出現在這一頁，勾選後才監測；AI 層沒設定就略過）
-      api.post('/ops/own-check', { ticker: d.ticker, lines: xs }).catch(() => {});
-      toast('已加進前提');
-      ctx.refresh();
-    } catch (e) {
-      fail(e);
-    }
-  });
-  const draftSlot = h('div');
-  const askAi = h('button', {
-    class: 'btn',
-    type: 'button',
-    onclick: async (ev) => {
-      ev.target.disabled = true;
-      const status = h('span', { class: 'faint small', style: 'margin-left:8px' }, '已送出，AI 通常幾分鐘內回來…');
-      ev.target.after(status);
-      try {
-        const v = await requestDrafts(d.ticker, [], (t) => (status.textContent = t));
-        if (!v.drafts.length) throw new Error(v.summary || 'AI 沒有草擬出前提');
-        status.remove();
-        const boxes = v.drafts.map((x) => ({ x, box: h('input', { type: 'checkbox', checked: true }) }));
-        draftSlot.replaceChildren(
-          h('div', null, boxes.map(({ x, box }) => h('label', { style: 'display:block;margin:6px 0' }, box, ' ', x.text, h('span', { class: 'faint' }, `（不成立的訊號：${x.breaksIf}）`)))),
-          actionButton('加入勾選的前提', '', async () => {
-            const ps = boxes.filter((b) => b.box.checked).map((b) => ({ text: b.x.text, origin: 'AI_DRAFT_ACCEPTED', breaksIf: b.x.breaksIf }));
-            if (!ps.length) return fail(new Error('至少勾一條'));
-            try {
-              await api.post('/ops/own-premises', { ticker: d.ticker, premises: ps });
-              toast('已加進前提');
-              ctx.refresh();
-            } catch (e) {
-              fail(e);
-            }
-          }),
-        );
-      } catch (e) {
-        status.textContent = e.message;
-        ev.target.disabled = false;
-      }
-    },
-  }, '請 AI 草擬前提');
   return [
     h('h5', { style: 'margin-top:16px' }, '標準比重'),
     h('div', { class: 'btn-row', style: 'align-items:center' }, std, h('span', null, '%'), saveStd),
     h('p', { class: 'small faint' }, '加回、入金補到這個比重；改了不會馬上下單。系統推薦值是依波動度在自選預算內分的。'),
-    h('h5', { style: 'margin-top:16px' }, '加前提'),
-    mine,
-    h('div', { class: 'btn-row', style: 'margin-top:8px' }, addMine, askAi),
-    h('p', { class: 'small faint' }, '原本只有系統預設的前提時，加了你寫的就取代預設。AI 只草擬「現在的股價隱含了哪些前提」，不判斷該不該買。'),
-    draftSlot,
     msg,
     h('p', { class: 'small faint', style: 'margin-top:14px' }, '不想再持有：到「填快照」把自選這一檔的股數改成 0，就會移出自選。'),
   ];

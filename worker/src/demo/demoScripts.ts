@@ -19,8 +19,6 @@ export interface DemoScript {
   aiTiers?: { on: string; ticker: string; tier: Tier; date: string; suggest: boolean }[];
   /** on 那一天收盤後成立的條件（F25）。 */
   conditions?: { on: string; ticker: string; tier: Tier; text: string }[];
-  /** 新增自選時 AI 草擬的前提（代號 → 草稿）。 */
-  drafts?: Record<string, { text: string; breaksIf: string }[]>;
   notes: AiNote[];
 }
 
@@ -155,13 +153,6 @@ export const DEMO_SCRIPTS: Record<DemoId, DemoScript> = {
     summary: '平靜的市場，沒有待辦。試試入金、出金、改比例、新增自選，或自己交易後填快照。MU 占約 13.5%，大額出金會先碰到單檔上限。',
     tips: ['入金 10,000：看錢怎麼分', '出金 30,000：MU 會先被減回 10%', '把動能比例改成 0%', '新增自選 TSLA：它已經跌超過 20%，一開始只買一半', '填快照時多填 10 股 AAPL（清單上沒有），看系統怎麼問'],
     startAt: '2026-12-10',
-    drafts: {
-      TSLA: [
-        { text: '自駕計程車在 2027 年擴大到 10 個城市（目前價格隱含的成長）', breaksIf: '主要城市的營運許可被撤回' },
-        { text: '汽車毛利率止跌（最近一季 17%）', breaksIf: '汽車毛利率連兩季低於 15%' },
-        { text: '執行長的注意力與持股質押沒有變化（不容易想到的風險）', breaksIf: '執行長出售或質押大量持股' },
-      ],
-    },
     notes: [],
   },
 };

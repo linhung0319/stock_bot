@@ -35,7 +35,7 @@ export const FUNCTIONS: Record<string, FnInfo> = {
   OWN_DROP: { label: '自選減半檢視', note: 'REVIEW', verdicts: { EXIT: '出清', HALF: '減半（照規則）', HOLD: '不動' }, askPrompt: GENERIC_ASK + '\n請特別檢查：跌幅的歸類（大盤、產業、公司本身）有沒有被證據支持，「價格跌了」是不是被當成「論點壞了」。' },
   DROP_EXPLAIN: { label: '持股單月大跌說明', note: null, verdicts: { EXPLAINED: '已說明', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK },
   STRATEGY_REVIEW: { label: '策略檢討說明', note: null, verdicts: { DONE: '已列出正反證據', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK + '\n請特別檢查：正反兩邊的證據是不是一樣認真；有沒有暗示該停用或該繼續。' },
-  OWN_CHECK: { label: '新增自選健檢', note: null, verdicts: { DONE: '完成', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK + '\n請檢查：草擬的前提是不是證據包看得到的事；改寫的出場條件有沒有忠於我原本的意思。' },
+  OWN_CHECK: { label: '出場條件改寫', note: null, verdicts: { DONE: '完成', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK + '\n請檢查：改寫的出場條件有沒有忠於我原本的意思、成立時的動作有沒有照我選的；數字門檻有沒有對應證據包裡的數字；有沒有和我既有的條件重複。' },
   TEST: { label: '測試', note: null, verdicts: {}, askPrompt: GENERIC_ASK },
 };
 

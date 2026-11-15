@@ -185,6 +185,8 @@ export interface ThesisReview {
   response: { outcome: string; reason: string | null } | null;
   /** 這次每一票對每條前提的判斷（算「最近一次檢查」用）。 */
   premiseVotes: Record<string, string[]>;
+  /** 和結論同檔位的第一張合格票的報告第一段（討論包用；沒有是 null）。 */
+  summary: string | null;
 }
 
 export interface ThesisLogRow {
@@ -249,7 +251,9 @@ function toReview(r: RunRow): ThesisReview {
     .filter(([, v]) => v.length === valid.length && valid.length > 0 && v.every((x) => x === 'BROKEN'))
     .map(([id]) => id);
   const trigger = r.fn === 'OWN_REVIEW' ? String(detail.trigger ?? '') || null : r.fn === 'HARD_EVENT' ? ((detail.codes as string[] | undefined) ?? []).join('、') || null : r.fn === 'OWN_DROP' ? '慢規則減半' : r.fn === 'OWN_CONDITION' ? '新申報' : null;
-  return { runId: r.run_id, date: r.as_of, fn: r.fn, label: FILE_FNS[r.fn] ?? r.fn, trigger, status: r.status === 'PENDING' || !o ? 'PENDING' : o.status, verdict: o?.verdict ?? null, votes: o?.votes ?? {}, brokenPremises, notif: null, response: null, premiseVotes };
+  const rep = valid.find((s) => s.verdict === o?.verdict) ?? valid[0];
+  const summary = rep?.report?.split(/\n\s*\n/)[0]?.trim().slice(0, 400) || null;
+  return { runId: r.run_id, date: r.as_of, fn: r.fn, label: FILE_FNS[r.fn] ?? r.fn, trigger, status: r.status === 'PENDING' || !o ? 'PENDING' : o.status, verdict: o?.verdict ?? null, votes: o?.votes ?? {}, brokenPremises, notif: null, response: null, premiseVotes, summary };
 }
 
 /**
@@ -333,6 +337,34 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     lastReview,
     newSince,
     log,
+  };
+}
+
+/**
+ * 只用帳戶狀態組的論點檔（不讀資料庫：沒有條件、事件、審查與 log）。示範模式的討論包用：示範的帳戶不在 D1 的那幾張表裡。
+ */
+export function metaFile(acct: Pick<Account, 'own'>, ticker: string, asOf: string): ThesisFile | null {
+  const meta = acct.own[ticker];
+  if (!meta) return null;
+  const fileId = meta.fileId ?? null;
+  const openedAt = fileDate(fileId, ticker);
+  return {
+    ticker,
+    fileId,
+    openedAt,
+    origin: meta.origin,
+    kind: fileKind(meta),
+    status: 'OPEN',
+    thesis: meta.thesis ?? null,
+    premises: meta.premises.map((p) => ({ id: p.id, text: p.text, origin: p.origin, addedAt: p.addedAt ?? null, ...(p.breaksIf ? { breaksIf: p.breaksIf } : {}), lastCheck: null, splitAfter: false })),
+    conditions: [],
+    events: [],
+    reviews: [],
+    disputes: meta.disputes ?? [],
+    flags: meta.flags,
+    lastReview: null,
+    newSince: minusDays(asOf, NO_REVIEW_DAYS),
+    log: [],
   };
 }
 

@@ -324,7 +324,7 @@ describe('情境 ① 平常的月報：用網站走完', () => {
     const h = (await web.state()).account!.holdings.find((x) => x.ticker === 'ORCL')!;
     expect(h).toMatchObject({ bucket: 'own', shares: 28 });
     const detail = await web.get<HoldingDetail>('/holding/ORCL');
-    expect(detail.own!.premises[0]).toEqual({ text: '雲端訂單還在成長', origin: '你寫的' });
+    expect(detail.own!.premises[0]).toEqual({ id: 'P1', text: '雲端訂單還在成長', origin: '你寫的', system: false }); // T27：持股頁的前提帶編號
   });
 
   it('策略類「這次不做」：下一份月報把差額再列一次，理由寫明是上次沒做', async () => {
@@ -519,12 +519,12 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect((await web.state()).account!.buckets.find((b) => b.id === 'mom')).toMatchObject({ value: 0, budget: 0 });
   });
 
-  it('新增自選 TSLA：試算時給健檢數字與 AI 草擬的前提；一開始就是減半，只買一半', async () => {
+  it('新增自選 TSLA：試算時給健檢數字；一開始就是減半，只買一半（T27：AI 草擬的前提拿掉）', async () => {
     const sim = simStart();
-    const dry = await web.post<{ preview: NotifView; drafts: { text: string; breaksIf: string }[]; startsHalved: boolean }>('/ops/add-own', { ticker: 'tsla', dry: true });
+    const dry = await web.post<{ preview: NotifView; drafts?: unknown; startsHalved: boolean }>('/ops/add-own', { ticker: 'tsla', dry: true });
     await expectSame(sim);
     expect(dry.startsHalved).toBe(true);
-    expect(dry.drafts).toHaveLength(3);
+    expect(dry.drafts).toBeUndefined();
     const x = dry.preview.items[0].explain;
     expect(x.why).toContain('一開始只買標準比重的一半');
     expect(x.facts!.map((f) => f.label)).toEqual(expect.arrayContaining(['年化波動度（近半年）', '距 52 週高點', '相對 200 日均線', '動能排名']));
@@ -898,11 +898,11 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     const hist = await web.get<HistoryView>('/history');
     expect(hist.events.some((e) => e.text === '成交：自選 ORCL +2 股（自選的手動交易：換股）')).toBe(true);
     expect(hist.events.some((e) => e.text.startsWith('其他現金變動：'))).toBe(true);
-    // 持股頁：改標準比重、加前提
+    // 持股頁：改標準比重、編輯論點（T27 起取代「加前提」：原本的前提照文字沿用，新的接在後面）
     await web.post('/ops/std-weight', { ticker: 'ORCL', stdWeight: 0.04 });
     expect((await web.fail('/ops/std-weight', { ticker: 'AMD', stdWeight: 0.04 })).error).toContain('不在自選裡');
     expect((await web.fail('/ops/std-weight', { ticker: 'ORCL', stdWeight: 0.9 })).status).toBe(422);
-    await web.post('/ops/own-premises', { ticker: 'ORCL', premises: [{ text: '毛利率維持 70% 以上' }] });
+    await web.post('/ops/own-thesis', { ticker: 'ORCL', thesis: '', premises: [{ text: '雲端資料庫訂單成長' }, { text: '毛利率維持 70% 以上' }], exitConditions: [] });
     acct = (await loadAccount(db))!.acct;
     expect(acct.rule.own.ORCL.stdWeight).toBe(0.04);
     expect(acct.own.ORCL.premises.map((p) => p.text)).toEqual(['雲端資料庫訂單成長', '毛利率維持 70% 以上']);

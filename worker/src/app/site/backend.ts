@@ -14,12 +14,15 @@ import { advanceDemo, demoAtEnd, demoFill, demoFilledSnapshot, demoMarket, demoV
 import { ranksAt } from '../../demo/market';
 import type { Env } from '../env';
 import { getRun, listRuns, type AiRun } from '../aiRuns';
-import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, saveAccount, saveSnapshot, saveSnapshotUndo, shadowTickers, snapshotUndoInfo, undoSnapshot, type LoadedAccount, type SnapshotUndoInfo, type SnapshotWarn, warnOf } from '../ledgerStore';
+import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, saveAccount, saveSnapshot, saveSnapshotUndo, shadowTickers, snapshotUndoInfo, thesisLogStmt, undoSnapshot, type LoadedAccount, type SnapshotUndoInfo, type SnapshotWarn, type ThesisLogInput, warnOf } from '../ledgerStore';
 import { noteOfRun } from './aiViews';
 import { loadSnapshot, type MacroSnapshot } from '../crashAi';
 import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
 import { loadReviews, type MomReview } from '../momAi';
-import { acceptOwnConditions, latestOwnCheck, monitorView, ownCheckView, startOwnCheck, type OwnCheckView } from '../ownCheckAi';
+import { acceptOwnConditions, monitorView, ownCheckView, rewriteView, startOwnCheck, type OwnCheckView, type RewriteView } from '../ownCheckAi';
+import type { ExitLine } from '../../ai/ownCheck';
+import type { DiscussionMode } from '../../ai/discussion';
+import { realDiscussion } from '../discussion';
 import { conditionOp, type CondOp } from '../ownConds';
 import { holdingAttention } from '../thesis';
 import { annotate } from './explain';
@@ -66,7 +69,8 @@ export interface SiteBackend {
   run(id: string): Promise<AiRun | null>;
   /** extra：這次操作另外需要價格的代號（真實模式沒有存的會當場去抓）。 */
   load(extra?: string[]): Promise<SiteData>;
-  save(acct: Account, cause: string): Promise<void>;
+  /** log：和這一版帳戶一起寫的論點檔紀錄（own_thesis_log；示範模式不寫）。 */
+  save(acct: Account, cause: string, log?: ThesisLogInput[]): Promise<void>;
   recordSnapshot(date: string, snap: Snapshot): Promise<void>;
   /** 快照存檔後：留下送出前的帳戶，好讓使用者復原（設計 §10 第 39 點）。 */
   saveUndo(before: Account, after: Account, date: string, warn: SnapshotWarn): Promise<void>;
@@ -76,10 +80,13 @@ export interface SiteBackend {
 }
 
 export interface SiteAi {
-  /** F14：請 AI 健檢（lines 空的 = 草擬前提；有內容 = 改寫出場條件）。 */
-  ownCheck(ticker: string, lines: string[]): Promise<{ runId: string }>;
+  /** F14：把使用者寫的出場條件送去改寫（T27 起只有改寫模式）。 */
+  ownCheck(ticker: string, exits: ExitLine[]): Promise<{ runId: string }>;
   checkView(runId: string): Promise<OwnCheckView | null>;
-  latestCheck(ticker: string): Promise<OwnCheckView | null>;
+  /** 持股頁：最近 30 天還沒勾的改寫結果、還沒送出去的出場條件（own_thesis §1.8）。 */
+  rewrites(ticker: string): Promise<RewriteView>;
+  /** 討論包（own_thesis §1.7）。 */
+  discussion(ticker: string, acct: Account, view: MarketView, mode: DiscussionMode | null, notif: number | null): Promise<{ text: string; mode: DiscussionMode }>;
   acceptConditions(ticker: string, runId: string, ids: string[], actions?: Record<string, unknown>): Promise<number>;
   /** 持股頁的條件操作（T26）：勾選 AI 建議的條件、撤下你定的條件、改成立時的動作。 */
   condition(ticker: string, id: number, op: CondOp, action?: unknown): Promise<{ id: number; status: string; action: string | null; retired?: number }>;
@@ -155,8 +162,11 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const undoable = acct ? await snapshotUndoInfo(env.DB, loaded?.rev ?? null) : null;
       return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), warnings, undoable };
     },
-    async save(acct, cause) {
-      rev = await saveAccount(env.DB, acct, loaded, cause, now);
+    async save(acct, cause, log = []) {
+      // 論點檔紀錄和這一版帳戶同一筆交易寫（account_version = 這次存檔的 rev，復原快照時一起刪）
+      const next = (loaded?.rev ?? 0) + 1;
+      const at = now.toISOString();
+      rev = await saveAccount(env.DB, acct, loaded, cause, now, log.map((l) => thesisLogStmt(env.DB, l, next, at)));
     },
     runs: () => listRuns(env.DB, now, { limit: 200 }),
     run: (id) => getRun(env.DB, id, now),
@@ -168,14 +178,15 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
     },
     undoSnapshot: () => undoSnapshot(env.DB, now),
     ai: {
-      async ownCheck(ticker, lines) {
+      async ownCheck(ticker, exits) {
         const d = await self.load([ticker]);
         if (!d.acct || !d.view) throw new Error('還沒有帳戶或價格資料');
-        const run = await startOwnCheck(env, fetcher, d.acct, d.view, d.axis, ticker, lines, now);
+        const run = await startOwnCheck(env, fetcher, d.acct, d.view, d.axis, ticker, exits, now);
         return { runId: run.runId };
       },
       checkView: (runId) => ownCheckView(env, runId, now),
-      latestCheck: (ticker) => latestOwnCheck(env, ticker, now),
+      rewrites: (ticker) => rewriteView(env, ticker, now),
+      discussion: (ticker, acct, view, mode, notif) => realDiscussion(env, fetcher, acct, view, ticker, mode, notif),
       acceptConditions: async (ticker, runId, ids, actions) => acceptOwnConditions(env, ticker, runId, ids, now, actions, lastCompletedSession(now, await loadCalendarOverrides(env.DB))),
       async condition(ticker, id, op, action) {
         const acct = (await loadAccount(env.DB))?.acct;

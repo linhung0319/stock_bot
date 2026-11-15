@@ -655,3 +655,6 @@ select option { background: #14162a; }
 /* 說話時嘴巴會動 */
 .bot.talk .m-o { display: block; animation: mouth 0.22s linear 4; }
 @keyframes mouth { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+/* 編輯論點頁（T27）：左邊現在的、右邊新的；手機上上下排 */
+.thesis-cmp { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) { .thesis-cmp { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; } }

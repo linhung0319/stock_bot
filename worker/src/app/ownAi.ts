@@ -4,12 +4,14 @@
 //                                              F25 → 條件成立的當天通知
 //   財報條件（ownXbrlConditions）：新的 10-Q／10-K → 程式直接比對 XBRL（不用 LLM），寫進度；你定的條件成立 → 當天通知
 //   開新的執行（startOwnRuns）：新申報是事件條件指定的確認來源 → F25；新的財報（10-Q、10-K、8-K 2.02）→ F24（財報後的審查）；
-//                               月報前一天（當月倒數第二個交易日）→ 每檔自選開一次 F24（月報那天用它的結論）
+//                               月報前一天（當月倒數第二個交易日）→ 每檔自選開一次 F24（月報那天用它的結論）；
+//                               前提有增減（thesisReviewDue）→ 論點變動後的審查（每檔 30 天 1 次，own_thesis §3.6.5）
 // 雲端排程（ROUTINE_FIRE_URL／ROUTINE_TOKEN）還沒設定時不開新的執行；EDGAR 的 User-Agent 沒設定時不看申報。
 import type { PackDoc } from '../ai/check';
 import { OWN_CONDITION, OWN_REVIEW, confirmMode, conditionDecision, conditionPack, ownReviewPack, reviewDecision, type ConditionDraft, type ProposedDraft } from '../ai/ownReview';
 import { newRunId } from '../ai/pack';
-import { TIER_NAME, conditionMet, recordAiTier, type Account, type MarketView, type Tier } from '../engine';
+import { TIER_NAME, clone, conditionMet, recordAiTier, type Account, type MarketView, type OwnMeta, type Tier } from '../engine';
+import { ConflictError, loadAccount, saveAccount } from './ledgerStore';
 import { isLastTradingDayOfMonth, nextTradingDay } from '../data/calendar';
 import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlines, isEarningsFiling, quarterTable, quarterTableText, xbrlConditionMet, XBRL_METRICS, type QuarterRow } from '../data/edgar';
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
@@ -166,7 +168,7 @@ export async function reviewThesisEvidence(env: Env, fetcher: Fetcher, tf: Thesi
 }
 
 /** 開一次 F24（證據包由論點檔組，T25）。 */
-export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: 'MONTHLY' | 'EARNINGS' | 'MANUAL', now: Date, evidence?: OwnEvidence): Promise<AiRun> {
+export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: 'MONTHLY' | 'EARNINGS' | 'MANUAL' | 'THESIS', now: Date, evidence?: OwnEvidence): Promise<AiRun> {
   const ev = evidence ?? (await gatherOwnEvidence(env, fetcher, ticker, view.date));
   const tf = await thesisFile(env.DB, acct, ticker, view.date);
   // 你定的條件 C、觀察項 W（T26；財報類觀察項用這次的 XBRL 比對）
@@ -282,11 +284,11 @@ export async function ownFacts(env: Env, fetcher: Fetcher, checks: FilingCheck[]
 /** 一次條件確認（F25）最多放幾份新申報（own_thesis §2.6；原本 3 份）。超過的記 F25_OVERFLOW 告警。 */
 export const F25_MAX_FILINGS = 8;
 
-/** F25（新申報對上事件條件）、F24（新財報、月報前一天）。 */
+/** F25（新申報對上事件條件）、F24（新財報、月報前一天、論點變動之後）。 */
 export async function startOwnRuns(sc: StartCtx): Promise<void> {
   const { env, fetcher, acct, view, axis, session, ov, now, res } = sc;
   const tickers = Object.keys(acct.own);
-  const review = new Map<string, 'EARNINGS' | 'MONTHLY'>();
+  const review = new Map<string, 'EARNINGS' | 'MONTHLY' | 'THESIS'>();
   for (const c of sc.checks) {
     if (!acct.own[c.ticker]) continue;
     // F25 的條件由論點檔取（只有現在這份論點檔的）
@@ -312,12 +314,50 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
     if (c.fresh.some(isEarningsFiling)) review.set(c.ticker, 'EARNINGS');
   }
   if (isLastTradingDayOfMonth(nextTradingDay(session, ov), ov)) for (const t of tickers) if (!review.has(t)) review.set(t, 'MONTHLY');
+  // 論點變動後的審查（§3.6.5）：今天已經因為別的原因開了審查、或 30 天內開過 → 只清掉；否則開一次（觸發原因 THESIS）
+  const patch: Record<string, Pick<OwnMeta, 'thesisReviewDue' | 'thesisReviewAt'>> = {};
+  for (const t of tickers) {
+    const m = acct.own[t];
+    if (!m.thesisReviewDue) continue;
+    const sameDay = review.has(t) || !!(await env.DB.prepare("SELECT 1 AS x FROM ai_runs WHERE fn = 'OWN_REVIEW' AND ticker = ? AND as_of = ? LIMIT 1").bind(t, session).first());
+    const recent = !!m.thesisReviewAt && daysApart(m.thesisReviewAt, session) < THESIS_REVIEW_GAP;
+    if (sameDay || recent) {
+      patch[t] = { thesisReviewDue: null };
+      res.log.push(`${t} 的論點改過：${sameDay ? '今天已經有審查' : `${m.thesisReviewAt} 開過論點變動後的審查（30 天內）`}，不另外開`);
+    } else review.set(t, 'THESIS');
+  }
   for (const [t, trigger] of review) {
     try {
       res.started.push((await startOwnReview(env, fetcher, acct, view, axis, t, trigger, now)).runId);
+      if (trigger === 'THESIS') patch[t] = { thesisReviewDue: null, thesisReviewAt: session };
     } catch (e) {
+      // 沒開成的論點變動審查：thesisReviewDue 留著，下一次每日流程再試
       res.log.push(`${t} 的定期審查沒有開成：${errText(e)}`);
       res.alerts.push({ kind: 'FLOW_ERROR', message: `${t} 的 AI 定期審查沒有開成：${errText(e)}` });
+    }
+  }
+  if (Object.keys(patch).length) await patchOwn(env.DB, now, patch, res.log);
+}
+
+/** 論點變動後的審查，每檔幾個日曆天最多 1 次（§3.6.5）。 */
+export const THESIS_REVIEW_GAP = 30;
+const daysApart = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86400_000);
+
+/** 開執行的段落（帳戶已經存好）要改的自選欄位：重新讀帳戶、改、存（和網站同時存檔時重來，最多 3 次）。 */
+async function patchOwn(db: D1Database, now: Date, patch: Record<string, Partial<OwnMeta>>, log: string[]): Promise<void> {
+  for (let k = 0; k < 3; k++) {
+    const loaded = await loadAccount(db);
+    if (!loaded) return;
+    const next = clone(loaded.acct);
+    for (const [t, p] of Object.entries(patch)) if (next.own[t]) Object.assign(next.own[t], p);
+    try {
+      await saveAccount(db, next, loaded, '論點變動後的審查', now);
+      return;
+    } catch (e) {
+      if (!(e instanceof ConflictError) || k === 2) {
+        log.push(`論點變動後的審查：帳戶沒有存成（${errText(e)}）`);
+        return;
+      }
     }
   }
 }

@@ -22,8 +22,10 @@ import {
   type Item,
   type MarketView,
   type Notif,
+  type OwnMeta,
   type Premise,
   type ShadowRecord,
+  type Thesis,
   type Tier,
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
@@ -752,6 +754,91 @@ export function addPremises(acct0: Account, ticker: string, premises: Omit<Premi
   meta.premises = [...keep, ...premises.map((p) => ({ ...p, id: `P${seq++}`, addedAt: p.addedAt ?? date }))];
   meta.premiseSeq = seq;
   return acct;
+}
+
+/** 比較前提文字用：去掉空白與標點（own_thesis §1.8「前提的對應」）。 */
+export const premiseKey = (t: string): string => t.normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+
+export interface PremiseMapping {
+  /** 存檔後的前提（沿用的保留原本的 id、來源與加入日；新的發新的 id、來源是 USER）。 */
+  premises: Premise[];
+  /** 沿用原本編號的。 */
+  kept: string[];
+  /** 新的（新發的編號）。 */
+  added: string[];
+  /** 現行有、新的沒有 → 撤下（原本只有系統預設、寫了自己的前提時，系統預設也在這裡）。 */
+  retired: Premise[];
+  /** 下一條前提的編號。 */
+  premiseSeq: number;
+}
+
+/**
+ * 編輯論點時，新的前提怎麼對應現行的（own_thesis §1.8，純函式）：
+ *   帶 id、而且是現行的一條 → 沿用（使用者在預覽裡改了字也算同一條）；
+ *   文字和現行的一條相同（去掉空白與標點後比）→ 沿用那條的 id；
+ *   其他 → 新的，從 premiseSeq 接著編號（編號不重用、不重排）；
+ *   現行有、新的沒對到 → 撤下。
+ * 新的一條都沒有：原本只有系統預設 → 預設留著；原本有你的前提 → 丟錯（至少留一條）。
+ */
+export function mapPremises(meta: Pick<OwnMeta, 'premises' | 'premiseSeq'>, next: { id?: string | null; text: string }[], date: string): PremiseMapping {
+  const cur = meta.premises;
+  const onlyDefault = cur.every((p) => p.origin === 'SYSTEM_DEFAULT');
+  // 原樣送回來的系統預設前提（預覽裡沒動的）：全部都是 → 照舊；混了自己的前提 → 預設整組拿掉
+  const isDefaultEcho = (r: { text: string }) => cur.some((p) => p.origin === 'SYSTEM_DEFAULT' && premiseKey(p.text) === premiseKey(r.text));
+  const all = next.map((p) => ({ id: p.id ?? null, text: p.text.trim() })).filter((p) => p.text);
+  const rows = all.filter((r) => !isDefaultEcho(r));
+  let seq = nextPremiseSeq(meta);
+  if (!rows.length) {
+    if (onlyDefault) return { premises: clone(cur), kept: cur.map((p) => p.id), added: [], retired: [], premiseSeq: seq };
+    throw new Error('至少要留一條前提');
+  }
+  const used = new Set<string>();
+  const premises: Premise[] = [];
+  const kept: string[] = [];
+  const added: string[] = [];
+  for (const r of rows) {
+    // 系統預設前提不能被「沿用」成你的前提：寫了自己的前提就整組換掉（照舊）
+    const pool = cur.filter((p) => p.origin !== 'SYSTEM_DEFAULT' && !used.has(p.id));
+    const hit = (r.id ? pool.find((p) => p.id === r.id) : undefined) ?? pool.find((p) => premiseKey(p.text) === premiseKey(r.text));
+    if (hit) {
+      used.add(hit.id);
+      kept.push(hit.id);
+      premises.push({ ...hit, text: r.text });
+    } else {
+      const id = `P${seq++}`;
+      added.push(id);
+      premises.push({ id, text: r.text, origin: 'USER', addedAt: date });
+    }
+  }
+  return { premises, kept, added, retired: cur.filter((p) => !used.has(p.id)), premiseSeq: seq };
+}
+
+export interface ThesisInput {
+  text: string;
+  source: Thesis['source'];
+  premises: { id?: string | null; text: string }[];
+  /** 訊號日。 */
+  date: string;
+}
+
+/**
+ * 存論點與前提（持股頁的「編輯論點」，own_thesis §1.8 確認的第 1 點；§3.6.5）：論點本文與前提立刻存進帳戶狀態，version 加 1。
+ * 前提有新增或撤下 → thesisReviewDue 記今天（下一次每日第一次流程開論點變動後的審查）；只改論點本文或前提的字不算。
+ * 「失效後修改」（afterBreak）在 T30 才累加，這裡照舊。
+ */
+export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { acct: Account; mapping: PremiseMapping; before: { text: string; premises: Premise[] }; changed: boolean } {
+  const acct = clone(acct0);
+  const meta = acct.own[ticker];
+  if (!meta) throw new Error(`${ticker} 不在自選裡`);
+  const mapping = mapPremises(meta, inp.premises, inp.date);
+  const before = { text: meta.thesis?.text ?? '', premises: clone(meta.premises) };
+  const prev = meta.thesis ?? null;
+  meta.thesis = { text: inp.text.trim(), setAt: inp.date, source: inp.source, version: (prev?.version ?? 0) + 1, afterBreak: prev?.afterBreak ?? 0, lastAfterBreakAt: prev?.lastAfterBreakAt ?? null };
+  meta.premises = mapping.premises;
+  meta.premiseSeq = mapping.premiseSeq;
+  const changed = mapping.added.length > 0 || mapping.retired.length > 0;
+  if (changed) meta.thesisReviewDue = inp.date;
+  return { acct, mapping, before, changed };
 }
 
 /** 改一檔自選的標準比重（持股頁；設計 §2.2「系統推薦，使用者可改」）。只改之後加回、入金用的目標，不下單。 */

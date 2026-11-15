@@ -5,6 +5,7 @@ import { day, h, toast } from './dom.js';
 import { menuList, page } from './layout.js';
 import { accountPage, authPage, depositPage, doPage, holdingPage, ratioPage, setupPage, undoPage, withdrawPage } from './pages-more.js';
 import { aiRunPage } from './pages-ai.js';
+import { thesisEditPage } from './pages-thesis.js';
 import { homePage, notifPage, snapshotPage } from './pages-notif.js';
 import { attach } from './slime.js';
 
@@ -41,6 +42,8 @@ const ROUTES = [
   [/^#\/snapshot$/, 'home', () => snapshotPage(ctx)],
   [/^#\/account$/, 'account', () => accountPage(ctx)],
   [/^#\/h\/([A-Za-z0-9.%-]+)$/, 'account', (m) => holdingPage(ctx, decodeURIComponent(m[1]))],
+  // 編輯論點（T27）；從通知的「拿去討論」回來時帶通知編號：#/h/MU/thesis/12
+  [/^#\/h\/([A-Za-z0-9.%-]+)\/thesis(?:\/(\d+))?$/, 'account', (m) => thesisEditPage(ctx, decodeURIComponent(m[1]), m[2] ? Number(m[2]) : null)],
   [/^#\/do$/, '', () => doPage(ctx)],
   [/^#\/do\/deposit$/, '', () => depositPage(ctx)],
   [/^#\/do\/withdraw$/, '', () => withdrawPage(ctx)],

@@ -16,6 +16,7 @@
 | T26 | 完成 | （見 git log） | 410 通過、1 略過 |
 | T37 | 完成 | （見 git log） | 420 通過、1 略過 |
 | T28 | 完成 | （見 git log） | 433 通過、1 略過 |
+| T27 | 完成 | （見 git log） | 453 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -86,6 +87,15 @@
 - T28｜失敗次數存在 `flow_state` 的 `scan:fails`；有執行紀錄的在照規則結束、套用時才算一次，免得算兩次。
 - T28｜F25 取最新的 8 份，告警寫出沒放進去的那幾份。掃描事件的說明文字仍帶英文代碼（網站事件表補了新代碼的中文），換成白話留給 T34。
 - T28｜13D 的表單名稱 `SCHEDULE 13D` 與 `SC 13D` 都收（實際看到新舊兩種寫法），`/A` 與 13G 不記。
+- T27｜另加解析端點 `POST ops/own-thesis/parse`，`ops/own-thesis` 也可以只試算（`dry`）：解析與前提對應只有後端一套。別的選項：前端複製一份解析器。
+- T27｜THESIS 紀錄多存 `exitActions`（和 `exitLines` 平行），重送時要用使用者選的動作。
+- T27｜前提對應：帶 `id` 而且是現行的一條 → 同一條（預覽裡改了字仍沿用編號）；文字不同又沒帶 `id` → 新編號、舊的撤下；系統預設原樣送回時，全部是預設就照舊，混了自己的前提就整組拿掉；原本有自己的前提、送來一條都沒有 → 擋下。
+- T27｜論點變動後的審查要改帳戶：加小函式 `patchOwn`（重讀、改、存，撞到重來最多 3 次）；沒開成時 `thesisReviewDue` 留著隔天再試；同一天已有定期審查就不另開。
+- T27｜乙類通知在 T29a 才有：目前「還沒回覆的乙類通知」用「還沒回覆、有這檔自選審查建議項目的通知」代替；BREAK 的依據取那一項的審查判不成立的前提與第一票引用的申報原文。
+- T27｜§3.8「還沒加回過」= 現在仍是減半，而且開檔之後沒有這檔的加回單。§3.6.3 部位 2 倍那一句預留欄位不計算（T35）。
+- T27｜解析：多個區塊取最後一個；沒有編號的行不算但在預覽標出；動作後的句號去掉。
+- T27｜示範模式的討論包只用帳戶狀態組、不讀 D1；改寫一律回失敗（示範沒有真的 AI）。
+- T27｜舊的 `GET ai/own-check/<執行編號>` 留著（沒有呼叫端，不影響功能）。
 
 ## 要使用者親手做的事
 
@@ -98,6 +108,7 @@
 - T25｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0011_thesis_file.sql`。
 - T26｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0012_condition_ownership.sql`。`own_review_v2.md` 由雲端排程從 repo 讀，push 之後生效。
 - T28｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0013_event_detail.sql`。`event_scan_v2.md` 由雲端排程從 repo 讀，push 之後生效。
+- T27｜`own_check_v2.md` 由雲端排程從 repo 讀，push 之後生效。想在 claude.ai 開專案整理討論的話，步驟在 `worker/SETUP.md` 的 T27 一節（可以不做）。
 
 ## 畫面截圖
 
@@ -111,6 +122,10 @@
 | T37 | 同上（手機） | `records/stage8/screens/T37/monthly-phone.png` |
 | T37 | 持股頁的「要看的事」（桌機） | `records/stage8/screens/T37/holding-desktop.png` |
 | T37 | 同上（手機） | `records/stage8/screens/T37/holding-phone.png` |
+| T27 | 編輯論點頁：空的（桌機／手機） | `records/stage8/screens/T27/edit-empty-desktop.png、edit-empty-phone.png` |
+| T27 | 編輯論點頁：貼回後的預覽（桌機／手機） | `records/stage8/screens/T27/edit-preview-desktop.png、edit-preview-phone.png` |
+| T27 | 編輯論點頁：改寫失敗（桌機／手機） | `records/stage8/screens/T27/edit-rewrite-failed-desktop.png、edit-rewrite-failed-phone.png` |
+| T27 | 持股頁：論點、編輯論點、複製討論包（桌機／手機） | `records/stage8/screens/T27/holding-desktop.png、holding-phone.png` |
 
 ## 卡住的任務
 

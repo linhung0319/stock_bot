@@ -307,7 +307,7 @@ describe('F7／F20／F5／F6／F21／F14：檢查與結論', () => {
     expect(s.issues.join()).toContain('P2');
   });
 
-  it('F14：草擬的前提最多 4 條；改寫的條件照 F24 的規則檢查', () => {
+  it('F14：改寫的條件照 F24 的規則檢查；成立時的動作帶使用者寫的那一條（T27：草擬前提拿掉）', () => {
     const r = ownCheckResult(
       {
         status: 'AGREED',
@@ -316,20 +316,22 @@ describe('F7／F20／F5／F6／F21／F14：檢查與結論', () => {
             valid: true,
             verdict: 'DONE',
             report: '改寫了一條。\n\n其他是理由。',
-            payload: { premises_draft: [{ text: '資料中心需求延續', breaks_if: '營收年增轉負' }] },
+            payload: {},
             conditions: [
-              { from: 'payload.conditions', auto: true, raw: { direction: 'DOWN', kind: 'XBRL', text: '毛利率低於 55%', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55 }, tier_if_met: 'EXIT' } },
+              { from: 'payload.conditions', auto: true, raw: { line: 'U1', direction: 'DOWN', kind: 'XBRL', text: '毛利率低於 55%', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55 }, tier_if_met: 'EXIT' } },
               { from: 'payload.conditions', auto: false, why: '價格條件只記錄', raw: { direction: 'DOWN', kind: 'PRICE', text: '跌破 100', check: { type: 'price_close_below', level: 100 } } },
             ],
           },
         ],
       } as never,
       'NVDA',
+      [{ text: '毛利率跌破 55% 就減半', action: 'HALF' }],
     );
-    expect(r.drafts).toEqual([{ text: '資料中心需求延續', breaksIf: '營收年增轉負' }]);
-    expect(r.conditions.map((c) => [c.condId, c.kind, c.manual, c.then])).toEqual([
-      ['U1', 'XBRL', false, '成立時建議出清（當天通知）'],
-      ['U2', 'PRICE', true, '只記錄：價格條件只記錄'],
+    expect('drafts' in r).toBe(false);
+    // U1 對到使用者寫的第 1 條 → 用使用者選的減半（AI 寫的檔位是出清）；U2 沒寫 line、沒有檔位 → 重新審查
+    expect(r.conditions.map((c) => [c.condId, c.kind, c.manual, c.then, c.action, c.from])).toEqual([
+      ['U1', 'XBRL', false, '新財報出來時比對', 'HALF', '毛利率跌破 55% 就減半'],
+      ['U2', 'PRICE', true, '只記錄：價格條件只記錄', 'REVIEW', null],
     ]);
     expect(r.summary).toBe('改寫了一條。');
   });
@@ -844,8 +846,10 @@ describe('F14：新增自選健檢 → 確認出場條件 → 之後的 F24 不�
       const loaded = (await loadAccount(db))!;
       const { view, axis } = buildMarketView(await loadSeries(db, ['VOO', 'SGOV', 'NVDA']), '2026-11-20', 'VOO');
       const now = new Date('2026-11-21T01:00:00Z');
-      const r = await startOwnCheck(env, fetcher, loaded.acct, view, axis, 'NVDA', ['資料中心需求延續', '收盤跌破 100 就賣'], now);
-      expect(r.pack.rule.detail).toMatchObject({ mode: 'REWRITE', lines: ['資料中心需求延續', '收盤跌破 100 就賣'] });
+      // T27：出場條件每條帶使用者選的動作（own_check_v2）
+      const r = await startOwnCheck(env, fetcher, loaded.acct, view, axis, 'NVDA', [{ text: '公司下修營收財測就賣', action: 'EXIT' }, { text: '收盤跌破 100 就賣', action: 'EXIT' }], now);
+      expect(r.pack.rule.detail).toMatchObject({ mode: 'REWRITE', lines: ['公司下修營收財測就賣', '收盤跌破 100 就賣'] });
+      expect(r.pack.prompt_version).toBe('own_check_v2');
       const price = r.pack.documents.find((d) => d.source_id === 'price:NVDA')!;
       const quote = price.text.split('\n').at(-1)!;
       await postResult(

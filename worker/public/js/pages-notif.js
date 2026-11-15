@@ -836,8 +836,7 @@ export async function snapshotPage(ctx) {
     try {
       const r = await api.post('/snapshot', { lots, cash: c, note: note.value, why, withdrawPending: !!wdPending?.checked });
       msg.replaceChildren();
-      // 新加進自選、有寫為什麼買的：請 AI 把它改寫成可以追蹤的出場條件（結果在持股頁，勾選後才監測；AI 層沒設定就略過）
-      for (const [t, w] of Object.entries(why)) api.post('/ops/own-check', { ticker: t, lines: [w] }).catch(() => {});
+      // 「為什麼買」只存成一條前提，不送去改寫（出場條件在持股頁的「編輯論點」寫；own_thesis §1.8）
       await ctx.refresh(false);
       form.hidden = true;
       // 帳本已經照快照更新，不能再回上一步

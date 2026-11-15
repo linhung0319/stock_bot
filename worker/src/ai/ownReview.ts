@@ -52,7 +52,7 @@ export interface OwnReviewInput {
   axis: string[];
   ticker: string;
   runId: string;
-  trigger: 'MONTHLY' | 'EARNINGS' | 'MANUAL';
+  trigger: 'MONTHLY' | 'EARNINGS' | 'MANUAL' | 'THESIS';
   /** XBRL 季度表（quarterTableText 的輸出）。 */
   xbrl: PackDoc | null;
   filings: PackDoc[];
