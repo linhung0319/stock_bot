@@ -1,7 +1,7 @@
 // Worker 進入點：路由與排程。
 //   /health                      不需要驗證
 //   /ai/task/:id/evidence|result 雲端排程用，Bearer AI_TASK_SECRET
-//   /admin/*                     管理用，Bearer ADMIN_TOKEN（/admin/export：紀錄匯出到本機，src/app/export.ts）
+//   /admin/*                     管理用，Bearer ADMIN_TOKEN（/admin/export：紀錄匯出到本機，src/app/export.ts；/admin/ops-report：運作統計，src/app/opsReport.ts）
 //   /auth/line/login|callback    網站的 LINE 登入（src/app/site/lineLogin.ts）
 //   /line/webhook                LINE 關鍵字回覆，驗 X-Line-Signature（src/app/lineWebhook.ts）
 //   /api/*、/demo/api/*          網站的 API（LINE 登入的 cookie；src/app/site/）
@@ -9,6 +9,7 @@
 import { acceptResult, createTask, fireRoutine, getTask, readEvidence, taskTimings } from './app/aiTasks';
 import { finalizeRun, listRuns } from './app/aiRuns';
 import { handleExport } from './app/export';
+import { handleOpsReport } from './app/opsReport';
 import { bearerOk, json, type Env, type Fetcher } from './app/env';
 import { getFlowState, ingest, pushPending, recentFlowRuns, runFlow, sendTestPush } from './app/flow';
 import { loadAccount, requiredTickers } from './app/ledgerStore';
@@ -84,6 +85,7 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
     }
     if (path === '/admin/data/status') return json(await dataStatus(env.DB));
     if (path === '/admin/export' && request.method === 'GET') return handleExport(env.DB, url, VERSION, now);
+    if (path === '/admin/ops-report' && request.method === 'GET') return handleOpsReport(env.DB, url, now);
     if (path === '/admin/flow' && request.method === 'POST') {
       // 手動跑一次每日流程（同一個交易日已經做過就只補推失敗的訊息）
       const r = await runFlow(env, fetcher, { now, attempt: 'MANUAL', forceRank: url.searchParams.get('rank') === '1' });

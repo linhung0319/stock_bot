@@ -23,6 +23,22 @@ Worker 端是 `GET /admin/export`（`ADMIN_TOKEN` 的 Bearer；`worker/src/app/e
 - `?table=<表>&after=<rowid>`：rowid 大於 `after` 的列，照 rowid 排；一頁最多該表的列數上限（`price_series` 40 列）或約 4 MB，回 `next_after` 與 `done`。JSON 欄位已經解析。
 - 不匯出的表（`probe_runs`、`demo_state`、`snapshot_undo`）與不認得的表回 400。
 
+運作統計是 `GET /admin/ops-report`（同一個 `ADMIN_TOKEN`；`worker/src/app/opsReport.ts`）：`?from=YYYY-MM-DD&to=YYYY-MM-DD`（含頭尾，時間戳欄位照 UTC 日期切、訊號日與決策日照原日期）；沒給 `from` 就從上線日算起（還沒有上線日就從頭），沒給 `to` 就是今天。回傳 `{ generated_at, period, launch_date, sections: [{ id, title, rows }] }`，每一段一個函式，之後的任務加段只要在 `OPS_SECTIONS` 加一個。匯出腳本拉完紀錄後會順便存一份 `records/reports/ops_<今天>.json`（`--report-from`、`--report-to` 可指定期間；同一天再跑會覆蓋；Worker 沒有這個路徑時只警告）。各段：
+
+| `id` | 內容 |
+|---|---|
+| `notifications` | 通知依種類的次數與處理狀態（待回覆、已回覆、略過、已讀、被取代、取消） |
+| `choices` | 照做／沒照做：已回覆的通知裡每一項選的選項 vs 規則的選項（依觸發功能；`same_as_rule`、`took_ai`、`skipped`、`other`） |
+| `shadow` | 沒照做的紀錄（`shadow_records`，濾掉被「改決定」作廢的）：手動交易、做錯就這樣、有 AI 建議的、照 AI 的次數。只有「和規則不同或有 AI 建議」的項目才有紀錄，全部項目的比例看 `choices` |
+| `data_runs`、`flow_runs`、`alerts` | 資料抓取的結果（不能出訊號、不能換股的次數）、每日流程（FIRST／FINAL／MANUAL × 結果）、告警依種類（推出去、已解除、太舊略過、還沒推） |
+| `pushes` | LINE 推播依種類的次數與失敗；`never_delivered` = 通知重試之後一直沒推成功的則數 |
+| `ai_runs` | AI 執行依功能的結論狀態；`usable_ratio` = 有結論的執行裡，送回的輸出通過檢查（AGREED／SPLIT／INSUFFICIENT／DATA_MISSING）的比例，INVALID、TIMEOUT、NO_RESULT 算沒通過 |
+| `ai_votes` | AI 的每一票，格式合格的比例 |
+| `ai_tasks` | 雲端任務依種類的結局；`pass_ratio` = done ÷（done ＋ rejected ＋ late）；逾時分「沒有來取證據包」與「取了沒送回」 |
+| `ai_rejections` | 被退回（REJECTED）或逾時才送到（LATE）的輸出 |
+
+每段最後一列的第一欄是「合計」；比例是 0～1 的小數、分母是 0 時是 null。
+
 ## 2. 資料夾結構
 
 ```

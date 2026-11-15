@@ -236,7 +236,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 
 ### 派工單
 
-#### [ ] T16 運作統計 `/admin/ops-report`（原計畫的任務）
+#### [x] T16 運作統計 `/admin/ops-report`（原計畫的任務）
 - 讀：`implementation_plan_2026-11-11.md` 的 T16；`worker/src/app/export.ts`、`scripts/export_records.py`、`docs/analysis/records_guide.md`。
 - 做：照原計畫 T16。報表分段寫，每一段一個函式（回傳標題與列），因為 T31a、T32d、T33b 會各加一段。
 - 完成條件：構造幾則通知、失敗紀錄、推播失敗、AI 執行與回覆 → 各段的數字正確；可以指定期間；匯出腳本存一份到 `records/reports/`。

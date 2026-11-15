@@ -69,6 +69,7 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 
 - `GET /admin/export`（`src/app/export.ts`）：每張表的拉法與列數；`?table=<表>&after=<rowid>` 照 rowid 分頁。不匯出 `probe_runs`、`demo_state`、`ai_tasks.evidence`。
 - 本機：在 repo 根目錄 `uv run python scripts/export_records.py`（`--full`、`--out`、`--url`），拉到 `records/`（`.gitignore`，repo 是公開的）。格式與表之間怎麼接：[`docs/analysis/records_guide.md`](../docs/analysis/records_guide.md)。
+- 運作統計：`GET /admin/ops-report?from=&to=`（`src/app/opsReport.ts`）：通知次數、資料與排程失敗、告警、推播失敗、AI 執行與通過檢查的比例、照做／沒照做。預設從上線日算起。每一段一個函式，登記在 `OPS_SECTIONS`；匯出腳本會順便存一份到 `records/reports/`（`--report-from`、`--report-to`）。各段的意思見 records_guide。
 - 被退回的 AI 輸出在 `ai_rejections`；雲端排程跑的 commit 在 `ai_runs.repo_commit`；通知項目、通知、影子紀錄的 `runIds` 接到 `ai_runs.run_id`（`migrations/0008_records.sql`）。
 - 雲端排程的共用 prompt：`../ai/prompts/run.md`；各功能的 prompt 在 T10、T11 加上。
 

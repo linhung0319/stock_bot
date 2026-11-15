@@ -3,9 +3,11 @@
     uv run python scripts/export_records.py            # 增量：只增加的表從上次的位置接著拉，其他表整張重拉
     uv run python scripts/export_records.py --full     # 全部重拉
     uv run python scripts/export_records.py --out records/pre-launch --full
+    uv run python scripts/export_records.py --report-from 2026-12-01 --report-to 2026-12-31   # 運作統計的期間（預設：上線日到今天）
 
 - ADMIN_TOKEN：先找環境變數 STOCKBOT_ADMIN_TOKEN，沒有就讀 worker/.secrets.json。不會印出來。
 - Worker 網址取 worker/wrangler.jsonc 的 SITE_URL，可用 --url 覆寫（例如本機的 http://127.0.0.1:8787）。
+- 匯出完再向 /admin/ops-report 要一份運作統計（T16），存成 <out>/reports/ops_<今天的 UTC 日期>.json；同一天再跑會覆蓋。拿不到只警告，不影響匯出。
 - repo 是公開的：輸出的資料夾必須被 .gitignore 擋掉（records/ 已經列進去），否則不寫。
 只用標準函式庫。
 """
@@ -62,16 +64,16 @@ class Client:
         self.base = base.rstrip("/")
         self._token = token
 
-    def get(self, params: dict[str, str | int] | None = None) -> dict:
+    def get(self, params: dict[str, str | int] | None = None, path: str = "/admin/export") -> dict:
         q = ("?" + urllib.parse.urlencode(params)) if params else ""
-        req = urllib.request.Request(f"{self.base}/admin/export{q}", headers={"Authorization": f"Bearer {self._token}", "User-Agent": USER_AGENT, "Accept": "application/json"})
+        req = urllib.request.Request(f"{self.base}{path}{q}", headers={"Authorization": f"Bearer {self._token}", "User-Agent": USER_AGENT, "Accept": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=180) as res:
                 return json.loads(res.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             # 不印 token；回應內容只是錯誤代碼
             body = e.read().decode("utf-8", "replace")[:300]
-            raise SystemExit(f"/admin/export{q} 回 HTTP {e.code}：{body}") from None
+            raise SystemExit(f"{path}{q} 回 HTTP {e.code}：{body}") from None
         except urllib.error.URLError as e:
             raise SystemExit(f"連不上 {self.base}：{e.reason}") from None
 
@@ -218,6 +220,22 @@ def expand_prices(out: Path, raw: dict[str, list[dict]]) -> int:
     return n
 
 
+# ---------------------------------------------------------------- 運作統計
+
+
+def save_ops_report(client: Client, out: Path, report_from: str | None, report_to: str | None) -> Path | None:
+    """向 /admin/ops-report 要運作統計，存成 reports/ops_<今天的 UTC 日期>.json。失敗只警告（舊版 Worker 沒有這個路徑）。"""
+    params = {k: v for k, v in (("from", report_from), ("to", report_to)) if v}
+    try:
+        report = client.get(params or None, path="/admin/ops-report")
+    except SystemExit as e:
+        log(f"  運作統計沒有存：{e}")
+        return None
+    path = out / "reports" / f"ops_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.json"
+    write_json(path, report)
+    return path
+
+
 # ---------------------------------------------------------------- 主程式
 
 
@@ -240,6 +258,8 @@ def main() -> None:
     ap.add_argument("--full", action="store_true", help="全部重拉（不用上次的位置）")
     ap.add_argument("--out", default=str(REPO / "records"), help="輸出資料夾（預設 repo 根目錄的 records/）")
     ap.add_argument("--url", default=None, help="Worker 網址（預設 wrangler.jsonc 的 SITE_URL）")
+    ap.add_argument("--report-from", default=None, help="運作統計的起日 YYYY-MM-DD（預設：上線日；還沒有上線日就從頭）")
+    ap.add_argument("--report-to", default=None, help="運作統計的迄日 YYYY-MM-DD（預設：今天）")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -281,6 +301,9 @@ def main() -> None:
         "tables": tables,
     }
     write_json(mpath, manifest)
+    report_path = save_ops_report(client, out, args.report_from, args.report_to)
+    if report_path:
+        log(f"  運作統計：{report_path.relative_to(out) if report_path.is_relative_to(out) else report_path}")
     log(f"完成：{len(tables)} 張表、{n_runs} 次 AI 分析、{n_px} 檔價格；manifest.json 已更新")
 
 

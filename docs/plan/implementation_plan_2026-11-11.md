@@ -129,7 +129,7 @@
 - `/line/webhook`：驗 Messaging API 的簽章，只回 `LINE_USER_ID`；關鍵字對照固定內容（網址、狀態、說明…），不認得的訊息回關鍵字列表。用 reply API，不占推播額度。
 - 使用者要做：LINE 後台填 webhook 網址、打開 webhook、關掉自動回覆、提供 channel secret。
 
-### [ ] T16 運作統計 `/admin/ops-report`
+### [x] T16 運作統計 `/admin/ops-report`
 - 指定期間的通知次數（依種類）、資料與排程失敗次數、推播失敗、AI 執行次數與通過檢查的比例、照做／沒照做的次數。預設從上線日算起。
 - 匯出腳本一併存一份到 `records/reports/`。
 - 2026-11-15（T23）：排進 `thesis_plan_2026-11-15.md` 階段八的第一個，由主持的工作階段派工；派工單在那一份。
