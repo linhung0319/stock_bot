@@ -258,32 +258,36 @@ export interface FilingDoc {
   text: string;
 }
 
+type FilingRef = { accession: string; form: string; items: string[]; filingDate: string; acceptedAt: string; primaryDocument: string };
+
+const edgarGet = (fetcher: Fetcher, userAgent: string) => async (url: string) => {
+  const r = await fetcher(url, { headers: { 'User-Agent': userAgent } });
+  if (!r.ok) throw new Error(`EDGAR ${url} HTTP ${r.status}`);
+  return r.text();
+};
+
+/** 8-K 的本文：封面（公司地址、勾選框）跳過，從第一個「Item x.xx」開始，最多 15000 字。 */
+const eightKBody = (main: string) => {
+  const at = main.search(/item\s+\d\.\d{2}/i);
+  return main.slice(at > 0 ? at : 0, (at > 0 ? at : 0) + 15_000);
+};
+const docTitle = (f: FilingRef) => `${f.form}${f.items.length ? `（Item ${f.items.join('、')}）` : ''} ${f.filingDate}`;
+
 /** 抓一份申報的相關原文：10-Q／10-K 的 MD&A；8-K 的本文（最多 15000 字）＋ EX-99.1（最多 30000 字）。 */
-export async function fetchFilingDoc(
-  fetcher: Fetcher,
-  cik: string | number,
-  f: { accession: string; form: string; items: string[]; filingDate: string; acceptedAt: string; primaryDocument: string },
-  userAgent: string,
-): Promise<FilingDoc> {
+export async function fetchFilingDoc(fetcher: Fetcher, cik: string | number, f: FilingRef, userAgent: string): Promise<FilingDoc> {
   const dir = filingDir(cik, f.accession);
-  const get = async (url: string) => {
-    const r = await fetcher(url, { headers: { 'User-Agent': userAgent } });
-    if (!r.ok) throw new Error(`EDGAR ${url} HTTP ${r.status}`);
-    return r.text();
-  };
+  const get = edgarGet(fetcher, userAgent);
   const url = `${dir}/${f.primaryDocument}`;
   const main = htmlToText(await get(url));
   let text: string;
-  let title = `${f.form}${f.items.length ? `（Item ${f.items.join('、')}）` : ''} ${f.filingDate}`;
+  let title = docTitle(f);
   const form = f.form.replace(/\/A$/, '') as keyof typeof MDNA;
   if (form in MDNA) {
     const sec = extractSection(main, MDNA[form].start, MDNA[form].end);
     text = sec ?? main.slice(0, 40_000);
     title += sec ? '：MD&A' : '：開頭（找不到 MD&A）';
   } else {
-    // 8-K 的封面（公司地址、勾選框）跳過，從第一個「Item x.xx」開始
-    const at = main.search(/item\s+\d\.\d{2}/i);
-    text = main.slice(at > 0 ? at : 0, (at > 0 ? at : 0) + 15_000);
+    text = eightKBody(main);
     if (f.form.startsWith('8-K')) {
       try {
         const ex = pickExhibit991(JSON.parse(await get(`${dir}/index.json`)));
@@ -297,6 +301,66 @@ export async function fetchFilingDoc(
     }
   }
   return { accession: f.accession, form: f.form, items: f.items, filingDate: f.filingDate, acceptedAt: f.acceptedAt, url, title, text };
+}
+
+// ---------------------------------------------------------------- 財報新聞稿（T29c，own_thesis §1.11 的 OWN_EARNINGS）
+
+/** 財報新聞稿（EX-99.1）的取法：開頭幾字＋從第一個損益表標題起幾字；找不到標題就取前幾字。 */
+export const PRESS_HEAD = 15_000;
+export const PRESS_STATEMENTS = 45_000;
+export const PRESS_FALLBACK = 60_000;
+/** 開頭與損益表之間省略時插的一行。 */
+export const PRESS_GAP = '\n\n…（中間省略）…\n\n';
+const STATEMENTS = /consolidated statements? of (operations|income|earnings)/i;
+
+/**
+ * 新聞稿的原文（own_thesis §1.11）：財務報表常在後段，所以取開頭 15,000 字＋從第一個符合
+ * `consolidated statements? of (operations|income|earnings)` 的位置起 45,000 字；標題在開頭 15,000 字內就是一整段；找不到就取前 60,000 字。
+ */
+export function pressExcerpt(text: string): string {
+  const at = text.search(STATEMENTS);
+  if (at < 0) return text.slice(0, PRESS_FALLBACK);
+  if (at <= PRESS_HEAD) return text.slice(0, at + PRESS_STATEMENTS);
+  return text.slice(0, PRESS_HEAD) + PRESS_GAP + text.slice(at, at + PRESS_STATEMENTS);
+}
+
+/**
+ * 從申報的索引頁（<申報編號>-index.html）的 Type 欄找 EX-99.1 的檔名。檔名沒有規則的公司（例如 NVIDIA 的 q2fy27pr.htm）
+ * pickExhibit991 找不到時才用。也收單獨一份的 EX-99。
+ */
+export function exhibit991FromIndex(html: string): string | null {
+  for (const row of html.matchAll(/<tr[\s\S]*?<\/tr>/gi)) {
+    const cells = [...row[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((c) => htmlToText(c[1]));
+    if (!cells.some((c) => /^EX-99(\.0?1)?$/i.test(c))) continue;
+    const a = /href="[^"]*\/([^"/]+\.html?)"/i.exec(row[0]);
+    if (a) return a[1];
+  }
+  return null;
+}
+
+export interface PressRelease {
+  /** 8-K 的本文（從第一個 Item 起，最多 15,000 字）。 */
+  body: FilingDoc;
+  /** EX-99.1（pressExcerpt 取過的）；找不到附件是 null。 */
+  exhibit: { name: string; url: string; text: string } | null;
+}
+
+/** 抓一份 8-K Item 2.02 的本文與財報新聞稿（OWN_EARNINGS 的證據包；本文和新聞稿分成兩份原文，各自不超過證據包一份的上限）。 */
+export async function fetchPressRelease(fetcher: Fetcher, cik: string | number, f: FilingRef, userAgent: string): Promise<PressRelease> {
+  const dir = filingDir(cik, f.accession);
+  const get = edgarGet(fetcher, userAgent);
+  const url = `${dir}/${f.primaryDocument}`;
+  const body: FilingDoc = { accession: f.accession, form: f.form, items: f.items, filingDate: f.filingDate, acceptedAt: f.acceptedAt, url, title: docTitle(f), text: eightKBody(htmlToText(await get(url))) };
+  let name = pickExhibit991(JSON.parse(await get(`${dir}/index.json`)));
+  if (!name) {
+    try {
+      name = exhibit991FromIndex(await get(`${dir}/${f.accession}-index.html`));
+    } catch {
+      name = null;
+    }
+  }
+  if (!name) return { body, exhibit: null };
+  return { body, exhibit: { name, url: `${dir}/${name}`, text: pressExcerpt(htmlToText(await get(`${dir}/${name}`))) } };
 }
 
 /** 財報類申報：10-Q、10-K、8-K Item 2.02（F24 的「新財報」觸發）。 */

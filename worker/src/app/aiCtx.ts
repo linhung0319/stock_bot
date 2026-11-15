@@ -19,6 +19,8 @@ export interface ApplyCtx {
   log: string[];
   /** 存檔成功之後才推的告警（每日掃描連續失敗 SCAN_FAILED…）。 */
   alerts?: Alert[];
+  /** 這次套用裡已經標成立的條件（列編號；財報新聞稿 T29c 寫入，同一次的 XBRL 比對跳過，免得通知兩次）。 */
+  met?: Set<number>;
 }
 
 /** 一個功能的結論怎麼套用（沒有登記的功能只標成已套用）。 */

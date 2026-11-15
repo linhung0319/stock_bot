@@ -3,6 +3,7 @@ import { XBRL_METRICS } from '../data/edgar';
 import type { PayloadHook } from './check';
 import { CRASH_REVIEW, checkCrashPayload } from './crash';
 import { DROP_EXPLAIN, OWN_DROP, checkDropPayload } from './drops';
+import { OWN_EARNINGS, checkEarningsPayload } from './earnings';
 import { EVENT_SCAN, HARD_EVENT, checkEventScanPayload, checkHardEventPayload } from './events';
 import { MOM_ENTRY, MOM_SCORE, checkMomEntryPayload, checkMomScorePayload } from './momEntry';
 import { OWN_CHECK, checkOwnCheckPayload } from './ownCheck';
@@ -23,4 +24,5 @@ export const PAYLOAD_HOOKS: Record<string, PayloadHook> = {
   [CRASH_REVIEW]: (s, pack) => checkCrashPayload(s, pack),
   [STRATEGY_REVIEW]: (s, pack) => checkStrategyPayload(s, pack),
   [OWN_CHECK]: (s, pack) => checkOwnCheckPayload(s, pack, METRICS),
+  [OWN_EARNINGS]: (s) => checkEarningsPayload(s),
 };

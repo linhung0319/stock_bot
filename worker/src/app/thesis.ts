@@ -285,7 +285,7 @@ function toReview(r: RunRow): ThesisReview {
   const brokenPremises = Object.entries(premiseVotes)
     .filter(([, v]) => v.length === valid.length && valid.length > 0 && v.every((x) => x === 'BROKEN'))
     .map(([id]) => id);
-  const trigger = r.fn === 'OWN_REVIEW' ? String(detail.trigger ?? '') || null : r.fn === 'HARD_EVENT' ? ((detail.codes as string[] | undefined) ?? []).join('、') || null : r.fn === 'OWN_DROP' ? '慢規則減半' : r.fn === 'OWN_CONDITION' ? '新申報' : null;
+  const trigger = r.fn === 'OWN_REVIEW' ? String(detail.trigger ?? '') || null : r.fn === 'HARD_EVENT' ? ((detail.codes as string[] | undefined) ?? []).join('、') || null : r.fn === 'OWN_DROP' ? '慢規則減半' : r.fn === 'OWN_CONDITION' ? '新申報' : r.fn === 'OWN_EARNINGS' ? '財報新聞稿' : null;
   const rep = valid.find((s) => s.verdict === o?.verdict) ?? valid[0];
   const summary = rep?.report?.split(/\n\s*\n/)[0]?.trim().slice(0, 400) || null;
   return { runId: r.run_id, date: r.as_of, fn: r.fn, label: FILE_FNS[r.fn] ?? r.fn, trigger, status: r.status === 'PENDING' || !o ? 'PENDING' : o.status, verdict: o?.verdict ?? null, votes: o?.votes ?? {}, brokenPremises, notif: null, response: null, premiseVotes, summary };
@@ -787,8 +787,8 @@ const cnNum = (n: number) => CN_NUM[n] ?? String(n);
 const ownedLive = (f: Pick<ThesisFile, 'conditions'>) => f.conditions.filter((c) => isOwned(c) && OWNED_LIVE.includes(c.status));
 
 /**
- * 自選股的「要看的事」，一種一個物件。加一種 = 在這裡加一個物件（T29a 的 COND_MET_NO_SELL、T29b 的 PRICE_NO_FILING 已加；
- * T29c 的 PRESS_MISMATCH、T35 的 SIZE_2X；T31a 的 NO_CONSENSUS 已加）；判斷需要的資料先放進論點檔或帳戶狀態。
+ * 自選股的「要看的事」，一種一個物件。加一種 = 在這裡加一個物件（T29a 的 COND_MET_NO_SELL、T29b 的 PRICE_NO_FILING、
+ * T29c 的 PRESS_MISMATCH、T31a 的 NO_CONSENSUS 已加；T35 的 SIZE_2X）；判斷需要的資料先放進論點檔或帳戶狀態。
  * 月報的頻率用「月」算（月報一個月一份；設計寫的「90 天」「6 個月」「每年」= 3、6、12 個月）。
  */
 export const OWN_ATTN: AttnKind[] = [
@@ -895,6 +895,23 @@ export const OWN_ATTN: AttnKind[] = [
           const ref = (e.detail ?? '').includes('大盤（') ? '大盤' : '產業';
           const how = idio ? `比${ref}多跌 ${idio.replace('-', '')}%` : '個股自身大跌';
           return { key: `PRICE_NO_FILING:${e.id}`, every: null, since: e.date, text: `${file.ticker} 最近 21 個交易日${how}，沒有新的申報可以檢查。可以複製討論包到 claude.ai 討論` };
+        });
+    },
+  },
+  {
+    // 財報新聞稿成立的條件，10-Q／10-K 核對不一致（§1.11）：論點檔的 PRESS_CHECK（ok = false）。
+    // 核對後的第一份月報列一次；持股頁列到那份月報產生為止
+    kind: 'PRESS_MISMATCH',
+    detect({ file, acct }) {
+      return file.log
+        .filter((l) => l.kind === 'PRESS_CHECK' && l.body.ok === false)
+        .filter((l) => !acct.notifs.some((n) => (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY') && n.date > l.session))
+        .flatMap((l) => {
+          const c = file.conditions.find((x) => x.id === Number(l.body.id));
+          if (!c) return [];
+          const metric = String(l.body.metric ?? c.check.metric);
+          const first = (v: unknown) => (Array.isArray(v) && typeof v[0] === 'number' ? v[0] : null);
+          return [{ key: `PRESS_MISMATCH:${c.id}`, every: null, since: l.session, text: `${file.ticker}：條件「${c.text}」依財報新聞稿成立（${fmtMetric(metric, first(l.body.press))}），${String(l.body.form ?? '10-Q')} 算出來是 ${fmtMetric(metric, first(l.body.xbrl))}，沒有過門檻` }];
         });
     },
   },

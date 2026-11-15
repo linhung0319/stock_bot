@@ -1,0 +1,10 @@
+{
+  "note": "真實的財報新聞稿（T29c，OWN_EARNINGS 的測試資料）。2026-11-15 用 research/data_sources/common.py 的 sec_get（專案 .env 的設定）從 EDGAR 抓；申報原文用 worker 的 htmlToText 轉成純文字（htmlToText 對這兩份是不動點，所以測試把純文字當成網頁回傳，和抓原始網頁的結果相同）。companyfacts 只留下面列的概念、期末 2024-01-01 起、申報日 2026-11-15 以前的值。",
+  "files": [
+    { "file": "amzn-2026-10-29-ex991.txt", "url": "https://www.sec.gov/Archives/edgar/data/1018724/000101872426000038/amzn-20260930xex991.htm", "what": "Amazon 2026 年第三季財報新聞稿（8-K Item 2.02 的 EX-99.1）；損益表在全文第 21,824 字之後" },
+    { "file": "amzn-2026-10-29-8k.txt", "url": "https://www.sec.gov/Archives/edgar/data/1018724/000101872426000038/amzn-20261029.htm", "what": "同一份 8-K 的本文" },
+    { "file": "amzn-2026-10-29-dir.json", "url": "https://www.sec.gov/Archives/edgar/data/1018724/000101872426000038/index.json", "what": "同一份 8-K 的目錄（只留檔名）" },
+    { "file": "amzn-companyfacts.json", "url": "https://data.sec.gov/api/xbrl/companyfacts/CIK0001018724.json", "what": "Amazon 的 XBRL（RevenueFromContractWithCustomerExcludingAssessedTax、CostOfGoodsAndServicesSold、OperatingIncomeLoss、NetIncomeLoss、EarningsPerShareDiluted、NetCashProvidedByUsedInOperatingActivities）；含 2026-10-30 申報的第三季 10-Q" },
+    { "file": "nvda-2026-08-26-index.html", "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000073/0001045810-26-000073-index.html", "what": "NVIDIA 8-K 2.02 的索引頁：新聞稿檔名 q2fy27pr.htm 沒有 99，要讀 Type 欄" }
+  ]
+}

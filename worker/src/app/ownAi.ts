@@ -3,7 +3,9 @@
 //   套用（applyOwnReview／applyOwnCondition）：F24 → 引擎記下檔位，照 own_thesis §1.9 決定當天通知（乙類）、進月報或只放網站
 //                                              ＋建議的條件（PROPOSED，勾選才監測）＋審查確認你定的條件成立（甲類）；
 //                                              F25 → 你定的條件成立（甲類，當天通知）
-//   財報條件（ownXbrlConditions）：新的 10-Q／10-K → 程式直接比對 XBRL（不用 LLM），寫進度；你定的條件成立 → 甲類當天通知
+//   財報條件（ownXbrlConditions）：新的 10-Q／10-K → 程式直接比對 XBRL（不用 LLM），寫進度；你定的條件成立 → 甲類當天通知；
+//                                   財報新聞稿成立的（met_basis = PRESS，T29c）→ 用 XBRL 核對
+//   財報新聞稿當天（OWN_EARNINGS，T29c）在 src/app/earningsAi.ts
 //   甲類（§1.10）：動作是重新審查 → 不通知、記 condReviewDue 開一次審查（觸發原因 CONDITION）；換算出來不用賣 → 不通知（列進「要看的事」）
 //   開新的執行（startOwnRuns）：新申報是事件條件指定的確認來源 → F25；新的財報（10-Q、10-K、8-K 2.02）→ F24（財報後的審查）；
 //                               月報前一天（當月倒數第二個交易日）= 月底檢查點：上次有結論的審查之後有新證據才開 F24（own_thesis §3.7），
@@ -14,7 +16,7 @@ import type { CheckedSample, PackDoc } from '../ai/check';
 import { OWN_CONDITION, OWN_REVIEW, confirmMode, conditionDecision, conditionPack, ownReviewPack, reviewDecision, type ConditionDraft, type ProposedDraft } from '../ai/ownReview';
 import { newRunId } from '../ai/pack';
 import { TIER_NAME, clone, condMetNotice, routeReview, type Account, type CondNotice, type MarketView, type OwnMeta, type ReviewTrigger } from '../engine';
-import { ConflictError, loadAccount, saveAccount } from './ledgerStore';
+import { ConflictError, loadAccount, saveAccount, thesisLogStmt } from './ledgerStore';
 import { isLastTradingDayOfMonth, nextTradingDay, type CalendarOverrides } from '../data/calendar';
 import { attribution } from '../ai/detect';
 import { attrFacts } from '../ai/drops';
@@ -77,8 +79,8 @@ export function insertConditionStmts(db: D1Database, ticker: string, runId: stri
   });
 }
 
-/** 條件成立（met_basis：XBRL 程式比對、FILING_VOTE 申報原文三票、REVIEW_VOTE 審查三票）。 */
-const metStmt = (db: D1Database, id: number, at: string, note: string, basis: 'XBRL' | 'FILING_VOTE' | 'REVIEW_VOTE') => db.prepare("UPDATE own_conditions SET status = 'MET', met_at = ?, note = ?, met_basis = ? WHERE id = ?").bind(at, note, basis, id);
+/** 條件成立（met_basis：XBRL 程式比對、PRESS 財報新聞稿擷取、FILING_VOTE 申報原文三票、REVIEW_VOTE 審查三票）。 */
+export const metStmt = (db: D1Database, id: number, at: string, note: string, basis: 'XBRL' | 'PRESS' | 'FILING_VOTE' | 'REVIEW_VOTE') => db.prepare("UPDATE own_conditions SET status = 'MET', met_at = ?, note = ?, met_basis = ? WHERE id = ?").bind(at, note, basis, id);
 
 // ---------------------------------------------------------------- 證據
 
@@ -236,7 +238,7 @@ export function xbrlWhy(check: Record<string, unknown>, values: (number | null)[
  *   換算出來不用賣 → 不發通知，條件照樣是成立（「要看的事」的 COND_MET_NO_SELL 由論點檔判斷）
  * why：理由（依 met_basis）；AI 建議、你勾選的條件另外寫一句是誰哪天勾的。
  */
-function notifyOwnCondition(ctx: ApplyCtx, c: FileCondition, why: string, runIds: string[], label: string, monthly = false): void {
+export function notifyOwnCondition(ctx: ApplyCtx, c: FileCondition, why: string, runIds: string[], label: string, monthly = false): void {
   const t = c.ticker;
   if (!ctx.acct.own[t]) return;
   const tier = notifyTier(c);
@@ -330,10 +332,14 @@ export async function applyOwnCondition(ctx: ApplyCtx, run: AiRun): Promise<void
 /**
  * 新的 10-Q／10-K：財報條件由程式直接比對 XBRL（不用 LLM）。
  * 你定的（ACTIVE）與觀察項（PROPOSED）每次比對都寫進度 progress_json（§3.6.2）；只有你定的成立時會標 MET、通知。
+ * 財報新聞稿成立的條件（met_basis = PRESS，還沒核對）：用 XBRL 再比一次（pressVerify，§1.11）。
+ * 同一次套用裡剛由財報新聞稿標成立的（ctx.met）不再比對，免得通知兩次。
  */
 export async function ownXbrlConditions(ctx: ApplyCtx, facts: Map<string, QuarterRow[]>): Promise<void> {
   for (const [t, rows] of facts) {
-    for (const c of (await fileConditions(ctx.db, ctx.acct, t)).filter((x) => x.kind === 'XBRL' && (x.status === 'ACTIVE' || x.status === 'PROPOSED'))) {
+    const all = (await fileConditions(ctx.db, ctx.acct, t)).filter((x) => x.kind === 'XBRL' && !ctx.met?.has(x.id));
+    for (const c of all.filter((x) => x.status === 'MET' && x.metBasis === 'PRESS' && !x.verifiedAt)) pressVerify(ctx, c, rows);
+    for (const c of all.filter((x) => x.status === 'ACTIVE' || x.status === 'PROPOSED')) {
       const check = c.check as { type: string; metric: string; level: number; quarters?: number };
       const p = xbrlProgress(rows, check, ctx.session);
       if (p) ctx.stmts.push(ctx.db.prepare('UPDATE own_conditions SET progress_json = ? WHERE id = ?').bind(JSON.stringify(p), c.id));
@@ -347,6 +353,31 @@ export async function ownXbrlConditions(ctx: ApplyCtx, facts: Map<string, Quarte
       notifyOwnCondition(ctx, c, xbrlWhy(c.check, m.values, rows[0]), [c.runId], `${t} 財報條件 ${c.condId} 成立（程式比對 XBRL）`);
     }
   }
+}
+
+/**
+ * 財報新聞稿成立的條件，10-Q／10-K 出來後核對（own_thesis §1.11）：XBRL 表有新聞稿那一季（progress_json.period）才比，
+ * 寫 verified_at。一致 → 說明加「10-Q 核對一致」；不一致（XBRL 算出來沒有過門檻）→ 說明寫明兩個數字、論點檔記一筆 PRESS_CHECK
+ * （「要看的事」的 PRESS_MISMATCH 讀它）。不會撤回已經做的事。XBRL 還沒有那一季、或數字不齊 → 這次不核對。
+ */
+function pressVerify(ctx: ApplyCtx, c: FileCondition, rows: QuarterRow[]): void {
+  const p = c.progress;
+  const t = c.ticker;
+  const k = p?.basis === 'PRESS' ? rows.findIndex((r) => r.end === p.period) : -1;
+  if (!p || k < 0) return void ctx.log.push(`${t} 財報條件 ${c.condId} 依財報新聞稿成立；新財報還沒有那一季（${p?.period ?? '—'}），這次不核對`);
+  const check = c.check as { type: string; metric: string; level: number; quarters?: number };
+  const m = xbrlConditionMet(rows.slice(k), check);
+  if (!m) return void ctx.log.push(`${t} 財報條件 ${c.condId} 依財報新聞稿成立；${rows[k].form} 的數字不齊，這次不核對`);
+  const metric = String(check.metric);
+  const form = rows[k].form;
+  const at = ctx.now.toISOString();
+  const press = fmtMetric(metric, p.values[0] ?? null);
+  const xbrl = fmtMetric(metric, m.values[0] ?? null);
+  const note = m.met ? `${c.note ? `${c.note}；` : ''}${form} 核對一致` : `${c.note ? `${c.note}；` : ''}${form} 核對不一致：依財報新聞稿 ${press}，${form} 算出來是 ${xbrl}，沒有過門檻 ${fmtMetric(metric, check.level)}`;
+  ctx.stmts.push(ctx.db.prepare('UPDATE own_conditions SET verified_at = ?, note = ? WHERE id = ?').bind(at, note, c.id));
+  if (m.met) return void ctx.log.push(`${t} 財報條件 ${c.condId} 依財報新聞稿成立，${form} 核對一致`);
+  if (c.fileId) ctx.stmts.push(thesisLogStmt(ctx.db, { ticker: t, fileId: c.fileId, session: ctx.session, kind: 'PRESS_CHECK', ref: String(c.id), body: { id: c.id, ok: false, metric, level: check.level, period: p.period, press: p.values.slice(0, m.values.length), xbrl: m.values, form, filed: rows[k].filed } }, null, at));
+  ctx.log.push(`${t} 財報條件 ${c.condId} 依財報新聞稿成立（${press}），${form} 算出來是 ${xbrl}，沒有過門檻：已經做的不撤回，列進要看的事`);
 }
 
 /** 自選股有新的 10-Q／10-K → 抓 XBRL（財報條件用）。 */

@@ -36,6 +36,7 @@ export const FUNCTIONS: Record<string, FnInfo> = {
   DROP_EXPLAIN: { label: '持股單月大跌說明', note: null, verdicts: { EXPLAINED: '已說明', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK },
   STRATEGY_REVIEW: { label: '策略檢討說明', note: null, verdicts: { DONE: '已列出正反證據', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK + '\n請特別檢查：正反兩邊的證據是不是一樣認真；有沒有暗示該停用或該繼續。' },
   OWN_CHECK: { label: '出場條件改寫', note: null, verdicts: { DONE: '完成', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK + '\n請檢查：改寫的出場條件有沒有忠於我原本的意思、成立時的動作有沒有照我選的；數字門檻有沒有對應證據包裡的數字；有沒有和我既有的條件重複。' },
+  OWN_EARNINGS: { label: '財報數字擷取', note: null, verdicts: { EXTRACTED: '已擷取', INSUFFICIENT: '沒有擷取到' }, askPrompt: GENERIC_ASK + '\n另外請檢查：抄的是不是 GAAP 的單季數字（不是調整後、不是年初至今的累計），單位有沒有抄錯，去年同季有沒有抄成別的欄。' },
   TEST: { label: '測試', note: null, verdicts: {}, askPrompt: GENERIC_ASK },
 };
 

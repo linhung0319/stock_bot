@@ -334,7 +334,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 做：`startEarlyReviews`（§2.4 表的六種情況、`handled_note`、`earlyReviewAt`），第一次與第二次排程都呼叫（掛在 T36 的掛點）；`PRICE_DROP` 事件（定義、兩種不寫的情況）；自選股不再跑單月大跌說明（F20；動能的在 T32d 拿掉）；提前審查的題目、`rule.detail`、價格類加跌幅拆解；`PRICE_NO_FILING` 加進「要看的事」。
 - 完成條件：整條流程——下修財測的 8-K → 掃描標記 → 第二次排程提前開審查 → 三票減半 → 第三次排程當天通知；§2.4 表的六種情況各一個測試；L1 與 L0 合併計算 30 天上限、擋掉第二次；新聞標題標到的不開；`PRICE_DROP` 的門檻邊界、30 天內不重寫、和慢規則減半同一天不寫；自選股不再開 `DROP_EXPLAIN`；月審的行為不變。
 
-#### [ ] T29c 財報新聞稿當天確認條件
+#### [x] T29c 財報新聞稿當天確認條件
 - 讀：`own_thesis` §1.11、§3.6.2、§3.6.6 的 `PRESS_MISMATCH`。檔案：`data/edgar.ts`（`fetchFilingDoc`）、`ai/hooks.ts`、`ai/functions.ts`、`app/ownAi.ts`（`ownXbrlConditions`）。
 - 做：新功能 `OWN_EARNINGS`（什麼時候開、證據包、EX-99.1 的取法、`own_earnings_v1.md`、§1.11 的六項程式檢查、指標由程式算）；成立 → `MET`、`met_basis = PRESS` → 甲類通知；10-Q／10-K 出來後核對（`verified_at`、一致與不一致的說明、`PRESS_MISMATCH`）；`progress_json` 的 `PRESS`。
 - 完成條件：六項檢查各有一個「不過就不採用」的測試；成立時的通知文字有「依財報新聞稿」；要連續兩季的條件用擷取的本季加 XBRL 的上一季；核對一致與不一致；`CfoToNetIncome` 的條件不開；同一批有 10-Q 時不開；EX-99.1 的取法用一份真實的財報新聞稿當測試資料（抓法同 T28 的注意事項）。

@@ -4,7 +4,7 @@
 //        已經有結論、還沒套用的 AI 執行（各功能的 applier）
 //        財報條件（程式比對 XBRL）、規則直接提出的硬事件（動能持股被收購、持股的 NT 10-K／10-Q）
 //   3. startNew 而且雲端排程設定好了：開新的執行
-//        F25／F24（自選）、F19 法庭與 F18 掃描、F1 否決法庭與擬事件打分（月報前一天）、
+//        F25／F24（自選）、財報新聞稿的數字擷取（OWN_EARNINGS，T29c）、F19 法庭與 F18 掃描、F1 否決法庭與擬事件打分（月報前一天）、
 //        F5／F6 崩盤規則檢視（月報前一天；切換了卻沒預估到時補開）、F7 減半檢視、自選的個股自身大跌（PRICE_DROP）與動能的 F20 大跌說明、
 //        F21 策略檢討說明、提前審查（T29b）
 //      沒有 startNew 時只開 afterApply 的那幾種（01:30 的 finalStarts，src/app/schedule.ts）；03:30 兩者都沒有，只套用
@@ -15,11 +15,13 @@ import { loadRanking, loadSeries } from '../data/store';
 import { DROP_EXPLAIN, OWN_DROP } from '../ai/drops';
 import { EVENT_SCAN, HARD_EVENT, type ScanTarget } from '../ai/events';
 import { MOM_ENTRY } from '../ai/momEntry';
+import { OWN_EARNINGS } from '../ai/earnings';
 import { OWN_CONDITION, OWN_REVIEW } from '../ai/ownReview';
 import { guard, type Applier, type ApplyCtx, type FlowExtras, type StartCtx, type StepResult } from './aiCtx';
 import { closeStaleRuns, getRun, listRuns } from './aiRuns';
 import { startCrashRuns } from './crashAi';
 import { applyDropExplain, applyOwnDrop, startDropRuns } from './dropAi';
+import { applyOwnEarnings, startOwnEarnings } from './earningsAi';
 import type { Env, Fetcher } from './env';
 import { applyEventScan, applyHardEvent, applyRuleEvents, classifyFresh, scanTargets, startEventRuns, type Classified } from './events';
 import { fetchFilingChecks, markSeen, sectorEtfs, type FilingCheck } from './filings';
@@ -38,6 +40,7 @@ export type { StepResult as AiStepResult } from './aiCtx';
 export const APPLIERS: Record<string, Applier> = {
   [OWN_REVIEW]: applyOwnReview,
   [OWN_CONDITION]: applyOwnCondition,
+  [OWN_EARNINGS]: applyOwnEarnings,
   [HARD_EVENT]: applyHardEvent,
   [EVENT_SCAN]: applyEventScan,
   [MOM_ENTRY]: applyMomEntry,
@@ -133,6 +136,8 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
   const acct = (await loadAccount(db))!.acct;
   const sc: StartCtx = { env, fetcher, acct, view, axis, session, ov, now, checks, res, extras };
   await guard(res, '自選審查與條件監測', () => startOwnRuns(sc));
+  // 財報新聞稿當天確認你定的財報條件（own_thesis §1.11）
+  await guard(res, '財報數字擷取', () => startOwnEarnings(sc));
   await guard(res, '硬事件與每日掃描', () => startEventRuns(sc, targets));
   await guard(res, '動能新股進場審查', () => momPreview(sc));
   await guard(res, '崩盤規則檢視', () => startCrashRuns(sc));
