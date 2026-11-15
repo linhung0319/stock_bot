@@ -67,7 +67,7 @@ records/                         ← .gitignore，不進 repo
 | `ai_runs` | 每次 AI 分析：`fn`（功能代號）、`ticker`、`as_of`（決策日）、`prompt_version`、`repo_commit`（雲端排程跑的 commit，T13 起）、證據包 `pack`、結論 `outcome`、過程 `process`、`applied_at` | 會改（PENDING → DONE） | 主角。判斷 vs 之後的價格；不同 prompt 版本比較；哪些證據讓結論翻轉 |
 | `ai_tasks` | 雲端任務的交換紀錄：狀態（DONE／REJECTED／TIMEOUT／FIRE_FAILED）、錯誤（前 500 字）、雲端 session 網址、各階段時間、通過外層檢查的原始輸出 `result`（每一票原文） | 會改 | AI 失敗率、耗時。`evidence` 欄和 `ai_runs.pack` 重複，不匯出 |
 | `ai_rejections` | 整份被退回（`REJECTED`）或逾時才送到（`LATE`）的原始輸出 `raw`（最多 256 KiB，超過的 `truncated = 1`、`raw_bytes` 記原本大小）、完整原因、回給雲端排程的 HTTP 狀態（T13 起） | 只增加 | 哪一種輸出常被檢查擋下、是 prompt 寫得不清楚還是格式出錯 |
-| `mom_reviews` | F1 否決法庭：每月每檔的 ALLOW／VETO／BLOCK、理由碼、由誰遞補 | 會改 | 被否決的股票事後表現 vs 遞補的股票 |
+| `mom_reviews` | F1 否決法庭：每月每檔的 ALLOW／VETO／BLOCK、理由碼、由誰遞補；`data_missing = 1` 是申報抓不到、這次沒有檢查申報類失效模式（T32a） | 會改 | 被否決的股票事後表現 vs 遞補的股票 |
 | `own_conditions` | F24 寫下、F25 監測的條件：方向、種類、成立時的檔位、狀態與成立日 | 會改 | 條件成立後股價怎麼走；哪種條件有用 |
 | `sec_events` | 申報與新聞事件的分類（規則或 AI）、處理狀態 | 會改 | 事件分類準不準；硬事件後的報酬 |
 | `macro_snapshots` | F5／F6 月報前抓的總經數字 | 會改（每月一列） | 崩盤規則檢視當時的背景 |

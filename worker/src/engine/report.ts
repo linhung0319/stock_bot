@@ -255,6 +255,37 @@ function excessVolOf(view: MarketView, benchmark: string) {
   return (names: string[]) => excessVol(retOf, names, benchmark, view.i - 125, view.i + 1);
 }
 
+/**
+ * 月報的超額波動（momentum_ai §3.11）：input 已經有 excessVol（重算）→ 用它（null = 算不出來）；
+ * 沒有（第一次產生、或沒有這個欄位的舊月報）→ 用現在的 view 算，record 把算到的值寫進要存的 input。
+ */
+function volSource(view: MarketView, input: MonthlyContext, core: string): { fn: (names: string[]) => number; record: (inp: MonthlyContext) => MonthlyContext } {
+  if (input.excessVol !== undefined) {
+    const v = input.excessVol ?? NaN;
+    return { fn: () => v, record: (inp) => clone(inp) };
+  }
+  const live = excessVolOf(view, view.benchmark ?? core);
+  let got: number | undefined;
+  return {
+    fn: (names) => (got = live(names)),
+    record: (inp) => (got === undefined ? clone(inp) : { ...clone(inp), excessVol: Number.isFinite(got) ? got : null }),
+  };
+}
+
+/** 月報暫停時：照訊號日的名單先算好超額波動，存進暫停那一則的輸入（之後的重算用它）。 */
+function withSignalVol(acct: Account, view: MarketView, input: MonthlyContext): MonthlyContext {
+  if (input.excessVol !== undefined || !acct.cfg.volScale) return clone(input);
+  const vol = volSource(view, input, acct.cfg.coreTicker);
+  const blocked = [...(input.vetoed ?? []), ...Object.keys(acct.mom.excluded), ...Object.keys(acct.mom.adopted)];
+  planDay({
+    cfg: acct.cfg,
+    values: cellValues(acct, view),
+    state: acct.rule,
+    monthly: { order: input.order, excessVol: vol.fn, coreBelow200: acct.rule.crash, blocked, owed: Object.keys(acct.mom.owe), emptySlots: input.emptySlots, companyOf: companyOfInput(input) },
+  });
+  return vol.record(input);
+}
+
 // ---------------------------------------------------------------- 每日檢查（收盤後）
 
 export interface DailyResult {
@@ -371,8 +402,8 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
       wait.kind === 'UNC'
         ? newNotif(acct, view, { kind: 'INFO', title: '月報暫停：有未分類的持股變動', text: '請先回答那筆變動是手動交易、新增自選還是轉入自選，屬於哪一桶。分類後會重算月報。', coreAbsorb: false })
         : newNotif(acct, view, { kind: 'INFO', title: `月報暫停：清單 #${wait.notif.id} 決定了還沒填快照`, text: `「${wait.notif.title}」（${wait.notif.date}）決定了還沒填快照，帳本還是下單前的樣子，這時出月報會叫你重複下單。下單了就去填快照；沒下單就回上一步改「這次不做」。之後會用今天的排名重算月報。`, ref: wait.notif.id, coreAbsorb: false });
-    // 留下這份月報的輸入（訊號日的排名），分類後用它重算（resumeMonthly）
-    notif.monthly = { input: clone(input), before: { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), cash: acct.cash } };
+    // 留下這份月報的輸入（訊號日的排名與超額波動），分類後用它重算（resumeMonthly）
+    notif.monthly = { input: withSignalVol(acct, view, input), before: { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), cash: acct.cash } };
     return { acct, notif, plan: null };
   }
   acct.monthlyBlocked = false;
@@ -395,6 +426,8 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
   }
   const core = acct.cfg.coreTicker;
   const blocked = [...(input.vetoed ?? []), ...Object.keys(acct.mom.excluded), ...Object.keys(acct.mom.adopted)];
+  // 依波動度減碼用訊號日的值（momentum_ai §3.11）：重算時用 input.excessVol；第一次產生時當場算、記下來
+  const vol = volSource(view, input, core);
   const plan = planDay({
     cfg: acct.cfg,
     values,
@@ -403,7 +436,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     flow,
     monthly: {
       order: input.order,
-      excessVol: excessVolOf(view, view.benchmark ?? core),
+      excessVol: vol.fn,
       coreBelow200: crashRuleOn(view.close[core], view.i),
       blocked,
       owed: Object.keys(acct.mom.owe),
@@ -471,7 +504,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     text: status,
     items,
     coreAbsorb: items.length > 0,
-    monthly: { input: clone(input), before },
+    monthly: { input: vol.record(input), before },
     deposit: flow?.kind === '入金' ? flow.amount : undefined,
   });
   // 不屬於任何項目的 AI 執行：被否決的代號（F1）、月報的說明（F20）
@@ -587,14 +620,15 @@ export function hardEvent(acct0: Account, view: MarketView, ticker: string, code
         kind: 'HARD',
         ticker,
         title: byRule ? `${ticker} ${code}：規則提出提早出場（動能）` : `${ticker} ${code}：AI 建議提早出場（動能）`,
-        choices: [{ id: byRule ? 'DO' : 'AI', label: byRule ? '確認出場' : '照 AI（出場）', lines: [{ ticker, bucket: 'mom', shares: -momSh, reason: '動能換股' }] }],
+        // AI 的建議：選「照 AI」才把這一檔拿出名單（MOM_DROP）；預設「不做」→ 名單不變，之後照排名進出（momentum_ai §3.5，修 Q11）
+        choices: [{ id: byRule ? 'DO' : 'AI', label: byRule ? '確認出場' : '照 AI（出場）', lines: [{ ticker, bucket: 'mom', shares: -momSh, reason: '動能換股' }], ...(byRule ? {} : { effects: [{ type: 'MOM_DROP' as const, ticker }] }) }],
         choice: byRule ? 'DO' : 'SKIP',
         ruleChoice: byRule ? 'DO' : 'SKIP',
         ...ai,
       }),
     );
-    // 名單拿掉這一檔，下個月照排名遞補；沒確認出場的話，下個月月報會再列一次
-    acct.rule.heldMom = acct.rule.heldMom.filter((t) => t !== ticker);
+    // 規則直接提出：名單拿掉這一檔，下個月照排名遞補；沒確認出場的話，下個月月報會再列一次
+    if (byRule) acct.rule.heldMom = acct.rule.heldMom.filter((t) => t !== ticker);
   }
   if (!items.length) return { acct, notif: null };
   const notif = newNotif(acct, view, { kind: 'URGENT', title: `${ticker} 硬事件（${code}）`, items });

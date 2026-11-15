@@ -18,7 +18,7 @@ import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
 import { startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
-import { fetchFilingChecks, handledStmt, insertHitStmts, loadEvents, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
+import { accOf, fetchFilingChecks, handledStmt, insertHitStmts, loadEvents, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { docOf, loadConditions, newsDoc, xbrlDoc } from './ownAi';
 
 /** 每日掃描的對象：自選、動能持股、排名 6～10 的候選（還沒持有的）。 */
@@ -110,7 +110,10 @@ export async function applyEventScan(ctx: ApplyCtx, run: AiRun): Promise<void> {
 
 // ---------------------------------------------------------------- 開新的執行
 
-const isNewsEvent = (e: SecEventRow) => e.accession.startsWith('nasdaq-rss:') || e.form === 'NEWS';
+const isNewsEvent = (e: SecEventRow) => accOf(e.accession).kind === 'NEWS' || e.form === 'NEWS';
+const HARD_CODES = ['PENDING_MA', 'ACCOUNTING', 'REGULATORY'];
+/** 待處理的事件建立超過這麼多個日曆天就不開法庭，標成已處理（momentum_ai §3.5）。 */
+export const EVENT_EXPIRE_DAYS = 10;
 
 /**
  * 持股的待處理事件 → 開 F19 法庭（同一檔一次一個）。
@@ -120,12 +123,19 @@ const isNewsEvent = (e: SecEventRow) => e.accession.startsWith('nasdaq-rss:') ||
 export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fetchChecks?: boolean } = {}): Promise<void> {
   const { env, fetcher, acct, view, axis, session, now, res } = sc;
   const role = new Map(targets.map((t) => [t.ticker, t.role]));
-  const pending = (await loadEvents(env.DB, { status: 'NEW' })).filter((e) => role.get(e.ticker) && role.get(e.ticker) !== 'CAND' && ['PENDING_MA', 'ACCOUNTING', 'REGULATORY'].includes(e.code));
+  const fresh: SecEventRow[] = [];
+  const expired: SecEventRow[] = [];
+  for (const e of (await loadEvents(env.DB, { status: 'NEW' })).filter((x) => HARD_CODES.includes(x.code))) (now.getTime() - Date.parse(e.created_at) > EVENT_EXPIRE_DAYS * 86400_000 ? expired : fresh).push(e);
+  if (expired.length) {
+    await handledStmt(env.DB, expired.map((e) => e.id), `過期：建立超過 ${EVENT_EXPIRE_DAYS} 天沒有處理`).run();
+    res.log.push(`待處理的事件過期（建立超過 ${EVENT_EXPIRE_DAYS} 天）：${expired.map((e) => `${e.ticker} ${e.sub}`).join('、')}`);
+  }
+  const pending = fresh.filter((e) => role.get(e.ticker) && role.get(e.ticker) !== 'CAND');
   const byTicker = new Map<string, SecEventRow[]>();
   for (const e of pending) byTicker.set(e.ticker, [...(byTicker.get(e.ticker) ?? []), e]);
   for (const [t, evs] of byTicker) {
     let check = sc.checks.find((c) => c.ticker === t);
-    if (!check && opt.fetchChecks && env.EDGAR_USER_AGENT && evs.some((e) => !isNewsEvent(e))) check = (await fetchFilingChecks(env, fetcher, [t], session, res.log))[0];
+    if (!check && opt.fetchChecks && env.EDGAR_USER_AGENT && evs.some((e) => accOf(e.accession).kind === 'FILING')) check = (await fetchFilingChecks(env, fetcher, [t], session, res.log))[0];
     const docs: PackDoc[] = [];
     const dq: Record<string, 'ok' | 'partial' | 'missing'> = {};
     try {
@@ -136,7 +146,9 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
           dq.news = 'partial';
           continue;
         }
-        const acc = e.accession.replace(/^edgar:/, '');
+        const ref = accOf(e.accession);
+        if (ref.kind !== 'FILING') continue;
+        const acc = ref.acc;
         const f = check?.all.find((x) => x.accession === acc);
         if (!f || !check) continue;
         if (docs.some((d) => d.source_id === `edgar:${acc}`)) continue;

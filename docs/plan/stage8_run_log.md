@@ -10,6 +10,7 @@
 | T16 | 完成 | （見 git log） | 353 通過、1 略過 |
 | T36 | 完成 | （見 git log） | 361 通過、1 略過 |
 | T24 | 完成 | （見 git log） | 365 通過、1 略過 |
+| T32a | 完成 | （見 git log） | 375 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -28,6 +29,13 @@
 - T24｜`REVIEW_ONLY` 直接寫進 `own_conditions.status`（沒有 CHECK 約束，不用 migration），T26 的狀態表沿用。
 - T24｜「勾選」在 T26 才有，T24 在條件寫入的那一刻判定。
 - T24｜截圖用假資料渲染持股頁的條件那一塊（示範模式沒有這一塊），不是整頁；整頁在 T34 截。
+- T32a｜`accOf` 放 `app/filings.ts`（`momEvidence.ts` 是 T32b 才建）；申報用編號格式 （10 位-2 位-6 位數字） 辨認。別的選項：看 `form`。
+- T32a｜`NEW` 事件 10 天過期套用到所有硬事件，不限目前持股（免得之後重新持有時把舊事件撈出來再審）。別的選項：只看目前持股。
+- T32a｜migration 0010 只加 `data_missing`；§3.10 其他欄位留給 T32b。§3.3 表第 6 列只在第 1～5 列都不成立時用（有程式算的命中照舊開法庭）。
+- T32a｜「先套用再出月報」只處理 `MOM_ENTRY`；其他功能照舊由 AI 段套用。
+- T32a｜`MOM_DROP` 和其他效果一樣在填快照時才生效，回覆時名單不動。
+- T32a｜「不做」的說明沒寫「180 天內不再通知」那半句，等 T32c 的 180 天上限做完再補。
+- T32a｜§3.11 月報暫停時，用訊號日的資料試算一次選股（不改帳戶）取得名單、算超額波動存起來；之後即使排除改了名單也用存下來的數字。依波動度減碼沒開的帳戶不記。
 
 ## 要使用者親手做的事
 
@@ -36,6 +44,7 @@
 - T16｜部署後 `/admin/ops-report` 才有效；之後 `uv run python scripts/export_records.py` 會多存 `records/reports/ops_<日期>.json`。
 - T36｜把 `ai/prompts/run.md`、`ai/prompts/ping.md` 的「排程的 prompt」重新貼到 claude.ai 的雲端排程。
 - T36｜`wrangler deploy` 之後新的 03:30 cron 才生效。
+- T32a｜部署前套用遠端 migration（或照 T17 重建資料庫）：`npx wrangler d1 migrations apply stock-bot --remote`（這次新增 `0010_mom_reviews_data_missing.sql`）。
 
 ## 畫面截圖
 

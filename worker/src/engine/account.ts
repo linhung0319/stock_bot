@@ -58,7 +58,9 @@ export type ChoiceId = 'RULE' | 'AI' | 'DO' | 'SKIP';
 export type Effect =
   | { type: 'APPLY_TIER'; ticker: string; tier: Tier }
   | { type: 'REMOVE_OWN'; ticker: string }
-  | { type: 'CLEAR_FLAG'; ticker: string };
+  | { type: 'CLEAR_FLAG'; ticker: string }
+  /** 動能持股照 AI 的硬事件建議出場：這一檔拿出動能名單，下個月照排名遞補（momentum_ai §3.5）。 */
+  | { type: 'MOM_DROP'; ticker: string };
 
 export interface Choice {
   id: ChoiceId;
@@ -166,6 +168,11 @@ export interface MonthlyContext {
   notes?: string[];
   /** 這份月報用到的 AI 執行（ai_runs.run_id，T13）：崩盤規則檢視、F1 每檔的審查、F20 說明。 */
   runIds?: { crash?: string; entry?: Record<string, string>; notes?: string[] };
+  /**
+   * 訊號日的超額波動（依波動度減碼用；momentum_ai §3.11）。第一次產生月報時算好寫進來；之後的重算（暫停後、入金合併、排除）用它。
+   * null = 算不出來；沒有這個欄位（舊月報）= 當場算。
+   */
+  excessVol?: number | null;
 }
 
 export interface SavedState {

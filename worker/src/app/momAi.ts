@@ -19,9 +19,9 @@ import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { loadRanking, loadSeries, type Ranking } from '../data/store';
 import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
-import { startRun, type AiRun } from './aiRuns';
+import { closeStaleRuns, getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
-import { cikFor, loadEvents } from './filings';
+import { accOf, cikFor, loadEvents } from './filings';
 import { requiredTickers } from './ledgerStore';
 import { docOf, newsDoc, routineReady } from './ownAi';
 
@@ -44,6 +44,8 @@ export interface MomReview {
   liftCondition: string | null;
   replacedBy: string | null;
   note: string | null;
+  /** 申報抓不到，這次沒有檢查申報類的失效模式（momentum_ai §3.3 表第 6 列）。 */
+  dataMissing?: boolean;
 }
 
 interface Row {
@@ -59,8 +61,9 @@ interface Row {
   lift_condition: string | null;
   replaced_by: string | null;
   note: string | null;
+  data_missing?: number | null;
 }
-const toReview = (r: Row): MomReview => ({ month: r.month, ticker: r.ticker, rank: r.rank, decision: r.decision as EntryDecision, reasonCode: r.reason_code, source: r.source as MomReview['source'], hits: JSON.parse(r.hits), runId: r.run_id, watchReason: r.watch_reason, liftCondition: r.lift_condition, replacedBy: r.replaced_by, note: r.note });
+const toReview = (r: Row): MomReview => ({ month: r.month, ticker: r.ticker, rank: r.rank, decision: r.decision as EntryDecision, reasonCode: r.reason_code, source: r.source as MomReview['source'], hits: JSON.parse(r.hits), runId: r.run_id, watchReason: r.watch_reason, liftCondition: r.lift_condition, replacedBy: r.replaced_by, note: r.note, dataMissing: !!r.data_missing });
 
 export async function loadReviews(db: D1Database, month?: string): Promise<MomReview[]> {
   const q = month ? db.prepare('SELECT * FROM mom_reviews WHERE month = ? ORDER BY rank').bind(month) : db.prepare('SELECT * FROM mom_reviews ORDER BY month DESC, rank LIMIT 200');
@@ -70,10 +73,10 @@ export async function loadReviews(db: D1Database, month?: string): Promise<MomRe
 function upsertStmt(db: D1Database, r: Omit<MomReview, 'replacedBy'>, at: string): D1PreparedStatement {
   return db
     .prepare(
-      `INSERT INTO mom_reviews (month, ticker, rank, decision, reason_code, source, hits, run_id, watch_reason, lift_condition, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(month, ticker) DO UPDATE SET rank = excluded.rank, decision = excluded.decision, reason_code = excluded.reason_code, source = excluded.source, hits = excluded.hits, run_id = excluded.run_id, watch_reason = excluded.watch_reason, lift_condition = excluded.lift_condition, note = excluded.note, updated_at = excluded.updated_at`,
+      `INSERT INTO mom_reviews (month, ticker, rank, decision, reason_code, source, hits, run_id, watch_reason, lift_condition, note, data_missing, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(month, ticker) DO UPDATE SET rank = excluded.rank, decision = excluded.decision, reason_code = excluded.reason_code, source = excluded.source, hits = excluded.hits, run_id = excluded.run_id, watch_reason = excluded.watch_reason, lift_condition = excluded.lift_condition, note = excluded.note, data_missing = excluded.data_missing, updated_at = excluded.updated_at`,
     )
-    .bind(r.month, r.ticker, r.rank, r.decision, r.reasonCode, r.source, JSON.stringify(r.hits), r.runId, r.watchReason, r.liftCondition, r.note, at, at);
+    .bind(r.month, r.ticker, r.rank, r.decision, r.reasonCode, r.source, JSON.stringify(r.hits), r.runId, r.watchReason, r.liftCondition, r.note, r.dataMissing ? 1 : 0, at, at);
 }
 
 // ---------------------------------------------------------------- 規則偵測
@@ -85,6 +88,8 @@ export interface EntryEvidence {
   dataQuality: Record<string, 'ok' | 'partial' | 'missing'>;
   notes: string[];
   r12: number;
+  /** 申報清單抓不到時的原因（呼叫端不能把它當成「沒有命中」，momentum_ai §3.1）。 */
+  filingsMissing?: string;
 }
 
 const toEntryHit = (h: FilingHit): EntryHit => ({ code: h.code, sub: h.sub, detail: h.detail ?? h.sub, date: h.date, byRule: h.byRule, displayOnly: h.displayOnly, accession: h.accession });
@@ -118,6 +123,7 @@ export async function entryEvidence(env: Env, fetcher: Fetcher, view: MarketView
   } catch (e) {
     out.notes.push(`申報：${errText(e)}`);
     out.dataQuality.filings = 'missing';
+    out.filingsMissing = errText(e);
   }
   if (c) {
     const sus = suspectMoves(c, axis, view.i, filings.map((f) => f.filingDate));
@@ -144,7 +150,8 @@ export async function entryEvidence(env: Env, fetcher: Fetcher, view: MarketView
   const since30 = new Date(Date.parse(asOf) - 30 * 86400_000).toISOString().slice(0, 10);
   for (const e of (await loadEvents(env.DB, { ticker, since: since30 })).filter((x) => x.source === 'SCAN' && ['REGULATORY', 'ACCOUNTING', 'PENDING_MA'].includes(x.code))) out.hits.push({ code: e.code, sub: e.sub, detail: e.detail ?? e.sub, date: e.event_date, byRule: false, accession: e.accession });
   if (withDocs && cik && ua) {
-    const accs = [...new Set(out.hits.filter((h) => h.accession && !h.accession.includes(':')).map((h) => h.accession!))];
+    // 規則分類的命中帶申報編號本身；每日掃描標到的帶 `edgar:<申報編號>`（修 Q1：以前帶冒號的都被排除）
+    const accs = [...new Set(out.hits.map((h) => accOf(h.accession)).flatMap((r) => (r.kind === 'FILING' ? [r.acc] : [])))];
     const pr = filings.find((f) => f.form.startsWith('8-K') && f.items.includes('2.02'));
     for (const f of [...filings.filter((x) => accs.includes(x.accession)), ...(pr && out.hits.some((h) => h.code === 'EARNINGS_DIVERGENCE') ? [pr] : [])].slice(0, 4)) {
       try {
@@ -188,7 +195,7 @@ async function review(rc: ReviewCtx, tickers: string[], existing: Map<string, Mo
     if (existing.has(t)) continue;
     const rank = rc.ranking.order.indexOf(t) + 1 || null;
     const ev = await entryEvidence(rc.env, rc.fetcher, rc.view, rc.axis, t, rc.acct.cfg.coreTicker, rc.court);
-    const v = entryRuleVerdict(ev.hits);
+    const v = entryRuleVerdict(ev.hits, { filingsMissing: ev.filingsMissing });
     let row: Omit<MomReview, 'replacedBy'> = { month: rc.month, ticker: t, rank, decision: 'ALLOW', reasonCode: null, source: 'RULE', hits: ev.hits, runId: null, watchReason: v.watchReason, liftCondition: null, note: v.note };
     if (v.decision === 'COURT') {
       if (rc.court) {
@@ -202,7 +209,7 @@ async function review(rc: ReviewCtx, tickers: string[], existing: Map<string, Mo
           row = { ...row, decision: v.watchReason ? 'ALLOW_WATCH' : 'ALLOW', source: 'DEFAULT', note: `${v.note}；法庭沒有開成（${errText(e)}），照規則准許` };
         }
       } else row = { ...row, decision: v.watchReason ? 'ALLOW_WATCH' : 'ALLOW', source: 'DEFAULT', note: `${v.note}；來不及開法庭（或雲端排程沒設定），照規則准許` };
-    } else row = { ...row, decision: v.decision, reasonCode: v.reasonCode };
+    } else row = { ...row, decision: v.decision, reasonCode: v.reasonCode, ...(v.dataMissing ? { source: 'DEFAULT' as const, dataMissing: true } : {}) };
     await upsertStmt(rc.env.DB, row, at).run();
     existing.set(t, { ...row, replacedBy: null });
     rc.log.push(`F1 ${t}（第 ${rank} 名）：${row.decision}${row.reasonCode ? ` ${row.reasonCode}` : ''}（${row.source}）${ev.notes.length ? `；${ev.notes.join('；')}` : ''}`);
@@ -273,6 +280,24 @@ export interface MonthInputs {
 const entryRunIds = (rows: Iterable<{ ticker: string; runId: string | null }>) => Object.fromEntries([...rows].filter((r) => r.runId).map((r) => [r.ticker, r.runId!]));
 
 /**
+ * 出月報之前先套用已經完成、還沒套用的 F1 法庭（momentum_ai §3.3「先套用再出月報」，修 Q7）：
+ * 先關掉逾時的執行，再把 MOM_ENTRY 的結論寫進 mom_reviews、標 applied_at。applyMomEntry 只寫 mom_reviews，可以單獨做。
+ */
+async function applyFinishedEntries(db: D1Database, acct: Account, view: MarketView, axis: string[], session: string, now: Date, log: string[]): Promise<void> {
+  await closeStaleRuns(db, now);
+  const done = (await db.prepare("SELECT run_id FROM ai_runs WHERE fn = ? AND status = 'DONE' AND applied_at IS NULL ORDER BY completed_at").bind(MOM_ENTRY).all<{ run_id: string }>()).results;
+  if (!done.length) return;
+  const ctx: ApplyCtx = { db, acct, view, axis, session, now, stmts: [], log };
+  for (const { run_id } of done) {
+    const run = await getRun(db, run_id);
+    if (!run) continue;
+    ctx.stmts.push(db.prepare('UPDATE ai_runs SET applied_at = ? WHERE run_id = ?').bind(now.toISOString(), run_id));
+    await applyMomEntry(ctx, run);
+  }
+  await db.batch(ctx.stmts);
+}
+
+/**
  * 出月報之前（每日流程，網路可用）：用訊號日的排名決定否決與遞補。
  * 還沒審過的跑規則偵測（不開法庭）；法庭還沒回來的照規則准許（並記下）。
  */
@@ -283,6 +308,7 @@ export async function prepareEntries(env: Env, fetcher: Fetcher, acct: Account, 
   const series = await loadSeries(env.DB, [...new Set([...requiredTickers(acct), ...ranking.order])]);
   const { view, axis } = buildMarketView(series, signal, acct.cfg.coreTicker);
   const select = selectorOf(acct, view, ranking, month);
+  await applyFinishedEntries(env.DB, acct, view, axis, signal, now, log);
   const existing = new Map((await loadReviews(env.DB, month)).map((r) => [r.ticker, r]));
   const at = now.toISOString();
   // 法庭還沒回來 → 照規則准許

@@ -44,6 +44,7 @@ export interface ResponseInput {
 function applyEffects(acct: Account, view: MarketView, effects: Effect[] | undefined): void {
   for (const e of effects ?? []) {
     if (e.type === 'REMOVE_OWN') removeOwnPick(acct, e.ticker);
+    else if (e.type === 'MOM_DROP') acct.rule.heldMom = acct.rule.heldMom.filter((t) => t !== e.ticker);
     else if (e.type === 'CLEAR_FLAG') {
       if (acct.own[e.ticker]) acct.own[e.ticker].flags = [];
     } else applyTier(acct, view, e.ticker, e.tier);

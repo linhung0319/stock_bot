@@ -40,10 +40,15 @@ export interface RuleVerdict {
   reasonCode: string | null;
   watchReason: string | null;
   note: string;
+  /** 申報抓不到、而且沒有別的命中：照規則准許，但不能說成「沒有命中」（momentum_ai §3.3 表第 6 列；source 記 DEFAULT）。 */
+  dataMissing?: boolean;
 }
 
-/** 規則偵測的命中 → 規則能下的結論；要法庭的回 COURT。 */
-export function entryRuleVerdict(hits: EntryHit[]): RuleVerdict {
+/**
+ * 規則偵測的命中 → 規則能下的結論；要法庭的回 COURT。
+ * opt.filingsMissing：申報清單抓不到的原因（有的話，沒有命中時不寫成「沒有命中」）。
+ */
+export function entryRuleVerdict(hits: EntryHit[], opt: { filingsMissing?: string } = {}): RuleVerdict {
   const veto = hits.find((h) => h.byRule && !h.displayOnly && (h.code === 'PENDING_MA' || h.code === 'ACCOUNTING'));
   if (veto) return { decision: 'VETO', reasonCode: veto.code, watchReason: null, note: `規則直接否決：${veto.detail}` };
   const sus = hits.find((h) => h.code === 'DATA_SUSPECT');
@@ -52,6 +57,7 @@ export function entryRuleVerdict(hits: EntryHit[]): RuleVerdict {
   const dil = hits.filter((h) => h.code === 'DILUTION' && h.displayOnly);
   if (court.length) return { decision: 'COURT', reasonCode: null, watchReason: dil.length ? dil.map((h) => h.detail).join('；') : null, note: `規則偵測命中，開法庭：${court.map((h) => h.sub).join('、')}` };
   if (dil.length) return { decision: 'ALLOW_WATCH', reasonCode: null, watchReason: `增資（只顯示、不否決）：${dil.map((h) => h.detail).join('；')}`, note: '只有增資命中：准許但觀察' };
+  if (opt.filingsMissing !== undefined) return { decision: 'ALLOW', reasonCode: null, watchReason: null, dataMissing: true, note: `申報抓不到（${opt.filingsMissing}），這次沒有檢查申報類的失效模式，照規則進場` };
   return { decision: 'ALLOW', reasonCode: null, watchReason: null, note: '規則偵測沒有命中任何失效模式（被收購、延遲申報、重編、會計師辭任、單日跳漲、盈餘背離、增資、資料可疑），照規則進場。' };
 }
 

@@ -99,6 +99,19 @@ export interface SecEventRow {
   created_at: string;
 }
 
+/**
+ * 事件或命中的 accession → 原文在哪裡（momentum_ai §3.1，修 Q1）：
+ * 規則分類存的是申報編號本身；每日掃描存 `edgar:<申報編號>`（去掉前綴再對申報清單）；`nasdaq-rss:` 開頭的是新聞標題；
+ * 其他（`price:`、執行編號）沒有原文。
+ */
+export type AccRef = { kind: 'FILING'; acc: string } | { kind: 'NEWS' } | { kind: 'NONE' };
+export function accOf(accession: string | null | undefined): AccRef {
+  if (!accession) return { kind: 'NONE' };
+  if (accession.startsWith('nasdaq-rss:')) return { kind: 'NEWS' };
+  const acc = accession.replace(/^edgar:/, '');
+  return /^\d{10}-\d{2}-\d{6}$/.test(acc) ? { kind: 'FILING', acc } : { kind: 'NONE' };
+}
+
 /** 新的命中 → 寫入（同一檔、同一份申報、同一細項只記一次）。 */
 export function insertHitStmts(db: D1Database, ticker: string, hits: FilingHit[], source: string, at: string, status: (h: FilingHit) => string): D1PreparedStatement[] {
   const ins = db.prepare('INSERT OR IGNORE INTO sec_events (ticker, accession, form, event_date, accepted_at, code, sub, by_rule, display_only, source, detail, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');

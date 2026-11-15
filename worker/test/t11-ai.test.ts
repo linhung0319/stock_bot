@@ -351,6 +351,8 @@ interface Sec {
   line: string[];
   /** 某一天某一檔的新聞標題（沒有就不給）。 */
   headline: (ticker: string, date: string) => string | null;
+  /** 這些 CIK 的申報清單抓不到（T32a）。 */
+  failSubs?: Set<number>;
 }
 
 function fetcherOf(w: World, sec: Sec): Fetcher {
@@ -366,6 +368,7 @@ function fetcherOf(w: World, sec: Sec): Fetcher {
       return Response.json({ claude_code_session_url: 'https://claude.ai/code/x' });
     }
     const sub = /data\.sec\.gov\/submissions\/CIK(\d+)\.json/.exec(url);
+    if (sub && sec.failSubs?.has(Number(sub[1]))) return new Response('busy', { status: 503 });
     if (sub) {
       const co = sec.cos.get(Number(sub[1])) ?? { name: 'SOME CORP', filings: [] };
       const fs = [...co.filings].reverse();
@@ -571,6 +574,101 @@ describe('整條流程：F1 否決法庭', () => {
           addFiling(sec, cik(order[1]), { accession: '0000000002-26-000020', form: '8-K', items: '4.02', acceptanceDateTime: '2026-11-05T21:00:00.000Z', filingDate: '2026-11-05', primaryDocument: 'k402.htm', html: EIGHTK_402 });
         },
       },
+    );
+  });
+});
+
+// ---------------------------------------------------------------- T32a 動能：修補（momentum_ai §5 的 T32a；引擎與純函式的部分在 t32a-mom-fixes.test.ts）
+
+const EIGHTK_801 = '<html><body><p>Item 8.01 Other Events.</p><p>On November 17, 2026, the Company received a subpoena from the SEC Division of Enforcement requesting documents about revenue recognition practices.</p></body></html>';
+
+describe('T32a：F1 的證據與月報', () => {
+  it('每日掃描標到的 8-K（edgar: 開頭）原文出現在 F1 法庭的證據包；申報抓不到 → mom_reviews 的說明與 data_missing', async () => {
+    let order: string[] = [];
+    await withWorld(
+      async ({ db, run }) => {
+        for (const d of ['2026-11-20', '2026-11-23', '2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
+        const rev = new Map((await loadReviews(db, '2026-12')).map((r) => [r.ticker, r]));
+        expect(rev.get(order[0])).toMatchObject({ decision: 'PENDING' });
+        const court = (await runsOf(db, 'MOM_ENTRY')).find((r) => r.ticker === order[0])!;
+        const doc = court.pack.documents.find((x) => x.source_id === 'edgar:0000000001-26-000801')!;
+        expect(doc.kind).toBe('filing');
+        expect(doc.text).toContain('subpoena from the SEC Division of Enforcement');
+        // 申報抓不到：照規則准許，但不寫成「沒有命中」
+        expect(rev.get(order[2])).toMatchObject({ decision: 'ALLOW', source: 'DEFAULT', dataMissing: true });
+        expect(rev.get(order[2])!.note).toMatch(/^申報抓不到（.+），這次沒有檢查申報類的失效模式，照規則進場$/);
+        expect(rev.get(order[2])!.note).not.toContain('沒有命中');
+        // 抓得到、沒有命中的照舊
+        expect(rev.get(order[3])).toMatchObject({ decision: 'ALLOW', source: 'RULE', dataMissing: false });
+      },
+      {
+        before: async ({ db, sec, env, fetcher, cik }) => {
+          await ingest(env, fetcher, cronTime('2026-11-19'), true);
+          order = (await loadRanking(db))!.order;
+          addFiling(sec, cik(order[0]), { accession: '0000000001-26-000801', form: '8-K', items: '8.01', acceptanceDateTime: '2026-11-18T21:00:00.000Z', filingDate: '2026-11-18', primaryDocument: 'k801.htm', html: EIGHTK_801 });
+          // 每日掃描（那時它是第 6～10 名的候選）標過：監管候選，accession 是 edgar:<申報編號>
+          await db
+            .prepare("INSERT INTO sec_events (ticker, accession, form, event_date, accepted_at, code, sub, by_rule, display_only, source, detail, status, created_at) VALUES (?, 'edgar:0000000001-26-000801', '8-K', '2026-11-18', NULL, 'REGULATORY', 'SCAN_REGULATORY_CANDIDATE', 0, 0, 'SCAN', '每日掃描標記：REGULATORY_CANDIDATE', 'NEW', '2026-11-19T23:40:00.000Z')")
+            .bind(order[0])
+            .run();
+          sec.failSubs = new Set([cik(order[2])]);
+        },
+      },
+    );
+  });
+
+  it('第一次流程失敗、01:30 補做才開的法庭，在 01:30 之後才完成 → 月報用得到它的結論（先套用再出月報）', async () => {
+    let order: string[] = [];
+    await withWorld(
+      async ({ db, run }) => {
+        const b = order[1];
+        for (const d of ['2026-11-20', '2026-11-23', '2026-11-24', '2026-11-25']) await run(d);
+        // 11-27 的第一次流程沒有跑；01:30 補做（開法庭）
+        await run('2026-11-27', 'FINAL');
+        const court = (await runsOf(db, 'MOM_ENTRY')).find((r) => r.ticker === b)!;
+        expect(court.createdAt).toBe('2026-11-28T01:30:00.000Z');
+        const doc = court.pack.documents.find((x) => x.kind === 'filing')!;
+        const veto = { run_id: court.pack.run_id, verdict: 'VETO', premise_checks: [{ premise_id: 'P2', status: 'BROKEN', evidence_ids: ['E1'] }], evidence: [{ id: 'E1', source_id: doc.source_id, date: doc.date, quote: 'revenue of $40 million was recognized prematurely', claim: '營收提前認列' }], payload: { decision: 'VETO', reason_code: 'ACCOUNTING' }, report: '財報不可信。' };
+        // 01:50 才送回（03:30 那一次也沒有跑）
+        await postResult(db, court.runId, [veto, veto, veto], new Date('2026-11-28T01:50:00Z'));
+        expect((await loadReviews(db, '2026-12')).find((r) => r.ticker === b)).toMatchObject({ decision: 'PENDING' });
+        const m = await run('2026-11-30');
+        const rev = (await loadReviews(db, '2026-12')).find((r) => r.ticker === b)!;
+        expect(rev).toMatchObject({ decision: 'VETO', reasonCode: 'ACCOUNTING', source: 'AI' });
+        const acct = (await loadAccount(db))!.acct;
+        const monthly = acct.notifs.find((n) => n.id === m.monthly)!;
+        expect(monthly.monthly!.input.vetoed).toContain(b);
+        expect(monthly.items.filter((i) => i.f === 'F1').map((i) => i.ticker)).not.toContain(b);
+        expect((await db.prepare('SELECT applied_at FROM ai_runs WHERE run_id = ?').bind(court.runId).first<{ applied_at: string }>())!.applied_at).toBe('2026-11-30T23:30:00.000Z');
+      },
+      {
+        before: async ({ db, sec, env, fetcher, cik }) => {
+          await ingest(env, fetcher, cronTime('2026-11-19'), true);
+          order = (await loadRanking(db))!.order;
+          addFiling(sec, cik(order[1]), { accession: '0000000002-26-000020', form: '8-K', items: '4.02', acceptanceDateTime: '2026-11-05T21:00:00.000Z', filingDate: '2026-11-05', primaryDocument: 'k402.htm', html: EIGHTK_402 });
+        },
+      },
+    );
+  });
+});
+
+describe('T32a：硬事件的待處理事件 10 天過期（§3.5）', () => {
+  it('建立超過 10 個日曆天的 NEW 事件不開法庭、標成已處理；10 天內的照常開', async () => {
+    await withWorld(
+      async ({ db, run }) => {
+        const ins = db.prepare("INSERT INTO sec_events (ticker, accession, form, event_date, accepted_at, code, sub, by_rule, display_only, source, detail, status, created_at) VALUES ('AAPL', ?, 'NEWS', ?, NULL, 'REGULATORY', 'SCAN_REGULATORY_CANDIDATE', 0, 0, 'SCAN', '每日掃描標記', 'NEW', ?)");
+        await db.batch([ins.bind('nasdaq-rss:AAPL:2026-11-09', '2026-11-09', '2026-11-09T23:40:00.000Z'), ins.bind('nasdaq-rss:AAPL:2026-11-18', '2026-11-18', '2026-11-18T23:40:00.000Z')]);
+        await run('2026-11-20');
+        const evs = new Map((await loadEvents(db, { ticker: 'AAPL' })).map((e) => [e.accession, e]));
+        expect(evs.get('nasdaq-rss:AAPL:2026-11-09')).toMatchObject({ status: 'HANDLED', handled_note: '過期：建立超過 10 天沒有處理' });
+        const fresh = evs.get('nasdaq-rss:AAPL:2026-11-18')!;
+        expect(fresh.status).toBe('HANDLED');
+        expect(fresh.handled_note).toMatch(/^開法庭 /);
+        const courts = (await runsOf(db, 'HARD_EVENT')).filter((r) => r.ticker === 'AAPL');
+        expect(courts).toHaveLength(1);
+        expect((courts[0].pack.rule.detail as { events: { date: string }[] }).events.map((e) => e.date)).toEqual(['2026-11-18']);
+      },
+      { mom: ['AAPL'] },
     );
   });
 });

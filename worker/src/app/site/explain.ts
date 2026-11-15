@@ -657,13 +657,16 @@ function hard(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const name = { PENDING_MA: '被收購（股價已經貼近收購價，動能的前提不再適用）', ACCOUNTING: '會計問題（財報重編、更換會計師或延遲申報）', REGULATORY: '重大監管事件' }[code] ?? code;
   const note = findNote(ctx.aiNotes, 'HARD', t, n.date, it.runIds);
   const byRule = it.choices.some((c) => c.id === 'DO');
+  const mom = it.choices.some((c) => c.lines.some((l) => l.bucket === 'mom'));
+  // 動能持股的 AI 建議：不做 = 名單不變（momentum_ai §3.5）
+  const aiNotes = mom ? { AI: '照 AI 出場：這一檔離開動能名單，空出來的位置下個月照排名遞補。', SKIP: '不做：這一檔留在動能名單，之後照排名進出。' } : { AI: '照 AI 出場。', SKIP: SKIP.ai };
   return {
     short: `硬事件：${name.split('（')[0]}`,
     why: `${t} 出現硬事件：${name}。${byRule ? '這一類由規則直接提出' : 'AI 讀過申報原文後建議提早出場'}，要你確認才會做。${note ? note.summary : ''}`,
     chart: t,
     ai: note,
     aiMissing: !byRule && !note,
-    choiceNotes: { DO: '確認出場，空出來的位置下個月照排名遞補。', AI: '照 AI 出場。', SKIP: byRule ? '不確認的話，下個月月報會再列一次。' : SKIP.ai },
+    choiceNotes: { DO: '確認出場，空出來的位置下個月照排名遞補。', AI: aiNotes.AI, SKIP: byRule ? '不確認的話，下個月月報會再列一次。' : aiNotes.SKIP },
   };
 }
 
