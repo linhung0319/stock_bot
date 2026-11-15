@@ -230,7 +230,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
    - 文字用繁體中文，不出現內部代號（F 幾、A 幾、狀態的英文）。理由和它說明的東西放在同一塊，用白話與實際的數字；收合時仍留一行理由。不新增角色或裝飾（只有史萊姆）；門檻只用長條，每一段標文字；顏色只用來表達意思。參考現有的 `worker/public/app.css` 與各頁的寫法。
    - 自己看畫面：另開一個有自己資料庫的本機站——`npx wrangler d1 migrations apply stock-bot --local --persist-to <暫存資料夾>`，再 `npx wrangler dev --port 88xx --inspector-port 93xx --persist-to <同一個資料夾>`；`.dev.vars` 要有 `DEV_NO_AUTH = "1"`，而且不能有 LINE 登入的變數；頁面用 `/?demo#/…` 開。不要用 8787、8799（使用者自己的）。
    - 截圖用 headless Edge：從 Git Bash 在背景開 `"C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" --headless=new --remote-debugging-port=<port> --user-data-dir=<暫存資料夾>`，再用 Node 經 CDP 操作（從 Node `spawn` 開 Edge 在這台機器會失敗）。手機寬度用 `Emulation.setDeviceMetricsOverride`（寬 390、`mobile: true`）；`--window-size` 縮不到 500px 以下。改了 `explain.ts` 之後要 `POST /demo/api/reset`，不然示範狀態裡是舊的說明文字。
-   - 桌機（寬 1280）與手機（寬 390）各截一張整頁，存到 `records/stage8/screens/<Txx>/`（`records/` 不進 git，repo 是公開的）。**自己打開截圖看**，有重疊、截斷、看不懂的地方就修。做完把自己開的 wrangler dev 與 Edge 關掉。
+   - 桌機（寬 1280）與手機（寬 390）各截一張整頁，存到 `records/stage8/screens/<Txx>/`（`records/` 不進 git，repo 是公開的）。**自己打開截圖看**，有重疊、截斷、看不懂的地方就修。做完把自己開的 wrangler dev 與 Edge 關掉：只用開的時候記下的 PID 關（`taskkill /PID <數字> /T /F`），不要用 `taskkill /IM`，也不要用條件比對命令列去找行程（T33b 曾因此誤關使用者的 Chrome）。
 9. **不要做**：`git commit`、`git push`、部署、對遠端 D1 下指令、改金鑰。commit 由主持者驗收後做。
 10. **回報**（照實寫，沒做的寫沒做）：改了哪些檔案；每一條完成條件對應的測試名稱；三個指令的結果（通過與略過的數目）；改了哪些既有測試與原因；做的決定；手動事項（部署後使用者要做的事）；截圖的路徑；沒做完或不放心的地方。
 
