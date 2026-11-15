@@ -9,9 +9,7 @@ import {
   halveShares,
   initialSlowState,
   initialStateForNewPick,
-  macdHist,
   median,
-  r1,
   rankUniverse,
   rollingMax,
   selectMomentum,
@@ -64,13 +62,6 @@ describe('指標', () => {
     expect(v).toBeCloseTo(stdev([0.01, -0.01, 0.02, -0.01]) * Math.sqrt(252), 12);
     // 和基準完全相同 → 0
     expect(excessVol((t) => ret[t], ['SPY'], 'SPY', 0, 4)).toBe(0);
-  });
-  it('R1：收盤 < 50 日均線且 MACD 柱 < 0', () => {
-    const up = Array.from({ length: 120 }, (_, i) => 100 + i);
-    expect(r1(up, 119)).toBe(false);
-    const down = [...up, ...Array.from({ length: 30 }, (_, i) => 219 - 3 * (i + 1))];
-    expect(macdHist(down, down.length - 1)).toBeLessThan(0);
-    expect(r1(down, down.length - 1)).toBe(true);
   });
 });
 

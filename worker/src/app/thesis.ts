@@ -215,11 +215,40 @@ export interface ThesisFile {
   reviews: ThesisReview[];
   disputes: NonNullable<OwnMeta['disputes']>;
   flags: string[];
-  /** 上一次有結論的定期審查（3 票一致，含一致維持現狀；票數不一致、資料缺漏、逾時的不算）。 */
-  lastReview: { runId: string; asOf: string; createdAt: string } | null;
+  /**
+   * 上一次有結論的定期審查（3 票一致，含一致維持現狀；票數不一致、資料缺漏、逾時的不算）。
+   * thesisVersion：那次證據包記下的論點版本（T31a 起；之前的執行沒有）。
+   */
+  lastReview: { runId: string; asOf: string; createdAt: string; thesisVersion?: number | null } | null;
   /** 沒有上一次審查時，「新的」從這一天起算（決策日往前 120 天）。 */
   newSince: string;
   log: ThesisLogRow[];
+  /** 連續票數不一致的審查（flow_state 的 review:splits:<代號>，own_thesis §3.6.4；沒有是 null）。 */
+  splits?: ReviewSplits | null;
+}
+
+/**
+ * 連續票數不一致的定期審查（own_thesis §3.6.4）：次數、這一串的第一次（執行編號）、到第 3 次的那一天（還沒到是 null）。
+ * fileId：寫入時這檔的論點檔編號（換了檔就不算）。
+ */
+export interface ReviewSplits {
+  count: number;
+  fileId: string | null;
+  first: string;
+  reachedAt: string | null;
+}
+/** 連續幾次票數不一致列進「要看的事」（NO_CONSENSUS）。 */
+export const NO_CONSENSUS_AFTER = 3;
+/** flow_state 的鍵（own_thesis §3.6.4）。 */
+export const reviewFailsKey = (ticker: string) => `review:fails:${ticker}`;
+export const reviewSplitsKey = (ticker: string) => `review:splits:${ticker}`;
+
+/** 讀 review:splits:<代號>；格式壞了、或是別的論點檔寫的 → null。 */
+export async function loadSplits(db: D1Database, ticker: string, fileId: string | null): Promise<ReviewSplits | null> {
+  const v = (await db.prepare('SELECT value FROM flow_state WHERE key = ?').bind(reviewSplitsKey(ticker)).first<{ value: string }>())?.value;
+  const j = parseJson<Partial<ReviewSplits>>(v);
+  if (!j || (j.fileId ?? null) !== fileId) return null;
+  return { count: Number(j.count) || 0, fileId, first: String(j.first ?? ''), reachedAt: typeof j.reachedAt === 'string' ? j.reachedAt : null };
 }
 
 /** 論點檔讀進來的 L2 功能。 */
@@ -229,6 +258,7 @@ const CONCLUSIVE = new Set(['AGREED', 'INSUFFICIENT']);
 /** 沒有上一次審查時，事件與 8-K 往前看幾天（own_thesis §1.6）。 */
 export const NO_REVIEW_DAYS = 120;
 const minusDays = (d: string, n: number) => new Date(Date.parse(d) - n * 86400_000).toISOString().slice(0, 10);
+const daysBetween = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86400_000);
 const fileDate = (fileId: string | null, ticker: string) => (fileId && fileId.startsWith(ticker + '@') ? fileId.slice(ticker.length + 1, ticker.length + 11) : null);
 
 interface RunRow {
@@ -296,7 +326,8 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     for (const rv of reviews) if (rv.notif !== null && rv.notif === l.body.notif) rv.response = { outcome: String(l.body.outcome ?? ''), reason: (l.body.reason as string | null) ?? null };
   }
   const lastRun = runs.find((r) => r.fn === 'OWN_REVIEW' && r.status === 'DONE' && r.outcome && CONCLUSIVE.has((JSON.parse(r.outcome) as Outcome).status));
-  const lastReview = lastRun ? { runId: lastRun.run_id, asOf: lastRun.as_of, createdAt: lastRun.created_at } : null;
+  const lastDetail = lastRun ? parseJson<{ thesisVersion?: unknown }>(lastRun.detail) : null;
+  const lastReview = lastRun ? { runId: lastRun.run_id, asOf: lastRun.as_of, createdAt: lastRun.created_at, thesisVersion: typeof lastDetail?.thesisVersion === 'number' ? lastDetail.thesisVersion : null } : null;
   const ref = asOf ?? openedAt ?? '0000-00-00';
   const newSince = minusDays(ref, NO_REVIEW_DAYS);
 
@@ -337,6 +368,7 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     lastReview,
     newSince,
     log,
+    splits: await loadSplits(db, ticker, fileId),
   };
 }
 
@@ -374,6 +406,43 @@ export function afterLastReview(tf: Pick<ThesisFile, 'lastReview' | 'newSince'>,
   if (!r) return date >= tf.newSince;
   return date > r.asOf || (date === r.asOf && !!at && at > r.createdAt);
 }
+
+// ---------------------------------------------------------------- 月底檢查點的「新證據」（T31a，own_thesis §3.7；純函式）
+
+/** 新證據的原因（own_thesis §3.7 的表）。 */
+export type EvidenceReason = 'NEVER' | 'FILING' | 'EVENT' | 'THESIS' | 'STALE' | 'UNKNOWN';
+/** 距上一次有結論的審查滿幾個日曆天就照審（STALE）。 */
+export const STALE_DAYS = 100;
+/** 算新證據的申報種類：8-K、10-Q、10-K（含修正）。 */
+const EVIDENCE_FORM = /^(8-K|10-Q|10-K)/;
+/** 新聞來源的事件（每日掃描從新聞標題標的）：新聞標題不能當引用，不算新證據。 */
+const isNewsEvent = (e: Pick<ThesisEvent, 'form' | 'sourceId'>) => e.form === 'NEWS' || accOf(e.sourceId).kind === 'NEWS';
+
+/**
+ * 相對於這檔最近一次有結論的審查，有沒有新證據（own_thesis §3.7）。回傳原因的清單；空的 = 沒有新證據，這個月不審。
+ *   NEVER    這份論點檔還沒有過有結論的審查（只回這一項）
+ *   FILING   有那次審查之後申報的 8-K、10-Q、10-K（同一天的看接受時間是否晚於那次審查開始）
+ *   EVENT    sec_events 有建立時間比那次審查晚的列（任何狀態；價格規則 PRICE 與新聞標題來源的不算）
+ *   THESIS   論點或前提改過（版本和那次證據包記的不同，或那次之後有 THESIS 紀錄），或那次之後有條件的變動（CONDITION）
+ *   STALE    距那次審查的決策日滿 100 個日曆天
+ *   UNKNOWN  申報清單抓不到（filings = null）：當成有新證據
+ * 新聞標題、慢規則還沒列進清單的減半或加回都不算。
+ */
+export function newEvidence(file: Pick<ThesisFile, 'lastReview' | 'newSince' | 'events' | 'thesis' | 'log'>, filings: Pick<Filing, 'form' | 'filingDate' | 'acceptedAt'>[] | null, asOf: string): EvidenceReason[] {
+  const r = file.lastReview;
+  if (!r) return ['NEVER'];
+  const out: EvidenceReason[] = [];
+  if (filings?.some((f) => EVIDENCE_FORM.test(f.form) && f.filingDate <= asOf && afterLastReview(file, f.filingDate, f.acceptedAt || null))) out.push('FILING');
+  if (file.events.some((e) => e.source !== 'PRICE' && !isNewsEvent(e) && e.createdAt > r.createdAt)) out.push('EVENT');
+  const changed = typeof r.thesisVersion === 'number' && r.thesisVersion !== (file.thesis?.version ?? 0);
+  if (changed || file.log.some((l) => (l.kind === 'THESIS' || l.kind === 'CONDITION') && l.at > r.createdAt)) out.push('THESIS');
+  if (daysBetween(r.asOf, asOf) >= STALE_DAYS) out.push('STALE');
+  if (filings === null) out.push('UNKNOWN');
+  return out;
+}
+
+/** 證據包與紀錄用的原因說明。 */
+export const EVIDENCE_TEXT: Record<EvidenceReason, string> = { NEVER: '還沒有過有結論的審查', FILING: '有新的申報', EVENT: '有新的事件', THESIS: '論點、前提或條件改過', STALE: '距上次審查滿 100 天', UNKNOWN: '申報清單抓不到' };
 
 function toEvent(e: SecEventRow, last: ThesisFile['lastReview'], newSince: string): ThesisEvent {
   const ref = accOf(e.accession);
@@ -687,7 +756,6 @@ export interface AttnKind {
   detect(ctx: AttnCtx): Omit<AttnHit, 'ticker' | 'kind' | 'src'>[];
 }
 
-const daysBetween = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86400_000);
 const plusDays = (d: string, n: number) => minusDays(d, -n);
 const CN_NUM = ['零', '一', '兩', '三', '四'];
 const cnNum = (n: number) => CN_NUM[n] ?? String(n);
@@ -697,7 +765,7 @@ const ownedLive = (f: Pick<ThesisFile, 'conditions'>) => f.conditions.filter((c)
 
 /**
  * 自選股的「要看的事」，一種一個物件。加一種 = 在這裡加一個物件（T29a 的 COND_MET_NO_SELL、T29b 的 PRICE_NO_FILING、
- * T29c 的 PRESS_MISMATCH、T31a 的 NO_CONSENSUS、T35 的 SIZE_2X）；判斷需要的資料先放進論點檔或帳戶狀態。
+ * T29c 的 PRESS_MISMATCH、T35 的 SIZE_2X；T31a 的 NO_CONSENSUS 已加）；判斷需要的資料先放進論點檔或帳戶狀態。
  * 月報的頻率用「月」算（月報一個月一份；設計寫的「90 天」「6 個月」「每年」= 3、6、12 個月）。
  */
 export const OWN_ATTN: AttnKind[] = [
@@ -760,6 +828,15 @@ export const OWN_ATTN: AttnKind[] = [
       // 從哪天起減半：最近一則有這檔減半單的通知；找不到（一開始就是減半）用開檔日
       const n = [...acct.notifs].reverse().find((x) => x.items.some((it) => it.f === 'F7' && it.ticker === file.ticker));
       return [{ key: 'HALF_NO_EXIT', every: 3, since: n?.date ?? file.openedAt ?? view.date, text: `${file.ticker} 減半中：站回 200 日均線之前規則不會再有動作，而你沒有定任何出場條件` }];
+    },
+  },
+  {
+    // 定期審查連續 3 次票數不一致（§3.6.4）：發生時列一次（鍵帶這一串的第一次；有一次三票一致歸零之後再發生才再列）
+    kind: 'NO_CONSENSUS',
+    detect({ file, view }) {
+      const s = file.splits;
+      if (!s || s.count < NO_CONSENSUS_AFTER) return [];
+      return [{ key: `NO_CONSENSUS@${s.first}`, every: null, since: s.reachedAt ?? view.date, text: `${file.ticker} 最近 ${s.count} 次審查都沒有一致結論，論點可能寫得不夠具體，可以拿去討論` }];
     },
   },
 ];

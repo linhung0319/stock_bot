@@ -135,6 +135,7 @@ export async function holdingPage(ctx, ticker) {
             d.own.openNote ? h('p', { class: 'notice', style: 'margin-top:10px' }, d.own.openNote) : null,
             ...thesisBlock(ctx, d),
             d.own.lastReview ? h('p', { class: 'small dim', style: 'margin-top:10px' }, 'AI 最近一次審查：' + d.own.lastReview) : h('p', { class: 'small faint', style: 'margin-top:10px' }, 'AI 還沒有審查過這一檔。'),
+            d.own.reviewSkip ? h('p', { class: 'small dim' }, d.own.reviewSkip) : null,
             aiBlock(d.ai),
             d.attention?.length ? [h('h5', { style: 'margin-top:12px' }, `要看的事（${d.attention.length} 件，不用下單）`), attentionList(d.attention, { link: false })] : null,
             ...ownMonitor(ctx, d),

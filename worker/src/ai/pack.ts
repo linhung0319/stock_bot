@@ -126,7 +126,7 @@ export function priceDoc(view: MarketView, axis: string[], ticker: string, days 
   return { id: `P-${ticker}`, source_id: `price:${ticker}`, kind: 'price', date: view.date, title: `${ticker} 最近 ${lines.length} 個交易日收盤（還原權值，訊號日等於實際收盤）`, text: lines.join('\n') };
 }
 
-/** 帳戶裡這一檔的規則狀態（自選）。編號 R 開頭。 */
+/** 帳戶裡這一檔的規則狀態（自選）。編號 R 開頭；R4（R1）在 2026-11-15 拿掉，R5 的編號不變（own_thesis §3.9）。 */
 export function ownRuleFacts(acct: Account, view: MarketView, ticker: string): EvidencePack['facts'] {
   const meta = acct.own[ticker];
   const st = acct.rule.own[ticker];
@@ -139,7 +139,6 @@ export function ownRuleFacts(acct: Account, view: MarketView, ticker: string): E
     { id: 'R1', label: '慢規則狀態', value: st.applied === 'HALF' ? '減半中' : '標準' },
     { id: 'R2', label: '標準比重', value: pc(st.stdWeight) },
     { id: 'R3', label: '目前持有', value: `${shares} 股`, note: Number.isFinite(px) && total > 0 ? `占總資產 ${pc((shares * px) / total)}` : undefined },
-    { id: 'R4', label: 'R1（MACD 柱狀體由正轉負等，只記錄）', value: meta.r1 === null ? '—' : meta.r1 ? '成立' : '不成立' },
     ...(meta.aiTier ? [{ id: 'R5', label: '上一次 AI 審查的檔位', value: `${meta.aiTier.tier}（${meta.aiTier.date}）` }] : []),
   ].map((x) => (x.note === undefined ? { id: x.id, label: x.label, value: x.value } : x));
 }

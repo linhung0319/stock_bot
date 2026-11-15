@@ -4,7 +4,8 @@
 //                                              F25 → 條件成立的當天通知
 //   財報條件（ownXbrlConditions）：新的 10-Q／10-K → 程式直接比對 XBRL（不用 LLM），寫進度；你定的條件成立 → 當天通知
 //   開新的執行（startOwnRuns）：新申報是事件條件指定的確認來源 → F25；新的財報（10-Q、10-K、8-K 2.02）→ F24（財報後的審查）；
-//                               月報前一天（當月倒數第二個交易日）→ 每檔自選開一次 F24（月報那天用它的結論）；
+//                               月報前一天（當月倒數第二個交易日）= 月底檢查點：上次有結論的審查之後有新證據才開 F24（own_thesis §3.7），
+//                               沒有就不審、記 reviewSkip（月報那天用上一次的結論）；
 //                               前提有增減（thesisReviewDue）→ 論點變動後的審查（每檔 30 天 1 次，own_thesis §3.6.5）
 // 雲端排程（ROUTINE_FIRE_URL／ROUTINE_TOKEN）還沒設定時不開新的執行；EDGAR 的 User-Agent 沒設定時不看申報。
 import type { PackDoc } from '../ai/check';
@@ -19,8 +20,9 @@ import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
 import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
-import { cikFor, type FilingCheck } from './filings';
-import { MAX_PROPOSED, MAX_REVIEW_8K, afterLastReview, condFacts, defaultAction, defaultFacts, fileConditions, flaggedAccessions, isOwned, notifyTier, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type ThesisFile } from './thesis';
+import { cikFor, setStateStmt, type FilingCheck } from './filings';
+import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
+import { EVIDENCE_TEXT, MAX_PROPOSED, MAX_REVIEW_8K, afterLastReview, condFacts, defaultAction, defaultFacts, fileConditions, flaggedAccessions, isOwned, newEvidence, notifyTier, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type ThesisFile } from './thesis';
 
 export { cikFor } from './filings';
 export { loadConditions } from './thesis';
@@ -167,14 +169,14 @@ export async function reviewThesisEvidence(env: Env, fetcher: Fetcher, tf: Thesi
   return { facts: [...thesisFacts(tf), ...defaultFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null, asOf)], filings, docs: note ? [note] : [], notes };
 }
 
-/** 開一次 F24（證據包由論點檔組，T25）。 */
-export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: 'MONTHLY' | 'EARNINGS' | 'MANUAL' | 'THESIS', now: Date, evidence?: OwnEvidence): Promise<AiRun> {
+/** 開一次 F24（證據包由論點檔組，T25）。reasons：月底檢查點的新證據原因（記在 rule.detail，T31a）。 */
+export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: 'MONTHLY' | 'EARNINGS' | 'MANUAL' | 'THESIS', now: Date, evidence?: OwnEvidence, reasons?: EvidenceReason[]): Promise<AiRun> {
   const ev = evidence ?? (await gatherOwnEvidence(env, fetcher, ticker, view.date));
   const tf = await thesisFile(env.DB, acct, ticker, view.date);
   // 你定的條件 C、觀察項 W（T26；財報類觀察項用這次的 XBRL 比對）
   const conds = tf ? condFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null) : undefined;
   const extra = tf ? await reviewThesisEvidence(env, fetcher, tf, ev, view.date) : { facts: [], filings: [], docs: [], notes: [] };
-  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, dataQuality: ev.dataQuality, extraFacts: extra.facts, extraDocs: extra.docs, now });
+  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, dataQuality: ev.dataQuality, extraFacts: extra.facts, extraDocs: extra.docs, reasons, now });
   return startRun(env, fetcher, pack, now, [...ev.notes, ...extra.notes, ...notes]);
 }
 
@@ -195,6 +197,8 @@ function notifyCondition(ctx: ApplyCtx, ticker: string, tier: Tier, text: string
  */
 export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
   const t = run.ticker ?? '';
+  // 連續沒有結論的次數與告警、連續票數不一致的次數（own_thesis §3.6.4）
+  await reviewHealthStmts(ctx, run);
   if (!run.outcome || !ctx.acct.own[t]) return void ctx.log.push(`${run.runId}：${ctx.acct.own[t] ? '沒有結論' : '已經不是自選股'}，不套用`);
   const d = reviewDecision(run.outcome, ctx.acct, t, run.asOf, run.pack);
   if (d.tier) {
@@ -313,37 +317,85 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
     }
     if (c.fresh.some(isEarningsFiling)) review.set(c.ticker, 'EARNINGS');
   }
-  if (isLastTradingDayOfMonth(nextTradingDay(session, ov), ov)) for (const t of tickers) if (!review.has(t)) review.set(t, 'MONTHLY');
+  // 月底檢查點（§3.7）：今天還沒有因為別的原因開審查的，上次有結論的審查之後有新證據才審
+  const patch: Record<string, Partial<Pick<OwnMeta, 'thesisReviewDue' | 'thesisReviewAt' | 'reviewSkip'>>> = {};
+  const reasonsOf = new Map<string, EvidenceReason[]>();
+  const checkpoint = isLastTradingDayOfMonth(nextTradingDay(session, ov), ov);
+  const record: Checkpoint = { session, reviewed: [], skipped: [], notStarted: [] };
+  if (checkpoint) {
+    for (const t of tickers) {
+      if (review.has(t)) continue;
+      const tf = await thesisFile(env.DB, acct, t, session);
+      const all = sc.checks.find((c) => c.ticker === t)?.all ?? null;
+      const reasons: EvidenceReason[] = tf ? newEvidence(tf, all, session) : ['NEVER'];
+      if (reasons.length) {
+        review.set(t, 'MONTHLY');
+        reasonsOf.set(t, reasons);
+        continue;
+      }
+      const since = tf!.lastReview!.asOf;
+      patch[t] = { reviewSkip: { month: session.slice(0, 7), since } };
+      record.skipped.push({ ticker: t, since });
+      res.log.push(`${t}：${since.slice(5)} 的審查之後沒有新的申報、事件或論點變動，這個月不審查`);
+    }
+  }
   // 論點變動後的審查（§3.6.5）：今天已經因為別的原因開了審查、或 30 天內開過 → 只清掉；否則開一次（觸發原因 THESIS）
-  const patch: Record<string, Pick<OwnMeta, 'thesisReviewDue' | 'thesisReviewAt'>> = {};
   for (const t of tickers) {
     const m = acct.own[t];
     if (!m.thesisReviewDue) continue;
     const sameDay = review.has(t) || !!(await env.DB.prepare("SELECT 1 AS x FROM ai_runs WHERE fn = 'OWN_REVIEW' AND ticker = ? AND as_of = ? LIMIT 1").bind(t, session).first());
     const recent = !!m.thesisReviewAt && daysApart(m.thesisReviewAt, session) < THESIS_REVIEW_GAP;
     if (sameDay || recent) {
-      patch[t] = { thesisReviewDue: null };
+      patch[t] = { ...patch[t], thesisReviewDue: null };
       res.log.push(`${t} 的論點改過：${sameDay ? '今天已經有審查' : `${m.thesisReviewAt} 開過論點變動後的審查（30 天內）`}，不另外開`);
     } else review.set(t, 'THESIS');
   }
   for (const [t, trigger] of review) {
+    const reasons = reasonsOf.get(t);
     try {
-      res.started.push((await startOwnReview(env, fetcher, acct, view, axis, t, trigger, now)).runId);
-      if (trigger === 'THESIS') patch[t] = { thesisReviewDue: null, thesisReviewAt: session };
+      res.started.push((await startOwnReview(env, fetcher, acct, view, axis, t, trigger, now, undefined, reasons)).runId);
+      if (trigger === 'THESIS') patch[t] = { ...patch[t], thesisReviewDue: null, thesisReviewAt: session };
+      if (acct.own[t].reviewSkip) patch[t] = { ...patch[t], reviewSkip: null };
+      if (reasons) {
+        record.reviewed.push({ ticker: t, reasons });
+        res.log.push(`${t}：月底檢查點有新證據（${reasons.map((r) => EVIDENCE_TEXT[r]).join('、')}），開審查`);
+      }
     } catch (e) {
-      // 沒開成的論點變動審查：thesisReviewDue 留著，下一次每日流程再試
+      // 沒開成的論點變動審查：thesisReviewDue 留著，下一次每日流程再試。沒開成也算一次沒有結論（§3.6.4）
       res.log.push(`${t} 的定期審查沒有開成：${errText(e)}`);
       res.alerts.push({ kind: 'FLOW_ERROR', message: `${t} 的 AI 定期審查沒有開成：${errText(e)}` });
+      if (reasons) record.notStarted.push({ ticker: t, reasons });
+      try {
+        const alert = await reviewStartFailed(env.DB, t, acct.own[t].fileId ?? null, session, now, ov);
+        if (alert) res.alerts.push(alert);
+      } catch (e2) {
+        res.log.push(`${t} 的審查失敗次數沒有記成：${errText(e2)}`);
+      }
     }
   }
+  if (checkpoint) await setStateStmt(env.DB, checkpointKey(session), JSON.stringify(record), now.toISOString()).run();
   if (Object.keys(patch).length) await patchOwn(env.DB, now, patch, res.log);
 }
+
+/**
+ * 月底檢查點的紀錄（flow_state 的 review:checkpoint:<年月>；運作統計「月底審了幾檔、跳過幾檔」用）：
+ * reviewed 有新證據、開了審查（附原因）；skipped 沒有新證據、沿用哪一次的審查；notStarted 有新證據但沒開成。
+ * 當天已經因為財報開審查的不在裡面。
+ */
+export interface Checkpoint {
+  session: string;
+  reviewed: { ticker: string; reasons: EvidenceReason[] }[];
+  skipped: { ticker: string; since: string }[];
+  notStarted: { ticker: string; reasons: EvidenceReason[] }[];
+}
+export const CHECKPOINT_PREFIX = 'review:checkpoint:';
+export const checkpointKey = (session: string) => `${CHECKPOINT_PREFIX}${session.slice(0, 7)}`;
 
 /** 論點變動後的審查，每檔幾個日曆天最多 1 次（§3.6.5）。 */
 export const THESIS_REVIEW_GAP = 30;
 const daysApart = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86400_000);
 
-/** 開執行的段落（帳戶已經存好）要改的自選欄位：重新讀帳戶、改、存（和網站同時存檔時重來，最多 3 次）。 */
+/** 開執行的段落（帳戶已經存好）要改的自選欄位（論點變動後的審查、月底檢查點的 reviewSkip）：重新讀帳戶、改、存（和網站同時存檔時重來，最多 3 次）。 */
 async function patchOwn(db: D1Database, now: Date, patch: Record<string, Partial<OwnMeta>>, log: string[]): Promise<void> {
   for (let k = 0; k < 3; k++) {
     const loaded = await loadAccount(db);
@@ -351,11 +403,11 @@ async function patchOwn(db: D1Database, now: Date, patch: Record<string, Partial
     const next = clone(loaded.acct);
     for (const [t, p] of Object.entries(patch)) if (next.own[t]) Object.assign(next.own[t], p);
     try {
-      await saveAccount(db, next, loaded, '論點變動後的審查', now);
+      await saveAccount(db, next, loaded, '論點變動後的審查與月底檢查點', now);
       return;
     } catch (e) {
       if (!(e instanceof ConflictError) || k === 2) {
-        log.push(`論點變動後的審查：帳戶沒有存成（${errText(e)}）`);
+        log.push(`論點變動後的審查與月底檢查點：帳戶沒有存成（${errText(e)}）`);
         return;
       }
     }

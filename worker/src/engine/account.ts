@@ -44,7 +44,8 @@ export interface OwnMeta {
   slow: SlowRuleState;
   /** 已觸發、還沒列進清單的訊號（變動 < 5%，等月報）。 */
   pending: { action: OwnAction; date: string } | null;
-  r1: boolean | null;
+  /** 2026-11-15 拿掉 R1（own_thesis §3.9）：不讀不寫，舊資料留著。 */
+  r1?: boolean | null;
   premises: Premise[];
   origin: 'INITIAL' | 'NEW' | 'TRANSFER' | 'ADOPT' | 'MANUAL';
   /**
@@ -81,6 +82,11 @@ export interface OwnMeta {
   thesisReviewDue?: string | null;
   /** 最近一次論點變動後的審查（觸發原因 THESIS）的訊號日；每檔 30 個日曆天最多 1 次。 */
   thesisReviewAt?: string | null;
+  /**
+   * 月底檢查點（own_thesis §3.7）沒有新證據、這個月沒審：month = 那次檢查點的年月，since = 沿用的那次審查的決策日。
+   * 這一檔再開審查時清掉。沒有這個欄位（舊資料）= 沒有跳過。
+   */
+  reviewSkip?: { month: string; since: string } | null;
 }
 
 /**
@@ -488,7 +494,6 @@ export function newOwnMeta(view: MarketView, ticker: string, origin: OwnMeta['or
   return {
     slow,
     pending: null,
-    r1: null,
     premises: ps,
     origin,
     aiTier: null,

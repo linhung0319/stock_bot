@@ -312,8 +312,35 @@ export const shadowSection: SectionFn = async (db, p) => {
   return { id: 'shadow', title: '沒照做的紀錄（依觸發功能）', rows: withTotal(rows, { f: '合計' }, ['records', 'manual', 'as_is', 'with_ai', 'followed_rule', 'not_followed_rule', 'followed_ai']) };
 };
 
-/** 報表的各段，照這個順序輸出。T31a、T32d、T33b 要加段就在這裡加一個函式。 */
-export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection];
+/** 月底檢查點的新證據原因（own_thesis §3.7；和 app/thesis.ts 的 EvidenceReason 相同）。 */
+const REASONS = ['NEVER', 'FILING', 'EVENT', 'THESIS', 'STALE', 'UNKNOWN'];
+const CHECKPOINT_KEY_LEN = 'review:checkpoint:'.length;
+
+/**
+ * 月底檢查點（T31a，own_thesis §3.7；flow_state 的 review:checkpoint:<年月>，檢查點那天在期間內）：每個月審了幾檔、跳過幾檔。
+ * reviewed = 有新證據、開了審查；skipped = 沒有新證據、這個月不審；not_started = 有新證據但沒開成；skip_ratio = skipped ÷（reviewed ＋ skipped ＋ not_started）。
+ * 原因欄（never、filing…）= 開了審查的那幾檔各有幾檔帶這個原因（一檔可以有好幾個）。當天已經因為財報開審查的不算在裡面。
+ */
+export const checkpointSection: SectionFn = async (db, p) => {
+  const c = dateCond(p, "json_extract(f.value, '$.session')");
+  const reason = (r: string) => `(SELECT COUNT(*) FROM json_each(f.value, '$.reviewed') x WHERE EXISTS (SELECT 1 FROM json_each(json_extract(x.value, '$.reasons')) y WHERE y.value = '${r}')) AS ${r.toLowerCase()}`;
+  const rows = await query(
+    db,
+    `SELECT substr(f.key, ${CHECKPOINT_KEY_LEN + 1}) AS month, json_extract(f.value, '$.session') AS session,
+       json_array_length(f.value, '$.reviewed') AS reviewed,
+       json_array_length(f.value, '$.skipped') AS skipped,
+       COALESCE(json_array_length(f.value, '$.notStarted'), 0) AS not_started,
+       ${REASONS.map(reason).join(', ')}
+     FROM flow_state f WHERE f.key LIKE 'review:checkpoint:%' AND ${c.sql} ORDER BY month`,
+    c.args,
+  );
+  const fin = (r: Row): Row => ({ ...r, skip_ratio: ratio(n(r.skipped), n(r.reviewed) + n(r.skipped) + n(r.not_started)) });
+  const keys = ['reviewed', 'skipped', 'not_started', ...REASONS.map((r) => r.toLowerCase())];
+  return { id: 'checkpoints', title: '月底檢查點（自選定期審查）：審了幾檔、跳過幾檔', rows: withTotal(rows.map(fin), { month: '合計', session: null }, keys, (t) => (t.skip_ratio = ratio(n(t.skipped), n(t.reviewed) + n(t.skipped) + n(t.not_started)))) };
+};
+
+/** 報表的各段，照這個順序輸出。T32d、T33b 要加段就在這裡加一個函式（T31a 加了月底檢查點）。 */
+export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection];
 
 export interface OpsReport {
   generated_at: string;

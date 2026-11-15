@@ -829,6 +829,8 @@ export interface HoldingDetail {
     /** id：前提的編號；system：系統預設前提。 */
     premises: { id: string; text: string; origin: string; system: boolean }[];
     lastReview: string | null;
+    /** 月底檢查點沒有新證據、沒審的那一句（own_thesis §3.7）；之後有新的審查就不顯示。 */
+    reviewSkip: string | null;
     /** 論點本文（還沒寫是 null）；afterBreak：失效後修改幾次。 */
     thesis: { text: string; setAt: string; source: string; version: number; afterBreak: number } | null;
     /** 有論點／只有預設（系統預設前提）。 */
@@ -880,6 +882,18 @@ function openNoteOf(acct: Account, ticker: string): string | null {
   if (acct.notifs.some((n) => n.date >= since && n.items.some((i) => i.f === 'F8' && i.ticker === ticker))) return null;
   const dd = o.drawdownAtOpen === null ? '' : `加入時比 52 週高點低 ${Math.round(-o.drawdownAtOpen * 100)}%，`;
   return `${dd}慢規則從減半開始：站回 200 日均線連續 ${SLOW.aboveRun} 天之前，規則不會再有動作。`;
+}
+
+/**
+ * 月底檢查點沒有新證據、這個月沒審（own_thesis §3.7）：「這個月沒有新證據，沿用 2026-11-06 的審查」。
+ * 跨月之後寫哪個月；之後有比沿用的那次新的審查結論（aiTier）就不顯示。
+ */
+function reviewSkipOf(meta: Account['own'][string], date: string): string | null {
+  const s = meta.reviewSkip;
+  if (!s) return null;
+  if (meta.aiTier && meta.aiTier.date > s.since) return null;
+  const when = s.month === date.slice(0, 7) ? '這個月' : `${Number(s.month.slice(5, 7))} 月底檢查時`;
+  return `${when}沒有新證據，沿用 ${s.since} 的審查。`;
 }
 
 /** 還沒回覆、建議這檔照 AI 調整的通知（月報或當天通知上的自選審查建議；乙類通知的文字在 T29a）。 */
@@ -938,6 +952,7 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
             stdWeight: rule.stdWeight,
             premises: meta.premises.map((p) => ({ id: p.id, text: p.text + (p.breaksIf ? `（不成立的訊號：${p.breaksIf}）` : ''), origin: ORIGIN[p.origin] ?? p.origin, system: p.origin === 'SYSTEM_DEFAULT' })),
             lastReview: meta.aiTier ? `${meta.aiTier.date}：${TIER_NAME[meta.aiTier.tier]}` : null,
+            reviewSkip: reviewSkipOf(meta, view.date),
             thesis: meta.thesis?.text ? { text: meta.thesis.text, setAt: meta.thesis.setAt, source: meta.thesis.source === 'DISCUSSION' ? '討論後貼回' : '在網站手寫', version: meta.thesis.version, afterBreak: meta.thesis.afterBreak } : null,
             kind: meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT') ? 'THESIS' : 'DEFAULT_ONLY',
             openNote: openNoteOf(acct, ticker),

@@ -36,6 +36,7 @@ Worker 端是 `GET /admin/export`（`ADMIN_TOKEN` 的 Bearer；`worker/src/app/e
 | `ai_votes` | AI 的每一票，格式合格的比例 |
 | `ai_tasks` | 雲端任務依種類的結局；`pass_ratio` = done ÷（done ＋ rejected ＋ late）；逾時分「沒有來取證據包」與「取了沒送回」 |
 | `ai_rejections` | 被退回（REJECTED）或逾時才送到（LATE）的輸出 |
+| `checkpoints` | 月底檢查點（自選定期審查，T31a）：每個月審了幾檔（`reviewed`，有新證據）、跳過幾檔（`skipped`，沒有新證據）、有新證據但沒開成（`not_started`）、`skip_ratio`；`never`／`filing`／`event`／`thesis`／`stale`／`unknown` = 開了審查的那幾檔各有幾檔帶這個原因。資料在 `flow_state` 的 `review:checkpoint:<年月>` |
 
 每段最後一列的第一欄是「合計」；比例是 0～1 的小數、分母是 0 時是 null。
 
@@ -101,7 +102,7 @@ records/                         ← .gitignore，不進 repo
 | `flow_runs` | 每次每日流程：FIRST（23:30）／FINAL（01:30）／APPLY（03:30，只套用與推播，狀態一律 SKIPPED）／MANUAL、DONE／ERROR…、處理了哪幾天 | 只增加 |
 | `pushes` | 每次 LINE 推播與結果（`kind`：NOTIF 通知、ALERT 告警、TEST 測試、REPLY 關鍵字回覆；REPLY 不算推播額度） | 只增加 |
 | `alerts` | 告警與推播時間 | 會改 |
-| `flow_state` | 流程進度（最後處理到的交易日、上線日…） | 會改 |
+| `flow_state` | 流程進度（最後處理到的交易日、上線日…）；T31a 起另有 `review:checkpoint:<年月>`（月底檢查點審了誰、跳過誰、原因）、`review:fails:<代號>`（自選審查連續沒有結論的次數與每次的原因）、`review:splits:<代號>`（連續票數不一致的次數） | 會改 |
 
 ### 不傳
 

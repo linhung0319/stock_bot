@@ -17,6 +17,7 @@
 | T37 | 完成 | （見 git log） | 420 通過、1 略過 |
 | T28 | 完成 | （見 git log） | 433 通過、1 略過 |
 | T27 | 完成 | （見 git log） | 453 通過、1 略過 |
+| T31a | 完成 | （見 git log） | 468 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -96,6 +97,15 @@
 - T27｜解析：多個區塊取最後一個；沒有編號的行不算但在預覽標出；動作後的句號去掉。
 - T27｜示範模式的討論包只用帳戶狀態組、不讀 D1；改寫一律回失敗（示範沒有真的 AI）。
 - T27｜舊的 `GET ai/own-check/<執行編號>` 留著（沒有呼叫端，不影響功能）。
+- T31a｜FILING 的時間比法用 T25 的 `afterLastReview`（同一天看接受時間是否晚於審查開始），不是設計字面的「申報日比決策日晚」。
+- T31a｜EVENT 不算每日掃描從新聞標題標的事件（`NEWS`、`nasdaq-rss:`），符合「新聞標題不算新證據」。別的選項：照字面任何狀態都算。
+- T31a｜THESIS：證據包的 `thesisVersion` 和現在不同，或那次審查之後 log 有 `THESIS`／`CONDITION`，任一成立就算。
+- T31a｜這裡的「三票一致」用 `AGREED` 或 `INSUFFICIENT`（和 `thesisFile.lastReview` 相同），不是 T26 較嚴格的定義。
+- T31a｜檢查點紀錄存 `flow_state` 的鍵，不加表、不加 migration；兩個計數都記論點檔編號（移出再加回從 0 算），也存 `flow_state`。
+- T31a｜沒開成時照舊推 `FLOW_ERROR`，累計 2 次以上另推 `REVIEW_FAILED`（照設計字面，同一件事會有兩則告警）。
+- T31a｜告警的「下一次審查」寫成「12-30 的月底檢查點，有新財報時會提早」，日期用空的休市表算。
+- T31a｜持股頁那一句跨月後改寫成「11 月底檢查時沒有新證據，沿用 … 的審查」；之後有更新的審查結論就不顯示。
+- T31a｜多標了一處：`design_v2` §2.2 的 R1 那一列（設計 §3.9 有寫，派工單沒列）。
 
 ## 要使用者親手做的事
 
@@ -126,6 +136,8 @@
 | T27 | 編輯論點頁：貼回後的預覽（桌機／手機） | `records/stage8/screens/T27/edit-preview-desktop.png、edit-preview-phone.png` |
 | T27 | 編輯論點頁：改寫失敗（桌機／手機） | `records/stage8/screens/T27/edit-rewrite-failed-desktop.png、edit-rewrite-failed-phone.png` |
 | T27 | 持股頁：論點、編輯論點、複製討論包（桌機／手機） | `records/stage8/screens/T27/holding-desktop.png、holding-phone.png` |
+| T31a | 持股頁：沿用上次審查的那一句、NO_CONSENSUS（桌機） | `records/stage8/screens/T31a/holding-desktop.png` |
+| T31a | 同上（手機） | `records/stage8/screens/T31a/holding-phone.png` |
 
 ## 卡住的任務
 

@@ -20,7 +20,7 @@ import {
   type Tier,
 } from './account';
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
-import { excessVol, r1 as r1Of } from './indicators';
+import { excessVol } from './indicators';
 import { composeWithCore, crashCoreLines, mergeByTicker, planToLines, type Composed, type CoreContext, type OrderLine } from './orders';
 import { crashDecision, validBars } from './risk';
 import { halveShares, slowDayInput, stepSlowRule } from './slowRule';
@@ -307,12 +307,12 @@ export interface DailyResult {
   acct: Account;
   /** 今天新產生的通知。 */
   created: Notif[];
-  /** 只記錄、不通知的事（R1 改變、訊號累積到月報、互相抵銷）。 */
+  /** 只記錄、不通知的事（訊號累積到月報、互相抵銷）。 */
   log: { ticker: string; what: string }[];
 }
 
 /**
- * 每天收盤後：自選慢規則前進一步、記錄 R1；單筆變動 ≥ 總資產 5% → 當天通知（隔天開盤執行），
+ * 每天收盤後：自選慢規則前進一步（R1 在 2026-11-15 拿掉，own_thesis §3.9）；單筆變動 ≥ 總資產 5% → 當天通知（隔天開盤執行），
  * 其餘累積到月報；發出 2 個交易日沒回報的通知提醒一次。
  */
 export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
@@ -322,9 +322,6 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
   for (const [tk, meta] of Object.entries(acct.own)) {
     const c = view.close[tk];
     if (!c) continue;
-    const r1 = r1Of(c, view.i);
-    if (meta.r1 !== null && meta.r1 !== r1) log.push({ ticker: tk, what: r1 ? 'R1 成立（只記錄）' : 'R1 解除（只記錄）' });
-    meta.r1 = r1;
     const step = stepSlowRule(meta.slow, slowDayInput(c, view.i));
     meta.slow = step.next;
     if (step.signal) {

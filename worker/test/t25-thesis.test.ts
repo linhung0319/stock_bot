@@ -505,10 +505,10 @@ describe('T25：F7 的證據包', () => {
         const [drop] = await runsOf(db, 'OWN_DROP');
         expect(drop.ticker).toBe('NVDA');
         const ids = drop.pack.facts.map((f) => f.id);
-        // 原本的：價格 F1～F7、規則 R1～R4、跌幅拆解 A*；新增的接在後面
+        // 原本的：價格 F1～F7、規則 R1～R3（R4 = R1 指標在 T31a 拿掉）、跌幅拆解 A*；新增的接在後面
         const old = ids.filter((x) => !/^(T0|V\d+|D\d)$/.test(x));
-        expect(old.slice(0, 11)).toEqual(['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'R1', 'R2', 'R3', 'R4']);
-        expect(old.slice(11).every((x) => /^A\d$/.test(x))).toBe(true);
+        expect(old.slice(0, 10)).toEqual(['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'R1', 'R2', 'R3']);
+        expect(old.slice(10).every((x) => /^A\d$/.test(x))).toBe(true);
         expect(ids.slice(old.length)).toEqual(['T0', 'V1']);
         expect(drop.pack.facts.find((f) => f.id === 'V1')!.note).toContain(`edgar:${k2.accession}`);
         // 原文：上次審查之後的申報（沒有審查：45 天）照順序（有標記的在前），然後價格表；沒有論點本文、沒有審查 → 沒有 note

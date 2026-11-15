@@ -99,33 +99,6 @@ export function excessVol(
   return stdev(xs) * Math.sqrt(252);
 }
 
-/** EMA 數列（從第一筆開始遞推，和一般 MACD 的算法相同）。 */
-function emaSeries(xs: ArrayLike<number>, i: number, span: number): number[] {
-  const a = 2 / (span + 1);
-  const out: number[] = [];
-  let e = xs[0];
-  for (let k = 0; k <= i; k++) {
-    e = k === 0 ? xs[0] : a * xs[k] + (1 - a) * e;
-    out.push(e);
-  }
-  return out;
-}
-
-/** MACD 柱（12, 26, 9）在 i 的值。 */
-export function macdHist(close: ArrayLike<number>, i: number): number {
-  if (i < 34) return NaN;
-  const fast = emaSeries(close, i, 12);
-  const slow = emaSeries(close, i, 26);
-  const macd = fast.map((v, k) => v - slow[k]);
-  const signal = emaSeries(macd, i, 9);
-  return macd[i] - signal[i];
-}
-
-/** 自選 R1（設計 §2.2）：收盤 < 50 日均線且 MACD 柱 < 0。只記錄，不通知。 */
-export function r1(close: ArrayLike<number>, i: number): boolean {
-  return close[i] < sma(close, i, 50) && macdHist(close, i) < 0;
-}
-
 /** 皮爾森相關係數（健檢用：和現有持股的一年相關）。 */
 export function correlation(a: number[], b: number[]): number {
   const n = Math.min(a.length, b.length);
