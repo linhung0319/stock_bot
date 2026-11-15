@@ -290,7 +290,15 @@ export async function fetchFilingDoc(fetcher: Fetcher, cik: string | number, f: 
     text = eightKBody(main);
     if (f.form.startsWith('8-K')) {
       try {
-        const ex = pickExhibit991(JSON.parse(await get(`${dir}/index.json`)));
+        let ex = pickExhibit991(JSON.parse(await get(`${dir}/index.json`)));
+        // 財報新聞稿（Item 2.02）的檔名沒有 99 的（例如 NVIDIA 的 q2fy27pr.htm）：照索引頁的 Type 欄找（和 fetchPressRelease 同一套；T34）
+        if (!ex && f.items.includes('2.02')) {
+          try {
+            ex = exhibit991FromIndex(await get(`${dir}/${f.accession}-index.html`));
+          } catch {
+            ex = null;
+          }
+        }
         if (ex) {
           text += '\n\n--- EX-99.1 ---\n' + htmlToText(await get(`${dir}/${ex}`)).slice(0, 30_000);
           title += '＋EX-99.1';

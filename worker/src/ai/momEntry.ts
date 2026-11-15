@@ -242,6 +242,21 @@ export function resolveEntries(select: Selector, decisions: Map<string, EntryDec
   return { vetoed, emptySlots: empty, need: [] };
 }
 
+/**
+ * 誰是因為否決才遞補上來的（T34）：沒有否決時，這個月會買的是排名最前的那幾檔（進場的檔數＋留在核心的格數，被否決的當成可以買）；
+ * 進場名單裡不在那幾檔之內的，才是遞補上來的。回傳 被否決的（照排名）→ 遞補的那一檔（照排名配對；不夠配的是 null，那一格留在核心）。
+ */
+export function replacements(order: string[], added: string[], vetoed: string[], emptySlots = 0): Map<string, string | null> {
+  const rank = (t: string) => {
+    const k = order.indexOf(t);
+    return k < 0 ? Number.MAX_SAFE_INTEGER : k;
+  };
+  const byRank = (a: string, b: string) => rank(a) - rank(b);
+  const would = new Set([...new Set([...added, ...vetoed])].sort(byRank).slice(0, added.length + emptySlots));
+  const reps = added.filter((t) => !would.has(t)).sort(byRank);
+  return new Map([...new Set(vetoed)].sort(byRank).map((v, k) => [v, reps[k] ?? null]));
+}
+
 /** 月報前一天先審的：這個月會進場的，加上「如果它被否決、會由誰遞補」（只替需要法庭或被規則否決的找遞補）。 */
 export function previewOrder(select: Selector, risky: (t: string) => boolean): string[] {
   const first = select([], 0);

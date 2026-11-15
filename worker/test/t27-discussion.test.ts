@@ -578,7 +578,7 @@ describe('T27：草擬模式的入口不存在（§1.12）', () => {
       expect(s, f).not.toContain('/ops/own-premises');
       expect(s, f).not.toMatch(/own-check', \{ ticker: [^}]*lines/);
     }
-    expect(readFileSync(join(js, 'pages-more.js'), 'utf8')).toContain('複製討論包');
+    expect(readFileSync(join(js, 'pages-holding.js'), 'utf8')).toContain('複製討論包');
     const v2 = readFileSync(join(HERE, '..', '..', 'ai', 'prompts', 'own_check_v2.md'), 'utf8');
     expect(v2).not.toMatch(/premises_draft|DRAFT/);
     expect(readFileSync(join(HERE, '..', '..', 'ai', 'prompts', 'own_check_v1.md'), 'utf8').split('\n')[0]).toContain('不再使用');

@@ -3,7 +3,8 @@
 import { ApiError, api, getMode, setMode } from './api.js';
 import { day, h, toast } from './dom.js';
 import { menuList, page } from './layout.js';
-import { accountPage, authPage, depositPage, doPage, holdingPage, ratioPage, setupPage, undoPage, withdrawPage } from './pages-more.js';
+import { accountPage, authPage, depositPage, doPage, ratioPage, setupPage, undoPage, withdrawPage } from './pages-more.js';
+import { holdingPage } from './pages-holding.js';
 import { aiRunPage } from './pages-ai.js';
 import { thesisEditPage } from './pages-thesis.js';
 import { homePage, notifPage, snapshotPage } from './pages-notif.js';

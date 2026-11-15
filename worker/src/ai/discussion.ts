@@ -5,7 +5,9 @@
 // 討論包只放比重，不放金額與股數。
 import { SLOW, TIER_NAME, bucketValue, rollingMax, sma, totalValue, trailingReturn, type Account, type MarketView, type Tier } from '../engine';
 import { sizeOf } from '../app/concentration';
-import type { CondAction, ThesisFile } from '../app/thesis';
+import { normalizeTicker } from '../data/sources';
+import { outcomeText, type CondAction, type ThesisFile } from '../app/thesis';
+import { eventDetail, eventLabel } from '../app/eventText';
 
 export const DISCUSSION_VERSION = 'discussion_v1';
 
@@ -128,28 +130,9 @@ const spc = (x: number | null, d = 1) => (x === null || !Number.isFinite(x) ? '�
 const px = (x: number | null) => (x === null || !Number.isFinite(x) ? '—' : x.toFixed(2));
 
 const SOURCE_TEXT: Record<string, string> = { EDGAR: '申報分類', SCAN: '每日掃描標記', AI: 'AI 轉交', PRICE: '價格規則' };
-const CODE_TEXT: Record<string, string> = {
-  EARNINGS: '財報',
-  MGMT_CHANGE: '高層異動',
-  GUIDANCE_CUT: '財測',
-  RESTRUCTURING: '重組',
-  MAJOR_CONTRACT: '重大合約',
-  FINANCING: '籌資',
-  DILUTION: '增資',
-  PENDING_MA: '被收購',
-  ACCOUNTING: '會計問題',
-  REGULATORY: '監管或訴訟',
-  DISTRESS: '財務危機',
-  CYBER: '資安事件',
-  ACTIVIST: '大股東申報（13D）',
-  CONDITION_HINT: '可能和條件有關',
-  PRICE_DROP: '個股自身大跌',
-  OTHER: '其他',
-};
 const TRIGGER_TEXT: Record<string, string> = { MONTHLY: '月審', EARNINGS: '財報後審查', THESIS: '論點變動後審查', MANUAL: '審查', EARLY: '提前審查', CONDITION: '條件觸發的審查', 慢規則減半: '減半檢視' };
 const STATUS_TEXT: Record<string, string> = { SPLIT: '沒有一致結論', INVALID: '格式不合格，沒有結論', DATA_MISSING: '資料缺漏', TIMEOUT: '逾時，沒有結論', NO_RESULT: '沒有結果' };
 const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
-const OUTCOME_TEXT: Record<string, string> = { FOLLOW: '照做', REVISE: '修正論點', DISAGREE: '不同意', SKIPPED: '沒有動它', NONE: '沒有回應', RULE: '照規則' };
 const COND_STATE: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '只在定期審查時檢查', MANUAL: '只記錄', MET: '已成立' };
 const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查' };
 /** 全形空白（討論包裡日期與內容之間的分隔，照 §1.7 的範例）。 */
@@ -216,10 +199,12 @@ function eventSection(file: ThesisFile): string[] {
   const evs = file.events.filter((e) => e.isNew).slice(0, MAX_EVENTS);
   if (!evs.length) return ['沒有'];
   return evs.map((e) => {
-    const what = CODE_TEXT[e.code] ?? e.code;
+    // 類別與說明用持股頁同一套白話（T34；掃描事件的說明原本帶英文代碼）
+    const what = eventLabel({ code: e.code, detail_code: e.detailCode ?? null });
     const form = e.form === 'NEWS' ? '新聞標題' : e.form;
     const src = SOURCE_TEXT[e.source] ?? e.source;
-    const detail = e.detail ? `：${e.detail.replace(/\s+/g, ' ').slice(0, 160)}` : '';
+    const plain = eventDetail(e.detail);
+    const detail = plain ? `：${plain.slice(0, 160)}` : '';
     return `${e.date}${SP}${form}${SP}${src}：${what}${detail}`;
   });
 }
@@ -233,7 +218,8 @@ function reviewSection(file: ThesisFile): string[] {
     const votes = Math.max(0, ...Object.values(r.votes));
     const head = r.status === 'AGREED' || r.status === 'INSUFFICIENT' ? `${r.verdict ? (TIER_NAME[r.verdict as Tier] ?? r.verdict) : '—'}（${votes} 票）` : (STATUS_TEXT[r.status] ?? r.status);
     const broken = r.brokenPremises.length ? `不成立：${r.brokenPremises.join('、')}。` : '';
-    const resp = r.response ? `我的回應：${OUTCOME_TEXT[r.response.outcome] ?? r.response.outcome}${r.response.reason ? `（${r.response.reason}）` : ''}。` : r.notif ? '我的回應：還沒回。' : '';
+    // 回應的白話和論點檔的 note 同一套（T34）：SKIPPED「月報裡沒有動它（當成不同意）」、NONE「上次的失效通知沒有回應」
+    const resp = r.response ? `我的回應：${outcomeText(r.response)}${r.response.reason ? `（${r.response.reason}）` : ''}。` : r.notif ? '我的回應：還沒回。' : '';
     L.push(`${r.date}${SP}${kind}：${head}。${broken}${resp}`);
     if (r.summary) L.push(`${SP}${r.summary.replace(/\s+/g, ' ')}`);
   }
@@ -360,7 +346,8 @@ export function parseThesisBlock(text: string, ticker: string): ParsedThesis {
     return { ...empty, thesis: whole, notes: whole ? ['沒找到固定格式，請自己分到三欄'] : [] };
   }
   const got = start.m![1].toUpperCase();
-  if (got !== ticker.toUpperCase()) return { ...empty, found: true, error: `這段是 ${got} 的論點，這一頁是 ${ticker.toUpperCase()}。請貼這一檔的討論結果。` };
+  // BRK.B 和 BRK-B 是同一檔（claude.ai 可能照別的寫法回）
+  if (normalizeTicker(got) !== normalizeTicker(ticker)) return { ...empty, found: true, error: `這段是 ${got} 的論點，這一頁是 ${ticker.toUpperCase()}。請貼這一檔的討論結果。` };
 
   const sec: Record<string, string[]> = { 論點: [], 前提: [], 出場條件: [], 這次的結論: [], 理由: [] };
   let cur: string | null = null;

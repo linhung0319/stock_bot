@@ -1,11 +1,9 @@
-// 帳戶、單一持股、「我要…」的各種操作、建立帳戶、登入。
+// 帳戶、「我要…」的各種操作、建立帳戶、登入。單一持股頁在 pages-holding.js（T34）。
 import { api, setToken } from './api.js';
-import { actionText, day, h, money, pct, put, qty, toast } from './dom.js';
+import { day, h, money, pct, put, qty, toast } from './dom.js';
 import { consoleBox, glass, meterEl, menuList, page, tiles } from './layout.js';
-import { aiBlock, attentionList, bucketTag, chart, fold, rankTable } from './parts.js';
+import { bucketTag, fold, rankTable } from './parts.js';
 import { actionButton, errBox, linkButton, planBubble, slips, trayBody, trayTitle, undoButton } from './pages-notif.js';
-import { ownMonitor } from './pages-ai.js';
-import { copyPackButton } from './pages-thesis.js';
 import { say } from './slime.js';
 
 const em = (t) => ({ t, tone: 'em' });
@@ -104,66 +102,6 @@ export function accountPage(ctx) {
     pane,
     rail: [...tiles(st), h('p', { class: 'rail-note' }, '三桶的比例是風險預算，不是要維持的目標：系統不會只為了把比例拉回來叫你下單。')],
   });
-}
-
-// ---------------------------------------------------------------- 單一持股
-
-export async function holdingPage(ctx, ticker) {
-  const d = await api.get('/holding/' + encodeURIComponent(ticker));
-  const st = ctx.state;
-  const rows = st.account?.holdings.filter((x) => x.ticker === d.ticker) ?? [];
-  const main = rows.find((x) => x.meter) ?? rows[0];
-  const bubble = main
-    ? { k: '這一檔現在', say: [em(main.state), main.detail ? `。${main.detail}。` : '。'], mood: main.tone === 'alert' ? 'alert' : main.tone === 'warn' ? 'worry' : 'watch' }
-    : { k: '這一檔現在', say: ['目前沒有持有。'], mood: 'idle' };
-  return page({
-    view: 'page',
-    banner: {
-      back: { href: '#/account', label: '帳戶' },
-      title: h('span', { class: 'tk' }, d.ticker),
-      sub: d.positions.length ? d.positions.map((p) => `${p.bucketName} ${qty(p.shares)} 股（${money(p.value)}，占 ${pct(p.pct)}）`).join('；') : '目前沒有持有。',
-      bubble,
-    },
-    pane: h('div', { class: 'stackv' },
-      main?.meter ? glass('pad', h('h2', { class: 'panel-h' }, main.meter.zone === '賣出' ? '離動能的賣出門檻多遠' : main.meter.zone === '啟動' ? '離崩盤規則多遠' : main.meter.zone === '買回' ? '離買回多遠' : '離慢規則的減半門檻多遠'), meterEl({ ...main.meter, say: `${main.state}。${main.detail}` }, 'big')) : null,
-      glass('pad', chart(d.chart)),
-      glass('pad', h('dl', { class: 'facts' }, d.facts.map((f) => [h('dt', null, f.label), h('dd', null, h('span', { class: 'num' }, f.value), f.note ? h('small', null, f.note) : null)]))),
-      d.own
-        ? glass(
-            'pad',
-            h('h2', { class: 'panel-h' }, actionText(`自選：${d.own.state}，標準比重 ${pct(d.own.stdWeight)}`)),
-            d.own.openNote ? h('p', { class: 'notice', style: 'margin-top:10px' }, d.own.openNote) : null,
-            ...thesisBlock(ctx, d),
-            d.own.lastReview ? h('p', { class: 'small dim', style: 'margin-top:10px' }, 'AI 最近一次審查：' + d.own.lastReview) : h('p', { class: 'small faint', style: 'margin-top:10px' }, 'AI 還沒有審查過這一檔。'),
-            d.own.reviewSkip ? h('p', { class: 'small dim' }, d.own.reviewSkip) : null,
-            aiBlock(d.ai),
-            d.attention?.length ? [h('h5', { style: 'margin-top:12px' }, `要看的事（${d.attention.length} 件，不用下單）`), attentionList(d.attention, { link: false })] : null,
-            ...ownMonitor(ctx, d),
-            ...ownEdit(ctx, d),
-          )
-        : null,
-      d.mom ? momPanel(d.mom) : null,
-      d.history.length ? [h('h2', { class: 'sec', style: 'margin:24px 0 0' }, '這檔的紀錄'), h('div', { class: 'glass rec' }, d.history.map((x) => (x.notif ? h('a', { class: 'rowlink', href: `#/n/${x.notif}` }, h('span', { class: 'd num' }, day(x.date)), h('span', null, x.text), h('span')) : h('div', { class: 'rowlink' }, h('span', { class: 'd num' }, day(x.date)), h('span', null, x.text), h('span')))))] : null,
-    ),
-    rail: tiles(st),
-  });
-}
-
-/**
- * 動能持股的事件與附註（momentum_ai §3.6）：事件只記錄、不發通知；「要看的事」含單月大跌那一行、晚到的否決、進場時的附註。
- * 只求能用（版面在 T34 整理）。
- */
-function momPanel(m) {
-  return glass(
-    'pad',
-    h('h2', { class: 'panel-h' }, '動能持股：要看的事與事件'),
-    m.attention.length ? [h('h5', { style: 'margin-top:4px' }, `要看的事（${m.attention.length} 件，不用下單）`), attentionList(m.attention, { link: false })] : h('p', { class: 'small faint' }, '目前沒有要看的事。'),
-    h('h5', { style: 'margin-top:14px' }, `最近 90 天記到的事件（${m.events.length} 件）`),
-    m.events.length
-      ? h('ul', { style: 'list-style:none;margin:6px 0 0;padding:0' }, m.events.map((e) => h('li', { style: 'padding:6px 0;border-top:1px solid var(--line);display:flex;gap:12px' }, h('span', { class: 'num dim', style: 'white-space:nowrap' }, day(e.date)), h('span', null, e.label, h('span', { class: 'small faint', style: 'margin-left:8px' }, e.source)))))
-      : h('p', { class: 'small faint' }, '最近 90 天沒有記到事件。'),
-    h('p', { class: 'small faint', style: 'margin-top:10px' }, '動能持股的事件只記錄、不發通知，也不會叫 AI 來看；出場只看排名。被收購、會計問題、重大監管這三種另外由 AI 審查，建議出場時才會通知你。'),
-  );
 }
 
 // ---------------------------------------------------------------- 我要…
@@ -317,47 +255,6 @@ export const ratioPage = (() => {
     confirmLabel: '確定改比例，建立清單',
   });
 })();
-
-/** 持股頁：論點本文、前提、「編輯論點」與「複製討論包」（T27；取代原本的「加前提」與 AI 草擬）。 */
-function thesisBlock(ctx, d) {
-  const o = d.own;
-  const t = o.thesis;
-  return [
-    h('h5', { style: 'margin-top:12px' }, '我的論點'),
-    t
-      ? [h('p', { style: 'margin-top:4px;white-space:pre-wrap' }, t.text), h('p', { class: 'small faint' }, `${day(t.setAt, true)} 定，${t.source}，第 ${t.version} 版${t.afterBreak ? `；失效後修改第 ${t.afterBreak} 次` : ''}`)]
-      : h('p', { class: 'small dim', style: 'margin-top:4px' }, o.kind === 'DEFAULT_ONLY' ? '還沒有論點本文。目前用系統預設前提做一般健康檢查，不是你的論點。' : '還沒有論點本文。'),
-    h('h5', { style: 'margin-top:12px' }, o.kind === 'DEFAULT_ONLY' ? '前提（系統預設）' : '前提（你為什麼持有它）'),
-    h('ul', { class: 'prem' }, o.premises.map((p) => h('li', null, h('span', { class: 'st' }, p.id), h('span', null, p.text, h('span', { class: 'faint small' }, `（${p.origin}）`), p.silenced ? h('span', { class: 'small dim', style: 'display:block;margin-top:2px' }, p.silenced) : null)))),
-    h('div', { class: 'btn-row', style: 'margin-top:12px' }, h('a', { class: 'btn primary', href: `#/h/${encodeURIComponent(d.ticker)}/thesis` }, '編輯論點'), copyPackButton(d.ticker)),
-    h('p', { class: 'small faint', style: 'margin-top:8px' }, '「複製討論包」把這檔的論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論；說「收尾」後把結果貼回「編輯論點」。'),
-  ];
-}
-
-// 持股頁：改標準比重（2026-11-15 起取代新增／移除自選兩頁；新增和賣光都在填快照做；前提在「編輯論點」頁，T27）
-function ownEdit(ctx, d) {
-  const msg = h('div');
-  const fail = (e) => msg.replaceChildren(errBox(e));
-  const std = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', value: (d.own.stdWeight * 100).toFixed(1), style: 'width:6em', 'aria-label': '標準比重（%）' });
-  const saveStd = actionButton('改標準比重', '', async () => {
-    const v = Number(std.value.replace(/[%\s]/g, ''));
-    if (!(v > 0 && v <= 50)) return fail(new Error('標準比重填 0.1～50（%）'));
-    try {
-      await api.post('/ops/std-weight', { ticker: d.ticker, stdWeight: v / 100 });
-      toast(`${d.ticker} 的標準比重改成 ${v}%`);
-      ctx.refresh();
-    } catch (e) {
-      fail(e);
-    }
-  });
-  return [
-    h('h5', { style: 'margin-top:16px' }, '標準比重'),
-    h('div', { class: 'btn-row', style: 'align-items:center' }, std, h('span', null, '%'), saveStd),
-    h('p', { class: 'small faint' }, '加回、入金補到這個比重；改了不會馬上下單。系統推薦值是依波動度在自選預算內分的。'),
-    msg,
-    h('p', { class: 'small faint', style: 'margin-top:14px' }, '不想再持有：到「填快照」把自選這一檔的股數改成 0，就會移出自選。'),
-  ];
-}
 
 // ---------------------------------------------------------------- 復原上一份快照（設計 §10 第 39 點）
 

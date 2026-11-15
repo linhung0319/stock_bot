@@ -483,7 +483,7 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
           extras = p.extras;
           Object.assign(res, { status: 'DONE', processed: p.processed, created: p.created, monthly: p.monthly });
           const m = p.monthly !== null ? p.acct.notifs.find((n) => n.id === p.monthly) : undefined;
-          if (m?.monthly) await recordReplacements(db, m.monthly.input.month, m.items.filter((i) => i.f === 'F1' && i.ticker).map((i) => i.ticker!)).catch((e) => aiPrep.push(`記錄遞補出錯：${errText(e)}`));
+          if (m?.monthly) await recordReplacements(db, m.monthly.input.month, m.items.filter((i) => i.f === 'F1' && i.kind !== 'CASHFLOW' && i.ticker).map((i) => i.ticker!), m.monthly.input.order, m.monthly.input.emptySlots ?? 0).catch((e) => aiPrep.push(`記錄遞補出錯：${errText(e)}`));
           break;
         }
       }

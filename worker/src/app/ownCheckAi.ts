@@ -13,7 +13,7 @@ import { loadAccount, thesisLogStmt } from './ledgerStore';
 import { gatherOwnEvidence, insertConditionStmts, routineReady } from './ownAi';
 import { CONC, corr1y } from './concentration';
 import { checkCap } from './ownConds';
-import { ACTION_TEXT, COND_ACTIONS, acceptStatus, condFacts, confirmText, defaultAction, fileConditions, isOwned, ownerText, progressText, thesisFile, type CondAction } from './thesis';
+import { ACTION_TEXT, COND_ACTIONS, REWRITE_DAYS, acceptStatus, condFacts, confirmText, defaultAction, fileConditions, fmtMetric, isOwned, ownerText, progressText, thesisFile, type CondAction, type FileCondition } from './thesis';
 
 /** 這檔現在的論點檔編號（帳戶沒有、不是自選、T25 之前的自選 → null）。 */
 async function currentFileId(db: D1Database, ticker: string): Promise<string | null> {
@@ -107,8 +107,8 @@ export async function ownCheckView(env: Env, runId: string, now: Date): Promise<
   return { ...r, runId, status: run.status, mode, accepted, exits, createdAt: run.createdAt, outcome: run.status === 'PENDING' || !run.outcome ? 'PENDING' : run.outcome.status };
 }
 
-/** 持股頁列出多少天內的改寫結果（own_thesis §1.8 確認的第 4 點）。 */
-export const REWRITE_DAYS = 30;
+/** 持股頁列出多少天內的改寫結果（own_thesis §1.8 確認的第 4 點；定義在 thesis.ts，「要看的事」也用）。 */
+export { REWRITE_DAYS };
 
 export interface RewriteView {
   /** 最近 30 天的改寫：還在改寫中的、還有沒勾的條件的、沒有結果而且之後沒有重送過的。新的在前。 */
@@ -191,6 +191,11 @@ export interface MonitorRow {
   confirm: string;
   /** 財報類條件的進度（§3.6.2）。 */
   progress: string | null;
+  /**
+   * 進度條（T34，§3.6.2「畫成條由 T34 決定」）：要連續 N 季（N ≥ 2）的財報條件才有。一季一段，最新的在右邊；
+   * labels：每一段的字（那一季的數值，還沒到的季寫「下一季」）；done：已連續符合幾季（從最新一季往回數）。
+   */
+  steps: { need: number; done: number; labels: string[] } | null;
   /** 只記錄、不會通知（價格條件、沒通過格式檢查的）：畫面不給選成立時的動作。 */
   recordOnly: boolean;
   /** 說明（已成立的寫怎麼確認成立的；其他是寫入時的原因）。 */
@@ -206,6 +211,19 @@ function metNote(c: { metAt: string | null; metBasis: string | null }): string {
   if (c.metBasis === 'REVIEW_VOTE') return `${d} 的定期審查，AI 3 票確認成立`;
   if (c.metBasis === 'PRESS') return `${d} 依財報新聞稿成立（10-Q 出來後再核對）`;
   return `${d} 成立`;
+}
+
+/**
+ * 進度條的每一段（T34）：要連續 need 季，從最新一季往回已連續 done 季符合。左到右是時間順序，最右邊一段是最新一季；
+ * 還沒符合的段落在右邊、寫「下一季」（要再符合幾季才成立）。
+ */
+export function progressSteps(c: Pick<FileCondition, 'progress' | 'check'>): MonitorRow['steps'] {
+  const p = c.progress;
+  if (!p || p.need < 2) return null;
+  const metric = String(c.check.metric);
+  const done = Math.min(p.streak, p.need);
+  const labels = [...Array.from({ length: done }, (_, k) => fmtMetric(metric, p.values[done - 1 - k] ?? null)), ...Array.from({ length: p.need - done }, (_, k) => (k === 0 ? '下一季' : k === 1 ? '再下一季' : `之後第 ${k + 1} 季`))];
+  return { need: p.need, done, labels };
 }
 
 const STATUS_TEXT: Record<string, string> = { ACTIVE: '監測中', MET: '已成立', MANUAL: '只記錄', REVIEW_ONLY: '只在定期審查時檢查', PROPOSED: '建議中', RETIRED: '已撤下', EXPIRED: '已過期', REPLACED: '已替換' };
@@ -231,11 +249,12 @@ export async function monitorView(env: Env, ticker: string): Promise<MonitorRow[
           actionText: action ? ACTION_TEXT[action] : null,
           confirm: confirmText(c),
           progress: progressText(c),
+          steps: progressSteps(c),
           recordOnly: acceptStatus(c) === 'MANUAL',
           note: c.status === 'MET' ? metNote(c) : c.note,
         };
       });
   } catch (e) {
-    return [{ id: 0, text: `讀不到：${errText(e)}`, kind: '', origin: '', status: '', code: '', owned: false, action: null, actionText: null, confirm: '', progress: null, recordOnly: false, note: null }];
+    return [{ id: 0, text: `讀不到：${errText(e)}`, kind: '', origin: '', status: '', code: '', owned: false, action: null, actionText: null, confirm: '', progress: null, steps: null, recordOnly: false, note: null }];
   }
 }

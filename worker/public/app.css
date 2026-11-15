@@ -431,7 +431,8 @@ a.step-in:hover, button.step-in:hover { color: #fff; }
 .act-lines .line-why { flex-basis: 100%; padding-left: 34px; }
 .note-line { font-size: 13.5px; color: var(--warn); }
 /* 慢規則項目上 AI 論點檢查的那一行：放在選項上面 */
-.ai-line { padding: 10px 14px; border-radius: 12px; background: rgba(255, 255, 255, 0.035); box-shadow: inset 0 0 0 1px var(--line); font-size: 14.5px; line-height: 1.75; color: var(--ink); overflow-wrap: anywhere; }
+/* 慢規則項目上 AI 的那一行（T34：和 AI 的說明框同一個顏色，一眼看得出是 AI 說的） */
+.ai-line { padding: 10px 14px; border-radius: 12px; background: linear-gradient(180deg, rgba(120, 100, 255, 0.1), rgba(120, 100, 255, 0.04)); box-shadow: inset 0 0 0 1px rgba(150, 130, 255, 0.22); font-size: 14.5px; line-height: 1.75; color: var(--ink); overflow-wrap: anywhere; }
 .picks { display: grid; gap: 8px; }
 .pick { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; align-items: baseline; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, 0.02); cursor: pointer; transition: border-color 0.15s, background-color 0.15s, box-shadow 0.15s; }
 .pick:hover { border-color: var(--line-hi); }
@@ -661,3 +662,61 @@ select option { background: #14162a; }
 /* 編輯論點頁（T27）：左邊現在的、右邊新的；手機上上下排 */
 .thesis-cmp { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 760px) { .thesis-cmp { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; } }
+
+/* ------------------------------------------------ 持股頁（T34）：自選股以論點為主、慢規則為輔 */
+.panel-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 10px; }
+.panel-top .panel-h { margin: 0; }
+.th-text { font-size: 16px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plist { display: grid; gap: 14px; margin-top: 8px; }
+.plist li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; align-items: baseline; }
+.plist li > div > p:first-child { overflow-wrap: anywhere; }
+.plist-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 4px; font-size: 13px; }
+.plist-quiet { margin-top: 4px; padding-left: 10px; border-left: 2px solid var(--line-hi); color: var(--ink-2); }
+.tl { display: grid; margin-top: 6px; }
+.tl li { display: grid; grid-template-columns: 5.8em minmax(0, 1fr); gap: 2px 14px; padding: 12px 0; border-top: 1px solid var(--line-2); }
+.tl li:first-child { border-top: 0; }
+.tl-d { color: var(--ink-3); font-size: 13.5px; white-space: nowrap; }
+.tl-h { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.tl-h b { font-weight: 600; }
+.tl li p + p { margin-top: 2px; }
+.rv-list { display: grid; }
+.rv { display: grid; grid-template-columns: 5.8em minmax(0, 1fr) auto; gap: 2px 14px; align-items: start; margin: 0 -10px; padding: 12px 10px; border-top: 1px solid var(--line-2); border-radius: 10px; text-decoration: none; }
+.rv:first-child { border-top: 0; }
+a.rv:hover { background: var(--wash); }
+.rv .chev { align-self: center; rotate: -45deg; translate: 0 0; }
+.rv-res { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 4px; }
+.rv-broken { color: #ff9a90; }
+.rv p + p { margin-top: 4px; }
+.cond { padding: 12px 0; border-top: 1px solid var(--line-2); }
+.cond-h { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+.cond-h b { font-weight: 500; overflow-wrap: anywhere; }
+.cond-h .chip { flex: none; }
+.cond-ctl { margin-top: 8px; gap: 8px; }
+.cond-ctl select { width: auto; min-height: 36px; padding: 4px 10px; }
+/* 財報條件的進度：一季一段，已符合的那幾季是紅的（和門檻條「會觸發的範圍」同一個意思），每一段寫那一季的數值或「下一季」 */
+.qbar { display: flex; gap: 4px; max-width: 420px; margin: 10px 0 4px; }
+.qbar span { flex: 1; min-width: 0; padding: 3px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.08); color: var(--ink-3); font-size: 12px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qbar span.on { background: rgba(255, 59, 48, 0.28); color: #ffc2bb; font-weight: 600; }
+.attn-list { display: grid; margin-top: 4px; }
+.attn { padding: 10px 0; border-top: 1px solid var(--line-2); }
+.attn:first-child { border-top: 0; }
+.attn > p:first-child { overflow-wrap: anywhere; }
+.attn-meta { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 2px; font-size: 12.5px; }
+.attn-meta a { color: var(--ink-2); text-decoration-color: var(--line-hi); text-underline-offset: 3px; }
+.attn-meta a::after { content: " ›"; }
+@media (max-width: 520px) {
+  .tl li { grid-template-columns: minmax(0, 1fr); }
+  .rv { grid-template-columns: minmax(0, 1fr) auto; }
+  .rv .tl-d { grid-column: 1 / -1; }
+  .rv > div { grid-column: 1; }
+  .rv .chev { grid-column: 2; grid-row: 2; }
+}
+/* 編輯論點頁（T34 整理）：出場條件一條一塊、存檔後的前提一條一行；頁首的「‹ MU」和版本小標分兩行 */
+.back { display: block; width: fit-content; }
+.exit-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-2); }
+.exit-row:first-child { border-top: 0; padding-top: 0; }
+.diff-list { display: grid; gap: 4px; margin-top: 4px; }
+.diff-list li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: baseline; }
+/* 崩盤規則的檢視紀錄（T34）：手機寬度表頭不擠成直排，整張表在自己的框裡左右捲，不讓整頁左右捲 */
+.more-body > * { min-width: 0; }
+.crash-log th { white-space: nowrap; }

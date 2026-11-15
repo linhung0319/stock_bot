@@ -32,6 +32,7 @@
 | T33d | 完成 | （見 git log） | 617 通過、1 略過 |
 | T32d | 完成 | （見 git log） | 636 通過、1 略過 |
 | T35 | 完成 | （見 git log） | 651 通過、1 略過 |
+| T34 | 完成 | （見 git log） | 676 通過、1 略過；2026-11-16 第二次執行 |
 
 ## 執行中做的決定
 
@@ -226,6 +227,17 @@
 - T35｜多加 `OwnMeta.sizeInfo`（越過那天、最新占比與倍數）產生「越過一次只列一次」的鍵與文字；旗已設但到 15% 時旗留著、不列，F10 減回後仍 ≥ 2 倍算同一次越過。
 - T35｜集中度與 `SIZE_2X` 的文字照 §3.6.6 風格寫，沒經使用者過目；門檻沒有回測，是建議值。月報頁集中度那一行連到字母排第一的那檔，但文字以占比最大的代號開頭（T34 可以看）。
 
+- T34｜示範模式也有論點那一塊與「要看的事」：從帳戶狀態算；沒有條件、事件、審查紀錄的地方寫「示範資料沒有…」，前提不顯示檢查結果。別的選項：示範模式不顯示這些區塊。
+- T34｜進度條（§3.6.2 留給 T34）：只有要連續 2 季以上的財報條件才畫，一季一段；已符合的段標那一季的數值、用紅色（和門檻條「會觸發」同義），還沒到的段寫「下一季」。
+- T34｜乙類項目標題改成「NVDA 不動（AI 建議減半，賣 13 股）」，修正論點結案後只寫「NVDA 不動」；其他預設不做的 AI 建議項目照舊。
+- T34｜集中度那一件多帶 `link` 連到占比最大的自選；記頻率用的錨點照舊是字母排第一的那檔。
+- T34｜晚到否決選改文字（「自己賣掉、填快照時記在動能，下次月報再列時按『排除』」），不補帳戶頁排除持有中動能股的功能。
+- T34｜`fetchFilingDoc` 只在 8-K 有 Item 2.02、目錄找不到 EX-99.1 時才多讀索引頁，免得每份 8-K 多一次請求。
+- T34｜移出自選時，還沒回覆的通知上這一檔的自選項目取消；整則都取消的（月報以外）改成「已取消」；月報只取消那一項、不整則結案。改的是 `engine/ops.ts` 的 `removeOwnPick`（純函式、不動規則參數與狀態機，重放數字不變）。
+- T34｜出場條件改寫回來沒勾：不延長持股頁 30 天的列出期限（設計寫明），改加「要看的事」新種類 `EXITS_UNCHECKED`。這個種類還沒寫進 `own_thesis` §3.6.6 的表（T38 補）。
+- T34｜網站所有收代號的地方先照 `normalizeTicker` 統一（BRK-B、BRK B、BRK/B → BRK.B），貼回的論點區塊比對代號也一樣；影響所有桶的填快照。
+- T34｜**列給使用者決定**：這檔有還沒回覆的乙類通知時，編輯論點頁「這是對通知 #N 的回應」預設勾著（設計 §1.8 寫明）；只是從持股頁進來改錯字，存檔也會讓那則通知以「修正論點」結案。要改成只有從通知進來才預設勾，請在 T39 提出。
+
 ## 要使用者親手做的事
 
 照做的順序排。每一筆寫清楚指令或步驟、是哪個任務帶出來的。
@@ -248,6 +260,7 @@
 - T33d｜`crash_review_v2.md` 由雲端排程從 repo 讀，push 之後生效。部署後才生效：不會切換的月份不再開每月評語；每天多了核心 ETF 的資料檢查與告警 `CORE_PRICE_SUSPECT`。
 - T32d｜push 之後雲端排程不會再遇到擬事件打分與單月大跌說明的任務；部署後候選股不再每日掃描、月報多出動能的「要看的事」。沒有 migration。
 - T35｜部署後每個交易日第一次流程會替自選股補算 `sizeFlag`；已經超過 2 倍的，下一份月報列一次。沒有 migration。
+- T34｜沒有 migration、沒改 prompt；push 並部署之後持股頁與修正才在正式網站生效。
 
 ## 畫面截圖
 
@@ -297,6 +310,12 @@
 | T35 | 月報頁的「要看的事」：SIZE_2X 與集中度（桌機／手機） | `records/stage8/screens/T35/monthly-desktop.png、monthly-phone.png` |
 | T35 | 持股頁 NVDA：SIZE_2X 與集中度（桌機／手機） | `records/stage8/screens/T35/holding-nvda-desktop.png、holding-nvda-phone.png` |
 | T35 | 持股頁 MU（組內另一檔，只有集中度）（桌機／手機） | `records/stage8/screens/T35/holding-mu-desktop.png、holding-mu-phone.png` |
+| T34 | 持股頁：有論點、只有預設、減半中、有建議中的條件、靜默中（桌機／手機） | `records/stage8/screens/T34/holding-{thesis,default,half,proposed,silenced}-{desktop,phone}.png` |
+| T34 | 編輯論點頁三種狀態：空白、預覽、改寫失敗（桌機／手機） | `records/stage8/screens/T34/edit-{empty,preview,rewrite-failed}-{desktop,phone}.png` |
+| T34 | 甲類與乙類通知（桌機／手機） | `records/stage8/screens/T34/notif-{typeA,typeB}-{desktop,phone}.png` |
+| T34 | 減半通知五種狀態（桌機／手機） | `records/stage8/screens/T34/reduce-{pending,hold,exit,agree,none}-{desktop,phone}.png` |
+| T34 | 月報的「要看的事」（桌機／手機） | `records/stage8/screens/T34/monthly-attention-{desktop,phone}.png` |
+| T34 | 額外：整則這次不做跳出理由欄、示範模式持股頁、動能與核心持股頁的檢查、崩盤紀錄表手機版（假資料） | `records/stage8/screens/T34/reduce-skip-all-reason-*`、`demo-holding-default-*`、`check-holding-{mom,core}-*`、`crash-log-table-check-phone.png` |
 
 ## 卡住的任務
 

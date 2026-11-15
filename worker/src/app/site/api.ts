@@ -48,6 +48,7 @@ import { demoDiscussion } from '../discussion';
 import type { ThesisLogInput } from '../ledgerStore';
 import { ruleResponseLogs, type CondAction } from '../thesis';
 import { errText } from '../../data/util';
+import { normalizeTicker } from '../../data/sources';
 import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
 import { json, type Env, type Fetcher } from '../env';
 import { LOGIN_PATH, lineLoginConfigured, siteAuth } from './auth';
@@ -57,7 +58,8 @@ import { BENCHMARK } from '../../data/ingest';
 import { exportMd, rowOfNote, runDetail, runRow, vetoView } from './aiViews';
 import { choiceEffect } from './bubble';
 import { annotate } from './explain';
-import { accountView, composedView, crashLogView, ctxOf, historyView, withPreviewNote, holdingDetail, notifView, snapshotForm, stateView } from './views';
+import { accountView, composedView, crashLogView, ctxOf, historyView, withPreviewNote, holdingDetail, notifView, pendingBreakOf, snapshotForm, stateView } from './views';
+import { demoHolding } from './thesisView';
 
 type Ready = SiteData & { acct: Account; view: MarketView };
 
@@ -101,8 +103,16 @@ function num(v: unknown, name: string, min: number, max: number): number {
   return x;
 }
 
+/** 標準比重（小數）。畫面上填的是百分比，超出範圍時用百分比講（T34 走一遍的缺口：原本寫「要在 0.001 到 0.5 之間」，和畫面上的 % 對不起來）。 */
+function stdWeightOf(v: unknown): number {
+  const x = typeof v === 'string' && v.trim() !== '' ? Number(v.replace(/[,\s%]/g, '')) : v;
+  if (typeof x !== 'number' || !Number.isFinite(x) || x < 0.001 || x > 0.5) throw new SiteError(422, '標準比重要在 0.1% 到 50% 之間（畫面上填百分比，例如 5 代表 5%）');
+  return x;
+}
+
 function ticker(v: unknown): string {
-  const t = String(v ?? '').trim().toUpperCase();
+  // 券商畫面的寫法不一樣（BRK.B／BRK-B／BRK B／BRK/B）：統一成系統用的「.」，免得同一檔變成兩個代號（T34 走一遍的缺口）
+  const t = normalizeTicker(String(v ?? ''));
   if (!TICKER.test(t)) throw new SiteError(422, `「${String(v ?? '').slice(0, 20)}」不是有效的股票代號`);
   return t;
 }
@@ -184,7 +194,7 @@ function decided(acct: Account, view: MarketView, n: Notif): Account {
 async function createFromSnapshot(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
   if (backend.mode !== 'real') throw new SiteError(400, '示範模式不用建立帳戶');
   const rows = (v: unknown) => (Array.isArray(v) ? (v as Record<string, unknown>[]) : []).filter((r) => String(r?.ticker ?? '').trim() !== '').slice(0, 40);
-  const own = rows(b.own).map((r) => ({ ticker: ticker(r.ticker), shares: num(r.shares, '股數', 0, 1e7), stdWeight: r.stdWeight === undefined || r.stdWeight === '' || r.stdWeight === null ? null : num(r.stdWeight, '標準比重', 0.001, 0.5), premises: premisesOf(r.premises) }));
+  const own = rows(b.own).map((r) => ({ ticker: ticker(r.ticker), shares: num(r.shares, '股數', 0, 1e7), stdWeight: r.stdWeight === undefined || r.stdWeight === '' || r.stdWeight === null ? null : stdWeightOf(r.stdWeight), premises: premisesOf(r.premises) }));
   const mom = rows(b.mom).map((r) => ({ ticker: ticker(r.ticker), shares: num(r.shares, '股數', 0, 1e7) }));
   const cash = num(b.cash ?? 0, '現金', 0, 1e10);
   const coreShares = num(b.coreShares ?? 0, '核心 ETF 股數', 0, 1e7);
@@ -403,8 +413,10 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const hd = holdingDetail(d, tk);
     // 真實模式：這檔監測中的條件（AI 寫的、你寫的）、最近 30 天還沒勾的改寫結果、要看的事
     // 動能持股：最近 90 天的事件與動能的「要看的事」（含進場時的附註；momentum_ai §3.6）
-    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), rewrites: await backend.ai.rewrites(tk), attention: await backend.ai.attention(tk, d.acct, d.view).catch(() => []), mom: await backend.ai.mom(tk, d.acct, d.view, d.rankOrder).catch(() => null) });
-    return json(hd);
+    // 論點那一塊（T34）：前提最近一次的檢查、事件時間軸、歷次審查與回應、靜默中的前提、減半檢視
+    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), rewrites: await backend.ai.rewrites(tk), attention: await backend.ai.attention(tk, d.acct, d.view).catch(() => []), mom: await backend.ai.mom(tk, d.acct, d.view, d.rankOrder).catch(() => null), thesis: await backend.ai.thesis(tk, d.acct, d.view).catch(() => null) });
+    // 示範模式（T34 的決定）：論點檔只有帳戶狀態（沒有條件、事件、審查紀錄），論點那一塊與「要看的事」從它算
+    return json({ ...hd, ...demoHolding(d.acct, d.view, tk) });
   }
 
   // ---- 論點（T27，own_thesis §1.7、§1.8）：討論包、貼回的解析、編輯論點
@@ -417,8 +429,10 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const mode = q ? (DISCUSSION_MODES.find((m) => m === q) ?? null) : null;
     if (q && !mode) throw new SiteError(422, 'mode 只能是 NEW、ROUTINE 或 BREAK');
     const nq = url.searchParams.get('notif');
-    const notif = nq ? Number(nq) : null;
+    let notif = nq ? Number(nq) : null;
     if (notif !== null) findNotif(d.acct, Number.isInteger(notif) ? notif : -1);
+    // 沒指定情境、這檔有還沒回覆的乙類通知（從持股頁按「複製討論包」）→ 照那一則組 BREAK 情境（T34 走一遍的缺口：原本給例行檢視，討論不到被判不成立的那條前提）
+    if (notif === null && !mode) notif = pendingBreakOf(d.acct, tk)?.notif ?? null;
     const out = backend.ai ? await backend.ai.discussion(tk, d.acct, d.view, mode, notif) : await demoDiscussion(d.acct, d.view, tk, mode, notif);
     return json(out);
   }
@@ -705,7 +719,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
   if (rest === 'ops/std-weight' && post) {
     const b = await body(req);
     const tk = ticker(b.ticker);
-    const w = num(b.stdWeight, '標準比重', 0.001, 0.5);
+    const w = stdWeightOf(b.stdWeight);
     await mutate(backend, `改標準比重 ${tk} → ${pct(w)}`, [], (d) => {
       if (!d.acct.rule.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
       return { acct: setStdWeight(d.acct, tk, w) };

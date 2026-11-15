@@ -374,7 +374,12 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   const single = tickers.length <= 1 && !!it.ticker;
   const total = primary.lines.reduce((a, l) => a + l.shares, 0);
   let headline: string;
-  if (single && it.ticker) {
+  // 乙類（AI 判斷前提不成立，own_thesis §1.10）預設不動：標題不寫成「賣 NVDA 13 股」，寫「NVDA 不動」、括號裡是 AI 的建議與股數；修正論點結案後只寫「不動」（T34）
+  const brkB = it.brk?.type === 'B' && !it.brk.withRule && it.ruleChoice === 'SKIP';
+  if (single && it.ticker && brkB) {
+    const exit = total < 0 && -total === (d.acct.lots.own[it.ticker] ?? -1);
+    headline = it.cancelled || total === 0 ? `${it.ticker} 不動` : `${it.ticker} 不動（AI 建議${primary.tier ? TIER_NAME[primary.tier] : '調整'}，${total < 0 ? '賣' : '買'} ${Math.abs(total)} 股${exit ? '，全部' : ''}）`;
+  } else if (single && it.ticker) {
     const exit = total < 0 && buckets.length === 1 && -total === (d.acct.lots[buckets[0] as 'own' | 'mom'][it.ticker] ?? -1);
     headline = total === 0 ? `${it.ticker} 不動` : `${total < 0 ? '賣' : '買'} ${it.ticker} ${Math.abs(total)} 股${exit ? '（全部）' : ''}`;
   } else if (it.f === 'F11' || it.f === 'F12') {
@@ -480,7 +485,8 @@ export function notifView(d: Ready, n: Notif): NotifView {
     kindLabel: KIND_LABEL[n.kind],
     date: n.date,
     title: n.title,
-    text: plainText(n.text),
+    // 失效通知（甲類、乙類，own_thesis §1.10）的說明是 LINE 那幾行，和項目的標題、理由重複：網站不另外顯示（T34）
+    text: listLike && n.items.every((i) => i.brk && !(i.brk.type === 'B' && i.brk.withRule)) ? null : plainText(n.text),
     status: n.status,
     statusLabel: n.followUpOpen ? '快照和清單不同' : n.status === 'PENDING' && !listLike ? (n.kind === 'INFO' || n.kind === 'MONTHLY_EMPTY' ? '未讀' : '等你回答') : STATUS_LABEL[n.status],
     step: !listLike ? 0 : n.status === 'PENDING' ? 1 : n.status === 'RESPONDED' ? 2 : 0,
@@ -499,7 +505,7 @@ export function notifView(d: Ready, n: Notif): NotifView {
     filled,
     deposit: n.deposit ?? null,
     withdraw: n.withdraw ?? null,
-    attention: (n.attention ?? []).map((x) => ({ ticker: x.ticker, kind: x.kind, text: x.text, since: x.since, src: x.src ?? 'own' })),
+    attention: (n.attention ?? []).map((x) => ({ ticker: x.ticker, kind: x.kind, text: x.text, since: x.since, src: x.src ?? 'own', ...(x.link ? { link: x.link } : {}) })),
     aiRun: !n.items.length ? (n.runIds?.[0] ?? null) : null,
   };
 }
@@ -1077,7 +1083,7 @@ function silencedText(meta: Account['own'][string], premiseId: string, date: str
 }
 
 /** 還沒回覆的乙類（AI 判斷前提不成立；當天通知或月報裡的，own_thesis §1.10）：編輯論點頁可以用「修正論點」回應的那一則。 */
-function pendingBreakOf(acct: Account, ticker: string): { notif: number; tier: string | null; premiseId: string | null } | null {
+export function pendingBreakOf(acct: Account, ticker: string): { notif: number; tier: string | null; premiseId: string | null } | null {
   for (const n of [...acct.notifs].reverse()) {
     if (n.status !== 'PENDING') continue;
     // 慢規則減半項目上的「AI 建議出清」不能用修正論點結案（§3.4），不算

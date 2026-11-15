@@ -12,53 +12,15 @@ import { momDropLine, type DropEvent } from '../ai/detect';
 import { ENTRY_CODE_TEXT } from '../ai/momEntry';
 import { clone, type Account, type Attention, type MarketView } from '../engine';
 import { buildMarketView } from '../data/marketView';
-import { ITEM_EVENTS } from '../data/secEvents';
 import { loadSeries } from '../data/store';
-import { accOf, loadEvents, sectorEtfs, type SecEventRow } from './filings';
+import { eventLabel, eventSource } from './eventText';
+import { loadEvents, sectorEtfs, type SecEventRow } from './filings';
 import { loadReviewsFor, type MomReview } from './momAi';
 import { dueAttention, toAttention, type AttnHit } from './thesis';
 
-// ---------------------------------------------------------------- 事件的白話
+// ---------------------------------------------------------------- 事件的白話（T34 起和自選股的持股頁、討論包共用 eventText.ts）
 
-const CODE_TEXT: Record<string, string> = {
-  EARNINGS: '財報',
-  MGMT_CHANGE: '高層異動',
-  GUIDANCE_CUT: '財測',
-  RESTRUCTURING: '重組',
-  MAJOR_CONTRACT: '重大合約',
-  FINANCING: '籌資',
-  DILUTION: '增資',
-  PENDING_MA: '被收購',
-  ACCOUNTING: '會計問題',
-  REGULATORY: '監管或訴訟',
-  DISTRESS: '財務危機',
-  CYBER: '資安事件',
-  ACTIVIST: '大股東申報（13D）',
-  EARNINGS_DIVERGENCE: '盈餘背離',
-  ONE_OFF_JUMP: '一次性跳漲',
-  DATA_SUSPECT: '資料可疑',
-  PRICE_DROP: '個股自身大跌',
-  CONDITION_HINT: '可能和條件有關',
-  OTHER: '其他',
-};
-const DETAIL_TEXT: Record<string, string> = {
-  CUT: '財測下修',
-  WITHDRAWN: '撤回財測',
-  CEO_DEPART: '執行長離任',
-  CFO_DEPART: '財務長離任',
-  ...Object.fromEntries(Object.values(ITEM_EVENTS).map((e) => [e.detailCode, e.text])),
-};
-
-/** 事件類別的中文（有細項的用細項，例如「財測下修」「執行長離任」）。 */
-export const eventLabel = (e: Pick<SecEventRow, 'code' | 'detail_code'>): string => (e.detail_code && DETAIL_TEXT[e.detail_code]) || CODE_TEXT[e.code] || '其他';
-
-/** 事件的來源：申報的表單名稱（8-K、10-Q…）或「新聞標題」。 */
-export function eventSource(e: Pick<SecEventRow, 'form' | 'accession'>): string {
-  if (e.form === 'NEWS' || accOf(e.accession).kind === 'NEWS') return '新聞標題';
-  if (e.form === 'AI') return 'AI 轉交';
-  if (e.form === 'RULE') return '價格規則';
-  return e.form;
-}
+export { eventLabel, eventSource } from './eventText';
 
 const toDropEvent = (e: SecEventRow): DropEvent => ({ date: e.event_date, label: eventLabel(e), source: eventSource(e) });
 
@@ -120,10 +82,11 @@ export const MOM_ATTN: MomAttnKind[] = [
       const r = reviews.find((x) => x.lateVerdict === 'VETO');
       if (!r) return [];
       const hit = entryItem(acct, r.month, ticker);
-      // 月報還沒回覆或還沒填快照時已經補推過（那兩種不列）；找不到那一項的不列
+      // 月報還沒回覆或還沒填快照時已經補推過（那兩種不列）；找不到那一項的不列。
+      // 帳戶頁沒有排除持有中動能股的功能（排除只在月報項目上），文字照實寫怎麼做（T34 走一遍的缺口）
       if (!hit?.it.lateVeto || hit.it.lateVeto.push) return [];
       const zh = ENTRY_CODE_TEXT[r.reasonCode ?? hit.it.lateVeto.code] ?? '進場審查的理由';
-      return [{ key: `LATE_VETO@${r.month}`, every: null, since: hit.it.lateVeto.date, text: `${ticker}：進場審查在你買進之後回來，3 票否決（${zh}）。出場照排名；不想留可以在帳戶頁排除 ${ticker}` }];
+      return [{ key: `LATE_VETO@${r.month}`, every: null, since: hit.it.lateVeto.date, text: `${ticker}：進場審查在你買進之後回來，3 票否決（${zh}）。出場照排名；不想留的話，自己賣掉、填快照時記在動能，下次月報再列 ${ticker} 時按「排除」` }];
     },
   },
   {

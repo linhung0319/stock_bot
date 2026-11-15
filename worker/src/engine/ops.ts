@@ -112,6 +112,31 @@ function removeOwnPick(acct: Account, ticker: string, reason: CloseReason, date:
   if (fileId) acct.ownClosed = { ...(acct.ownClosed ?? {}), [ticker]: { fileId, reason, date } };
   delete acct.own[ticker];
   delete acct.rule.own[ticker];
+  cancelOwnItems(acct, ticker, reason, date);
+}
+
+/**
+ * 移出自選之後，還沒回覆的通知上這一檔的自選項目（慢規則、AI 的建議、你定的條件成立、硬事件）跟著取消
+ * （T34 走一遍的缺口：先自己賣光、才回乙類通知，按「照 AI」清單還會叫你賣一次這檔）。
+ * 整則都取消的（月報以外）改成已取消：不留在「等你決定」，也沒有要下的單。
+ */
+function cancelOwnItems(acct: Account, ticker: string, reason: CloseReason, date: string): void {
+  const md = `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
+  for (const n of acct.notifs) {
+    if (n.status !== 'PENDING') continue;
+    let hit = false;
+    for (const it of n.items) {
+      if (it.cancelled || it.ticker !== ticker || !it.choices.some((c) => c.lines.some((l) => l.ticker === ticker && l.bucket === 'own'))) continue;
+      it.cancelled = true;
+      it.note = `${md} ${ticker} 已經${reason === 'SOLD_OUT' ? '賣光、' : ''}移出自選，這一項取消`;
+      hit = true;
+    }
+    if (hit && n.kind !== 'MONTHLY' && n.items.every((i) => i.cancelled)) {
+      n.coreAbsorb = false;
+      n.status = 'CANCELLED';
+      delete n.preview; // 產生時試算的清單（含核心吸收現金的那一行）不再適用
+    }
+  }
 }
 
 /** 晚回覆（提醒過才回）：規則狀態已反轉的自選項目取消，其餘自選規則單用今天的價格重算（設計 §2.3.1「忘了」）。 */

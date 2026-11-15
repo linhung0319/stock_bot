@@ -7,6 +7,7 @@
 // L2 各功能的證據包（F24、F7、F25、自選股的 F19）都從這裡取資料；這裡也放組證據包要的純函式（事件 V、預設前提的 D1～D3、
 // 8-K 的挑選順序、論點那一份 note）。讀 D1，所以不在引擎裡。
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
+import { ownCheckResult, type ExitLine } from '../ai/ownCheck';
 import { confirmMode, type OwnCondition } from '../ai/ownReview';
 import { DEFAULT_CONFIG, clone, type Account, type Attention, type MarketView, type Notif, type OwnMeta, type Thesis, type Tier } from '../engine';
 import { concentrationHits, sizeText } from './concentration';
@@ -232,7 +233,15 @@ export interface ThesisFile {
   log: ThesisLogRow[];
   /** 連續票數不一致的審查（flow_state 的 review:splits:<代號>，own_thesis §3.6.4；沒有是 null）。 */
   splits?: ReviewSplits | null;
+  /**
+   * 最近 30 天出場條件改寫回來、還有沒勾的（T34 走一遍的缺口：沒勾的 30 天後就不在持股頁列出，使用者以為在監測）。
+   * pending：那一次改寫還沒勾的條數。沒有是空陣列（舊的呼叫端沒給：undefined）。
+   */
+  unchecked?: { runId: string; at: string; pending: number }[];
 }
+
+/** 持股頁列出多少天內的出場條件改寫結果（own_thesis §1.8 確認的第 4 點）。 */
+export const REWRITE_DAYS = 30;
 
 /**
  * 連續票數不一致的定期審查（own_thesis §3.6.4）：次數、這一串的第一次（執行編號）、到第 3 次的那一天（還沒到是 null）。
@@ -357,6 +366,22 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     return { id: p.id, text: p.text, origin: p.origin, addedAt: p.addedAt ?? null, ...(p.breaksIf ? { breaksIf: p.breaksIf } : {}), lastCheck, splitAfter };
   });
 
+  // 出場條件改寫回來、還沒勾的（最近 30 天；勾過的看這份論點檔的條件裡有沒有同一次改寫、同一個編號、你寫的那一列）
+  const rewriteRows = (
+    await db
+      .prepare("SELECT run_id, created_at, outcome, json_extract(pack, '$.rule.detail') AS detail FROM ai_runs WHERE fn = 'OWN_CHECK' AND ticker = ? AND as_of >= ? AND created_at >= ? AND status = 'DONE' ORDER BY created_at DESC LIMIT 10")
+      .bind(ticker, openedAt ?? '0000-00-00', minusDays(asOf ?? openedAt ?? '0000-00-00', REWRITE_DAYS))
+      .all<{ run_id: string; created_at: string; outcome: string | null; detail: string | null }>()
+  ).results;
+  const unchecked = rewriteRows.flatMap((r) => {
+    const detail = parseJson<{ mode?: string; exits?: ExitLine[] }>(r.detail);
+    if (detail?.mode === 'DRAFT') return [];
+    const res = ownCheckResult(parseJson<Outcome>(r.outcome), ticker, detail?.exits ?? []);
+    const taken = new Set(conditions.filter((c) => c.runId === r.run_id && c.origin === 'USER').map((c) => c.condId));
+    const pending = res.conditions.filter((c) => !taken.has(c.condId)).length;
+    return pending ? [{ runId: r.run_id, at: r.created_at, pending }] : [];
+  });
+
   // 事件：開檔前一年起（預設前提的 D1 要看有效期間內的硬事件，最長 365 天）
   const evSince = minusDays(openedAt && openedAt < ref ? openedAt : ref, 365);
   const events = (await loadEvents(db, { ticker, since: evSince })).map((e) => toEvent(e, lastReview, newSince));
@@ -378,6 +403,7 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     newSince,
     log,
     splits: await loadSplits(db, ticker, fileId),
+    unchecked,
   };
 }
 
@@ -831,6 +857,14 @@ export const OWN_ATTN: AttnKind[] = [
     },
   },
   {
+    // 你寫的出場條件改寫回來、還沒勾選（T34 走一遍的缺口）：勾選才會監測，沒勾的 30 天後就不在持股頁列出。
+    // 每一次改寫列一次（鍵帶那一次的執行編號）；持股頁列到勾完或滿 30 天為止
+    kind: 'EXITS_UNCHECKED',
+    detect({ file }) {
+      return (file.unchecked ?? []).map((u) => ({ key: `EXITS_UNCHECKED@${u.runId}`, every: null, since: u.at.slice(0, 10), text: `${file.ticker}：你寫的 ${u.pending} 條出場條件 AI 改寫好了，還沒勾選；勾選之後才會開始監測（${plusDays(u.at.slice(0, 10), REWRITE_DAYS)} 之後就不再列在持股頁）` }));
+    },
+  },
+  {
     // 論點檔是「只有預設」：每檔每 6 個月
     kind: 'NO_THESIS',
     detect({ file, view }) {
@@ -1073,7 +1107,7 @@ export function dueAttention(hits: AttnHit[], shown: Record<string, Record<strin
 }
 
 /** 存進月報、給畫面的形狀（拿掉頻率用的欄位）。 */
-export const toAttention = (x: AttnHit): Attention => ({ ticker: x.ticker, kind: x.kind, text: x.text, since: x.since, src: x.src ?? 'own' });
+export const toAttention = (x: AttnHit): Attention => ({ ticker: x.ticker, kind: x.kind, text: x.text, since: x.since, src: x.src ?? 'own', ...(x.link ? { link: x.link } : {}) });
 
 /**
  * 每日流程在產生月報前（own_thesis §3.6.6）：組每檔自選的論點檔、算這個月該列的，並更新 attnShown。

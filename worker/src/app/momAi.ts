@@ -14,6 +14,7 @@
 import type { PackDoc } from '../ai/check';
 import {
   ENTRY_CODE_TEXT,
+  replacements,
   MOM_ENTRY,
   NEW_EVIDENCE_TEXT,
   courtConcluded,
@@ -627,12 +628,16 @@ export async function prepareEntries(env: Env, fetcher: Fetcher, acct: Account, 
   return finish(resolveEntries(select, new Map([...existing].map(([t, r]) => [t, r.decision === 'PENDING' ? 'ALLOW' : r.decision]))));
 }
 
-/** 月報出了之後：被否決的記下由誰遞補（往前驗證「沒否決時的組合」用）。 */
-export async function recordReplacements(db: D1Database, month: string, added: string[]): Promise<void> {
+/**
+ * 月報出了之後：被否決的記下由誰遞補（往前驗證「沒否決時的組合」用）。
+ * 照排名配對（replacements；T34：原本把進場名單照項目順序一個一個配，沒有否決也會買的那幾檔會被記成遞補）。
+ * order：這份月報的排名；emptySlots：遞補者也被否決、留在核心的格數。
+ */
+export async function recordReplacements(db: D1Database, month: string, added: string[], order: string[] = [], emptySlots = 0): Promise<void> {
   const rows = (await loadReviews(db, month)).filter((r) => r.decision === 'VETO' || r.decision === 'BLOCK');
-  const fresh = added.filter((t) => !rows.some((r) => r.ticker === t));
-  for (const [k, r] of rows.entries()) {
-    const by = fresh[k] ?? '（留在核心）';
+  const map = replacements(order, added, rows.map((r) => r.ticker), emptySlots);
+  for (const r of rows) {
+    const by = map.get(r.ticker) ?? '（留在核心）';
     await db.prepare('UPDATE mom_reviews SET replaced_by = ? WHERE month = ? AND ticker = ?').bind(by, month, r.ticker).run();
   }
 }

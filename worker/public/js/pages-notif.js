@@ -486,7 +486,7 @@ function attentionBox(v) {
     'div',
     { class: 'glass pad', style: 'margin-top:16px' },
     h('h2', { class: 'panel-h' }, `持股有 ${v.attention.length} 件事要看（不用下單）`),
-    h('p', { class: 'small dim' }, '這些不是清單上的單，也不用回覆。點一行到那一檔的持股頁看。'),
+    h('p', { class: 'small dim' }, '這些不是清單上的單，也不用回覆；同一件事不會每個月都列。'),
     attentionList(v.attention, { groups: true }),
   );
 }
@@ -537,11 +537,19 @@ export async function notifPage(ctx, id) {
       // 要寫理由的項目選了不做卻沒寫：先在這裡擋下，打開那一張單（伺服器也會再檢查）
       const miss = v.items.filter((it) => !it.cancelled && it.reasonRequired && (mode === 'SKIP' || choices[it.key] === 'SKIP') && !(reasons[it.key] ?? '').trim());
       if (miss.length) {
-        msg.replaceChildren(errBox({ message: mode === 'SKIP' ? `${miss.map((it) => (it.reasonText ? '崩盤規則' : (it.ticker ?? it.headline))).join('、')} 這次不做要寫一句理由：先在那一項選「這次不做」（或「不同意，不動」）、寫下理由，再按一次。` : `${miss.map((it) => (it.reasonText ? '崩盤規則' : (it.ticker ?? it.headline))).join('、')} 選了不做，要寫一句理由。` }));
-        if (mode === 'SKIP') return msg.scrollIntoView({ block: 'center' });
+        const names = miss.map((it) => (it.reasonText ? '崩盤規則' : (it.ticker ?? it.headline))).join('、');
+        msg.replaceChildren(errBox({ message: mode === 'SKIP' ? `${names} 這次不做要寫一句理由：已經幫你打開${miss.length > 1 ? '第一項' : '那一項'}、選好不做，寫下理由再按一次「整則這次不做」。` : `${names} 選了不做，要寫一句理由。` }));
+        // 整則這次不做：直接打開那一項、選好「這次不做」（或「不同意，不動」），理由欄就會出現（T31b 留下的：原本只捲到錯誤訊息）
         const el = [...document.querySelectorAll('details.slip')][v.items.indexOf(miss[0])];
         if (el) {
           el.open = true;
+          const skip = el.querySelector('input[type="radio"][value="SKIP"]');
+          if (mode === 'SKIP' && skip && !skip.checked) {
+            skip.checked = true;
+            msg.dataset.keep = '1'; // 選項改了會重算清單，重算成功時不要把上面這句說明清掉
+            skip.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          el.scrollIntoView({ block: 'center' });
           el.querySelector('textarea')?.focus();
         }
         return;
@@ -575,7 +583,8 @@ export async function notifPage(ctx, id) {
           const { effect, ...next } = r;
           composed = next;
           drawTray(prev);
-          msg.replaceChildren();
+          if (msg.dataset.keep) delete msg.dataset.keep;
+          else msg.replaceChildren();
           // 史萊姆只講剛剛改的那一個選項造成的結果
           if (effect) say(effect, effect.mood === 'happy' ? 'hop' : 'jiggle');
         } catch (e) {

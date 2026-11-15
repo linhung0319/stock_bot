@@ -252,20 +252,19 @@ export function headline(text) {
 }
 
 /**
- * 「要看的事」（不用下單、不用回覆）：每一件一行，代號連到持股頁、後面是從哪天起。
- * 月報頁分「自選股」「動能持股」兩段（groups = true）；持股頁只有這一檔的，不分段。
+ * 「要看的事」（不用下單、不用回覆）：每一件一行字，下面一行小字是從哪天起與「看 X 的持股頁」（月報頁才有）。
+ * 整行不再是底線連結（讀起來重，T34）；集中度那一件連到文字開頭、占比最大的那一檔（link）。
+ * 月報頁分「自選股」「動能持股」兩段（groups = true）；持股頁只有這一檔的，不分段、不放連結。
  */
 export function attentionList(list, opt = {}) {
   if (!list?.length) return null;
-  // 文字本身就以代號開頭；月報頁整行連到那一檔的持股頁
-  const row = (x) =>
-    h(
-      'li',
-      { style: 'padding:8px 0;border-top:1px solid var(--line)' },
-      opt.link === false ? h('span', null, x.text) : h('a', { href: `#/h/${encodeURIComponent(x.ticker)}` }, x.text),
-      x.since ? h('div', { class: 'small faint' }, `${day(x.since, true)} 起`) : null,
-    );
-  const ul = (xs) => h('ul', { style: 'list-style:none;margin:6px 0 0;padding:0' }, xs.map(row));
+  const row = (x) => {
+    const tk = x.link ?? x.ticker;
+    const link = opt.link === false ? null : h('a', { href: `#/h/${encodeURIComponent(tk)}` }, `看 ${tk} 的持股頁`);
+    const since = x.since ? h('span', { class: 'faint' }, `${day(x.since, true)} 起`) : null;
+    return h('li', { class: 'attn' }, h('p', null, x.text), since || link ? h('p', { class: 'attn-meta' }, since, link) : null);
+  };
+  const ul = (xs) => h('ul', { class: 'attn-list' }, xs.map(row));
   if (!opt.groups) return ul(list);
   const own = list.filter((x) => (x.src ?? 'own') === 'own');
   const mom = list.filter((x) => x.src === 'mom');

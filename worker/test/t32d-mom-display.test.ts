@@ -119,7 +119,7 @@ describe('T32d：動能的「要看的事」（momAttention，§3.6）', () => {
   it('LATE_VETO：買進之後才回來的否決（月報已經填快照）才列；還沒回覆、已回覆還沒填快照（補推過）不列；沒有動能部位不列', () => {
     const late = review({ month: '2026-11', decision: 'ALLOW', source: 'AI', lateVerdict: 'VETO', reasonCode: 'ACCOUNTING', runId: 'r-late' });
     const done = momAttention(inputOf({ acct: acctOf({ notifs: [monthlyWith('DONE', undefined)] }), reviews: [late] }));
-    expect(done).toEqual([{ ticker: 'MU', kind: 'LATE_VETO', src: 'mom', key: 'LATE_VETO@2026-11', every: null, since: '2026-10-31', text: 'MU：進場審查在你買進之後回來，3 票否決（財報可信度）。出場照排名；不想留可以在帳戶頁排除 MU' }]);
+    expect(done).toEqual([{ ticker: 'MU', kind: 'LATE_VETO', src: 'mom', key: 'LATE_VETO@2026-11', every: null, since: '2026-10-31', text: 'MU：進場審查在你買進之後回來，3 票否決（財報可信度）。出場照排名；不想留的話，自己賣掉、填快照時記在動能，下次月報再列 MU 時按「排除」' }]);
     expect(momAttention(inputOf({ acct: acctOf({ notifs: [monthlyWith('PENDING', '補推的文字')] }), reviews: [late] }))).toEqual([]);
     expect(momAttention(inputOf({ acct: acctOf({ notifs: [monthlyWith('RESPONDED', '提醒的文字')] }), reviews: [late] }))).toEqual([]);
     expect(momAttention(inputOf({ acct: acctOf({ lots: {}, held: [], notifs: [monthlyWith('DONE', undefined)] }), reviews: [late] }))).toEqual([]);

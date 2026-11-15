@@ -194,6 +194,8 @@ export function concentrationHits(acct: Account, view: MarketView): ConcHit[] {
   return concentrationGroups(acct, view).map((g) => {
     const names = g.members.map((m) => m.ticker).sort();
     const anchor = g.members.filter((m) => m.own).map((m) => m.ticker).sort()[0];
-    return { ticker: anchor, kind: 'CONCENTRATION', src: 'own' as const, key: `CONCENTRATION:${names.join('+')}`, every: 3, since: '', text: concentrationText(g), members: names };
+    // 文字以占比最大的開頭：點這一行去占比最大的那一檔自選（members 是市值大的在前）
+    const link = g.members.find((m) => m.own)!.ticker;
+    return { ticker: anchor, kind: 'CONCENTRATION', src: 'own' as const, key: `CONCENTRATION:${names.join('+')}`, every: 3, since: '', text: concentrationText(g), members: names, ...(link !== anchor ? { link } : {}) };
   });
 }

@@ -33,8 +33,8 @@ async function copyDiscussion(btn, ticker, notif) {
 }
 
 /** 「複製討論包」按鈕（持股頁、編輯論點頁；乙類通知的「拿去討論」在 T29a 用同一個，帶通知編號）。 */
-export function copyPackButton(ticker, notif = null, label = '複製討論包') {
-  const b = actionButton(label, '', () => copyDiscussion(b, ticker, notif).catch((e) => toast(e.message)));
+export function copyPackButton(ticker, notif = null, label = '複製討論包', cls = '') {
+  const b = actionButton(label, cls, () => copyDiscussion(b, ticker, notif).catch((e) => toast(e.message)));
   return b;
 }
 
@@ -85,9 +85,9 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     const r = { input, sel, guessed: !!x.guessed };
     const el = h(
       'div',
-      { style: 'margin-top:8px' },
-      h('div', { style: rowStyle }, input, removeBtn(() => { exits.splice(exits.indexOf(r), 1); el.remove(); })),
-      h('div', { class: 'btn-row', style: 'margin-top:6px;gap:8px' }, h('span', { class: 'small' }, '成立時'), sel, x.guessed ? h('span', { class: 'chip warn' }, '動作沒寫或不認得，先當成重新審查') : null),
+      { class: 'exit-row' },
+      h('div', { style: rowStyle.replace('margin-top:8px', 'margin-top:0') }, input, removeBtn(() => { exits.splice(exits.indexOf(r), 1); el.remove(); })),
+      h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, '成立時'), sel, x.guessed ? h('span', { class: 'chip warn' }, '動作沒寫或不認得，先當成重新審查') : null),
     );
     exits.push(r);
     exitList.append(el);
@@ -151,7 +151,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       try {
         const r = await api.post('/ops/own-thesis', { ...payload(), dry: true });
         const p = r.preview;
-        const line = (label, xs, warn) => (xs.length ? h('div', { style: 'margin-top:4px' }, h('b', { style: warn ? 'color:var(--hot)' : null }, label), xs.map((x) => `${x.id} ${x.text}`).join('；')) : null);
+        // 一條一行（T34 整理：原本用分號接成一段）
+        const line = (label, xs, warn) => (xs.length ? h('div', { style: 'margin-top:6px' }, h('b', { style: warn ? 'color:var(--hot)' : null }, label), h('ul', { class: 'diff-list' }, xs.map((x) => h('li', null, h('span', { class: 'st' }, x.id), h('span', null, x.text))))) : null);
         put(
           diff,
           h('b', null, '存檔後的前提'),
@@ -198,6 +199,11 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
           ),
         );
         say({ k: '存好了，但…', say: ['論點存好了；', { t: '出場條件還沒送去改寫', tone: 'em' }, '，可以按「重送」。'], mood: 'worry' });
+        // 頁首跟著改成存好的這一版（T27 留下的：原本還寫「還沒有論點本文」）
+        const kicker = document.querySelector('.banner .kicker');
+        if (kicker) kicker.textContent = `第 ${r.preview.version} 版，${day(d.date)} 定`;
+        const sub = document.querySelector('.banner .sub');
+        if (sub) sub.textContent = '論點與前提已經存好；出場條件還沒送去改寫，按「重送」或回持股頁再送。';
         window.scrollTo({ top: 0 });
         return;
       }

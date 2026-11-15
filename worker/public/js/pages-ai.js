@@ -200,7 +200,7 @@ export function crashLogBlock(log) {
         'scroll-x',
         h(
           'table',
-          { class: 'plain' },
+          { class: 'plain crash-log' },
           h('thead', null, h('tr', null, ['月份、方向', 'AI 檢視', '你的選擇', '1 個月後', '3 個月後', '6 個月後'].map((x) => h('th', null, x)))),
           h(
             'tbody',
@@ -334,18 +334,28 @@ function actionSelect(value, onchange) {
   return h('select', { style: 'width:auto;min-height:36px;padding:4px 10px', onchange }, COND_ACTIONS.map(([v, t]) => h('option', { value: v, selected: v === value }, t)));
 }
 
-/** 一條條件：文字與狀態、誰定的與怎麼確認、進度、說明；controls 是這一條能做的事。 */
+/**
+ * 一條條件：文字與狀態、誰定的與怎麼確認、進度條、說明；controls 是這一條能做的事。
+ * 狀態標籤和「怎麼確認」相同時（只在定期審查時檢查、只記錄）只寫一次（T24 留下的重複，T34 整理）。
+ */
 function condRow(c, controls) {
   const tone = c.code === 'MET' ? 'hot' : c.code === 'ACTIVE' ? 'ok' : c.code === 'PROPOSED' ? 'now' : '';
+  const how = c.confirm && c.confirm !== c.status ? (c.code === 'PROPOSED' ? `勾選後${c.confirm}` : c.confirm) : null;
   return h(
     'div',
-    { style: 'padding:10px 0;border-top:1px solid var(--line)' },
-    h('div', { style: 'display:flex;gap:10px;align-items:flex-start;justify-content:space-between' }, h('b', { style: 'font-weight:500' }, c.text), h('span', { class: 'chip ' + tone }, c.status)),
-    h('div', { class: 'small dim', style: 'margin-top:4px' }, [c.origin, c.kind, c.confirm].filter(Boolean).join(' · ')),
-    c.progress ? h('div', { class: 'small', style: 'margin-top:2px' }, c.progress) : null,
-    c.note ? h('div', { class: 'small faint', style: 'margin-top:2px' }, c.note) : null,
-    controls ? h('div', { class: 'btn-row', style: 'margin-top:8px;gap:8px' }, controls) : null,
+    { class: 'cond' },
+    h('div', { class: 'cond-h' }, h('b', null, c.text), h('span', { class: 'chip ' + tone }, c.status)),
+    h('p', { class: 'small dim', style: 'margin-top:4px' }, [c.origin, c.kind ? `${c.kind}條件` : null, how].filter(Boolean).join('；')),
+    c.steps ? stepsBar(c.steps) : null,
+    c.progress ? h('p', { class: 'small', style: 'margin-top:2px' }, c.progress) : null,
+    c.note ? h('p', { class: 'small faint', style: 'margin-top:2px' }, c.note) : null,
+    controls ? h('div', { class: 'btn-row cond-ctl' }, controls) : null,
   );
+}
+
+/** 財報條件的進度條（§3.6.2；要連續 N 季的才有）：一季一段，左到右是時間順序，已符合的段落標那一季的數值。 */
+function stepsBar(s) {
+  return h('div', { class: 'qbar', role: 'img', 'aria-label': `要連續 ${s.need} 季，已經 ${s.done} 季符合` }, s.labels.map((l, k) => h('span', { class: k < s.done ? 'on' : null }, l)));
 }
 
 /** 條件的操作（勾選、撤下、改動作）：成功就重畫這一頁，失敗把原因寫在 msg。 */
@@ -369,7 +379,7 @@ export function ownMonitor(ctx, d) {
   const msg = h('div');
   if (owned.length)
     out.push(
-      h('h5', { style: 'margin-top:12px' }, `你定的條件（會通知的 ${live}／${MAX_OWNED} 條）`),
+      h('h5', { style: 'margin-top:4px' }, `你定的（會通知的 ${live}／${MAX_OWNED} 條）`),
       h('p', { class: 'small dim' }, '成立時照你選的動作通知你；之後的審查不會換掉它們。價格條件只記錄。'),
       owned.map((c) =>
         condRow(
@@ -387,7 +397,7 @@ export function ownMonitor(ctx, d) {
     );
   if (proposed.length)
     out.push(
-      h('h5', { style: 'margin-top:16px' }, `AI 建議的條件（${proposed.length} 條，你還沒勾選）`),
+      h('h5', { style: 'margin-top:18px' }, `AI 建議的（${proposed.length} 條，你還沒勾選）`),
       h('p', { class: 'small dim' }, `沒勾選的不會自己發通知，只給下一次審查參考；勾選之後才監測，成立時通知你。下一次審查寫了新的建議時，沒勾的會過期。${live >= MAX_OWNED ? `你定的條件已經 ${MAX_OWNED} 條，要先撤下一條才能再勾。` : ''}`),
       proposed.map((c) => {
         let act = c.action;
@@ -462,14 +472,14 @@ function rewriteBlock(ctx, d) {
         return { x, box, get act() { return act; }, sel: x.manual ? null : actionSelect(act, (e) => (act = e.target.value)) };
       });
     out.push(
-      h('h5', { style: 'margin-top:16px' }, `AI 改寫的出場條件（${day2(c.createdAt)} 送出，${rows.length} 條還沒勾）`),
-      h('p', { class: 'small dim' }, '勾選的才會開始監測，成立時照你選的動作通知你。'),
+      h('h5', { style: 'margin-top:18px' }, `AI 改寫回來、你還沒勾的（${day2(c.createdAt)} 送出，${rows.length} 條）`),
+      h('p', { class: 'small dim' }, '勾選的才會開始監測，成立時照你選的動作通知你。沒勾的 30 天後就不再列在這裡。'),
       rows.map((r) =>
         h(
           'div',
-          { style: 'padding:10px 0;border-top:1px solid var(--line)' },
-          h('label', { style: 'display:flex;gap:10px;align-items:flex-start' }, r.box, h('span', null, h('b', { style: 'font-weight:500' }, r.x.text), r.x.from ? h('div', { class: 'small faint' }, `你寫的：${r.x.from}`) : null, h('div', { class: 'small dim' }, r.x.then))),
-          r.sel ? h('div', { class: 'btn-row', style: 'margin-top:6px;gap:8px' }, h('span', { class: 'small' }, '成立時'), r.sel) : null,
+          { class: 'cond' },
+          h('label', { class: 'check-row', style: 'margin:0' }, r.box, h('span', null, h('b', { style: 'font-weight:500' }, r.x.text), r.x.from ? h('span', { class: 'small faint', style: 'display:block' }, `你寫的：${r.x.from}`) : null, h('span', { class: 'small dim', style: 'display:block' }, r.x.then))),
+          r.sel ? h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, '成立時'), r.sel) : null,
         ),
       ),
       c.summary ? h('p', { class: 'small faint', style: 'margin-top:6px' }, c.summary) : null,
