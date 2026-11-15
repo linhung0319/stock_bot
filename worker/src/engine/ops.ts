@@ -31,7 +31,7 @@ import {
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
-import { KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, composeNotif, monthlyReport, monthlyWait, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
+import { KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, composeNotif, crashReviewOf, monthlyReport, monthlyWait, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
 import type { Bucket } from './types';
 
@@ -165,15 +165,19 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
     const rule = it.choices.find((c) => c.id === it.ruleChoice);
     const ai = it.choices.find((c) => c.id === 'AI');
     const act = it.choices.find((c) => c.id === it.choice);
-    const tickers = it.ticker ? [it.ticker] : [...new Set((rule?.lines ?? []).map((l) => l.ticker))];
+    const crash = isCrashItem(it);
+    // 崩盤項目（core_ai §3.4）：照做那一行的每一檔都記（VOO、短債、動能那幾檔）；AI 的意見來自檢視的狀態（三票一致才有，延後 = 0 股）
+    const cr = crash ? crashReviewOf(it) : undefined;
+    const tickers = it.ticker && !crash ? [it.ticker] : [...new Set((rule?.lines ?? []).map((l) => l.ticker))];
     for (const tk of tickers) {
+      const ruleSh = sumFor(rule?.lines ?? [], tk);
       const rec = {
         date: view.date,
         f: it.f,
         ticker: tk,
         title: it.title,
-        rule: sumFor(rule?.lines ?? [], tk),
-        ai: ai ? sumFor(ai.lines, tk) : null,
+        rule: ruleSh,
+        ai: crash ? (cr?.state === 'OPINION' && cr.opinion ? (cr.opinion === '照做' ? ruleSh : 0) : null) : ai ? sumFor(ai.lines, tk) : null,
         actual: sumFor(act?.lines ?? [], tk),
         price: view.close[tk] ? priceOf(view, tk) : 0,
         choice: it.choice,
@@ -182,7 +186,8 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
         ...(it.reason ? { note: it.reason } : {}),
       };
       // 慢規則項目上 AI 的那一行可能只是「同意減半」「沒有一致結論」（沒有另一個選項）：照規則做了就不用記
-      if (rec.ai !== null || rec.actual !== rec.rule || (it.aiLine && it.kind !== 'OWN_RULE')) acct.shadow.push(rec);
+      // 崩盤項目一律記（每一次切換都有紀錄，§3.4）
+      if (crash || rec.ai !== null || rec.actual !== rec.rule || (it.aiLine && it.kind !== 'OWN_RULE')) acct.shadow.push(rec);
       // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒（崩盤項目在下面另外記）
       if (it.kind === 'STRATEGY' && it.choice === 'SKIP' && rec.rule !== 0 && !isCrashItem(it)) acct.mom.owe[tk] = { since: view.date, notif: n.id };
     }

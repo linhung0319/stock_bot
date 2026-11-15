@@ -26,6 +26,7 @@
 | T32c | 完成 | （見 git log） | 566 通過、1 略過 |
 | T32b | 完成 | （見 git log） | 579 通過、1 略過 |
 | T33c | 完成 | （見 git log） | 586 通過、1 略過 |
+| T33b | 完成 | （見 git log） | 602 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -187,6 +188,16 @@
 - T33c｜理由欄先填「照 AI 檢視：延後」用 `aiLine === 'AI 檢視：延後'` 判斷（T33b 還沒做 `crashReview`）。重列項目的影子紀錄照現有寫法，`ai` 欄留給 T33b。
 - T33c｜全站共用的 `.pick .what` 拿掉 `nowrap`（長的股數文字會把「沒選就是這個」擠成直排）；短的選項看起來不變。
 - T33c｜範圍外留著：月報裡有 F5（即使選了這次不做）時 `composeNotif` 照樣一半一半分多的錢（T33a 的 `halfUpTo`），短債可能多一些；下個月重列用現值重算，結果不會錯。
+- T33b｜補開、決定不開或已滿 3 次之後，用 `patchAccount` 把月報那一項的 `crashReview` 改成 PENDING／NO_DATA／FAILED（月報等推看這一欄）。
+- T33b｜失敗告警在 `applyCrashReview` 推：只有這筆是最新的第 2 或第 3 次失敗、而且沒有任何跑完的執行時才推（不另存計數）；預估了但訊號日沒切換時，告警裡「下一次流程會再開一次」不準。
+- T33b｜03:30 之後才回來的只放網站：套用時間晚於訊號日隔天 12:00 UTC 就標成講過了、不補推（月報補做晚一天時這個截止點偏早）。
+- T33b｜NO_DATA = 沒有任何執行而且這個月份的儀表板可用序列不到 6 個；AI 層沒設定時一律算 OFF。舊的儀表板沒有 `stale` 欄位時載入照 `asOf` 補算（市場資料相容）。
+- T33b｜FAILED 只有 1 次時寫「沒有結論（逾時）」；原因寫白話。
+- T33b｜「回覆之後才回來」時直接改 `shadow_records.body` 補上 null 的 ai（設計明寫的例外；匯出是只接新列，事後補的不會重新匯出）。
+- T33b｜重列項目的影子 ai 是 null，照樣列在檢視紀錄表、標「上次沒做，再列」，不算在「切換過 N 次」。§3.1「預估了但沒用到」做在 AI 紀錄的顯示、不存欄位。
+- T33b｜每月評語照舊開（拿掉在 T33d），01:30 不開每月評語。
+- T33b｜手機寬度的檢視紀錄表表頭（「1 個月後」等）會擠成直排；改不換行會讓整頁可以左右捲，所以照原樣，留給 T34。
+- T33b｜**意外**：subagent 關本機站時比對條件寫太寬，誤關了使用者 Chrome 的 2 個子行程（PID 19420、19332；Chrome 主程式還在，可能是某個分頁或擴充功能當掉）。之後的派工單已加「只用確定的 PID 關、不要用條件比對命令列」。
 
 ## 要使用者親手做的事
 
@@ -205,6 +216,8 @@
 - T29c｜`own_earnings_v1.md` 由雲端排程從 repo 讀，push 之後生效；部署後才開始跑。
 - T31b｜`own_drop_v2.md` 由雲端排程從 repo 讀，push 之後生效。部署後減半通知在 23:30 可能先不推、01:30 才推，03:30 可能補推一行。
 - T32b｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0014_mom_reviews_entry.sql`。`mom_entry_v2.md` 與修改過的 `event_scan_v2.md` 由雲端排程從 repo 讀，push 之後生效。
+- T33b｜部署後才生效：01:30 會重抓 FRED、重開崩盤檢視；月報補開檢視時 LINE 等 01:30 才推、03:30 可能補推一行；新告警 `CRASH_REVIEW_FAILED`、`MACRO_MISSING`。
+- T33b｜（T33b 的意外）如果 Chrome 有分頁或擴充功能顯示當掉，重新整理或重開即可。
 
 ## 畫面截圖
 
@@ -241,6 +254,9 @@
 | T33c | 重列的 F6 項目與月報狀態文字（桌機／手機） | `records/stage8/screens/T33c/relist-desktop.png、relist-phone.png` |
 | T33c | 重列項目選「這次不做」的理由欄（桌機／手機） | `records/stage8/screens/T33c/relist-skip-reason-desktop.png、relist-skip-reason-phone.png` |
 | T33c | 帳戶頁崩盤規則那一格「短債還沒換回」（桌機／手機） | `records/stage8/screens/T33c/account-desktop.png、account-phone.png` |
+| T33b | 崩盤項目上那一列的七種狀態：有意見、沒有意見、還在檢視、沒有結論、總經資料抓不到、AI 沒開、回覆之後才回來（桌機／手機） | `records/stage8/screens/T33b/item-{opinion,no-opinion,pending,failed,no-data,off,late}-{desktop,phone}.png` |
+| T33b | 整頁月報（桌機／手機） | `records/stage8/screens/T33b/monthly-opinion-full-desktop.png、monthly-opinion-full-phone.png` |
+| T33b | AI 紀錄分頁：崩盤檢視紀錄表與總經儀表板（桌機／手機） | `records/stage8/screens/T33b/ai-records-desktop.png、ai-records-phone.png` |
 
 ## 卡住的任務
 

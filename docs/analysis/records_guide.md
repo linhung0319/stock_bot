@@ -37,6 +37,7 @@ Worker 端是 `GET /admin/export`（`ADMIN_TOKEN` 的 Bearer；`worker/src/app/e
 | `ai_tasks` | 雲端任務依種類的結局；`pass_ratio` = done ÷（done ＋ rejected ＋ late）；逾時分「沒有來取證據包」與「取了沒送回」 |
 | `ai_rejections` | 被退回（REJECTED）或逾時才送到（LATE）的輸出 |
 | `checkpoints` | 月底檢查點（自選定期審查，T31a）：每個月審了幾檔（`reviewed`，有新證據）、跳過幾檔（`skipped`，沒有新證據）、有新證據但沒開成（`not_started`）、`skip_ratio`；`never`／`filing`／`event`／`thesis`／`stale`／`unknown` = 開了審查的那幾檔各有幾檔帶這個原因。資料在 `flow_state` 的 `review:checkpoint:<年月>` |
+| `crash_reviews` | 崩盤規則的切換與 AI 檢視（T33b）：期間內每一次切換一列（月報訊號日在期間內；重列的那一項不算）——`month`、`direction`（ON 啟動／OFF 解除）、`notif`、`state`（月報那一項現在的檢視狀態：OPINION 有意見、NO_OPINION 沒有意見、PENDING、FAILED、NO_DATA 總經資料不足、OFF）、`kind`（PREVIEW 月報前一天預估、MAKEUP 月報之後補開）、`runs`（這個月份＋方向開了幾次）、`no_conclusion`（沒有結論幾次）、`followups`（03:30 補推幾次）。合計列多一欄 `switches`（切換次數） |
 
 每段最後一列的第一欄是「合計」；比例是 0～1 的小數、分母是 0 時是 null。
 
@@ -79,7 +80,7 @@ records/                         ← .gitignore，不進 repo
 | 表 | 內容 | 拉法 | 分析用途 |
 |---|---|---|---|
 | `notifications` | 每則通知（`body` 是完整 JSON：項目、選項、清單、你的回覆、狀態） | 會改 | 系統建議了什麼、你選了哪個選項 |
-| `shadow_records` | 沒照做的紀錄：照規則、照 AI、實際的股數變動、當時價格、你的選擇與理由 | 只增加 | **照做與沒照做的後果**：把三種股數乘上之後的價格 |
+| `shadow_records` | 沒照做的紀錄：照規則、照 AI、實際的股數變動、當時價格、你的選擇與理由。崩盤項目（F5／F6）每一次切換、每一檔都記（T33b） | 只增加（例外：崩盤規則檢視在你回覆之後才回來時，那則通知的 F5／F6 紀錄 `ai` 由 null 補上、`note` 後面加「（AI 檢視在回覆之後才回來）」） | **照做與沒照做的後果**：把三種股數乘上之後的價格 |
 | `ledger_events` | 帳本事件：交易、轉桶、入金出金、股利、手動交易的分類與理由 | 只增加 | 實際做了什麼、錢怎麼流 |
 | `snapshots` | 你填的每份快照（每檔股數＋現金） | 只增加 | 真實持股的時間序列 |
 | `account_state` | 目前帳戶（不含通知、帳本、影子紀錄） | 會改（一列） | 目前狀態、設定 |

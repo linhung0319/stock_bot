@@ -1,6 +1,6 @@
 // 待辦與紀錄、通知頁（三步驟：看建議與理由 → 下單 → 填快照）、填快照。
 import { api, getMode } from './api.js';
-import { aiOverview, runRow, shadowLines } from './pages-ai.js';
+import { aiOverview, crashLogBlock, runRow, shadowLines } from './pages-ai.js';
 import { actionText, day, h, money, put, qty, toast } from './dom.js';
 import { consoleBox, glass, icon, longDay, menuList, page, tiles } from './layout.js';
 import { actParts, attentionList, bucketTag, chevron, headline, orderRows, whyBlock } from './parts.js';
@@ -80,7 +80,7 @@ function records(hist, initial = 0) {
     ['全部', () => [...hist.notifs.map((n) => ({ date: n.date, el: () => historyRow(n) })), ...hist.events.filter((e) => !e.notif).map((e) => ({ date: e.date, el: () => eventRow(e) }))].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)), '還沒有紀錄。'],
     ['通知', () => hist.notifs.map((n) => ({ el: () => historyRow(n) })), '還沒有通知。'],
     ['帳本', () => hist.events.map((e) => ({ el: () => eventRow(e) })), '帳本還沒有變動。'],
-    ['AI 紀錄', () => (hist.runs ?? []).map((r) => ({ el: () => runRow(r) })), '還沒有 AI 紀錄。AI 層設定好之後，每一次審查、否決、檢視都會留在這裡：看了哪些資料、每一票怎麼判、哪些引用通過檢查。', aiOverview],
+    ['AI 紀錄', () => (hist.runs ?? []).map((r) => ({ el: () => runRow(r) })), '還沒有 AI 紀錄。AI 層設定好之後，每一次審查、否決、檢視都會留在這裡：看了哪些資料、每一票怎麼判、哪些引用通過檢查。', () => h('div', null, crashLogBlock(hist.crashLog), aiOverview())],
   ];
   const showList = (rows, empty, top) => {
     const head = top ? top() : null;

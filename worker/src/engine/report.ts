@@ -15,6 +15,7 @@ import {
   type Choice,
   type CondNotice,
   type CoreOwe,
+  type CrashReviewInfo,
   type DropStatus,
   type Item,
   type MarketView,
@@ -311,7 +312,7 @@ export function refreshOwnAiChoice(acct0: Account, view: MarketView, ticker: str
 }
 
 /** 把規則的計畫（每一格的目標金額）變成清單項目。 */
-function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values: Record<string, number>, ctx: { crashOpinion?: string; ownNotes?: Record<string, string>; coreBefore: CoreContext; runIds?: MonthlyContext['runIds'] }): Item[] {
+function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values: Record<string, number>, ctx: { crashReview?: CrashReviewInfo; ownNotes?: Record<string, string>; coreBefore: CoreContext; runIds?: MonthlyContext['runIds'] }): Item[] {
   const lines = planToLines(plan, values, { price: (t) => priceOf(view, t), shares: shareCells(acct) });
   const items: Item[] = [];
   const crashLines: OrderLine[] = [];
@@ -379,8 +380,8 @@ function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values
         ticker: acct.cfg.coreTicker,
         title: on ? '崩盤規則啟動：核心一半換短債、動能部位減半' : '崩盤規則解除：短債換回核心 ETF、動能部位恢復',
         choices: [{ id: 'DO', label: '照做', lines: [...core, ...crashLines] }],
-        aiLine: ctx.crashOpinion ? `AI 檢視：${ctx.crashOpinion}` : undefined,
-        ...(ctx.crashOpinion && ctx.runIds?.crash ? { runIds: [ctx.runIds.crash] } : {}),
+        // 檢視的狀態（core_ai §3.2）：aiLine 只在三票一致時寫（LINE 讀它）；runIds 只要有執行就帶
+        ...crashReviewFields(ctx.crashReview, ctx.runIds?.crash),
         why: on ? '核心 ETF 前一日收盤低於 200 日均線' : '核心 ETF 前一日收盤回到 200 日均線之上',
         // 「這次不做」要寫一句理由（core_ai §3.6；整則月報選這次不做時也要）
         reasonRequired: true,
@@ -393,6 +394,43 @@ function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values
     items.push(makeItem({ f: 'F4', kind: 'STRATEGY', title: '動能部位調整（依波動度減碼）', choices: [{ id: 'DO', label: '照做', lines: volLines }], why: plan.vol?.ratio != null ? `σ̃/σ = ${plan.vol.ratio.toFixed(2)}` : undefined }));
   }
   return items;
+}
+
+// ---------------------------------------------------------------- 崩盤規則檢視的狀態（core_ai §3.2）
+
+/** 月報輸入裡的檢視狀態；舊月報只有 crashOpinion → 當成 { state: 'OPINION', opinion }。 */
+export function monthlyCrashReview(input: Pick<MonthlyContext, 'crashReview' | 'crashOpinion'>): CrashReviewInfo | undefined {
+  if (input.crashReview) return input.crashReview;
+  return input.crashOpinion ? { state: 'OPINION', opinion: input.crashOpinion } : undefined;
+}
+
+/** F5／F6 項目上和檢視有關的欄位：crashReview；aiLine 只在 OPINION 時寫；runIds 只要有執行就帶（舊月報用 runIds.crash）。 */
+function crashReviewFields(info: CrashReviewInfo | undefined, legacyRun?: string): Pick<Item, 'crashReview' | 'aiLine' | 'runIds'> {
+  if (!info) return {};
+  const runId = info.runId ?? legacyRun;
+  return { crashReview: clone(info), ...(info.state === 'OPINION' && info.opinion ? { aiLine: `AI 檢視：${info.opinion}` } : {}), ...(runId ? { runIds: [runId] } : {}) };
+}
+
+/**
+ * 月報之後才回來的檢視結果寫進 F5／F6 項目（core_ai §3.2 的 applyCrashReview 第 3 步；直接改傳進來的通知）：
+ * crashReview、aiLine、runIds 換成新的，通知的 runIds 跟著重算。回傳有沒有改。
+ */
+export function setCrashReview(n: Notif, it: Item, info: CrashReviewInfo): boolean {
+  const before = JSON.stringify([it.crashReview, it.aiLine, it.runIds]);
+  const f = crashReviewFields(info);
+  it.crashReview = f.crashReview;
+  if (f.aiLine) it.aiLine = f.aiLine;
+  else delete it.aiLine;
+  if (f.runIds) it.runIds = f.runIds;
+  syncRunIds(n);
+  return before !== JSON.stringify([it.crashReview, it.aiLine, it.runIds]);
+}
+
+/** F5／F6 項目上的檢視狀態；舊通知沒有 crashReview 時由 aiLine 推回（「AI 檢視：照做／延後」= 三票一致）。 */
+export function crashReviewOf(it: Pick<Item, 'crashReview' | 'aiLine'>): CrashReviewInfo | undefined {
+  if (it.crashReview) return it.crashReview;
+  const m = /^AI 檢視：(照做|延後)$/.exec(it.aiLine ?? '');
+  return m ? { state: 'OPINION', opinion: m[1] as '照做' | '延後' } : undefined;
 }
 
 // ---------------------------------------------------------------- 崩盤項目「這次不做」之後（core_ai §3.6）
@@ -697,7 +735,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   acct.rule = plan.state;
   for (const tk of Object.keys(ownActions)) acct.own[tk].pending = null;
   acct.mom.owe = {};
-  let items = itemsFromPlan(acct, view, plan, values, { coreBefore, ownNotes, crashOpinion: input.crashOpinion, runIds: input.runIds });
+  let items = itemsFromPlan(acct, view, plan, values, { coreBefore, ownNotes, crashReview: monthlyCrashReview(input), runIds: input.runIds });
   // 崩盤項目上次選了「這次不做」（core_ai §3.6）：規則還在同一個狀態就再列一次核心的單
   const relisted = applyCoreOwe(acct, items, plan.crashChanged, coreBefore);
   // 任務 A：進場那一項的說明（准許，附註、法庭的結論、沿用、還在審…；momentum_ai §3.3）。舊月報只有觀察理由

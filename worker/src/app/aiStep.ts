@@ -18,10 +18,11 @@ import { DROP_EXPLAIN, OWN_DROP } from '../ai/drops';
 import { EVENT_SCAN, HARD_EVENT, type ScanTarget } from '../ai/events';
 import { MOM_ENTRY } from '../ai/momEntry';
 import { OWN_EARNINGS } from '../ai/earnings';
+import { CRASH_REVIEW } from '../ai/crash';
 import { OWN_CONDITION, OWN_REVIEW } from '../ai/ownReview';
 import { guard, type Applier, type ApplyCtx, type FlowExtras, type StartCtx, type StepResult } from './aiCtx';
 import { closeStaleRuns, getRun, listRuns } from './aiRuns';
-import { startCrashRuns } from './crashAi';
+import { applyCrashReview, startCrashRuns } from './crashAi';
 import { applyDropExplain, applyOwnDrop, markDropNone, startDropRuns } from './dropAi';
 import { applyOwnEarnings, startOwnEarnings } from './earningsAi';
 import type { Env, Fetcher } from './env';
@@ -39,7 +40,7 @@ import { endDisputes } from '../engine';
 
 export type { StepResult as AiStepResult } from './aiCtx';
 
-/** 各功能的結論怎麼套用（沒有登記的功能只標成已套用：擬事件打分、崩盤檢視、策略檢討、健檢只記錄或由別處讀）。 */
+/** 各功能的結論怎麼套用（沒有登記的功能只標成已套用：擬事件打分、策略檢討、健檢只記錄或由別處讀）。 */
 export const APPLIERS: Record<string, Applier> = {
   [OWN_REVIEW]: applyOwnReview,
   [OWN_CONDITION]: applyOwnCondition,
@@ -49,6 +50,8 @@ export const APPLIERS: Record<string, Applier> = {
   [MOM_ENTRY]: applyMomEntry,
   [OWN_DROP]: applyOwnDrop,
   [DROP_EXPLAIN]: applyDropExplain,
+  // 崩盤規則檢視：月報之後才回來的結果更新那一項、連續沒有結論的告警（core_ai §3.2、§3.1）
+  [CRASH_REVIEW]: applyCrashReview,
 };
 
 /** 套用之後、沒有 startNew 時另外開的執行（01:30 的 finalStarts）。 */

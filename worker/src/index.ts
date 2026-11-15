@@ -15,7 +15,7 @@ import { getFlowState, ingest, pushPending, recentFlowRuns, runFlow, sendTestPus
 import { loadAccount, requiredTickers } from './app/ledgerStore';
 import { startOwnReview } from './app/ownAi';
 import { entryEvidence } from './app/momAi';
-import { buildSnapshot, saveSnapshot } from './app/crashAi';
+import { buildSnapshot, macroMonthOf, saveSnapshot } from './app/crashAi';
 import { entryRuleVerdict } from './ai/momEntry';
 import { buildMarketView } from './data/marketView';
 import { lineConfigured } from './app/line';
@@ -24,7 +24,7 @@ import { probeSummary, runProbe, saveProbe } from './app/probe';
 import { handleSite } from './app/site/api';
 import { handleLineLogin } from './app/site/lineLogin';
 import { APPLY_CRON, FINAL_CRON, INGEST_CRON, attemptOfCron } from './app/schedule';
-import { loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
+import { loadCalendarOverrides, loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
 export const VERSION = '0.13.1';
 
@@ -148,7 +148,8 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
       const session = series.get(loaded.acct.cfg.coreTicker)?.d.at(-1);
       if (!session) return json({ error: '還沒有價格資料' }, 409);
       const built = buildMarketView(series, session, loaded.acct.cfg.coreTicker);
-      const snap = await buildSnapshot(env.DB, fetcher, loaded.acct, built.view, session.slice(0, 7));
+      // 月份標籤和排程一致（core_ai §3.5）：月報前一天與訊號日用 monthOfSignal，其他日子用當月
+      const snap = await buildSnapshot(env.DB, fetcher, loaded.acct, built.view, macroMonthOf(session, await loadCalendarOverrides(env.DB)));
       await saveSnapshot(env.DB, snap, now);
       return json(snap);
     }

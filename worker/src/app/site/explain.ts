@@ -14,6 +14,7 @@ import {
   totalValue,
   trailingReturn,
   type Account,
+  type CrashReviewInfo,
   type Item,
   type MarketView,
   type Notif,
@@ -412,7 +413,7 @@ function crash(ctx: ExplainContext, n: Notif, it: Item): Explain {
     rule: RULE.crash,
     facts: [
       { label: '2000–2026 啟動過', value: '17 次', note: '3 次是真的空頭（買回時便宜 13～34%）；13 次買回時更貴（+2～+14%）。多付的那幾次就是保險費。' },
-      ...(it.aiLine ? [{ label: 'AI 檢視', value: it.aiLine.replace(/^AI 檢視：/, ''), note: 'AI 的意見只供參考並記錄，不能否決或延後這條規則。' }] : []),
+      ...crashFacts(it),
     ],
     math: it.choices[0].lines.map((l) => `${BUCKET_NAME[l.bucket]} ${l.ticker}：${sharesText(l.shares)}`),
     chart: core,
@@ -420,6 +421,52 @@ function crash(ctx: ExplainContext, n: Notif, it: Item): Explain {
     aiMissing: !!it.aiLine && !note,
     choiceNotes: { DO: on ? '核心與動能一起減半；全系統只有這條規則會把錢放到短債。' : '短債全部換回核心 ETF，動能買回原本的比例。', SKIP: CRASH_SKIP },
   };
+}
+
+/** OPINION 那一列的備註。 */
+const CRASH_AI_NOTE = 'AI 的意見只供參考並記錄，不能否決或延後這條規則。';
+
+/**
+ * 「AI 檢視」那一列的值（core_ai §3.3）：照做（3 票一致）、沒有意見（照做 2、延後 1）、進行中、2 次都沒有結論（逾時、被退回）、
+ * 沒有：總經資料抓不到、沒有開；有 basis 時接「；依 11/27 收盤預估時做的」或「；月報之後補開的」，晚到的再接「；在你決定之後才回來」。
+ */
+export function crashReviewText(cr: CrashReviewInfo): string {
+  const fails = cr.fails ?? [];
+  const base =
+    cr.state === 'OPINION'
+      ? `${cr.opinion ?? '—'}（${cr.votes ?? '3 票一致'}）`
+      : cr.state === 'NO_OPINION'
+        ? `沒有意見${cr.votes ? `（${cr.votes}）` : ''}`
+        : cr.state === 'PENDING'
+          ? '進行中，台灣 11:30 前更新'
+          : cr.state === 'FAILED'
+            ? `${fails.length > 1 ? `${fails.length} 次都` : ''}沒有結論${fails.length ? `（${fails.join('、')}）` : ''}`
+            : cr.state === 'NO_DATA'
+              ? '沒有：總經資料抓不到'
+              : '沒有開';
+  const basis = cr.basis && cr.state !== 'NO_DATA' && cr.state !== 'OFF' ? (cr.kind === 'PREVIEW' ? `；依 ${md(cr.basis)} 收盤預估時做的` : cr.kind === 'MAKEUP' ? '；月報之後補開的' : '') : '';
+  return `${base}${basis}${cr.late ? '；在你決定之後才回來' : ''}`;
+}
+
+/** 崩盤項目固定有一列「AI 檢視」（core_ai §3.3）；舊通知沒有 crashReview 時照舊（有 aiLine 才顯示）；重列的那一項不開檢視，沒有這一列。 */
+function crashFacts(it: Item): Fact[] {
+  if (it.relist) return [];
+  if (it.crashReview) return [{ label: 'AI 檢視', value: crashReviewText(it.crashReview), ...(it.crashReview.state === 'OPINION' ? { note: CRASH_AI_NOTE } : {}) }];
+  return it.aiLine ? [{ label: 'AI 檢視', value: it.aiLine.replace(/^AI 檢視：/, ''), note: CRASH_AI_NOTE }] : [];
+}
+
+/**
+ * 崩盤項目的理由，「AI 檢視」那一列與 AI 說明每次讀通知時重算：月報產生之後檢視才回來（補開、01:30 重開）時那一列會更新（core_ai §3.2、§3.3）。
+ * 存在通知裡的數字（價格、均線、股數）不變。
+ */
+export function liveCrash(ctx: ExplainContext, n: Notif, it: ItemX): Explain {
+  const x = it.x ?? explainItem(ctx, n, it);
+  if (it.relist) return x;
+  const note = noteByRun(ctx.aiNotes, 'CRASH', it.runIds);
+  const facts = [...(x.facts ?? []).filter((f) => f.label !== 'AI 檢視'), ...crashFacts(it)];
+  const cr = it.crashReview;
+  const tail = cr?.state === 'OPINION' && cr.opinion ? `AI 檢視：${cr.opinion}` : cr?.state === 'PENDING' ? 'AI 檢視進行中' : null;
+  return { ...x, short: tail && !x.short.includes(tail) ? `${x.short}；${tail}` : x.short, facts, ai: note, aiMissing: !!it.aiLine && !note };
 }
 
 /** 崩盤項目「這次不做」的說明（core_ai §3.6）。 */
@@ -431,7 +478,7 @@ export function crashReasonText(it: Item): { placeholder: string; hint: string; 
   return {
     placeholder: '為什麼這次不照崩盤規則做（1～200 字）',
     hint: '這句話會記在紀錄裡，下個月重列時也會帶著。規則的狀態照樣記成已經切換；下個月還在同一個狀態，核心的單會再列一次。',
-    prefill: it.aiLine === 'AI 檢視：延後' ? '照 AI 檢視：延後' : '',
+    prefill: (it.crashReview ? it.crashReview.state === 'OPINION' && it.crashReview.opinion === '延後' : it.aiLine === 'AI 檢視：延後') ? '照 AI 檢視：延後' : '',
   };
 }
 

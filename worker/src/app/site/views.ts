@@ -10,6 +10,7 @@ import {
   bucketValue,
   composeNotif,
   coreContext,
+  crashReviewOf,
   coreOweMonth,
   owedCoreLines,
   drawdownFromHigh,
@@ -25,12 +26,17 @@ import {
   type MarketView,
   type Notif,
   type OrderLine,
+  type ShadowRecord,
   type Snapshot,
   cashflowKind,
 } from '../../engine';
+import { CRASH_REVIEW } from '../../ai/crash';
+import { HORIZONS, indexOn, type PriceBook } from '../../ai/shadow';
+import type { AiRun } from '../aiRuns';
+import type { RunRow } from './aiViews';
 import type { SiteData } from './backend';
 import { accountBubble, todoBubble, type Bubble } from './bubble';
-import { coreLineWhy, crashReasonText, explainItem, findNote, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
+import { coreLineWhy, crashReasonText, explainItem, findNote, liveCrash, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
 import { labelOf, meter, place, scaleOf, type Meter } from './meter';
 import { BUCKET_NAME, type AiNote, type Explain, type Gauge, type RankRow } from './types';
 
@@ -356,7 +362,8 @@ const thirdName = (w: number) => (w >= 0.999 ? '全額' : Math.abs(w - 2 / 3) < 
 function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   const it = it0 as ItemX;
   // 慢規則項目上 AI 的那一部分會在通知產生之後才更新（減半檢視晚一點回來），每次讀的時候重算
-  const x = it.kind === 'OWN_RULE' ? liveOwnRule(ctxOf(d), n, it) : (it.x ?? explainItem(ctxOf(d), n, it));
+  // 崩盤項目的「AI 檢視」那一列也一樣：月報之後才回來的檢視（core_ai §3.2）
+  const x = it.kind === 'OWN_RULE' ? liveOwnRule(ctxOf(d), n, it) : it.f === 'F5' || it.f === 'F6' ? liveCrash(ctxOf(d), n, it) : (it.x ?? explainItem(ctxOf(d), n, it));
   const primary = it.choices.find((c) => c.id !== 'SKIP') ?? it.choices[0];
   const tickers = [...new Set(primary.lines.map((l) => l.ticker))];
   const buckets = [...new Set(primary.lines.map((l) => l.bucket))];
@@ -867,6 +874,111 @@ export function historyView(d: Ready): HistoryView {
       .map((s) => ({ date: s.date, ticker: s.ticker, title: s.title, rule: s.ticker ? sharesText(s.rule) : '', ai: s.ai === null ? null : sharesText(s.ai), actual: s.ticker ? sharesText(s.actual) : '', note: s.note ?? null })),
   };
 }
+
+// ---------------------------------------------------------------- 崩盤規則的檢視紀錄（core_ai §3.4）
+
+export interface CrashLogRow {
+  /** 月份與方向：2027-01 啟動。重列的那一項另外標。 */
+  label: string;
+  relist: boolean;
+  notif: number | null;
+  /** 延後（3 票一致）／沒有意見／沒有。 */
+  ai: string;
+  runId: string | null;
+  /** 照做／這次不做：<理由>。 */
+  choice: string;
+  /** 1、3、6 個月後的三個金額：照規則比你實際、照 AI 比你實際（沒有 AI 意見是 null）、照規則比延後（把你實際換成 0 股）。還沒到是 null。 */
+  at: Record<string, { rule: number; ai: number | null; delay: number } | null>;
+}
+
+export interface CrashLogView {
+  head: string;
+  rows: CrashLogRow[];
+}
+
+/** 2000–2026 的固定文字（和崩盤項目上的那一列相同的數字）。 */
+export const CRASH_BASE_TEXT = '2000–2026 崩盤規則啟動 17 次，3 次是真的空頭（買回時便宜 13～34%）；13 次買回時更貴（+2～+14%），多付的那幾次就是保險費。';
+
+const CRASH_LATE_SUFFIX = '（AI 檢視在回覆之後才回來）';
+
+/**
+ * 「AI 紀錄」頁的崩盤規則檢視紀錄（core_ai §3.4）：每次切換一列（同一則通知的 F5／F6 影子紀錄合成一列），
+ * 1、3、6 個月後照規則比你實際、照 AI 比你實際、照規則比延後（延後 = 你實際換成 0 股；1 個月那一格就是「延後一個月」的對照）。
+ * 算法和 ai/shadow.ts 的 shadowSummary 相同（那一筆的股數差，從當天收盤拿到觀察期結束）。records 要先用 liveShadow 濾掉作廢的。
+ */
+export function crashLogView(acct: Pick<Account, 'notifs'>, records: ShadowRecord[], book: PriceBook): CrashLogView {
+  const groups = new Map<string, ShadowRecord[]>();
+  for (const r of records) {
+    if ((r.f !== 'F5' && r.f !== 'F6') || !r.ticker) continue;
+    const k = r.notif !== undefined ? `n${r.notif}:${r.f}` : `d${r.date}:${r.f}`;
+    groups.set(k, [...(groups.get(k) ?? []), r]);
+  }
+  const last = book.axis.length - 1;
+  const rows: CrashLogRow[] = [];
+  for (const recs of groups.values()) {
+    const r0 = recs[0];
+    const n = r0.notif !== undefined ? acct.notifs.find((x) => x.id === r0.notif) : undefined;
+    const it = n?.items.find((i) => i.f === r0.f && !i.cancelled);
+    const relist = !!it?.relist || /再列一次/.test(r0.title);
+    const cr = it ? crashReviewOf(it) : undefined;
+    const aiOp = cr?.state === 'OPINION' ? cr.opinion : r0.ai === null ? undefined : r0.ai === r0.rule ? '照做' : '延後';
+    const ai = aiOp ? `${aiOp}（${cr?.votes ?? '3 票一致'}）` : cr?.state === 'NO_OPINION' ? '沒有意見' : '沒有';
+    const reason = (r0.note ?? '').replace(CRASH_LATE_SUFFIX, '').trim();
+    const at: CrashLogRow['at'] = {};
+    for (const hz of HORIZONS) {
+      let ok = true;
+      const v = { rule: 0, ai: aiOp ? 0 : (null as number | null), delay: 0 };
+      for (const r of recs) {
+        const k0 = indexOn(book.axis, r.date);
+        const k1 = k0 + hz.days;
+        const a0 = book.adj(r.ticker!, k0);
+        const a1 = book.adj(r.ticker!, k1);
+        if (k0 < 0 || k1 > last || !(a0 > 0) || !Number.isFinite(a1)) {
+          ok = false;
+          break;
+        }
+        const per = r.price * (a1 / a0 - 1);
+        v.rule += (r.rule - r.actual) * per;
+        if (v.ai !== null && r.ai !== null) v.ai += (r.ai - r.actual) * per;
+        v.delay += r.rule * per;
+      }
+      at[hz.key] = ok ? v : null;
+    }
+    rows.push({
+      label: `${n?.monthly?.input.month ?? r0.date.slice(0, 7)} ${r0.f === 'F5' ? '啟動' : '解除'}`,
+      relist,
+      notif: n?.id ?? null,
+      ai,
+      runId: cr?.runId ?? it?.runIds?.[0] ?? r0.runIds?.[0] ?? null,
+      choice: r0.choice === 'SKIP' ? `這次不做${reason ? `：${reason}` : ''}` : '照做',
+      at,
+    });
+  }
+  rows.reverse();
+  const sw = rows.filter((r) => !r.relist);
+  const delays = sw.filter((r) => r.ai.startsWith('延後'));
+  const better = delays.filter((r) => (r.at['1m']?.delay ?? 0) < 0);
+  return { head: sw.length ? `崩盤規則切換過 ${sw.length} 次；AI 說延後 ${delays.length} 次，其中 ${better.length} 次延後一個月比較好。` : '還沒有紀錄', rows };
+}
+
+/**
+ * AI 紀錄的列表：預估的檢視（PREVIEW）在訊號日沒有切換時標「沒有用到」（core_ai §3.1 效果表；顯示時判斷，不存欄位）：
+ * 這個月份已經有月報、月報裡沒有同方向的 F5／F6。
+ */
+export function crashPreviewUnused(run: Pick<AiRun, 'fn' | 'pack'>, acct: Pick<Account, 'notifs'>): string | null {
+  if (run.fn !== CRASH_REVIEW) return null;
+  const d = (run.pack.rule.detail ?? {}) as { kind?: string; month?: string; direction?: string };
+  if (d.kind !== 'PREVIEW' || !d.month || (d.direction !== 'ON' && d.direction !== 'OFF')) return null;
+  const m = acct.notifs.filter((n) => n.monthly?.input.month === d.month && (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY'));
+  if (!m.length || m.some((n) => n.items.some((i) => i.f === (d.direction === 'ON' ? 'F5' : 'F6') && !i.relist))) return null;
+  return `預估會${d.direction === 'ON' ? '啟動' : '解除'}，訊號日沒有切換，沒有用到`;
+}
+
+/** 列表上的那一列套上「沒有用到」。 */
+export const withPreviewNote = (row: RunRow, run: Pick<AiRun, 'fn' | 'pack'>, acct: Pick<Account, 'notifs'>): RunRow => {
+  const u = crashPreviewUnused(run, acct);
+  return u ? { ...row, verdict: u } : row;
+};
 
 // ---------------------------------------------------------------- 單一持股
 

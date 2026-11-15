@@ -188,6 +188,52 @@ export function shadowLines(sum) {
 }
 
 
+// ---------------------------------------------------------------- 崩盤規則的檢視紀錄（T33b，core_ai §3.4）
+
+/** 每次切換一列：月份方向、AI 檢視（連到那次執行）、你的選擇、1／3／6 個月後的三個金額。log 是 /history 的 crashLog。 */
+export function crashLogBlock(log) {
+  if (!log) return null;
+  const amt = (v, label) => h('div', { class: 'small', style: 'white-space:nowrap' }, h('span', { class: 'faint' }, label + ' '), v === null || v === undefined ? h('span', { class: 'faint' }, '—') : h('span', { class: 'num', style: `color:${v > 0 ? 'var(--core)' : v < 0 ? 'var(--hot)' : 'inherit'}` }, money(v)));
+  const hz = (x) => (x ? [amt(x.rule, '照規則比你'), amt(x.ai, '照 AI 比你'), amt(x.delay, '照規則比延後')] : h('span', { class: 'faint small' }, '還沒到'));
+  const body = log.rows.length
+    ? glass(
+        'scroll-x',
+        h(
+          'table',
+          { class: 'plain' },
+          h('thead', null, h('tr', null, ['月份、方向', 'AI 檢視', '你的選擇', '1 個月後', '3 個月後', '6 個月後'].map((x) => h('th', null, x)))),
+          h(
+            'tbody',
+            null,
+            log.rows.map((r) =>
+              h(
+                'tr',
+                null,
+                h('td', { style: 'white-space:nowrap' }, r.notif ? h('a', { href: `#/n/${r.notif}` }, r.label) : r.label, r.relist ? h('div', { class: 'small faint' }, '上次沒做，再列') : null),
+                h('td', null, r.runId ? h('a', { href: `#/ai/${encodeURIComponent(r.runId)}` }, r.ai) : r.ai),
+                h('td', null, r.choice),
+                h('td', null, hz(r.at['1m'])),
+                h('td', null, hz(r.at['3m'])),
+                h('td', null, hz(r.at['6m'])),
+              ),
+            ),
+          ),
+        ),
+      )
+    : null;
+  return details(
+    '崩盤規則的檢視紀錄',
+    h(
+      'div',
+      null,
+      h('p', { style: 'margin-bottom:8px' }, log.head),
+      body,
+      h('p', { class: 'small faint', style: 'margin-top:8px' }, '金額是那一次股數差的價差（含股利），從當天收盤拿到觀察期結束：正數＝照規則（或照 AI）比你實際多賺；「照規則比延後」是把那次的單全部延後不做的對照，負數＝延後比較好。一年大約切換一次，統計上驗證不了，這張表給你逐次看。'),
+      h('p', { class: 'small faint', style: 'margin-top:4px' }, '2000–2026 崩盤規則啟動 17 次，3 次是真的空頭（買回時便宜 13～34%）；13 次買回時更貴（+2～+14%），多付的那幾次就是保險費。'),
+    ),
+  );
+}
+
 // ---------------------------------------------------------------- AI 紀錄上方的總覽（T11）
 
 const DECISION = { ALLOW: '准許', ALLOW_WATCH: '准許，附註', VETO: '否決', BLOCK: '資料可疑，這個月不進場', PENDING: '等法庭' };
@@ -213,10 +259,12 @@ export function aiOverview() {
             h('table', { class: 'plain' }, h('tbody', null, o.reviews.map((r) => h('tr', null, h('td', { style: 'white-space:nowrap' }, h('span', { class: 'tk' }, r.ticker), r.rank ? h('div', { class: 'small faint' }, `第 ${r.rank} 名`) : null), h('td', null, h('span', { class: 'chip ' + (r.decision === 'VETO' || r.decision === 'BLOCK' ? 'hot' : r.decision === 'ALLOW_WATCH' ? 'warn' : 'ok') }, DECISION[r.decision] ?? r.decision), r.lateVerdict === 'VETO' ? h('div', null, h('span', { class: 'chip hot' }, '月報之後回來：否決')) : null), h('td', { class: 'small' }, `${r.carriedFrom ? `沿用 ${r.carriedFrom} 的 AI 法庭` : (SOURCE[r.source] ?? r.source)}${r.reasonCode ? ` · ${CODE[r.reasonCode] ?? r.reasonCode}` : ''}${r.replacedBy ? ` · 由 ${r.replacedBy} 遞補` : ''}`, r.watchReason ? h('div', { class: 'faint' }, '附註：' + plain(r.watchReason)) : null, r.note ? h('div', { class: 'faint' }, plain(r.note)) : null))))),
           ),
         );
-      if (o.macro)
+      if (o.macro) {
+        // 可用 = 有值而且沒過期（core_ai §3.5）
+        const usable = o.macro.rows.filter((r) => r.value !== null && !r.stale).length;
         parts.push(
           details(
-            `總經儀表板（${day(o.macro.asOf)}，崩盤規則檢視用）`,
+            `總經儀表板（${day(o.macro.asOf)}，崩盤規則檢視用）：${o.macro.rows.length} 個序列有 ${usable} 個可用`,
             h('div', null,
               h('dl', { class: 'facts' },
                 o.macro.rows.map((r) => [
@@ -224,15 +272,17 @@ export function aiOverview() {
                   h('dd', null,
                     h('span', { class: 'num' }, r.value === null ? '抓不到' : fnum(r.value)),
                     r.date ? h('span', { class: 'faint small', style: 'margin-left:8px' }, r.date) : null,
+                    r.stale ? h('span', { class: 'small', style: 'margin-left:6px;color:var(--hot)' }, '資料停在這一天') : null,
                     h('small', null, [r.change6m === null ? null : `6 個月變化 ${r.change6m >= 0 ? '+' : ''}${fnum(r.change6m)}`, r.derived, Object.values(r.atBears ?? {}).some((v) => v !== null) ? `真空頭開始時 ${Object.values(r.atBears).map((v) => fnum(v)).join('／')}` : null, r.note].filter(Boolean).join('；')),
                   ),
                 ]),
                 o.macro.breadth ? [h('dt', null, '市場廣度'), h('dd', null, h('span', { class: 'num' }, `${Math.round((o.macro.breadth.above / o.macro.breadth.n) * 100)}%`), h('small', null, `市值前 50 大裡收盤在 200 日均線之上：${o.macro.breadth.above}／${o.macro.breadth.n}`))] : null,
               ),
-              h('p', { class: 'small faint', style: 'margin-top:8px' }, '真空頭開始時（2000-10／2002-05／2008-01）的值是現在修正後的數字，不是當時看到的。過去 17 次跌破 200 日均線，3 次是真的空頭。'),
+              h('p', { class: 'small faint', style: 'margin-top:8px' }, `抓不到或資料停太久（每日的 10 天、每週的 21 天、每月的 75 天）的序列不能當證據；可用的不到 6 個時不開崩盤規則的 AI 檢視，規則照常。真空頭開始時（2000-10／2002-05／2008-01）的值是現在修正後的數字，不是當時看到的。過去 17 次跌破 200 日均線，3 次是真的空頭。`),
             ),
           ),
         );
+      }
       if (o.events?.length)
         parts.push(details('最近的申報事件（規則偵測、每日掃描）', h('table', { class: 'plain' }, h('tbody', null, o.events.map((e) => h('tr', null, h('td', { class: 'num' }, day(e.event_date)), h('td', { class: 'tk' }, e.ticker), h('td', null, `${e.form === 'NEWS' ? '新聞標題' : e.form} · ${CODE[e.code] ?? e.code}`, e.detail ? h('div', { class: 'small faint' }, plain(e.detail)) : null), h('td', { class: 'small' }, e.status === 'IN_COURT' && e.handled_note ? h('a', { href: `#/ai/${e.handled_note}` }, '審查中') : e.status === 'HANDLED' && /^法庭 ([^\s：]+)：/.test(e.handled_note ?? '') ? h('a', { href: `#/ai/${/^法庭 ([^\s：]+)：/.exec(e.handled_note)[1]}` }, '已審查') : e.status === 'HANDLED' && /開法庭 (\S+)/.test(e.handled_note ?? '') ? h('a', { href: `#/ai/${/開法庭 (\S+)/.exec(e.handled_note)[1]}` }, '已開審查') : ({ NEW: '待處理', HANDLED: e.handled_note ?? '已處理', INFO: '只記錄', IN_COURT: '審查中' }[e.status] ?? e.status))))))));
       box.replaceChildren(...parts);

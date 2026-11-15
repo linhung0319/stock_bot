@@ -18,7 +18,8 @@ import { errText } from '../data/util';
 import type { FlowExtras } from './aiCtx';
 import { closeStaleRuns, listRuns } from './aiRuns';
 import { aiStep } from './aiStep';
-import { crashDirection, crashOpinionFor } from './crashAi';
+import { crashDirection, crashReviewFor } from './crashAi';
+import { routineReady } from './ownAi';
 import { monthNotes } from './dropAi';
 import { sectorEtfs } from './filings';
 import { monthOfSignal, prepareEntries, recordReplacements, signalsIn, type MonthInputs } from './momAi';
@@ -180,7 +181,7 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
           const why = pauseReason(run, !!ranking);
           // 暫停換股：否決與遞補用不到，崩盤規則檢視與說明照樣附上（連同它們的 run_id）
           const runIds = { ...(ai.runIds?.crash ? { crash: ai.runIds.crash } : {}), ...(ai.runIds?.notes ? { notes: ai.runIds.notes } : {}) };
-          input = { order: [...acct.rule.heldMom], month, paused: why, ...(ai.crashOpinion ? { crashOpinion: ai.crashOpinion } : {}), ...(ai.notes ? { notes: ai.notes } : {}), ...(Object.keys(runIds).length ? { runIds } : {}) };
+          input = { order: [...acct.rule.heldMom], month, paused: why, ...(ai.crashReview ? { crashReview: ai.crashReview } : {}), ...(ai.notes ? { notes: ai.notes } : {}), ...(Object.keys(runIds).length ? { runIds } : {}) };
           alerts.push({ kind: 'MONTHLY_PAUSED', message: `${month} 月報照出，但本月暫停換股（${why}），動能名單不變。` });
         }
         // 「要看的事」（own_thesis §3.6.6）：用訊號日的帳戶狀態算這個月該列的，記下 attnShown；動能的（momentum_ai §3.6）接在後面
@@ -348,7 +349,7 @@ export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: A
 // ---------------------------------------------------------------- 月報的 AI 輸入
 
 /**
- * 月報訊號日、出月報之前：任務 A 的否決與遞補（還沒審過的跑規則偵測）、崩盤規則檢視的意見（同方向、3 票一致才有）、
+ * 月報訊號日、出月報之前：任務 A 的否決與遞補（還沒審過的跑規則偵測）、崩盤規則檢視的狀態（同月份＋方向，crashReviewFor）、
  * 這個月任務 C 的說明。出錯只記下來，月報照規則出（預設准許、沒有 AI 那一行）。
  */
 async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal: string, ov: CalendarOverrides, now: Date, log: string[], alerts: Alert[]): Promise<MonthInputs> {
@@ -361,10 +362,12 @@ async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal:
   }
   try {
     const { view } = buildMarketView(await loadSeries(env.DB, requiredTickers(acct)), signal, acct.cfg.coreTicker);
-    const op = await crashOpinionFor(env.DB, monthOfSignal(signal, ov), crashDirection(acct, view));
-    if (op) {
-      out.crashOpinion = op.opinion;
-      out.runIds = { ...out.runIds, crash: op.runId };
+    // 崩盤規則檢視的狀態（core_ai §3.2）：會切換時才有；月報的 F5／F6 那一項照它寫那一列與 LINE 那一行
+    const dir = crashDirection(acct, view);
+    if (dir !== 'NONE') {
+      const cr = await crashReviewFor(env.DB, monthOfSignal(signal, ov), dir, { ready: routineReady(env) });
+      out.crashReview = cr;
+      if (cr.runId) out.runIds = { ...out.runIds, crash: cr.runId };
     }
     const notes = await monthNotes(env.DB, `${signal.slice(0, 7)}-00`, signal);
     if (notes.length) {

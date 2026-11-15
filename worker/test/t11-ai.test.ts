@@ -399,7 +399,8 @@ function fetcherOf(w: World, sec: Sec): Fetcher {
       const title = sec.headline(t, w.dataDate);
       return new Response(`<rss><channel>${title ? `<item><title>${title}</title><link>https://n/${t}</link><pubDate>${new Date(w.dataDate + 'T20:00:00Z').toUTCString()}</pubDate></item>` : ''}</channel></rss>`);
     }
-    if (url.startsWith('https://fred.stlouisfed.org/graph/fredgraph.csv')) return new Response('observation_date,X\n2000-10-02,1.0\n2026-05-01,1.2\n2026-11-02,1.5\n');
+    // T33b：最新一筆是資料日那一天（core_ai §3.5 的過期判斷：每日序列停在 10 天以前的不能用，可用的不到 6 個不開檢視）
+    if (url.startsWith('https://fred.stlouisfed.org/graph/fredgraph.csv')) return new Response(`observation_date,X\n2000-10-02,1.0\n2026-05-01,1.2\n${w.dataDate},1.5\n`);
     if (url.startsWith('https://mba.tuck.dartmouth.edu/')) return new Response('nf', { status: 404 });
     return base(url, init);
   };
@@ -694,7 +695,7 @@ describe('整條流程：F5／F6 崩盤規則檢視', () => {
         expect(cr.pack.policy).toMatchObject({ level: 'A2', samples: 3 });
         expect(cr.pack.documents.map((x) => x.source_id)).toEqual(['base-rate:crash', 'macro:2026-11-27']);
         const snap = (await loadSnapshot(db, '2026-12'))!;
-        expect(snap.rows.find((r) => r.id === 'T10Y3M')).toMatchObject({ value: 1.5, date: '2026-11-02' });
+        expect(snap.rows.find((r) => r.id === 'T10Y3M')).toMatchObject({ value: 1.5, date: '2026-11-27', stale: false });
         const v = { run_id: cr.pack.run_id, verdict: 'FOLLOW', evidence: [], payload: { direction: up ? 'OFF' : 'ON', opinion: 'FOLLOW', bear_prob: 0.2 }, report: '過去 17 次中 3 次是真空頭。' };
         await postResult(db, cr.runId, [v, v, v], new Date('2026-11-28T00:10:00Z'));
         await run('2026-11-27', 'FINAL');

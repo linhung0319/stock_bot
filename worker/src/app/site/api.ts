@@ -57,7 +57,7 @@ import { BENCHMARK } from '../../data/ingest';
 import { exportMd, rowOfNote, runDetail, runRow } from './aiViews';
 import { choiceEffect } from './bubble';
 import { annotate } from './explain';
-import { accountView, composedView, ctxOf, historyView, holdingDetail, notifView, snapshotForm, stateView } from './views';
+import { accountView, composedView, crashLogView, ctxOf, historyView, withPreviewNote, holdingDetail, notifView, snapshotForm, stateView } from './views';
 
 type Ready = SiteData & { acct: Account; view: MarketView };
 
@@ -354,9 +354,11 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
   if (rest === 'history' && get) {
     const d = ready(await backend.load());
     // AI 紀錄（示範模式只有腳本裡的假說明）與影子組合的三條線
-    const runs = d.demo ? d.aiNotes.map(rowOfNote) : (await backend.runs()).map(runRow);
-    const shadowSum = shadowSummary(liveShadow([...d.shadow, ...d.acct.shadow]), bookFromView(d.axis, d.view.close));
-    return json({ ...historyView(d), runs, shadowSum });
+    const runs = d.demo ? d.aiNotes.map(rowOfNote) : (await backend.runs()).map((r) => withPreviewNote(runRow(r), r, d.acct));
+    const live = liveShadow([...d.shadow, ...d.acct.shadow]);
+    const book = bookFromView(d.axis, d.view.close);
+    // 崩盤規則的檢視紀錄（core_ai §3.4）：每次切換一列，照規則、照 AI、你實際、照規則比延後
+    return json({ ...historyView(d), runs, shadowSum: shadowSummary(live, book), crashLog: crashLogView(d.acct, live, book) });
   }
 
   const aiRun = /^ai\/run\/([A-Za-z0-9_.-]{1,100})(\/md)?$/.exec(rest);

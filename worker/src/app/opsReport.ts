@@ -339,8 +339,43 @@ export const checkpointSection: SectionFn = async (db, p) => {
   return { id: 'checkpoints', title: '月底檢查點（自選定期審查）：審了幾檔、跳過幾檔', rows: withTotal(rows.map(fin), { month: '合計', session: null }, keys, (t) => (t.skip_ratio = ratio(n(t.skipped), n(t.reviewed) + n(t.skipped) + n(t.not_started)))) };
 };
 
-/** 報表的各段，照這個順序輸出。T32d、T33b 要加段就在這裡加一個函式（T31a 加了月底檢查點）。 */
-export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection];
+/**
+ * 崩盤規則的切換與檢視（T33b，core_ai §3.4）：期間內（月報訊號日）每一次切換一列——月份、方向、通知、
+ * 檢視的狀態（月報那一項現在的 crashReview.state；舊通知沒有是 null）、預估或補開（kind）、這個月份＋方向開了幾次、沒有結論幾次、補推幾次（pushes 的 FOLLOWUP）。
+ * 重列的那一項（上次這次不做）不是切換，不列。合計列的 switches 是切換次數。
+ */
+export const crashSection: SectionFn = async (db, p) => {
+  const c = dateCond(p, 'n.date');
+  const items = await query(
+    db,
+    `SELECT n.id AS notif, n.date AS date, json_extract(n.body, '$.monthly.input.month') AS month,
+       json_extract(i.value, '$.f') AS f, json_extract(i.value, '$.crashReview.state') AS state, json_extract(i.value, '$.crashReview.kind') AS kind
+     FROM notifications n, json_each(n.body, '$.items') i
+     WHERE n.kind = 'MONTHLY' AND json_extract(i.value, '$.f') IN ('F5', 'F6')
+       AND COALESCE(json_extract(i.value, '$.relist'), 0) = 0 AND COALESCE(json_extract(i.value, '$.cancelled'), 0) = 0 AND ${c.sql}
+     ORDER BY n.date, n.id`,
+    c.args,
+  );
+  const fin = ['AGREED', 'SPLIT', 'INSUFFICIENT', 'DATA_MISSING'].map((x) => `'${x}'`).join(', ');
+  const rows: Row[] = [];
+  for (const it of items) {
+    const direction = it.f === 'F5' ? 'ON' : 'OFF';
+    const [runs] = await query(
+      db,
+      `SELECT COUNT(*) AS runs,
+         COALESCE(SUM(status = 'DONE' AND COALESCE(json_extract(outcome, '$.status'), '') NOT IN (${fin})), 0) AS no_conclusion
+       FROM ai_runs WHERE fn = 'CRASH_REVIEW' AND json_extract(pack, '$.rule.detail.month') = ? AND json_extract(pack, '$.rule.detail.direction') = ?`,
+      [it.month, direction],
+    );
+    const [fu] = await query(db, `SELECT COUNT(*) AS followups FROM pushes WHERE kind = 'FOLLOWUP' AND ok = 1 AND ref = ? AND text LIKE '%崩盤規則的 AI 檢視回來了%'`, [it.notif]);
+    rows.push({ month: it.month, direction, notif: it.notif, date: it.date, state: it.state ?? null, kind: it.kind ?? null, runs: n(runs?.runs), no_conclusion: n(runs?.no_conclusion), followups: n(fu?.followups) });
+  }
+  const total = withTotal(rows, { month: '合計', direction: null, notif: null, date: null, state: null, kind: null }, ['runs', 'no_conclusion', 'followups'], (t) => (t.switches = rows.length));
+  return { id: 'crash_reviews', title: '崩盤規則的切換與 AI 檢視（每次切換一列；state：OPINION 有意見、NO_OPINION 沒有意見、PENDING、FAILED、NO_DATA、OFF）', rows: total };
+};
+
+/** 報表的各段，照這個順序輸出。T32d 要加段就在這裡加一個函式（T31a 加了月底檢查點、T33b 加了崩盤規則）。 */
+export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection];
 
 export interface OpsReport {
   generated_at: string;

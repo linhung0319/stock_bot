@@ -213,6 +213,11 @@ export interface Item {
   /** F5／F6：上次選了「這次不做」、這份月報重列的那一項（core_ai §3.6，由 T33c 產生；重列的不開檢視）。 */
   relist?: boolean;
   /**
+   * F5／F6：崩盤規則檢視的狀態（core_ai §3.2、§3.3；T33b 起）。網站那一列、LINE 那一行（aiLine 只在 OPINION 時寫）、影子紀錄的 ai 都看它。
+   * 沒有 = 舊通知或重列的那一項（重列的不開檢視）。月報之後才回來的結果由 applyCrashReview 更新（已經是 OPINION／NO_OPINION 就不動）。
+   */
+  crashReview?: CrashReviewInfo;
+  /**
    * 失效通知（own_thesis §1.10）：A = 你定的條件成立（conditionId 是 own_conditions 的列編號）；B = AI 判斷前提不成立、沒有對應的條件。
    * 寫 own_thesis_log 的 BREAK_NOTICE、網站的「拿去討論」用。
    * withRule：附在慢規則減半項目上的「AI 建議出清」（§3.4）。不是獨立的乙類通知：不能用「修正論點」結案；沒有照 AI 出清 → 那條前提進靜默期。
@@ -311,8 +316,10 @@ export interface MonthlyContext {
   emptySlots?: number;
   /** 月份標籤，例如 2026-12。 */
   month: string;
-  /** 崩盤規則切換時 AI 檢視的一行意見（只顯示，設計 §4.4）。 */
+  /** 舊月報（T33b 之前）：崩盤規則切換時 AI 檢視的一行意見。新的月報用 crashReview；讀到這個欄位時當成 { state: 'OPINION', opinion }。 */
   crashOpinion?: '照做' | '延後';
+  /** 崩盤規則檢視在這個月份＋方向的狀態（core_ai §3.2，T33b 起取代 crashOpinion）：出月報前由 crashReviewFor 算好。 */
+  crashReview?: CrashReviewInfo;
   /** 同一家公司的不同類股：代號 → 公司（CIK）。同公司已經有一類在名單裡時，另一類不進場（設計 §2.4）。 */
   company?: Record<string, string>;
   /** 本月暫停換股的原因（成分股名單不一致、排名沒有產生）；order 這時是目前的動能名單，名單不變。 */
@@ -368,6 +375,28 @@ export interface CoreOwe {
 
 /** 快照顯示崩盤項目核心的單沒做時，coreOwe 記的理由（§3.6）。 */
 export const CORE_OWE_SNAPSHOT_REASON = '快照顯示沒有做';
+
+/**
+ * 崩盤規則檢視在某個月份＋方向的狀態（core_ai §3.2）：
+ *   OPINION 有一筆跑完、三票一致（照做或延後）；NO_OPINION 跑完、沒有意見（票數不一致、三票證據不足）；
+ *   PENDING 有一筆還在等；FAILED 只有沒有結論的執行（1～3 筆）；NO_DATA 總經資料不足沒開（§3.5）；OFF AI 層沒設定或沒有任何執行。
+ * told：LINE 已經帶過這個意見（月報推出去時有那一行，或補推過）；late：使用者回覆之後才回來。
+ */
+export interface CrashReviewInfo {
+  state: 'OPINION' | 'NO_OPINION' | 'PENDING' | 'FAILED' | 'NO_DATA' | 'OFF';
+  opinion?: '照做' | '延後';
+  /** 「3 票一致」「照做 2、延後 1」「3 票都是證據不足」。 */
+  votes?: string;
+  /** 最近一筆執行（任何狀態；OPINION／NO_OPINION 是跑完的那一筆）。 */
+  runId?: string;
+  kind?: 'PREVIEW' | 'MAKEUP';
+  /** 檢視依哪一天的收盤。 */
+  basis?: string;
+  /** FAILED：每次沒有結論的原因（逾時、被退回…）。 */
+  fails?: string[];
+  late?: boolean;
+  told?: boolean;
+}
 
 export interface ShadowRecord {
   date: string;

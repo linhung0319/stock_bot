@@ -3,7 +3,7 @@
 // 純函式：總經儀表板（程式算好）、基準率表、證據包、檢查、結論。資料抓取與排程在 src/app/crashAi.ts。
 import { sma, type MarketView } from '../engine';
 import type { FredSeries } from '../data/fred';
-import { MACRO_SERIES, TRUE_BEARS } from '../data/fred';
+import { MACRO_SERIES, MACRO_STALE_DAYS, TRUE_BEARS } from '../data/fred';
 import type { CheckedSample, EvidencePack, Outcome, PackDoc, PackPremise } from './check';
 import { buildPack } from './pack';
 
@@ -55,6 +55,26 @@ export interface DashRow {
   /** 過去真空頭開始時的值（現在修正後的數字）。 */
   atBears: Record<string, number | null>;
   note: string;
+  /** 最新一筆觀察值距儀表板的日期太久（core_ai §3.5：日 10、週 21、月 75 個日曆天），不能當證據。舊的儀表板沒有這個欄位 = 沒過期。 */
+  stale?: boolean;
+}
+
+/** 這個序列在 asOf 這天算不算過期（core_ai §3.5）。 */
+export function isStale(id: string, date: string | null, asOf: string): boolean {
+  const m = MACRO_SERIES.find((x) => x.id === id);
+  if (!m || !date) return false;
+  return (Date.parse(asOf) - Date.parse(date)) / 86400_000 > MACRO_STALE_DAYS[m.freq];
+}
+
+/** 總經資料夠不夠（core_ai §3.5）：可用 = 有值而且沒過期。10 個 ok、6～9 個 partial（照開，寫明缺哪些）、0～5 個 missing（不開檢視）。 */
+export type MacroQuality = 'ok' | 'partial' | 'missing';
+export const MACRO_MIN_USABLE = 6;
+export function macroUsable(rows: Pick<DashRow, 'value' | 'stale'>[]): number {
+  return rows.filter((r) => r.value !== null && !r.stale).length;
+}
+export function macroQuality(rows: Pick<DashRow, 'value' | 'stale'>[]): MacroQuality {
+  const n = macroUsable(rows);
+  return n >= MACRO_SERIES.length ? 'ok' : n >= MACRO_MIN_USABLE ? 'partial' : 'missing';
 }
 
 function at(s: FredSeries, date: string): number | null {
@@ -100,7 +120,7 @@ export function macroDashboard(series: Map<string, FredSeries>, asOf: string): D
     }
     const atBears: Record<string, number | null> = {};
     for (const b of TRUE_BEARS) atBears[b] = at(s, `${b}-01`);
-    return { id: m.id, label: m.label, date, value, change6m: v6 === null ? null : value - v6, derived, atBears, note: m.note };
+    return { id: m.id, label: m.label, date, value, change6m: v6 === null ? null : value - v6, derived, atBears, note: m.note, stale: isStale(m.id, date, asOf) };
   });
 }
 
@@ -122,7 +142,8 @@ export function breadth(view: MarketView, tickers: string[]): { above: number; n
 export function dashboardText(rows: DashRow[], br: { above: number; n: number } | null, core: { ticker: string; close: number; ma: number } | null): string {
   const f = (x: number | null, d = 2) => (x === null || !Number.isFinite(x) ? '-' : x.toFixed(d));
   const lines = ['series | date | value | 6m change | derived | at bear starts (' + TRUE_BEARS.join(', ') + ', revised values) | note'];
-  for (const r of rows) lines.push(`${r.id} ${r.label} | ${r.date ?? '-'} | ${f(r.value)} | ${f(r.change6m)} | ${r.derived ?? '-'} | ${TRUE_BEARS.map((b) => f(r.atBears[b] ?? null)).join(' / ')} | ${r.note}`);
+  // 過期的列在 note 後面寫明（core_ai §3.5）
+  for (const r of rows) lines.push(`${r.id} ${r.label} | ${r.date ?? '-'} | ${f(r.value)} | ${f(r.change6m)} | ${r.derived ?? '-'} | ${TRUE_BEARS.map((b) => f(r.atBears[b] ?? null)).join(' / ')} | ${r.note}${r.stale ? `（資料停在 ${r.date}，不能當證據）` : ''}`);
   if (br) lines.push(`breadth | | ${br.n ? ((br.above / br.n) * 100).toFixed(0) : '-'}% of top-50 universe above 200-day MA (${br.above}/${br.n}) | | | | computed from stored prices`);
   if (core) lines.push(`${core.ticker} | | close ${core.close.toFixed(2)} vs 200-day MA ${core.ma.toFixed(2)} (${((core.close / core.ma - 1) * 100).toFixed(1)}%) | | | |`);
   return lines.join('\n');

@@ -1,7 +1,8 @@
 // T11：F5／F6 的總經儀表板資料（ai_layer_design F5／F6 卡片的「規則偵測段」）。
-// 用 FRED 的 fredgraph.csv（公開、不需要金鑰），只在月報前一天抓一次。
+// 用 FRED 的 fredgraph.csv（公開、不需要金鑰），只在月報前一天抓一次（抓不到或過期的序列在 01:30 重抓一次，core_ai §3.5）。
 // 上線時決策日就是今天，FRED 現在的值就是當時看得到的值；「過去真空頭開始時的值」用的是現在修正後的數字（標明，不是當時的 vintage）。
 import type { Fetcher } from './sources';
+import { retry } from './util';
 
 export interface FredSeries {
   id: string;
@@ -26,7 +27,12 @@ export function parseFredCsv(id: string, csv: string): FredSeries {
   return { id, dates, values };
 }
 
+/** 抓一個序列；失敗重試一次（和價格相同的 retry，core_ai §3.5）。 */
 export async function fetchFred(fetcher: Fetcher, id: string): Promise<FredSeries> {
+  return retry(() => fetchFredOnce(fetcher, id));
+}
+
+async function fetchFredOnce(fetcher: Fetcher, id: string): Promise<FredSeries> {
   const r = await fetcher(fredCsvUrl(id), { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; stock-bot/1.0)', Accept: 'text/csv' } });
   if (!r.ok) throw new Error(`FRED ${id} HTTP ${r.status}`);
   const s = parseFredCsv(id, await r.text());
@@ -34,18 +40,24 @@ export async function fetchFred(fetcher: Fetcher, id: string): Promise<FredSerie
   return s;
 }
 
+/** 序列多久公布一次：D 每天、W 每週、M 每月（core_ai §3.5 判斷過期用）。 */
+export type MacroFreq = 'D' | 'W' | 'M';
+
+/** 最新一筆觀察值距儀表板的日期超過幾個日曆天算過期（core_ai §3.5）。 */
+export const MACRO_STALE_DAYS: Record<MacroFreq, number> = { D: 10, W: 21, M: 75 };
+
 /** 儀表板的序列（ai_layer F5／F6 卡片；VIX 也用 FRED 的 VIXCLS）。 */
-export const MACRO_SERIES: { id: string; label: string; unit: '%' | 'idx' | 'k'; note: string }[] = [
-  { id: 'T10Y3M', label: '10 年－3 個月利差', unit: '%', note: '負值 = 倒掛' },
-  { id: 'SAHMREALTIME', label: 'Sahm 規則（即時版）', unit: '%', note: '≥ 0.50 通常代表衰退已開始' },
-  { id: 'UNRATE', label: '失業率', unit: '%', note: '和 12 個月平均比' },
-  { id: 'ICSA', label: '初領失業金', unit: 'k', note: '4 週平均和 52 週低點比' },
-  { id: 'RRSFS', label: '實質零售銷售', unit: 'idx', note: '看年增率' },
-  { id: 'INDPRO', label: '工業生產', unit: 'idx', note: '看年增率' },
-  { id: 'BAA10Y', label: 'BAA 公司債對 10 年公債利差', unit: '%', note: '長期歷史用這個（高收益債利差只有最近 3 年）' },
-  { id: 'BAMLH0A0HYM2', label: '高收益債利差', unit: '%', note: 'FRED 只提供最近 3 年' },
-  { id: 'NFCI', label: '芝加哥 Fed 金融情勢（NFCI）', unit: 'idx', note: '> 0 代表比平均緊' },
-  { id: 'VIXCLS', label: 'VIX', unit: 'idx', note: '' },
+export const MACRO_SERIES: { id: string; label: string; unit: '%' | 'idx' | 'k'; note: string; freq: MacroFreq }[] = [
+  { id: 'T10Y3M', label: '10 年－3 個月利差', unit: '%', note: '負值 = 倒掛', freq: 'D' },
+  { id: 'SAHMREALTIME', label: 'Sahm 規則（即時版）', unit: '%', note: '≥ 0.50 通常代表衰退已開始', freq: 'M' },
+  { id: 'UNRATE', label: '失業率', unit: '%', note: '和 12 個月平均比', freq: 'M' },
+  { id: 'ICSA', label: '初領失業金', unit: 'k', note: '4 週平均和 52 週低點比', freq: 'W' },
+  { id: 'RRSFS', label: '實質零售銷售', unit: 'idx', note: '看年增率', freq: 'M' },
+  { id: 'INDPRO', label: '工業生產', unit: 'idx', note: '看年增率', freq: 'M' },
+  { id: 'BAA10Y', label: 'BAA 公司債對 10 年公債利差', unit: '%', note: '長期歷史用這個（高收益債利差只有最近 3 年）', freq: 'D' },
+  { id: 'BAMLH0A0HYM2', label: '高收益債利差', unit: '%', note: 'FRED 只提供最近 3 年', freq: 'D' },
+  { id: 'NFCI', label: '芝加哥 Fed 金融情勢（NFCI）', unit: 'idx', note: '> 0 代表比平均緊', freq: 'W' },
+  { id: 'VIXCLS', label: 'VIX', unit: 'idx', note: '', freq: 'D' },
 ];
 
 /** 2000–2026 三次真空頭開始的月份（ai_layer §3.3）。 */
