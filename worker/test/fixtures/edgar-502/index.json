@@ -1,0 +1,18 @@
+{
+  "note": "真實的 8-K Item 5.02（T28，classify502 的測試資料）。2026-11-15 用 research/data_sources/common.py 的 sec_get（專案 .env 的設定）從 EDGAR 抓主文件，再用 worker 的 htmlToText 轉成純文字（和 fetchPrimaryText 給 classify502 的輸入相同）。expect：ceo、cfo 是規則應該判出的離任；why 是人讀過原文後的判斷。",
+  "files": [
+    { "file": "intc-2024-12-03.txt", "url": "https://www.sec.gov/Archives/edgar/data/50863/000005086324000173/intc-20241201.htm", "expect": { "ceo": true, "cfo": false }, "why": "執行長 Gelsinger 辭任" },
+    { "file": "nke-2024-09-19.txt", "url": "https://www.sec.gov/Archives/edgar/data/320187/000032018724000053/nke-20240919.htm", "expect": { "ceo": true, "cfo": false }, "why": "新執行長上任，Donahoe 退休卸任執行長" },
+    { "file": "sbux-2024-08-14.txt", "url": "https://www.sec.gov/Archives/edgar/data/829224/000119312524200724/d848513d8k.htm", "expect": { "ceo": true, "cfo": false }, "why": "Narasimhan 不再擔任執行長（新執行長的聘用條款在前面）" },
+    { "file": "sbux-2025-03-04.txt", "url": "https://www.sec.gov/Archives/edgar/data/829224/000082922425000016/sbux-20250304.htm", "expect": { "ceo": false, "cfo": true }, "why": "新財務長任命，Ruggeri 不再擔任財務長" },
+    { "file": "intc-2025-03-14.txt", "url": "https://www.sec.gov/Archives/edgar/data/50863/000005086325000036/intc-20250310.htm", "expect": { "ceo": false, "cfo": false }, "why": "新執行長任命；兩位代理共同執行長卸任寫在這一節的 8,000 字之後（設計的上限），規則不記，交給每日掃描" },
+    { "file": "intc-2024-08-22.txt", "url": "https://www.sec.gov/Archives/edgar/data/50863/000005086324000134/intc-20240819.htm", "expect": { "ceo": false, "cfo": false }, "why": "董事辭任" },
+    { "file": "nke-2025-06-18.txt", "url": "https://www.sec.gov/Archives/edgar/data/320187/000032018725000026/nke-20250613.htm", "expect": { "ceo": false, "cfo": false }, "why": "董事退休、不再參選" },
+    { "file": "nke-2023-05-09.txt", "url": "https://www.sec.gov/Archives/edgar/data/320187/000032018723000016/nke-20230504.htm", "expect": { "ceo": false, "cfo": false }, "why": "新董事任命；經歷寫到她在別家公司當財務長到退休" },
+    { "file": "intc-2025-04-30.txt", "url": "https://www.sec.gov/Archives/edgar/data/50863/000005086325000079/intc-20250428.htm", "expect": { "ceo": false, "cfo": false }, "why": "商務長（Chief Commercial Officer）辭任" },
+    { "file": "intc-2025-09-08.txt", "url": "https://www.sec.gov/Archives/edgar/data/50863/000005086325000149/intc-20250907.htm", "expect": { "ceo": false, "cfo": false }, "why": "事業部（Intel Products）執行長辭任，不是公司的執行長" },
+    { "file": "sbux-2024-09-16.txt", "url": "https://www.sec.gov/Archives/edgar/data/829224/000082922424000044/sbux-20240912.htm", "expect": { "ceo": false, "cfo": false }, "why": "北美區執行長退休，不是公司的執行長" },
+    { "file": "intc-2024-01-03.txt", "url": "https://www.sec.gov/Archives/edgar/data/50863/000005086324000003/intc-20231229.htm", "expect": { "ceo": false, "cfo": false }, "why": "主管轉任子公司執行長" },
+    { "file": "intc-2024-02-16.txt", "url": "https://www.sec.gov/Archives/edgar/data/50863/000005086324000033/intc-20240215.htm", "expect": { "ceo": false, "cfo": false }, "why": "高層遣散政策（沒有人離任）" }
+  ]
+}

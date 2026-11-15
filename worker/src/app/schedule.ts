@@ -3,7 +3,7 @@
 //   FIRST   UTC 23:30（台灣 07:30）週一到週五：抓資料 → 每日檢查 → 月底出月報 → 套用 AI 結論 → 看新申報、開這一天所有新的 AI 執行 → 推播
 //           （這一次失敗的告警先不推，兩小時後會再試）
 //   FINAL   UTC 01:30（台灣 09:30）週二到週六：今天沒做完就再試一次（做了就和 FIRST 一樣開這一天的執行）；套用結論；
-//           接著開 finalStarts 的那幾種（硬事件法庭…）；標記逾時；推播；還是沒做完就推缺席告警
+//           接著開 finalStarts 的那幾種（硬事件法庭、當天沒有結論的每日掃描重掃…）；標記逾時；推播；還是沒做完就推缺席告警
 //   APPLY   UTC 03:30（台灣 11:30）週二到週六：只套用回來的結論、推新通知與告警、標記逾時。
 //           不抓資料、不跑每日檢查、不開新的執行。今天的每日流程還沒做完就不套用（帳戶還停在前一天）
 //   MANUAL  POST /admin/flow：和 FIRST 相同，但失敗也推告警、也標記逾時
@@ -12,7 +12,7 @@
 // wrangler.jsonc 的 triggers.crons 要和這裡相同（test/flow.test.ts 鎖住）。
 import type { ScanTarget } from '../ai/events';
 import { guard, type StartCtx } from './aiCtx';
-import { startCourts } from './events';
+import { rescanEvents, startCourts } from './events';
 
 export type Attempt = 'FIRST' | 'FINAL' | 'APPLY' | 'MANUAL';
 
@@ -59,7 +59,7 @@ export function attemptOfCron(cron: string): Attempt {
 /**
  * 01:30 套用結論之後接著開的執行（own_thesis §2.7 的掛點）。aiStep 在 FINAL、這次沒有處理新的交易日、雲端排程設定好了時呼叫。
  * 每一段各自 guard，出錯只記在紀錄裡。後面的任務在這裡加：
- *   T28  當天的每日掃描沒有合格結論就重開一次（own_thesis §2.6）
+ *   T28  當天的每日掃描沒有合格結論就重開一次（own_thesis §2.6）：rescanEvents（已接）
  *   T29b 提前審查 startEarlyReviews（own_thesis §2.4）
  *   T32b 動能的 momRecheck（月報前一天與訊號日，momentum_ai §3.9）
  *   T33b 崩盤檢視的 crashNeeds（有需要時，core_ai §3.12）
@@ -67,4 +67,6 @@ export function attemptOfCron(cron: string): Attempt {
 export async function finalStarts(sc: StartCtx, targets: ScanTarget[]): Promise<void> {
   // 每日掃描（或 23:30 之後的規則段）標到的硬事件候選 → 同一次就開法庭，不等到隔天
   await guard(sc.res, '硬事件法庭（01:30）', () => startCourts(sc, targets, { fetchChecks: true }));
+  // 當天的每日掃描沒有合格結論（含逾時、沒開成）→ 重開一次
+  await guard(sc.res, '每日掃描重掃（01:30）', () => rescanEvents(sc, targets));
 }

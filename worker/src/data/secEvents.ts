@@ -26,6 +26,8 @@ export interface FilingHit {
   /** 只顯示（增資）。 */
   displayOnly?: boolean;
   detail?: string;
+  /** 細項（own_thesis §2.2 的固定列舉：CEO_DEPART、IMPAIRMENT、BANKRUPTCY…；條件提示是條件的列編號）。 */
+  detailCode?: string;
 }
 
 export const MA_PROXY_FORMS = ['PREM14A', 'DEFM14A', 'PREM14C', 'DEFM14C'];
@@ -52,6 +54,107 @@ export function quickHits(f: Filing): FilingHit[] {
   if (f.form === 'SC 14D9') out.push({ ...base, code: 'PENDING_MA', sub: 'SC_14D9', byRule: true, detail: '公開收購的被收購方回應（只有被收購方會申報）' });
   if (is8k(f) && has(f, '3.02')) out.push({ ...base, code: 'DILUTION', sub: '8K_3.02', byRule: true, displayOnly: true, detail: '未登記的股票發行（規模不明）' });
   return out;
+}
+
+// ---------------------------------------------------------------- 事件的類別與細項（own_thesis §2.2、§2.3；T28）
+
+/**
+ * 8-K 的 Item 編號直接對到類別與細項（公司自己選的項目，不用再判）。
+ * 每日流程的規則段才用（classifyFilings 的 events）；動能進場審查的規則偵測（quickHits）不受影響。
+ */
+export const ITEM_EVENTS: Record<string, { code: string; detailCode: string; text: string }> = {
+  '1.02': { code: 'MAJOR_CONTRACT', detailCode: 'TERMINATION', text: '重大合約終止' },
+  '1.03': { code: 'DISTRESS', detailCode: 'BANKRUPTCY', text: '破產或接管' },
+  '1.05': { code: 'CYBER', detailCode: 'INCIDENT', text: '重大資安事件' },
+  '2.04': { code: 'DISTRESS', detailCode: 'ACCELERATION', text: '債務加速到期' },
+  '2.05': { code: 'RESTRUCTURING', detailCode: 'EXIT_PLAN', text: '重組或退出計畫' },
+  '2.06': { code: 'RESTRUCTURING', detailCode: 'IMPAIRMENT', text: '重大減損' },
+  '3.01': { code: 'DISTRESS', detailCode: 'DELISTING_NOTICE', text: '下市通知或不符上市規定' },
+};
+
+/** 13D（有人申報持股 5% 以上且有意影響公司）：EDGAR 2024-12 起改名 SCHEDULE 13D，之前是 SC 13D；修正（/A）不記。 */
+export const SC13D_FORMS = ['SC 13D', 'SCHEDULE 13D'];
+
+/** 對自選股可以提前開審查的細項（§2.2 表上標「是」的；CONDITION_HINT 另外看來源，PRICE_DROP 是價格規則）。 */
+export const ADVANCE_DETAILS: Record<string, readonly string[]> = {
+  MGMT_CHANGE: ['CEO_DEPART', 'CFO_DEPART'],
+  GUIDANCE_CUT: ['CUT', 'WITHDRAWN'],
+  RESTRUCTURING: ['IMPAIRMENT', 'EXIT_PLAN'],
+  MAJOR_CONTRACT: ['TERMINATION'],
+  DISTRESS: ['BANKRUPTCY', 'ACCELERATION', 'DELISTING_NOTICE'],
+  CYBER: ['INCIDENT'],
+};
+export const isAdvanceable = (code: string, detailCode: string | null | undefined): boolean => !!detailCode && (ADVANCE_DETAILS[code]?.includes(detailCode) ?? false);
+
+/** 只看類型與 Item 就能分出類別與細項的（8-K 的 Item 編號、13D）。 */
+export function eventHits(f: Filing): FilingHit[] {
+  const base = { accession: f.accession, form: f.form, date: f.filingDate, acceptedAt: f.acceptedAt, byRule: true };
+  const out: FilingHit[] = [];
+  if (is8k(f)) for (const [item, e] of Object.entries(ITEM_EVENTS)) if (has(f, item)) out.push({ ...base, code: e.code, detailCode: e.detailCode, sub: `8K_${item}`, detail: `8-K Item ${item}：${e.text}` });
+  if (SC13D_FORMS.includes(f.form)) out.push({ ...base, code: 'ACTIVIST', detailCode: 'SC_13D', sub: 'SC_13D', displayOnly: true, detail: '有人申報持股 5% 以上，而且有意影響公司（13D，只記錄）' });
+  return out;
+}
+
+// ---------------------------------------------------------------- 8-K 5.02（執行長、財務長離任）
+
+const CEO_TITLE = /chief executive officer|principal executive officer|\bCEO\b/gi;
+const CFO_TITLE = /chief financial officer|principal financial officer|\bCFO\b/gi;
+// 設計的離任字（own_thesis §2.3）；用真實的 5.02 調過：加了 no longer serve（Starbucks 2024-08、2025-03 的寫法）
+const DEPART = /resign|retire|step(?:ped|ping|s)? down|terminat|depart|ceas\w* to serve|remov\w+|separat\w+|will leave|leaving|not (?:stand|seek) (?:for )?re-?(?:election|appointment)|no longer serve/gi;
+/** 離任字前面有這些字 → 是聘用合約的假設條款（「如果被公司無故解僱」「發生符合條件的離職時」），不算。 */
+const HYPOTHETICAL = /\b(?:if|in the event|upon|qualifying|unless|whether)\b/i;
+/** 職稱前面有這些字 → 是經歷（「曾任某公司財務長」），不算。 */
+const BIO = /\b(?:former|formerly|previously|prior)\b[^.]{0,40}$/i;
+const PAIR_CHARS = 300;
+
+/** 職稱後面接著別的公司或事業部（「Chief Executive Officer of Intel Products」「chief executive officer, North America」）→ 不是這家公司的執行長。 */
+function otherEntity(after: string): boolean {
+  const of = /^\s*(?:of|for)\s+/i.exec(after);
+  if (of) {
+    const rest = after.slice(of[0].length);
+    if (/^(?:the\s+)?(?:company|registrant|corporation)\b/i.test(rest) || /^our\b/i.test(rest)) return false;
+    return /^(?:the\s+)?[A-Z]/.test(rest);
+  }
+  return /^\s*,\s*(?:North America|International|Americas|Europe|Asia|China|[A-Z][\w&-]*(?:\s+[A-Z][\w&-]*)?\s+(?:Group|Products|Division|Segment|Business|Unit))\b/.test(after);
+}
+
+/** Item 5.02 那一節：從 item 5.02 起到下一個 item x.xx 或 8,000 字。 */
+export function section502(text: string): string | null {
+  const k = /item\s*5\.?02/i.exec(text);
+  if (!k) return null;
+  const rest = text.slice(k.index + k[0].length, k.index + 8000);
+  // 下一項（節裡常見的「The description … in this Item 5.02 is qualified …」不算下一項）
+  const next = [...rest.matchAll(/item\s*(\d)\.(\d{2})/gi)].find((m) => `${m[1]}.${m[2]}` !== '5.02');
+  const sec = text.slice(k.index, k.index + k[0].length + (next ? next.index! : rest.length));
+  // 這一項固定的標題（Departure of Directors or Certain Officers…）本身有離任的字，換成空白（長度不變）
+  return sec.replace(/departure of directors or (?:certain |principal )*officers/gi, (m) => ' '.repeat(m.length));
+}
+
+/**
+ * 8-K Item 5.02：執行長、財務長離任（own_thesis §2.3 第 2 點）。職稱和離任的字在同一節、相距 300 字以內。
+ * 會有誤判（代價是多一次提前審查，受頻率上限限制）；用 test/fixtures/edgar-502 的真實申報調過。
+ */
+export function classify502(text: string): { ceo: boolean; cfo: boolean } {
+  const sec = section502(text);
+  if (!sec) return { ceo: false, cfo: false };
+  const departs = [...sec.matchAll(DEPART)].filter((m) => !HYPOTHETICAL.test(sec.slice(Math.max(0, m.index! - 100), m.index!))).map((m) => m.index!);
+  const near = (re: RegExp) =>
+    [...sec.matchAll(re)].some((m) => {
+      const at = m.index!;
+      if (BIO.test(sec.slice(Math.max(0, at - 60), at)) || otherEntity(sec.slice(at + m[0].length, at + m[0].length + 60))) return false;
+      return departs.some((d) => Math.abs(d - at) <= PAIR_CHARS);
+    });
+  return { ceo: near(CEO_TITLE), cfo: near(CFO_TITLE) };
+}
+
+/** 5.02 的規則命中（執行長、財務長離任）。 */
+export function hits502(f: Filing, text: string): FilingHit[] {
+  const c = classify502(text);
+  const base = { accession: f.accession, form: f.form, date: f.filingDate, acceptedAt: f.acceptedAt, byRule: true, code: 'MGMT_CHANGE' };
+  return [
+    ...(c.ceo ? [{ ...base, detailCode: 'CEO_DEPART', sub: '8K_5.02_CEO_DEPART', detail: '8-K Item 5.02：執行長離任（規則從原文判斷）' }] : []),
+    ...(c.cfo ? [{ ...base, detailCode: 'CFO_DEPART', sub: '8K_5.02_CFO_DEPART', detail: '8-K Item 5.02：財務長離任（規則從原文判斷）' }] : []),
+  ];
 }
 
 // ---------------------------------------------------------------- 8-K 4.01
@@ -216,15 +319,21 @@ export async function fetchPrimaryText(fetcher: Fetcher, cik: string | number, f
   return { url, text: htmlToText(raw.slice(0, maxChars * 4)).slice(0, maxChars) };
 }
 
-/** 一組申報 → 命中（要讀封面的才抓原文；抓不到的記在 notes）。 */
-export async function classifyFilings(fetcher: Fetcher, cik: string, names: string[], filings: Filing[], userAgent: string, notes: string[]): Promise<FilingHit[]> {
+/**
+ * 一組申報 → 命中（要讀封面的才抓原文；抓不到的記在 notes）。
+ * events：每日流程的規則段另外記事件的類別與細項（Item 編號、13D、5.02 的執行長與財務長離任；own_thesis §2.3）。
+ */
+export async function classifyFilings(fetcher: Fetcher, cik: string, names: string[], filings: Filing[], userAgent: string, notes: string[], opt: { events?: boolean } = {}): Promise<FilingHit[]> {
   const out: FilingHit[] = [];
   for (const f of filings) {
     out.push(...quickHits(f));
-    if (!needsCover(f)) continue;
+    if (opt.events) out.push(...eventHits(f));
+    const read502 = !!opt.events && is8k(f) && has(f, '5.02');
+    if (!needsCover(f) && !read502) continue;
     try {
       const { text } = await fetchPrimaryText(fetcher, cik, f, userAgent, B424_FORMS.includes(f.form) ? 60_000 : 120_000);
-      out.push(...coverHits(f, text, names));
+      if (needsCover(f)) out.push(...coverHits(f, text, names));
+      if (read502) out.push(...hits502(f, text));
     } catch (e) {
       notes.push(`${f.form} ${f.accession} 的原文抓不到：${e instanceof Error ? e.message : String(e)}`);
     }

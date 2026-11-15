@@ -251,9 +251,10 @@ describe('F18／F19：payload 檢查與結論', () => {
       },
     };
     const o = judge(pack, [vote], PAYLOAD_HOOKS.EVENT_SCAN);
+    // T28：多了細項 sub（沒給是 null）與條件的列編號（這個證據包沒有對照表：空的）
     expect(scanEvents(o, pack)).toEqual([
-      { ticker: 'AAPL', cls: 'REGULATORY_CANDIDATE', sourceId: 'nasdaq-rss:AAPL:2026-11-23', date: '2026-11-23', conditionIds: [] },
-      { ticker: 'MU', cls: 'GUIDANCE_CUT', sourceId: 'nasdaq-rss:AAPL:2026-11-23', date: '2026-11-23', conditionIds: ['MU 的事件條件 C2'] },
+      { ticker: 'AAPL', cls: 'REGULATORY_CANDIDATE', sub: null, sourceId: 'nasdaq-rss:AAPL:2026-11-23', date: '2026-11-23', conditionIds: [], conditionRows: [] },
+      { ticker: 'MU', cls: 'GUIDANCE_CUT', sub: null, sourceId: 'nasdaq-rss:AAPL:2026-11-23', date: '2026-11-23', conditionIds: ['MU 的事件條件 C2'], conditionRows: [] },
     ]);
     expect(o.samples[0].issues.length).toBe(2);
   });

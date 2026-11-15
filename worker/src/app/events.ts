@@ -4,19 +4,23 @@
 //   動能持股是被收購方、持股的 NT 10-K／10-Q → 規則直接提出提早出場（當天通知，使用者確認；不跑法庭）
 //   4.02、會計師辭任、自選股是被收購方 → 等著開法庭（F19）
 //   候選股的命中 → 只記錄（下一次 F1 審查會自己重新分類）
+//   事件的類別與細項（T28，own_thesis §2.2、§2.3）：8-K 的 Item 編號、13D、5.02 的執行長與財務長離任；
+//     自選股、細項可提前審查 → NEW（等提前審查，T29b）；其餘 → INFO
 // LLM 段（雲端排程設定好才開）：
-//   F18 掃描（Haiku，一票）：規則分不出輕重的 8-K 與新聞標題 → 事件類別；持股的 _CANDIDATE → 開法庭；候選股的 → 下一次 F1 看得到
+//   F18 掃描（Haiku，一票）：規則分不出輕重的 8-K 與新聞標題 → 事件類別與細項；持股的 _CANDIDATE → 開法庭；候選股的 → 下一次 F1 看得到
+//     標記分開（scan8k、news 記時間）、有合格結論才往前推、沒有結論時 01:30 重掃、連續 2 次失敗告警（own_thesis §2.6）
 //   F19 法庭（3 票）：一致建議出場 → 當天通知（只限 PENDING_MA、ACCOUNTING、REGULATORY）
-import { CANDIDATE_CODE, EVENT_SCAN, HARD_EVENT, eventScanPack, hardDecision, hardEventPack, scanEvents, type HardCode, type HardEventRef, type ScanTarget } from '../ai/events';
+import { CANDIDATE_CODE, EVENT_SCAN, HARD_EVENT, eventScanPack, hardDecision, hardEventPack, scanEvents, scanQualified, type HardCode, type HardEventRef, type ScanBatchItem, type ScanCondition, type ScanCursors, type ScanTarget } from '../ai/events';
 import type { PackDoc } from '../ai/check';
 import { newRunId } from '../ai/pack';
 import { hardEvent } from '../engine';
-import { fetchCompanyFacts, fetchFilingDoc, quarterTable } from '../data/edgar';
-import { SCAN_ITEMS, classifyFilings, fetchPrimaryText, type FilingHit } from '../data/secEvents';
-import { loadRanking } from '../data/store';
+import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlines, quarterTable } from '../data/edgar';
+import { SCAN_ITEMS, classifyFilings, fetchPrimaryText, isAdvanceable, type FilingHit } from '../data/secEvents';
+import type { Filing } from '../data/sources';
+import { loadRanking, type Alert } from '../data/store';
 import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
-import { startRun, type AiRun } from './aiRuns';
+import { closeStaleRuns, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { accOf, fetchFilingChecks, handledStmt, insertHitStmts, loadEvents, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { docOf, newsDoc, xbrlDoc } from './ownAi';
@@ -46,7 +50,7 @@ export async function classifyFresh(env: Env, fetcher: Fetcher, checks: FilingCh
   const out: Classified[] = [];
   for (const c of checks) {
     if (!c.fresh.length || !role.has(c.ticker)) continue;
-    const hits = await classifyFilings(fetcher, c.cik, c.names, c.fresh, env.EDGAR_USER_AGENT!, log);
+    const hits = await classifyFilings(fetcher, c.cik, c.names, c.fresh, env.EDGAR_USER_AGENT!, log, { events: true });
     if (hits.length) out.push({ ticker: c.ticker, role: role.get(c.ticker)!, hits });
   }
   return out;
@@ -66,7 +70,9 @@ export async function applyRuleEvents(ctx: ApplyCtx, classified: Classified[]): 
     const mom = (ctx.acct.lots.mom[c.ticker] ?? 0) > 0 || ctx.acct.rule.heldMom.includes(c.ticker);
     const direct = (h: FilingHit) => held && h.byRule && !h.displayOnly && ((h.code === 'ACCOUNTING' && h.sub.startsWith('NT_')) || (h.code === 'PENDING_MA' && mom && !own));
     const court = (h: FilingHit) => held && !h.displayOnly && !direct(h) && (!h.byRule || h.code === 'PENDING_MA');
-    ctx.stmts.push(...insertHitStmts(ctx.db, c.ticker, c.hits, 'EDGAR', at, (h) => (direct(h) ? 'HANDLED' : court(h) ? 'NEW' : 'INFO')));
+    // 自選股、細項可以提前審查（own_thesis §2.3 最後一段）→ NEW，等提前審查；動能持股與候選股只記錄
+    const early = (h: FilingHit) => c.role === 'OWN' && isAdvanceable(h.code, h.detailCode);
+    ctx.stmts.push(...insertHitStmts(ctx.db, c.ticker, c.hits, 'EDGAR', at, (h) => (direct(h) ? 'HANDLED' : court(h) || early(h) ? 'NEW' : 'INFO')));
     for (const h of c.hits.filter(direct)) {
       const since = new Date(Date.parse(ctx.session) - (WINDOW_DAYS[h.code] ?? 180) * 86400_000).toISOString().slice(0, 10);
       const before = (await loadEvents(ctx.db, { ticker: c.ticker, since, status: 'HANDLED' })).filter((e) => e.code === h.code && e.accession !== h.accession);
@@ -96,17 +102,124 @@ export async function applyHardEvent(ctx: ApplyCtx, run: AiRun): Promise<void> {
   ctx.log.push(`${run.runId}：${t} ${d.code} → AI 建議提早出場${r.notif ? `，當天通知 #${r.notif.id}` : ''}`);
 }
 
-/** F18 掃描：事件寫進 sec_events；持股或候選的 _CANDIDATE 標成待處理（持股會開法庭，候選股留給下一次 F1）。 */
+/**
+ * F18 掃描（own_thesis §2.2、§2.5、§2.6）：
+ *   沒有合格結論（逾時、觸發失敗、整份退回、每一票格式都不合格）→ 標記不動、失敗次數加 1（連續 2 次起推 SCAN_FAILED）
+ *   合格 → 事件寫進 sec_events、兩個標記推到 cursors、失敗次數歸零：
+ *     _CANDIDATE → NEW（持股開法庭，候選股留給下一次 F1）
+ *     自選股、申報原文、細項可以提前審查（執行長或財務長離任、財測下修或撤回）→ NEW（等提前審查）；其餘 INFO
+ *     標到條件 → 每一條一筆 CONDITION_HINT（細項 = 條件的列編號）：申報原文 → NEW，新聞標題 → INFO
+ */
 export async function applyEventScan(ctx: ApplyCtx, run: AiRun): Promise<void> {
-  if (!run.outcome) return;
-  const events = scanEvents(run.outcome, run.pack);
+  const detail = (run.pack.rule.detail ?? {}) as { targets?: ScanTarget[]; cursors?: ScanCursors; batch?: ScanBatchItem[]; conds?: Record<string, number> };
   const at = ctx.now.toISOString();
+  if (!run.outcome || !scanQualified(run.outcome)) {
+    const n = await scanFailStmts(ctx, run.asOf, detail.batch ?? [], run.runId, at);
+    ctx.log.push(`${run.runId}：每日掃描沒有結論（${run.outcome?.reason ?? '沒有結果'}）；標記不動，下一次重掃（連續第 ${n} 次）`);
+    return;
+  }
+  const events = scanEvents(run.outcome, run.pack);
+  const role = new Map((detail.targets ?? []).map((t) => [t.ticker, t.role]));
+  // 條件的列編號 → 哪一檔、給人讀的名稱（證據包的 K 開頭）
+  const condOf = new Map<number, { ticker: string; label: string }>();
+  for (const f of run.pack.facts) if (detail.conds?.[f.id] !== undefined) condOf.set(detail.conds[f.id], { ticker: f.label.split(' ')[0], label: f.label });
+  let hints = 0;
   for (const e of events) {
     const code = CANDIDATE_CODE[e.cls];
-    const hit: FilingHit = { code: code ?? e.cls, sub: `SCAN_${e.cls}`, accession: e.sourceId, form: e.sourceId.startsWith('edgar:') ? '8-K' : 'NEWS', date: e.date, acceptedAt: '', byRule: false, displayOnly: !code, detail: `每日掃描標記：${e.cls}${e.conditionIds.length ? `；可能和條件 ${e.conditionIds.join('、')} 有關（等申報原文證實）` : ''}` };
-    ctx.stmts.push(...insertHitStmts(ctx.db, e.ticker, [hit], 'SCAN', at, () => (code ? 'NEW' : 'INFO')));
+    const filing = accOf(e.sourceId).kind === 'FILING';
+    const own = role.get(e.ticker) === 'OWN';
+    const early = !code && own && filing && isAdvanceable(e.cls, e.sub);
+    const base = { accession: e.sourceId, form: filing ? '8-K' : 'NEWS', date: e.date, acceptedAt: '', byRule: false };
+    const hit: FilingHit = { ...base, code: code ?? e.cls, ...(e.sub ? { detailCode: e.sub } : {}), sub: `SCAN_${e.cls}`, displayOnly: !code, detail: `每日掃描標記：${e.cls}${e.sub ? `（${e.sub}）` : ''}${e.conditionIds.length ? `；可能和 ${e.conditionIds.join('、')} 有關（等申報原文證實）` : ''}` };
+    ctx.stmts.push(...insertHitStmts(ctx.db, e.ticker, [hit], 'SCAN', at, () => (code || early ? 'NEW' : 'INFO')));
+    for (const row of e.conditionRows) {
+      const c = condOf.get(row);
+      if (!c || c.ticker !== e.ticker) continue;
+      const hint: FilingHit = { ...base, code: 'CONDITION_HINT', detailCode: String(row), sub: `SCAN_CONDITION_HINT_${row}`, displayOnly: false, detail: `每日掃描：可能和${c.label.slice(c.ticker.length + 1)}有關（${filing ? '申報原文，下一次審查由三票判斷成不成立' : '只有新聞標題，只記錄'}）` };
+      ctx.stmts.push(...insertHitStmts(ctx.db, e.ticker, [hint], 'SCAN', at, () => (own && filing ? 'NEW' : 'INFO')));
+      hints++;
+    }
   }
-  ctx.log.push(`${run.runId}：每日掃描標記 ${events.length} 件${events.length ? `（${events.map((e) => `${e.ticker} ${e.cls}`).join('、')}）` : ''}`);
+  // 兩個標記推到這次看到的最新一份（只往前、不往回）；失敗次數歸零
+  for (const [t, c] of Object.entries(detail.cursors ?? {})) {
+    if (c.scan8k) ctx.stmts.push(advanceStmt(ctx.db, `scan8k:${t}`, c.scan8k, at));
+    if (c.news) ctx.stmts.push(advanceStmt(ctx.db, `news:${t}`, c.news, at));
+  }
+  ctx.stmts.push(ctx.db.prepare('DELETE FROM flow_state WHERE key = ?').bind(SCAN_FAILS));
+  failsSeen.set(ctx, null);
+  ctx.log.push(`${run.runId}：每日掃描標記 ${events.length} 件${events.length ? `（${events.map((e) => `${e.ticker} ${e.cls}${e.sub ? `/${e.sub}` : ''}`).join('、')}）` : ''}${hints ? `，條件提示 ${hints} 筆` : ''}`);
+}
+
+// ---------------------------------------------------------------- 每日掃描的標記與失敗次數（own_thesis §2.6）
+
+/** flow_state 的鍵：連續沒有合格結論的次數與最近一批文件。 */
+export const SCAN_FAILS = 'scan:fails';
+/** 一次掃描最多讀幾份 8-K 原文（所有對象合計；裝不下的留到下一次）。 */
+export const SCAN_MAX_FILINGS = 10;
+/** 每檔一次最多幾則新聞標題（取最新的；較舊的略過，不排隊）。 */
+export const SCAN_MAX_NEWS = 30;
+/** 連續幾次沒有結論開始推告警。 */
+export const SCAN_ALERT_AFTER = 2;
+
+export interface ScanFails {
+  count: number;
+  /** 最近一次失敗的那一批是哪一個交易日的掃描。 */
+  session: string;
+  batch: ScanBatchItem[];
+  runId: string | null;
+}
+
+const stateOf = async (db: D1Database, key: string) => (await db.prepare('SELECT value FROM flow_state WHERE key = ?').bind(key).first<{ value: string }>())?.value ?? null;
+
+export async function loadScanFails(db: D1Database): Promise<ScanFails | null> {
+  const v = await stateOf(db, SCAN_FAILS);
+  if (!v) return null;
+  try {
+    const j = JSON.parse(v) as Partial<ScanFails>;
+    return { count: Number(j.count) || 0, session: String(j.session ?? ''), batch: Array.isArray(j.batch) ? j.batch : [], runId: j.runId ?? null };
+  } catch {
+    return null;
+  }
+}
+
+/** 標記只往前推：新的值比較新才寫（acceptedAt 與標題時間都是 ISO 時間）。 */
+const advanceStmt = (db: D1Database, key: string, value: string, at: string) =>
+  db.prepare('INSERT INTO flow_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE excluded.value > flow_state.value').bind(key, value, at);
+
+/** 舊的 news 標記是日期（T28 之前）：當成那一天的 23:59:59Z。 */
+export function newsCursorMs(v: string | null | undefined): number | null {
+  if (!v) return null;
+  const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T23:59:59Z` : v);
+  return Number.isNaN(t) ? null : t;
+}
+
+/** SCAN_FAILED 的文字。 */
+export function scanFailText(n: number, batch: ScanBatchItem[]): string {
+  const docs = batch.map((b) => b.label);
+  return `每日掃描連續 ${n} 次沒有結論${docs.length ? `：${docs.join('、')}還沒有被 AI 看過` : ''}。規則分類照常；下一次流程會重掃。`;
+}
+
+/** 同一次套用裡已經算過的失敗次數（同一次套用兩份掃描時不重讀資料庫）。 */
+const failsSeen = new WeakMap<object, ScanFails | null>();
+
+/**
+ * 一次沒有合格結論：失敗次數加 1（和這批文件一起存），連續 2 次起每次推告警。回傳這是連續第幾次。
+ * 套用時（和帳戶同一筆存檔）語句放 ctx.stmts、告警放 ctx.alerts；開掃描失敗時（startRun 丟錯）直接寫、告警放 res.alerts。
+ */
+async function scanFailStmts(ctx: Pick<ApplyCtx, 'db' | 'stmts' | 'alerts'> | { db: D1Database; direct: Alert[] }, session: string, batch: ScanBatchItem[], runId: string | null, at: string): Promise<number> {
+  const prev = failsSeen.has(ctx) ? failsSeen.get(ctx)! : await loadScanFails(ctx.db);
+  const next: ScanFails = { count: (prev?.count ?? 0) + 1, session, batch, runId };
+  failsSeen.set(ctx, next);
+  const stmt = setStateStmt(ctx.db, SCAN_FAILS, JSON.stringify(next), at);
+  const alert: Alert | null = next.count >= SCAN_ALERT_AFTER ? { kind: 'SCAN_FAILED', message: scanFailText(next.count, batch), detail: { runId, session, count: next.count } } : null;
+  if ('direct' in ctx) {
+    await stmt.run();
+    if (alert) ctx.direct.push(alert);
+  } else {
+    ctx.stmts.push(stmt);
+    if (alert) (ctx.alerts ??= []).push(alert);
+  }
+  return next.count;
 }
 
 // ---------------------------------------------------------------- 開新的執行
@@ -185,46 +298,152 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
   }
 }
 
-/** F18 掃描：規則分不出輕重的新 8-K、新的新聞標題 → 一份證據包（有東西才開）。 */
-async function startScan(sc: StartCtx, targets: ScanTarget[]): Promise<void> {
+const msOf = (iso: string | null | undefined) => {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(t) ? -Infinity : t;
+};
+
+/**
+ * scan8k 標記沒有值時的起點（不追溯）：當時的 edgar 標記，也就是這次新申報（fresh）之前看過的最新一份。
+ * 第一次看申報（沒有 edgar 標記、fresh 是空的）時就是最新的一份。
+ */
+export function scanBase(c: Pick<FilingCheck, 'all' | 'fresh'>, stored: string | null): string {
+  if (stored) return stored;
+  const fresh = new Set(c.fresh.map((f) => f.accession));
+  return c.all.filter((f) => !fresh.has(f.accession)).reduce((m, f) => (msOf(f.acceptedAt) > msOf(m) ? f.acceptedAt : m), '');
+}
+
+/** 要掃的 8-K：acceptedAt 比標記新、有 SCAN_ITEMS 裡的項目（從全部申報裡找，不是只看當天新的），由舊到新。 */
+export function pendingScanFilings(all: Filing[], base: string): Filing[] {
+  return all.filter((f) => f.form.startsWith('8-K') && f.items.some((i) => SCAN_ITEMS.includes(i)) && msOf(f.acceptedAt) > msOf(base)).sort((a, b) => msOf(a.acceptedAt) - msOf(b.acceptedAt));
+}
+
+const items = (f: Filing) => (f.items.length ? `（Item ${f.items.join('、')}）` : '');
+
+/**
+ * F18 掃描（own_thesis §2.6 的收集）：規則分不出輕重的 8-K、新的新聞標題 → 一份證據包（有東西才開）。
+ *   8-K：每個對象 scan8k 之後、有 SCAN_ITEMS 項目的申報，由舊到新，一次最多 10 份原文（所有對象合計），裝不下的留到下一次
+ *   新聞：每檔發布時間比 news 標記新的標題，最多取最新的 30 則，較舊的略過（證據包的備註寫明）
+ *   標記在這裡不動：證據包記下 cursors，有合格結論時才往前推（applyEventScan）
+ *   已經有一份掃描在等結果時不開新的；沒開成（startRun 丟錯）算一次失敗
+ */
+export async function startScan(sc: StartCtx, targets: ScanTarget[]): Promise<boolean> {
   const { env, fetcher, session, now, res } = sc;
+  const at = now.toISOString();
+  await closeStaleRuns(env.DB, now);
+  const waiting = await env.DB.prepare("SELECT run_id FROM ai_runs WHERE fn = ? AND status = 'PENDING' LIMIT 1").bind(EVENT_SCAN).first<{ run_id: string }>();
+  if (waiting) {
+    res.log.push(`每日掃描：${waiting.run_id} 還在等結果，不開新的`);
+    return false;
+  }
+
   const docs: (PackDoc & { ticker: string })[] = [];
   const dq: Record<string, 'ok' | 'partial' | 'missing'> = {};
+  const cursors: ScanCursors = {};
+  const batch: ScanBatchItem[] = [];
+  const notes: string[] = [];
+  const isTarget = new Set(targets.map((t) => t.ticker));
+
+  // 8-K：所有對象一起由舊到新排，取前 10 份
+  const pending: { c: FilingCheck; f: Filing }[] = [];
+  const bases = new Map<string, string>();
   for (const c of sc.checks) {
-    if (!targets.some((t) => t.ticker === c.ticker)) continue;
-    for (const f of c.fresh.filter((x) => x.form.startsWith('8-K') && x.items.some((i) => SCAN_ITEMS.includes(i))).slice(0, 3)) {
-      try {
-        docs.push({ ...docOf(await fetchFilingDoc(fetcher, c.cik, f, env.EDGAR_USER_AGENT!)), ticker: c.ticker });
-        dq.filings = 'ok';
-      } catch (e) {
-        res.log.push(`${c.ticker} ${f.form} 抓不到：${errText(e)}`);
-      }
+    if (!isTarget.has(c.ticker)) continue;
+    const key = `scan8k:${c.ticker}`;
+    const stored = await stateOf(env.DB, key);
+    const base = scanBase(c, stored);
+    bases.set(c.ticker, base);
+    // 第一次：從當時的 edgar 標記開始（不追溯）；起點先記下，01:30 重掃時才接得上
+    if (!stored && base) await setStateStmt(env.DB, key, base, at).run();
+    pending.push(...pendingScanFilings(c.all, base).map((f) => ({ c, f })));
+  }
+  pending.sort((a, b) => msOf(a.f.acceptedAt) - msOf(b.f.acceptedAt));
+  const included = new Set<string>();
+  for (const { c, f } of pending.slice(0, SCAN_MAX_FILINGS)) {
+    try {
+      docs.push({ ...docOf(await fetchFilingDoc(fetcher, c.cik, f, env.EDGAR_USER_AGENT!)), ticker: c.ticker });
+      included.add(f.accession);
+      batch.push({ ticker: c.ticker, kind: '8-K', label: `${c.ticker} 的 ${f.form} ${f.filingDate}${items(f)}` });
+      dq.filings = 'ok';
+    } catch (e) {
+      res.log.push(`${c.ticker} ${f.form} ${f.accession} 抓不到：${errText(e)}`);
     }
   }
-  const seen: D1PreparedStatement[] = [];
+  const deferred = pending.length - Math.min(pending.length, SCAN_MAX_FILINGS);
+  if (deferred) notes.push(`還有 ${deferred} 份 8-K 排在下一次掃描（一次最多 ${SCAN_MAX_FILINGS} 份）`);
+  // 每檔的 scan8k 推到「第一份沒讀到的之前」；全部讀到了就推到這檔最新的申報
+  for (const c of sc.checks) {
+    if (!bases.has(c.ticker)) continue;
+    let cur = bases.get(c.ticker)!;
+    let gap = false;
+    for (const f of pendingScanFilings(c.all, cur)) {
+      if (!included.has(f.accession)) {
+        gap = true;
+        break;
+      }
+      cur = f.acceptedAt;
+    }
+    if (!gap && msOf(c.latest) > msOf(cur)) cur = c.latest;
+    if (cur && cur !== bases.get(c.ticker)) cursors[c.ticker] = { scan8k: cur };
+  }
+
+  // 新聞標題：比 news 標記新的，每檔最多最新 30 則
   for (const t of targets) {
     try {
-      const key = `news:${t.ticker}`;
-      const last = (await env.DB.prepare('SELECT value FROM flow_state WHERE key = ?').bind(key).first<{ value: string }>())?.value;
-      const n = await newsDoc(fetcher, t.ticker, session, last ?? undefined);
-      if (n) {
-        docs.push({ ...n, id: `N-${t.ticker}-${session}`, source_id: `nasdaq-rss:${t.ticker}:${session}`, ticker: t.ticker });
-        seen.push(setStateStmt(env.DB, key, n.date, now.toISOString()));
-      }
+      const last = newsCursorMs(await stateOf(env.DB, `news:${t.ticker}`));
+      const hl = (await fetchHeadlines(fetcher, t.ticker)).filter((h) => h.date <= session && (last === null || msOf(h.at) > last)).sort((a, b) => msOf(b.at) - msOf(a.at));
       dq.news = 'partial';
+      if (!hl.length) continue;
+      const keep = hl.slice(0, SCAN_MAX_NEWS);
+      const skipped = hl.length - keep.length;
+      if (skipped) notes.push(`${t.ticker}：略過 ${skipped} 則較舊的標題（一次最多 ${SCAN_MAX_NEWS} 則）`);
+      docs.push({ id: `N-${t.ticker}-${session}`, source_id: `nasdaq-rss:${t.ticker}:${session}`, kind: 'news', date: keep[0].date, title: `${t.ticker} 最近的新聞標題（Nasdaq RSS，只有標題）`, text: keep.map((h) => `${h.date} | ${h.title}`).join('\n') + (skipped ? `\n（略過 ${skipped} 則較舊的標題）` : ''), ticker: t.ticker });
+      batch.push({ ticker: t.ticker, kind: 'NEWS', label: `${t.ticker} 的 ${keep.length} 則新聞標題` });
+      cursors[t.ticker] = { ...cursors[t.ticker], news: hl[0].at };
     } catch {
       dq.news = 'partial';
     }
   }
-  if (!docs.length) return void res.log.push('每日掃描：沒有新的 8-K 或新聞標題，不開');
-  const conditions = [];
-  for (const t of targets.filter((x) => x.role === 'OWN')) for (const c of (await fileConditions(env.DB, sc.acct, t.ticker)).filter((x) => x.kind === 'EVENT' && x.status === 'ACTIVE')) conditions.push({ ticker: t.ticker, condId: c.condId, text: c.text });
-  const { pack, notes } = eventScanPack({ runId: newRunId(session, EVENT_SCAN), asOf: session, targets, docs, conditions, dataQuality: dq, now });
-  res.started.push((await startRun(env, fetcher, pack, now, notes)).runId);
-  if (seen.length) await env.DB.batch(seen);
+  if (!docs.length) {
+    res.log.push('每日掃描：沒有新的 8-K 或新聞標題，不開');
+    return false;
+  }
+
+  // 自選股的觀察項（事件類）與只在審查時檢查的條件（own_thesis §2.5）
+  const conditions: ScanCondition[] = [];
+  for (const t of targets.filter((x) => x.role === 'OWN'))
+    for (const c of (await fileConditions(env.DB, sc.acct, t.ticker)).filter((x) => x.kind === 'EVENT' && (x.status === 'PROPOSED' || x.status === 'REVIEW_ONLY')))
+      conditions.push({ ticker: t.ticker, condId: c.condId, text: c.text, rowId: c.id, status: c.status as ScanCondition['status'] });
+  const runId = newRunId(session, EVENT_SCAN);
+  const { pack, notes: packNotes } = eventScanPack({ runId, asOf: session, targets, docs, conditions, cursors, batch, notes, dataQuality: dq, now });
+  try {
+    res.started.push((await startRun(env, fetcher, pack, now, [...notes, ...packNotes])).runId);
+    return true;
+  } catch (e) {
+    res.log.push(`每日掃描沒有開成：${errText(e)}`);
+    // 已經存了執行紀錄的，之後會被照規則結束、套用時算失敗；沒存成的在這裡算一次
+    const saved = await env.DB.prepare('SELECT 1 AS x FROM ai_runs WHERE run_id = ?').bind(runId).first();
+    if (!saved) await scanFailStmts({ db: env.DB, direct: res.alerts }, session, batch, null, at);
+    return false;
+  }
 }
 
-/** 每日流程的 F18／F19 開執行那一段。 */
+/**
+ * 01:30（schedule.ts 的 finalStarts）：今天的每日掃描沒有合格結論（含逾時、沒開成）→ 重開一次（own_thesis §2.6）。
+ * 這次流程沒有看新申報（sc.checks 是空的），對象的申報清單另外抓（只抓清單、不推 edgar 標記）。
+ */
+export async function rescanEvents(sc: StartCtx, targets: ScanTarget[]): Promise<void> {
+  const { env, session, res } = sc;
+  const fails = await loadScanFails(env.DB);
+  if (!fails || fails.count < 1 || fails.session !== session) return;
+  const runs = (await env.DB.prepare('SELECT COUNT(*) AS n FROM ai_runs WHERE fn = ? AND as_of = ?').bind(EVENT_SCAN, session).first<{ n: number }>())?.n ?? 0;
+  if (runs >= 2) return void res.log.push('今天的每日掃描已經重掃過，留給下一次流程');
+  res.log.push(`今天的每日掃描沒有結論（連續第 ${fails.count} 次）→ 重掃一次`);
+  const checks = sc.checks.length || !env.EDGAR_USER_AGENT ? sc.checks : await fetchFilingChecks(env, sc.fetcher, targets.map((t) => t.ticker), session, res.log);
+  await startScan({ ...sc, checks }, targets);
+}
+
+/** 每日流程的 F18／F19 開執行那一段（掃描的 01:30 重開在 rescanEvents）。 */
 export async function startEventRuns(sc: StartCtx, targets: ScanTarget[]): Promise<void> {
   try {
     await startCourts(sc, targets);

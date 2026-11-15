@@ -17,6 +17,8 @@ export interface ApplyCtx {
   now: Date;
   stmts: D1PreparedStatement[];
   log: string[];
+  /** 存檔成功之後才推的告警（每日掃描連續失敗 SCAN_FAILED…）。 */
+  alerts?: Alert[];
 }
 
 /** 一個功能的結論怎麼套用（沒有登記的功能只標成已套用）。 */

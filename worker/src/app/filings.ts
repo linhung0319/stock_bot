@@ -97,6 +97,8 @@ export interface SecEventRow {
   status: string;
   handled_note: string | null;
   created_at: string;
+  /** 細項（T28；舊列沒有：null）。 */
+  detail_code?: string | null;
 }
 
 /**
@@ -114,8 +116,8 @@ export function accOf(accession: string | null | undefined): AccRef {
 
 /** 新的命中 → 寫入（同一檔、同一份申報、同一細項只記一次）。 */
 export function insertHitStmts(db: D1Database, ticker: string, hits: FilingHit[], source: string, at: string, status: (h: FilingHit) => string): D1PreparedStatement[] {
-  const ins = db.prepare('INSERT OR IGNORE INTO sec_events (ticker, accession, form, event_date, accepted_at, code, sub, by_rule, display_only, source, detail, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  return hits.map((h) => ins.bind(ticker, h.accession, h.form, h.date, h.acceptedAt || null, h.code, h.sub, h.byRule ? 1 : 0, h.displayOnly ? 1 : 0, source, h.detail ?? null, status(h), at));
+  const ins = db.prepare('INSERT OR IGNORE INTO sec_events (ticker, accession, form, event_date, accepted_at, code, sub, by_rule, display_only, source, detail, status, created_at, detail_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  return hits.map((h) => ins.bind(ticker, h.accession, h.form, h.date, h.acceptedAt || null, h.code, h.sub, h.byRule ? 1 : 0, h.displayOnly ? 1 : 0, source, h.detail ?? null, status(h), at, h.detailCode ?? null));
 }
 
 export async function loadEvents(db: D1Database, opt: { ticker?: string; since?: string; status?: string } = {}): Promise<SecEventRow[]> {

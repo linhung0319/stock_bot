@@ -70,7 +70,7 @@ records/                         ← .gitignore，不進 repo
 | `mom_reviews` | F1 否決法庭：每月每檔的 ALLOW／VETO／BLOCK、理由碼、由誰遞補；`data_missing = 1` 是申報抓不到、這次沒有檢查申報類失效模式（T32a） | 會改 | 被否決的股票事後表現 vs 遞補的股票 |
 | `own_conditions` | 自選股的條件：方向、種類、狀態與成立日；`file_id` 是屬於哪一份論點檔（T25 起）。T26 起審查只寫建議（`status = PROPOSED`），你勾選才監測：`accepted_at` 有值就是你定的條件、`action` 是成立時做什麼（出清／減半／重新審查）、`supersedes` 是取代的那一列、`met_basis` 是怎麼確認成立的（`XBRL`／`FILING_VOTE`／`REVIEW_VOTE`）、`progress_json` 是財報類條件最近一次比對的進度；撤下是 `RETIRED`、沒勾的建議過期是 `EXPIRED` | 會改 | 條件成立後股價怎麼走；哪種條件有用；AI 建議的條件你勾了多少 |
 | `own_thesis_log` | 自選股論點檔的歷史（T25 起）：`kind` = `OPEN`（開檔：怎麼加入、前提、開檔時的慢規則狀態與距高點跌幅）／`CLOSE`（結案原因）；之後加論點的每一版、失效通知、你的回應、條件的勾選。`file_id` = `<代號>@<開檔日>`，`body` 是 JSON；復原快照時那一版寫的列會被刪掉（本機已拉的不會跟著刪，用 `account_version` 對 `account_history.rev`） | 只增加 | 論點從開檔到結案怎麼變；失效通知後你怎麼回應 |
-| `sec_events` | 申報與新聞事件的分類（規則或 AI）、處理狀態 | 會改 | 事件分類準不準；硬事件後的報酬 |
+| `sec_events` | 申報與新聞事件的分類（規則或 AI）、處理狀態；`detail_code` 是細項（T28 起：`CEO_DEPART`、`IMPAIRMENT`、`BANKRUPTCY`…，條件提示 `CONDITION_HINT` 放條件的列編號；之前的列是空的） | 會改 | 事件分類準不準；硬事件後的報酬；規則與每日掃描各標到什麼 |
 | `macro_snapshots` | F5／F6 月報前抓的總經數字 | 會改（每月一列） | 崩盤規則檢視當時的背景 |
 
 ### 你的選擇與帳戶

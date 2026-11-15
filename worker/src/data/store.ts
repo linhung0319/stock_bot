@@ -158,6 +158,8 @@ export type AlertKind =
   | 'MONTHLY_PAUSED' // 月報照出，但本月暫停換股
   | 'AI_TIMEOUT' // AI 任務逾時（照規則）
   | 'CORE_MA_MISSING' // 核心 ETF 的 200 日均線算不出來，崩盤規則維持原狀態（core_ai §3.10）
+  | 'SCAN_FAILED' // 每日掃描連續 2 次以上沒有合格結論，寫出哪些文件還沒被 AI 看過（own_thesis §2.6）
+  | 'F25_OVERFLOW' // 條件確認的新申報超過 8 份，寫出哪幾份沒放進去（own_thesis §2.6）
   | 'TEST'; // 手動測試告警的推播（/admin/alert/test）
 /** 只表示「今天沒有產生訊號」的告警：同一個交易日後來再試成功了，就不必推播。 */
 export const NO_SIGNAL_ALERTS: ReadonlySet<string> = new Set(['PRICE_MISSING', 'PRICE_STALE', 'INGEST_ERROR', 'FLOW_ERROR']);

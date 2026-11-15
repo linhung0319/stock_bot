@@ -16,7 +16,7 @@ import { EVENT_SCAN, HARD_EVENT, type ScanTarget } from '../ai/events';
 import { MOM_ENTRY } from '../ai/momEntry';
 import { OWN_CONDITION, OWN_REVIEW } from '../ai/ownReview';
 import { guard, type Applier, type ApplyCtx, type FlowExtras, type StartCtx, type StepResult } from './aiCtx';
-import { getRun, listRuns } from './aiRuns';
+import { closeStaleRuns, getRun, listRuns } from './aiRuns';
 import { startCrashRuns } from './crashAi';
 import { applyDropExplain, applyOwnDrop, startDropRuns } from './dropAi';
 import type { Env, Fetcher } from './env';
@@ -76,12 +76,14 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
   }
 
   // 2. 套用（和網站的操作同時存檔時重來，最多 3 次；抓到的資料沿用）
+  // 已經超過時限、還在等結果的執行先照規則結束，這一次就套用（01:30 才知道 23:30 的掃描沒有結論、要不要重掃）
+  await closeStaleRuns(db, now);
   for (let tryNo = 0; ; tryNo++) {
     const loaded = tryNo === 0 ? first : await loadAccount(db);
     if (!loaded) return res;
     rebaseNotifSeq(loaded.acct, axis);
     const before = new Set(loaded.acct.notifs.map((n) => n.id));
-    const ctx: ApplyCtx = { db, acct: loaded.acct, view, axis, session, now, stmts: [], log: [] };
+    const ctx: ApplyCtx = { db, acct: loaded.acct, view, axis, session, now, stmts: [], log: [], alerts: [] };
     const done = (await db.prepare("SELECT run_id FROM ai_runs WHERE status = 'DONE' AND applied_at IS NULL ORDER BY completed_at").all<{ run_id: string }>()).results;
     for (const { run_id } of done) {
       const run = await getRun(db, run_id);
@@ -103,6 +105,7 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
     }
     res.created.push(...ctx.acct.notifs.filter((n) => !before.has(n.id)).map((n) => n.id));
     res.log.push(...ctx.log);
+    res.alerts.push(...(ctx.alerts ?? []));
     break;
   }
 

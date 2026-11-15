@@ -122,7 +122,8 @@ describe('申報原文', () => {
     expect(pickExhibit991({ directory: { item: [{ name: 'nvda-20261119.htm' }, { name: 'q3fy27pr.htm' }, { name: 'nvda-ex99_1.htm' }] } })).toBe('nvda-ex99_1.htm');
     expect(pickExhibit991({ directory: { item: [{ name: 'a.htm' }, { name: 'ex991.htm' }] } })).toBe('ex991.htm');
     const rss = parseRss('<rss><channel><item><title><![CDATA[NVIDIA beats estimates]]></title><link>https://n/1</link><pubDate>Thu, 19 Nov 2026 21:30:00 +0000</pubDate></item><item><title>bad</title><pubDate>nope</pubDate></item></channel></rss>');
-    expect(rss).toEqual([{ date: '2026-11-19', title: 'NVIDIA beats estimates', link: 'https://n/1' }]);
+    // T28：另外留下完整的發布時間（每日掃描的標記記時間，不是日期）
+    expect(rss).toEqual([{ date: '2026-11-19', title: 'NVIDIA beats estimates', link: 'https://n/1', at: '2026-11-19T21:30:00.000Z' }]);
   });
 });
 
@@ -335,6 +336,7 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       expect(acct.own.NVDA.aiTier!.premiseId).toBe('P2');
 
       // 11-30 月底：月報並列 AI 建議（股數由程式換算），理由用 AI 紀錄
+      const lineAtMonthly = e.line.length;
       const m = await run('2026-11-30');
       acct = (await loadAccount(db))!.acct;
       const monthly = acct.notifs.find((n) => n.id === m.monthly)!;
@@ -342,7 +344,8 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       expect(ai).toMatchObject({ kind: 'AI_ONLY', ticker: 'NVDA', title: 'NVDA 自選定期審查的建議', choice: 'SKIP' });
       expect(ai.choices[0].lines[0].shares).toBe(-Math.round((acct.lots.own.NVDA ?? 0) / 2));
       expect((ai as { x?: { ai?: { kind: string; verdict: string } } }).x?.ai).toMatchObject({ kind: 'REVIEW', verdict: '減半' });
-      expect(e.line.at(-1)).toContain('另有 1 項 AI 建議（預設不做），到網站決定。');
+      // T28：每日掃描（新聞標題）一直沒有結果 → 同一次也推 SCAN_FAILED 告警，月報那一則不一定是最後一則
+      expect(e.line.slice(lineAtMonthly).find((t) => t.includes('月報'))).toContain('另有 1 項 AI 建議（預設不做），到網站決定。');
       expect(acct.own.NVDA.aiTier!.suggest).toBe(false);
 
       // 使用者在持股頁勾選 C2（成立時出清，帶 AI 建議的檔位）→ 監測中

@@ -372,11 +372,14 @@ describe('T25：F24 的證據包由論點檔組', () => {
       expect(filing).toMatchObject({ kind: 'filing', date: '2026-12-01' });
       expect(filing.text).toContain('Chief Financial Officer informed the Company of her resignation');
       const v = r2.pack.facts.filter((f) => /^V\d+$/.test(f.id));
-      expect(v).toHaveLength(1);
+      // T28：5.02 的財務長辭任，規則從原文也記一筆（MGMT_CHANGE／8K_5.02_CFO_DEPART），和每日掃描的標記各一筆
+      expect(v).toHaveLength(2);
       expect(v[0]).toMatchObject({ id: 'V1', value: expect.stringContaining('MGMT_CHANGE') });
       expect(v[0].label).toContain('2026-12-01');
       expect(v[0].label).toContain('每日掃描');
       expect(v[0].note).toContain(src);
+      expect(v[1].label).toContain('8K_5.02_CFO_DEPART');
+      expect(v[1].note).toContain(EIGHTK_502.accession);
       expect(r2.pack.facts.find((f) => f.id === 'T0')!.value).toBe('有論點');
       expect(r2.pack.facts.some((f) => /^D\d$/.test(f.id))).toBe(false);
       // 論點那一份 note：最近的審查與結論；寫明是背景

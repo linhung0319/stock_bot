@@ -15,6 +15,7 @@
 | T25 | 完成 | （見 git log） | 399 通過、1 略過 |
 | T26 | 完成 | （見 git log） | 410 通過、1 略過 |
 | T37 | 完成 | （見 git log） | 420 通過、1 略過 |
+| T28 | 完成 | （見 git log） | 433 通過、1 略過 |
 
 ## 執行中做的決定
 
@@ -75,6 +76,16 @@
 - T37｜論點檔讀不到時月報照出、這個月不列也不記頻率，只寫 `console.error`、不推告警。月報暫停時照樣記 `attnShown`，清單存在暫停那一則的 input。
 - T37｜`HALF_NO_EXIT` 的「你定的條件」只算 ACTIVE 與 REVIEW_ONLY；`COND_NEAR` 只看監測中、你定的財報條件，動作照 `action`，沒有就看 `notifyTier`，再沒有寫「重新審查」。
 - T37｜示範模式沒有論點檔，月報與持股頁不會出現「要看的事」；要不要讓示範也有留給 T34。
+- T28｜Item 編號對照、13D、5.02 讀原文只放在每日掃描的規則段（新函式 `eventHits`、`hits502`），不加進 `quickHits`／`needsCover`（設計這樣寫，但那兩個 F1 也在用，會改到 F1 的證據包）。T32b 要不要也用由那個任務決定。
+- T28｜`classify502` 用真實資料調過：拿掉固定標題、節內的「this Item 5.02」與「Item 404(a)」不算下一項、離任字前 100 字有 if／upon／unless 等假設語不算、職稱前有 former／prior 不算、職稱後接「of 別的實體」或事業部不算（副作用：寫成「CEO of 公司全名」的會被略過）、離任字加 `no longer serve`。已知漏判：寫在 8,000 字之後的（Intel 2025-03），交給 Haiku。
+- T28｜細項可提前的事件：規則段遇到自選股 → `NEW`，動能與候選 → `INFO`；掃描結果自選股、申報來源、細項是 CEO／CFO 離任、下修、撤回 → `NEW`，新聞 → `INFO`。這些 `NEW` 不開法庭，等 T29b 處理（目前也不會過期）。
+- T28｜`CONDITION_HINT` 一條條件寫一筆（`sub` = `SCAN_CONDITION_HINT_<列編號>`），因為 `UNIQUE(ticker, accession, sub)`。
+- T28｜`aiStep` 套用前先 `closeStaleRuns`：超過 45 分鐘的執行在同一次流程照規則結束並套用，01:30 才知道 23:30 的掃描沒有結論。影響所有功能（逾時的結論早一次套用）。別的選項：只在重掃那一步判斷，但失敗次數與告警會晚一天。
+- T28｜重掃條件：`scan:fails` 最近一次失敗是今天這個交易日、而且今天的掃描執行不到 2 次；重掃另外抓所有對象的申報清單（不推 `edgar:` 標記）。
+- T28｜`scan8k` 第一次沒有值時，起點是當時的 `edgar:` 標記，開掃描當下就存起來（存起點不算往前推）。8-K 標記每檔推到第一份沒讀到的之前；新聞推到這次看到的最新一則。
+- T28｜失敗次數存在 `flow_state` 的 `scan:fails`；有執行紀錄的在照規則結束、套用時才算一次，免得算兩次。
+- T28｜F25 取最新的 8 份，告警寫出沒放進去的那幾份。掃描事件的說明文字仍帶英文代碼（網站事件表補了新代碼的中文），換成白話留給 T34。
+- T28｜13D 的表單名稱 `SCHEDULE 13D` 與 `SC 13D` 都收（實際看到新舊兩種寫法），`/A` 與 13G 不記。
 
 ## 要使用者親手做的事
 
@@ -86,6 +97,7 @@
 - T32a｜部署前套用遠端 migration（或照 T17 重建資料庫）：`npx wrangler d1 migrations apply stock-bot --remote`（這次新增 `0010_mom_reviews_data_missing.sql`）。
 - T25｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0011_thesis_file.sql`。
 - T26｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0012_condition_ownership.sql`。`own_review_v2.md` 由雲端排程從 repo 讀，push 之後生效。
+- T28｜部署前套用遠端 migration（或照 T17 重建資料庫）：新增 `0013_event_detail.sql`。`event_scan_v2.md` 由雲端排程從 repo 讀，push 之後生效。
 
 ## 畫面截圖
 

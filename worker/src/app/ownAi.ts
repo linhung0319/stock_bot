@@ -279,6 +279,9 @@ export async function ownFacts(env: Env, fetcher: Fetcher, checks: FilingCheck[]
 
 // ---------------------------------------------------------------- 開新的執行
 
+/** 一次條件確認（F25）最多放幾份新申報（own_thesis §2.6；原本 3 份）。超過的記 F25_OVERFLOW 告警。 */
+export const F25_MAX_FILINGS = 8;
+
 /** F25（新申報對上事件條件）、F24（新財報、月報前一天）。 */
 export async function startOwnRuns(sc: StartCtx): Promise<void> {
   const { env, fetcher, acct, view, axis, session, ov, now, res } = sc;
@@ -289,7 +292,14 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
     // F25 的條件由論點檔取（只有現在這份論點檔的）
     const events = ((await thesisFile(env.DB, acct, c.ticker, session))?.conditions ?? []).filter((x) => x.kind === 'EVENT' && x.status === 'ACTIVE');
     const confirm = new Set(events.flatMap((x) => ((x.check.confirm_by as string[] | undefined) ?? []).map((s) => (s === 'SEC' ? '8-K' : s))));
-    const relevant = c.fresh.filter((f) => [...confirm].some((k) => f.form.startsWith(k))).slice(0, 3);
+    // 相關的新申報全部取，最多 8 份（新的在前，和 EDGAR 的順序相同）；超過的寫進告警
+    const all = c.fresh.filter((f) => [...confirm].some((k) => f.form.startsWith(k)));
+    const relevant = all.slice(0, F25_MAX_FILINGS);
+    if (events.length && all.length > F25_MAX_FILINGS) {
+      const left = all.slice(F25_MAX_FILINGS).map((f) => `${f.form} ${f.filingDate}（${f.accession}）`);
+      res.alerts.push({ kind: 'F25_OVERFLOW', message: `${c.ticker} 有 ${all.length} 份新申報可能確認條件，條件確認一次最多讀 ${F25_MAX_FILINGS} 份（取最新的），這幾份沒有放進去：${left.join('、')}。` });
+      res.log.push(`${c.ticker} 的條件確認：新申報 ${all.length} 份，只取最新的 ${F25_MAX_FILINGS} 份`);
+    }
     if (events.length && relevant.length) {
       try {
         const docs = await Promise.all(relevant.map(async (f) => docOf(await fetchFilingDoc(fetcher, c.cik, f, env.EDGAR_USER_AGENT!))));

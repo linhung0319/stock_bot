@@ -294,7 +294,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 做：`ownAttention`（放 `app/thesis.ts`，本身不讀資料庫）；月報的 `attention` 欄位與 `attnShown` 的頻率；月報 LINE 的那一行；持股頁與月報頁列出來（只求能用）。這個任務做的種類：`PROPOSED_CONDS`、`COND_NEAR`、`NO_THESIS`、`THESIS_OLD`、`HALF_NO_EXIT`。其餘種類由各自的任務加（T29a、T29b、T29c、T31a、T35；動能 T32d），所以加一種要很容易。
 - 完成條件：五種各有成立與不成立的測試；頻率（同一件事下個月不再列、`COND_NEAR` 換季才再列）；「本月不用動」的月報也列；LINE 有與沒有那一行；不產生通知。
 
-#### [ ] T28 每日掃描的補強
+#### [x] T28 每日掃描的補強
 - 讀：`own_thesis` §2.1～§2.3、§2.5、§2.6（最後一段的硬事件法庭是 T32c）；問題 S1～S6、M2。檔案：`data/secEvents.ts`、`ai/events.ts`、`app/events.ts`、`app/aiStep.ts`、`app/ownAi.ts`（`newsDoc`、`startOwnRuns` 的 `slice(0, 3)`）、`ai/prompts/event_scan_v1.md`。
 - 做：
   1. `sec_events.detail_code`；Item 編號對照（含新的類別 `DISTRESS`、`CYBER`）；`classify502`；13D；規則段寫入時的狀態。

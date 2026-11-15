@@ -310,6 +310,8 @@ export interface Headline {
   date: string;
   title: string;
   link: string;
+  /** 完整的發布時間（ISO，UTC）；每日掃描的標記記這個，不是日期（own_thesis §2.6，S5）。 */
+  at: string;
 }
 
 export function parseRss(xml: string): Headline[] {
@@ -322,7 +324,7 @@ export function parseRss(xml: string): Headline[] {
     const it = m[0];
     const d = new Date(tag(it, 'pubDate'));
     if (Number.isNaN(d.getTime())) continue;
-    out.push({ date: d.toISOString().slice(0, 10), title: tag(it, 'title'), link: tag(it, 'link') });
+    out.push({ date: d.toISOString().slice(0, 10), title: tag(it, 'title'), link: tag(it, 'link'), at: d.toISOString() });
   }
   return out;
 }

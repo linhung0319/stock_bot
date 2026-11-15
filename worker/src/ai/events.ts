@@ -10,7 +10,8 @@ import type { CheckedSample, EvidencePack, Outcome, PackDoc, PackPremise } from 
 import { buildPack, ownPremises, priceDoc, priceFacts } from './pack';
 
 export const EVENT_SCAN = 'EVENT_SCAN';
-export const EVENT_SCAN_PROMPT = 'event_scan_v1';
+/** v2（T28）：每筆多一個細項 sub；條件清單改成觀察項與「只在審查時檢查」的條件。 */
+export const EVENT_SCAN_PROMPT = 'event_scan_v2';
 export const HARD_EVENT = 'HARD_EVENT';
 export const HARD_EVENT_PROMPT = 'hard_event_v1';
 
@@ -21,18 +22,44 @@ export const HARD_CODES: HardCode[] = ['PENDING_MA', 'ACCOUNTING', 'REGULATORY']
 export const SCAN_CLASSES = ['ACCOUNTING_CANDIDATE', 'REGULATORY_CANDIDATE', 'PENDING_MA_CANDIDATE', 'GUIDANCE_CUT', 'EARNINGS', 'MGMT_CHANGE', 'RESTRUCTURING', 'MAJOR_CONTRACT', 'FINANCING', 'OTHER'] as const;
 export type ScanClass = (typeof SCAN_CLASSES)[number];
 export const CANDIDATE_CODE: Partial<Record<ScanClass, HardCode>> = { ACCOUNTING_CANDIDATE: 'ACCOUNTING', REGULATORY_CANDIDATE: 'REGULATORY', PENDING_MA_CANDIDATE: 'PENDING_MA' };
+/**
+ * Haiku 可以給的細項（own_thesis §2.2 由 Haiku 判的那幾種）。不在這裡的 sub 程式拿掉，類別留著（當成不可提前的）。
+ * RESTRUCTURING、MAJOR_CONTRACT 的終止、DISTRESS、CYBER 由規則看 Item 編號，不由 Haiku 給細項。
+ */
+export const SCAN_SUBS: Partial<Record<ScanClass, readonly string[]>> = {
+  MGMT_CHANGE: ['CEO_DEPART', 'CFO_DEPART', 'EXEC_APPOINT', 'OTHER_EXEC', 'DIRECTOR'],
+  GUIDANCE_CUT: ['CUT', 'WITHDRAWN'],
+  MAJOR_CONTRACT: ['NEW'],
+};
 
 export interface ScanTarget {
   ticker: string;
   role: 'OWN' | 'MOM' | 'CAND';
 }
 
-/** 自選股的事件條件（F24 寫的），讓掃描順便標出「可能成立的條件」。 */
+/**
+ * 自選股的條件，讓掃描順便標出「可能有關的條件」（own_thesis §2.5）：事件類的觀察項（PROPOSED）與你定的、只在審查時檢查的（REVIEW_ONLY）。
+ * 可以由申報確認的（ACTIVE）不放：它們由新申報直接開條件確認（F25）。
+ */
 export interface ScanCondition {
   ticker: string;
   condId: string;
   text: string;
+  /** own_conditions 的列編號（標到時寫進 CONDITION_HINT 的細項）。 */
+  rowId: number;
+  status: 'PROPOSED' | 'REVIEW_ONLY';
 }
+
+/** 這次掃描的一份文件（申報或一檔的新聞標題），沒有結論時寫進 SCAN_FAILED 告警。 */
+export interface ScanBatchItem {
+  ticker: string;
+  kind: '8-K' | 'NEWS';
+  /** 給人讀的一句（MU 的 8-K 2027-01-06（Item 5.02）、NVDA 的 12 則新聞標題）。 */
+  label: string;
+}
+
+/** 這次掃描看到的最新一份 8-K（acceptedAt）與最新一則標題的時間；有合格結論才把標記推到這裡。 */
+export type ScanCursors = Record<string, { scan8k?: string; news?: string }>;
 
 export interface EventScanInput {
   runId: string;
@@ -41,6 +68,12 @@ export interface EventScanInput {
   /** 新的 8-K 原文、新的新聞標題（每份一個來源）。 */
   docs: (PackDoc & { ticker: string })[];
   conditions: ScanCondition[];
+  /** 每檔這次看到的最新 acceptedAt 與標題時間（rule.detail.cursors）。 */
+  cursors?: ScanCursors;
+  /** 這次的文件清單（rule.detail.batch）。 */
+  batch?: ScanBatchItem[];
+  /** 證據包的備註（略過的較舊標題、留到下一次的 8-K）。 */
+  notes?: string[];
   dataQuality: EvidencePack['data_quality'];
   now: Date;
 }
@@ -57,14 +90,25 @@ export function eventScanPack(inp: EventScanInput) {
     asOf: inp.asOf,
     subject: { name: `每日事件掃描（${tickers.join('、')}）` },
     question:
-      '逐份讀這些新的申報與新聞標題，每一件事只輸出事件類別與日期（payload.events），不寫評論、不判斷該不該買賣。' +
-      '只有原文直接寫出的事才標；新聞標題只能當初判。自選股另外標出「可能成立的事件條件」編號（facts 的 K 開頭）。' +
+      '逐份讀這些新的申報與新聞標題，每一件事只輸出事件類別、細項與來源（payload.events），不寫評論、不判斷重大性、不判斷該不該買賣。' +
+      '只有原文直接寫出的事才標；新聞標題只能當初判。自選股另外標出「可能有關的條件」編號（facts 的 K 開頭：觀察項，或只在審查時檢查的條件）。' +
       '沒有值得標的事就回 NOTHING。',
     policy: { level: 'A1', verdicts: ['FLAGGED', 'NOTHING'], abstain: 'NOTHING', min_evidence: 0, samples: 1 },
-    rule: { action: '只標記、轉交（F19 硬事件法庭、下一次 F1 審查），不能觸發交易', detail: { targets: inp.targets, classes: SCAN_CLASSES } },
+    rule: {
+      action: '只標記、轉交（F19 硬事件法庭、提前審查、下一次 F1 審查），不能觸發交易',
+      detail: {
+        targets: inp.targets,
+        classes: SCAN_CLASSES,
+        subs: SCAN_SUBS,
+        conds: Object.fromEntries(inp.conditions.map((c, k) => [`K${k + 1}`, c.rowId])),
+        cursors: inp.cursors ?? {},
+        batch: inp.batch ?? [],
+        ...(inp.notes?.length ? { notes: inp.notes } : {}),
+      },
+    },
     facts: [
       ...inp.targets.map((t, k) => ({ id: `T${k + 1}`, label: t.ticker, value: ROLE[t.role] })),
-      ...inp.conditions.map((c, k) => ({ id: `K${k + 1}`, label: `${c.ticker} 的事件條件 ${c.condId}`, value: c.text })),
+      ...inp.conditions.map((c, k) => ({ id: `K${k + 1}`, label: `${c.ticker} 的${c.status === 'PROPOSED' ? '觀察項' : '條件（只在審查時檢查）'} ${c.condId}`, value: c.text })),
     ],
     documents: inp.docs.map(({ ticker: _t, ...d }) => d),
     dataQuality: inp.dataQuality,
@@ -72,12 +116,25 @@ export function eventScanPack(inp: EventScanInput) {
   });
 }
 
+/**
+ * 掃描有沒有合格結論（own_thesis §2.6）：至少一票格式合格，而且不是逾時、觸發失敗、整份退回。
+ * 合格（含「沒有值得標的事」）才把標記往前推；不合格 → 標記不動、下一次重掃同一批。
+ */
+export function scanQualified(outcome: Outcome | null | undefined): boolean {
+  return !!outcome && outcome.status !== 'TIMEOUT' && outcome.status !== 'NO_RESULT' && outcome.samples.some((s) => s.valid);
+}
+
 export interface ScanEvent {
   ticker: string;
   cls: ScanClass;
+  /** 細項（只有 SCAN_SUBS 列舉內的；其他是 null）。 */
+  sub: string | null;
   sourceId: string;
   date: string;
+  /** 可能有關的條件（facts 的名稱，給人讀）。 */
   conditionIds: string[];
+  /** 同上，own_conditions 的列編號（證據包有對照表時）。 */
+  conditionRows: number[];
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -100,7 +157,15 @@ export function checkEventScanPayload(s: CheckedSample, pack: EvidencePack): voi
       continue;
     }
     const ids = (Array.isArray(e.condition_ids) ? e.condition_ids : []).filter((x): x is string => typeof x === 'string' && [...conds.values()].includes(x));
-    kept.push({ ...e, condition_ids: ids });
+    // 細項：只收 SCAN_SUBS 列舉內的；其他拿掉細項、類別留著（當成不可提前的）
+    const subs = SCAN_SUBS[e.class as ScanClass] ?? [];
+    const { sub: rawSub, ...rest } = e;
+    let sub: string | null = null;
+    if (rawSub !== undefined && rawSub !== null && rawSub !== '') {
+      if (typeof rawSub === 'string' && subs.includes(rawSub)) sub = rawSub;
+      else s.issues.push(`${e.ticker} ${String(e.class)} 的細項（${String(rawSub).slice(0, 40)}）不在列舉內，拿掉細項（類別留著）`);
+    }
+    kept.push({ ...rest, ...(sub ? { sub } : {}), condition_ids: ids });
   }
   s.payload = { ...(s.payload ?? {}), events: kept };
   if (s.verdict === 'FLAGGED' && !kept.length) s.verdict = 'NOTHING';
@@ -111,14 +176,20 @@ export function scanEvents(outcome: Outcome, pack: EvidencePack): ScanEvent[] {
   const s = outcome.samples.find((x) => x.valid);
   if (!s || s.verdict !== 'FLAGGED') return [];
   const conds = new Map(pack.facts.filter((f) => /^K\d+$/.test(f.id)).map((f) => [f.id, f.label]));
+  const rows = ((pack.rule.detail ?? {}) as { conds?: Record<string, number> }).conds ?? {};
   const dateOf = new Map(pack.documents.map((d) => [d.source_id, d.date]));
-  return ((s.payload?.events as Record<string, unknown>[]) ?? []).map((e) => ({
-    ticker: String(e.ticker),
-    cls: e.class as ScanClass,
-    sourceId: String(e.source_id),
-    date: dateOf.get(String(e.source_id)) ?? pack.as_of,
-    conditionIds: ((e.condition_ids as string[]) ?? []).map((id) => conds.get(id) ?? id),
-  }));
+  return ((s.payload?.events as Record<string, unknown>[]) ?? []).map((e) => {
+    const ids = (e.condition_ids as string[]) ?? [];
+    return {
+      ticker: String(e.ticker),
+      cls: e.class as ScanClass,
+      sub: typeof e.sub === 'string' ? e.sub : null,
+      sourceId: String(e.source_id),
+      date: dateOf.get(String(e.source_id)) ?? pack.as_of,
+      conditionIds: ids.map((id) => conds.get(id) ?? id),
+      conditionRows: ids.map((id) => rows[id]).filter((x): x is number => typeof x === 'number'),
+    };
+  });
 }
 
 // ---------------------------------------------------------------- F19 硬事件法庭
