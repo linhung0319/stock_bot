@@ -96,7 +96,7 @@
   - 當天通知的頻率上限。
 - 完成條件：設計文件的這一章使用者看過並同意。
 
-### [ ] T19 自選股：L1 該看什麼、怎麼交給 L2
+### [x] T19 自選股：L1 該看什麼、怎麼交給 L2
 - **難度：中偏高**。**建議：Fable 5.2，effort high**。依賴 T18（事件要寫進論點檔）。
 - 讀：上面的 S1～S7、`worker/src/ai/events.ts`、`worker/src/app/events.ts`、`worker/src/data/secEvents.ts`、`ai/prompts/event_scan_v1.md`、`drop_explain_v1.md`。
 - 要定的：
