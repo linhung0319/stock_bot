@@ -395,6 +395,9 @@ function monthlyItem(acct: Account, month: string, ticker: string): { n: Notif; 
   return null;
 }
 
+/** 晚到否決的 LINE 補推（T45，T41 第 11 條）：排除不是只管這個月，按了之後每個月都擋，要到帳戶頁取消。 */
+export const EXCLUDE_LASTS = '（排除會一直有效，之後要在帳戶頁取消）';
+
 const sumShares = (it: Item, choice: string, ticker: string) => (it.choices.find((c) => c.id === choice)?.lines ?? []).filter((l) => l.ticker === ticker).reduce((a, l) => a + l.shares, 0);
 
 /**
@@ -417,9 +420,9 @@ function lateVeto(ctx: ApplyCtx, cur: MomReview, run: AiRun, code: string): void
   n.runIds = [...new Set([...(n.runIds ?? []), run.runId])];
   const push =
     n.status === 'PENDING'
-      ? `${t} 的進場審查回來了：3 票否決（${zh}）。${mm} 已更新，預設仍是照規則買進；要照否決，到網站對 ${t} 按「排除」。`
+      ? `${t} 的進場審查回來了：3 票否決（${zh}）。${mm} 已更新，預設仍是照規則買進；要照否決，到網站對 ${t} 按「排除」${EXCLUDE_LASTS}。`
       : n.status === 'RESPONDED'
-        ? `${t} 的進場審查回來了：3 票否決（${zh}）。你已經決定了；還沒下單的話可以回通知 #${n.id} 對 ${t} 按「排除」。`
+        ? `${t} 的進場審查回來了：3 票否決（${zh}）。你已經決定了；還沒下單的話可以回通知 #${n.id} 對 ${t} 按「排除」${EXCLUDE_LASTS}。`
         : undefined;
   it.lateVeto = { code, runId: run.runId, date: ctx.session, ...(push ? { push } : {}) };
   // 「進場審查進行中」的說明換掉；存著的說明拿掉，網站照現在的狀態重算（收合時那一行先講否決）

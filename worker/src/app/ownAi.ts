@@ -467,7 +467,7 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
     if (!m.thesisReviewDue) continue;
     if (!ownHeld(acct, t)) continue; // 0 股：論點變動後的審查留著，持有後再開（T39b）
     const sameDay = review.has(t) || !!(await env.DB.prepare("SELECT 1 AS x FROM ai_runs WHERE fn = 'OWN_REVIEW' AND ticker = ? AND as_of = ? LIMIT 1").bind(t, session).first());
-    const recent = !!m.thesisReviewAt && daysApart(m.thesisReviewAt, session) < THESIS_REVIEW_GAP;
+    const recent = !!thesisReviewHeld(m, session);
     if (sameDay || recent) {
       patch[t] = { ...patch[t], thesisReviewDue: null };
       res.log.push(`${t} 的論點改過：${sameDay ? '今天已經有審查' : `${m.thesisReviewAt} 開過論點變動後的審查（30 天內）`}，不另外開`);
@@ -701,6 +701,14 @@ export const checkpointKey = (session: string) => `${CHECKPOINT_PREFIX}${session
 /** 論點變動後的審查，每檔幾個日曆天最多 1 次（§3.6.5）。 */
 export const THESIS_REVIEW_GAP = 30;
 const daysApart = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86400_000);
+
+/**
+ * 論點變動後的審查在 session 那一次每日流程會不會被 30 天的上限擋下（§3.6.5）：擋下時回傳上次開論點變動後審查的日子，否則 null。
+ * 每日流程用它決定開不開；編輯論點頁的預覽用它寫「M/D 已經審過一次，這次的改動留到月底檢查點審」（T45）。
+ */
+export function thesisReviewHeld(m: Pick<OwnMeta, 'thesisReviewAt'>, session: string): string | null {
+  return m.thesisReviewAt && daysApart(m.thesisReviewAt, session) < THESIS_REVIEW_GAP ? m.thesisReviewAt : null;
+}
 
 /** 開執行的段落（帳戶已經存好）要改的自選欄位（論點變動後的審查、月底檢查點的 reviewSkip）：重新讀帳戶、改、存（和網站同時存檔時重來，最多 3 次）。 */
 async function patchOwn(db: D1Database, now: Date, patch: Record<string, Partial<OwnMeta>>, log: string[]): Promise<void> {

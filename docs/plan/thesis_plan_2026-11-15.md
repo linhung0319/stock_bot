@@ -498,7 +498,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 畫面：有。再買回後的持股頁、「還沒有論點的自選」、編輯論點頁的「帶入上次的論點」，桌機與手機，存 `records/stage8/screens/T44/`。
 - 完成條件：每一項至少一個測試，包括：賣光再買回 → 持股頁與討論包有上一份的論點與結案原因；沒有結案過的不出現；帶入之後前提是新的編號、出場條件不帶；證據包不帶；舊條件沒有恢復監測。全部測試、typecheck、lint、重放驗收通過。
 
-##### [ ] T45 自選論點的畫面與文字小修（2026-11-16 使用者同意）
+##### [x] T45 自選論點的畫面與文字小修（2026-11-16 使用者同意）
 - 起因：T41 第 2、8、9、10、11、12 條。
 - 讀：`docs/test-records/t41_meaning_walkthrough_2026-11-16.md` 這六條（每條有程式位置）；`public/js/pages-thesis.js`、`pages-more.js`；`worker/src/app/site/api.ts`（`addThesisTodo`、`newOwnWithoutThesis`、通知的轉入與認養、分類通知）；`worker/src/app/ownAi.ts`（`THESIS_REVIEW_GAP`）；`worker/src/app/momAi.ts`（晚到否決的 LINE）。
 - 做：

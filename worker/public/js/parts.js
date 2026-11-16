@@ -3,6 +3,12 @@ import { api } from './api.js';
 import { actionText, day, h, money, pct, put, qty, s, signedPct } from './dom.js';
 import { meterEl } from './layout.js';
 
+/**
+ * 新加進自選時已經比 52 週高點低 20% 以上（T45，T41 第 10 條）：建立帳戶頁與快照結果頁同一句。
+ * 股數照填的記、狀態記成減半；減半只會從標準觸發，所以再跌也不會有動作。
+ */
+export const HALF_START_TEXT = '一開始記成「減半」狀態：系統不會叫你賣，但這檔再跌慢規則也不會有動作，直到站回 200 日均線連續 10 天；要有底線請寫出場條件。';
+
 export const bucketTag = (bucket, name) => h('span', { class: 'tag', 'data-b': bucket }, h('i', { class: 'g' }), name);
 
 /** 收合的箭頭（放在 summary 裡）。 */

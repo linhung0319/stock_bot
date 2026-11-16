@@ -51,6 +51,8 @@ import { demoDiscussion } from '../discussion';
 import type { ThesisLogInput } from '../ledgerStore';
 import { ruleResponseLogs, type CondAction } from '../thesis';
 import { StaleExitsError } from '../ownCheckAi';
+import { thesisReviewHeld } from '../ownAi';
+import { nextTradingDay } from '../../data/calendar';
 import { errText } from '../../data/util';
 import { normalizeTicker } from '../../data/sources';
 import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
@@ -310,6 +312,14 @@ export function newOwnWithoutThesis(before: Account, after: Account): string[] {
   return Object.keys(after.own).filter((t) => before.own[t]?.fileId !== after.own[t].fileId || !before.own[t]).filter((t) => after.own[t].premises.every((p) => p.origin === 'SYSTEM_DEFAULT'));
 }
 
+/**
+ * 這次新開的自選裡、一開始就記成減半的（現在已經比 52 週高點低 20% 以上；T45，T41 第 10 條）：
+ * 股數照填的記，系統不會叫你賣，但再跌慢規則也不會有動作，直到站回 200 日均線連續 10 天。快照結果頁列一句。
+ */
+export function newOwnStartsHalved(before: Account, after: Account): string[] {
+  return Object.keys(after.own).filter((t) => (!before.own[t] || before.own[t].fileId !== after.own[t].fileId) && after.own[t].opened?.startState === 'HALF');
+}
+
 /** 加進「還沒有論點的自選」清單（已經在裡面的不重複）。 */
 function addThesisTodo(acct: Account, tickers: string[]): Account {
   if (!tickers.length) return acct;
@@ -407,6 +417,10 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
         edited: out.mapping.edited,
         silenceEnded: out.silenceEnded,
         changed: out.changed,
+        // 原本只有系統預設、這次也沒有自己的前提（T45，T41 第 2 條）：AI 照樣用預設的三條檢查，這檔仍算還沒有論點
+        defaultOnly: out.before.premises.every((p) => p.origin === 'SYSTEM_DEFAULT') && meta.premises.every((p) => p.origin === 'SYSTEM_DEFAULT'),
+        // 前提有變動、但 30 天內已經開過論點變動後的審查（T45，T41 第 9 條）：上次開的日子；隔天不會再審，留到月底檢查點
+        reviewHeld: out.changed ? thesisReviewHeld(d.acct.own[tk], nextTradingDay(d.view.date)) : null,
         version,
         // 出場條件（T42）：有沒有改動、監測中幾條、只改動作的（沒改動時直接改）、之前還沒確認的那一版
         exits: {
@@ -743,7 +757,10 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       const r = await mutate(backend, `通知 #${id}：${action}`, [], (d) => {
         const out = itemAction(d.acct, d.view, id, key, { action, reason });
         if (!out.notif) throw new SiteError(409, '這個動作現在不能做（通知已經回覆，或這一項不支援）');
-        return { acct: out.acct, result: { notifId: out.notif.id } };
+        // 轉入、認養新開的自選也進「還沒有論點的自選」（T45，改掉 T40 執行中「不進清單」的決定）；回應頁顯示同一張清單
+        const newOwn = newOwnWithoutThesis(d.acct, out.acct);
+        const acct = addThesisTodo(out.acct, newOwn);
+        return { acct, result: { notifId: out.notif.id, newOwn, newOwnRows: thesisTodoOf(acct, newOwn) } };
       });
       return json({ ok: true, ...r.result });
     }
@@ -771,7 +788,10 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
           acct = m.acct;
           monthlyId = m.notif?.id ?? null;
         }
-        return { acct, result: { monthlyUnblocked: out.monthlyUnblocked, notifId: monthlyId } };
+        // 清單外買進歸自選、新開的自選也進「還沒有論點的自選」（T45）
+        const newOwn = newOwnWithoutThesis(d.acct, acct);
+        acct = addThesisTodo(acct, newOwn);
+        return { acct, result: { monthlyUnblocked: out.monthlyUnblocked, notifId: monthlyId, newOwn, newOwnRows: thesisTodoOf(acct, newOwn) } };
       });
       return json({ ok: true, ...r.result });
     }
@@ -854,11 +874,12 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       // 存完之後的引導（T40）：這次新加進自選、還沒有論點的，列在結果頁，也記進帳戶頁入口的那張清單
       const newOwn = newOwnWithoutThesis(d.acct, acct);
       acct = addThesisTodo(acct, newOwn);
+      const startsHalved = newOwnStartsHalved(d.acct, acct);
       return {
         acct,
         snapshot: snap,
         // newOwnRows：結果頁那張清單的每一行（買進時的一句話；賣光又買回、上次有論點的帶 prev，T44）
-        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, belowStd: out.belowStd, monthlyId, newOwn, newOwnRows: thesisTodoOf(acct, newOwn) },
+        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, belowStd: out.belowStd, startsHalved, monthlyId, newOwn, newOwnRows: thesisTodoOf(acct, newOwn) },
       };
     });
     // 送出前的帳戶留下來，填錯了可以復原（只留最後一份；之後帳戶有變動就不能復原）

@@ -315,8 +315,10 @@ describe('情境 ① 平常的月報：用網站走完', () => {
     const { sim, n } = simStart();
     const v = await web.notif(n.id);
     const r = itemAction(sim.acct, sim.pre, n.id, n.items.find((i) => i.f === 'F2')!.key, { action: 'TRANSFER', reason: '雲端訂單還在成長' });
-    sim.acct = r.acct;
-    await web.post(`/notif/${n.id}/action`, { key: itemOf(v, '動能出場', 'ORCL').key, action: 'TRANSFER', reason: '雲端訂單還在成長' });
+    // T45：轉入新開的自選也進「還沒有論點的自選」（網站那一層加的，引擎不管）
+    sim.acct = { ...r.acct, thesisTodo: ['ORCL'] };
+    const w = await web.post<{ newOwn: string[] }>(`/notif/${n.id}/action`, { key: itemOf(v, '動能出場', 'ORCL').key, action: 'TRANSFER', reason: '雲端訂單還在成長' });
+    expect(w.newOwn).toEqual(['ORCL']);
     await expectSame(sim);
     const v2 = await web.notif(n.id);
     expect(itemOf(v2, '動能出場', 'ORCL')).toMatchObject({ cancelled: true, note: '已轉入自選（不用下單）' });

@@ -16,6 +16,13 @@ const ACTIONS = [
 ];
 const LIMITS = { thesis: 600, premises: 5, premise: 200, exits: 6, exit: 300 };
 
+/** 原本只有系統預設、這次也沒有自己的前提（T45，T41 第 2 條）：預覽與存檔結果同一句。 */
+export const DEFAULT_ONLY_TEXT = '沒有寫前提：AI 照樣用系統預設的三條前提檢查，這檔仍算還沒有論點。';
+/** 前提有變動、但 30 天內已經開過論點變動後的審查（T45，T41 第 9 條）：預覽與送不出去時的結果框同一句。 */
+export const reviewHeldText = (at) => `${day(at)} 已經審過一次（每檔 30 天最多 1 次），這次的改動留到月底檢查點審。`;
+/** 存檔後的前提變動會不會開審查（預覽、送不出去時的結果框）。 */
+const reviewLine = (p) => (p.reviewHeld ? `前提有增減或字改了：${reviewHeldText(p.reviewHeld)}` : '前提有增減或字改了：隔天的每日流程會開一次審查，檢查每條前提（每檔 30 天最多 1 次）。');
+
 /** 取討論包、放進剪貼簿。剪貼簿不能用時，在按鈕下面放一個選好的文字框讓使用者自己複製。 */
 async function copyDiscussion(btn, ticker, notif) {
   const q = notif ? `?notif=${notif}` : '';
@@ -162,7 +169,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     replyTo: reply && reply.checked ? replyNotif : null,
   });
   /** 沿用編號、但字改了（T40）：左邊舊的、右邊新的；「當成新的一條」取消對應（這一條發新編號，舊的撤下）。 */
-  const editedList = (xs) =>
+  const editedList = (xs, held) =>
     xs.length
       ? h(
           'div',
@@ -180,7 +187,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
               ),
             ),
           ),
-          h('p', { class: 'faint', style: 'margin-top:4px' }, `沿用編號：之前的檢查結果接著算；這條前提如果在靜默期（你不同意過 AI 的判斷），靜默期結束，因為你不同意的是原本的字。字改了也算論點變動，隔天會開一次審查。意思已經不同的，按「當成新的一條」。`),
+          h('p', { class: 'faint', style: 'margin-top:4px' }, `沿用編號：之前的檢查結果接著算；這條前提如果在靜默期（你不同意過 AI 的判斷），靜默期結束，因為你不同意的是原本的字。字改了也算論點變動，${held ? reviewHeldText(held) : '隔天會開一次審查。'}意思已經不同的，按「當成新的一條」。`),
         )
       : null;
   const actName = (v) => ACTIONS.find(([a]) => a === v)?.[1] ?? '重新審查';
@@ -225,10 +232,12 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
           diff,
           h('b', null, '存檔後的前提'),
           line('沿用：', p.kept.filter((x) => !edited.some((e) => e.id === x.id)), false),
-          editedList(edited),
+          editedList(edited, p.reviewHeld),
           line('新的：', p.added, false),
           line('會撤下：', p.retired.map((x) => ({ ...x, text: x.origin === 'SYSTEM_DEFAULT' ? `${x.text}（系統預設）` : x.text })), true),
-          h('div', { class: 'faint', style: 'margin-top:4px' }, p.changed ? '前提有增減或字改了：隔天的每日流程會開一次審查，檢查每條前提（每檔 30 天最多 1 次）。' : '前提沒有增減：不另外開審查。'),
+          p.defaultOnly
+            ? h('div', { class: 'default-only', style: 'margin-top:4px;color:var(--warn)' }, DEFAULT_ONLY_TEXT)
+            : h('div', { class: p.reviewHeld ? null : 'faint', style: `margin-top:4px${p.reviewHeld ? ';color:var(--warn)' : ''}` }, p.changed ? reviewLine(p) : '前提沒有增減：不另外開審查。'),
           p.silenceEnded?.length ? h('div', { style: 'margin-top:4px;color:var(--warn)' }, `${p.silenceEnded.join('、')} 正在靜默期，字改了：存檔後靜默期結束，AI 判斷新的字不成立時會照常通知你。`) : null,
           keptWarn(p),
         );
@@ -262,7 +271,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
           glass(
             'pad',
             h('h2', { class: 'panel-h' }, `論點與前提已經存好（第 ${r.preview.version} 版）`),
-            r.preview.changed ? h('p', { class: 'small dim', style: 'margin-top:6px' }, '前提有增減：隔天的每日流程會開一次審查。') : null,
+            r.preview.changed ? h('p', { class: 'small dim', style: 'margin-top:6px' }, r.preview.reviewHeld ? `前提有增減：${reviewHeldText(r.preview.reviewHeld)}` : '前提有增減：隔天的每日流程會開一次審查。') : null,
+            r.preview.defaultOnly ? h('p', { class: 'small', style: 'margin-top:6px;color:var(--warn)' }, DEFAULT_ONLY_TEXT) : null,
             r.revised ? h('p', { class: 'small dim', style: 'margin-top:6px' }, `${r.revisedName ?? '那則通知'}已結案（修正論點，部位不動）${r.revised.kept ? `；新的論點還留著前提 ${r.revised.premiseId}，當成不同意，這條前提進靜默期` : ''}。`) : null,
             unsentBox(d.ticker, r.exits, `原因：${r.rewrite.error}`, () => ctx.go(back.href), r.preview.version),
             h('p', { class: 'small faint', style: 'margin-top:10px' }, '持股頁也會一直提示，直到重送成功。'),
@@ -281,7 +291,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       const rv = r.revised ? `；${r.revisedName ?? '那則通知'}結案（修正論點${r.revised.kept ? `，保留的前提 ${r.revised.premiseId} 進靜默期` : ''}）` : '';
       const cd = r.conds?.actionChanged?.length ? `；${r.conds.actionChanged.length} 條出場條件改了成立時的動作` : '';
       const ex = r.rewrite.status === 'SENT' ? '論點已存；出場條件送去 AI 對照與改寫，回來後在持股頁確認（確認之前舊的照舊監測）' : r.preview.exits?.changed ? '論點已存；出場條件全部拿掉，到持股頁確認才撤下' : '論點已存';
-      toast([ex + rv + cd, ...(r.conds?.errors ?? [])].join('；'));
+      toast([ex + rv + cd, ...(r.preview.defaultOnly ? [DEFAULT_ONLY_TEXT.replace(/。$/, '')] : []), ...(r.conds?.errors ?? [])].join('；'));
       ctx.go(back.href);
     } catch (e) {
       msg.replaceChildren(errBox(e));
@@ -420,6 +430,20 @@ export function thesisTodoList(rows) {
   );
 }
 
+/**
+ * 回應頁的「新加進自選、還沒有論點」那一塊（快照結果頁；T45 起轉入、認養、清單外買進歸自選的回應頁也用）。
+ * rows：[{ ticker, buyNote, prev? }]；沒有就回 null。
+ */
+export function newOwnBox(rows, lead = '新加進自選的') {
+  if (!rows?.length) return null;
+  return glass(
+    'pad new-own-box',
+    h('h2', { class: 'panel-h' }, `${lead} ${rows.length} 檔還沒有你的論點`),
+    h('p', { class: 'small dim', style: 'margin:4px 0 10px' }, '可以現在寫，也可以之後再做（帳戶頁會有入口）。不寫也不擋月報；目前用系統預設前提做一般健康檢查。'),
+    thesisTodoList(rows),
+  );
+}
+
 /** 「還沒有論點的自選」那一頁：建立帳戶完成後先到這裡；帳戶頁的入口也連到這裡。可以跳過、之後再做，也可以關掉。 */
 export function thesisTodoPage(ctx) {
   const rows = ctx.state.thesisTodo ?? [];
@@ -440,7 +464,7 @@ export function thesisTodoPage(ctx) {
         h('p', { class: 'small dim', style: 'margin-top:6px' }, '不寫也可以：不擋上線，也不擋月報。買進時寫的那一句只當討論的開場，不是前提。'),
         h('div', { style: 'margin-top:14px' }, thesisTodoList(rows)),
         h('div', { class: 'btn-row', style: 'margin-top:16px' }, h('a', { class: 'btn primary', href: after.href }, '先跳過，之後再做'), dismiss),
-        h('p', { class: 'small faint', style: 'margin-top:8px' }, '跳過的話，帳戶頁會一直有入口回到這裡，直到每一檔都有論點；「關掉這張清單」就不再出現。'),
+        h('p', { class: 'small faint', style: 'margin-top:8px' }, '跳過的話，帳戶頁會一直有入口回到這裡，直到每一檔都有論點。關掉之後，現在這幾檔不再列；之後新加的自選還是會列。'),
       ]
     : [h('p', null, '每一檔自選都有你的論點了（或清單已經關掉）。'), h('div', { class: 'btn-row', style: 'margin-top:12px' }, h('a', { class: 'btn', href: after.href }, '回帳戶'))];
   return page({

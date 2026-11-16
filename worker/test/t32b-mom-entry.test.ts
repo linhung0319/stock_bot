@@ -430,7 +430,7 @@ describe('T32b：月報之後才回來的否決（§3.3）', () => {
         const pushed = net.line.slice(before);
         const late = pushed.filter((t) => t.includes('的進場審查回來了'));
         expect(late).toHaveLength(1);
-        expect(late[0]).toContain(`${b} 的進場審查回來了：3 票否決（財報可信度）。12 月月報 #${monthly.id} 已更新，預設仍是照規則買進；要照否決，到網站對 ${b} 按「排除」。`);
+        expect(late[0]).toContain(`${b} 的進場審查回來了：3 票否決（財報可信度）。12 月月報 #${monthly.id} 已更新，預設仍是照規則買進；要照否決，到網站對 ${b} 按「排除」（排除會一直有效，之後要在帳戶頁取消）。`);
         expect(late[0]).toContain(`#/n/${monthly.id}`);
         // 03:30 不再補推
         const n2 = net.line.length;
@@ -495,7 +495,7 @@ describe('T32b：月報之後才回來的否決（§3.3）', () => {
     expect(n.status).toBe('PENDING');
     expect(it.choice).toBe('DO');
     expect(it.aiLine).toBe('進場審查（3 票）在月報之後回來：否決（財報可信度）。財報不可信，營收提前認列。');
-    expect(it.lateVeto?.push).toBe(`${t} 的進場審查回來了：3 票否決（財報可信度）。1 月月報 #${n.id} 已更新，預設仍是照規則買進；要照否決，到網站對 ${t} 按「排除」。`);
+    expect(it.lateVeto?.push).toBe(`${t} 的進場審查回來了：3 票否決（財報可信度）。1 月月報 #${n.id} 已更新，預設仍是照規則買進；要照否決，到網站對 ${t} 按「排除」（排除會一直有效，之後要在帳戶頁取消）。`);
     expect(row).toMatchObject({ decision: 'ALLOW', lateVerdict: 'VETO', reasonCode: 'ACCOUNTING', lateTold: true });
     const sh = acct.shadow.find((s) => s.choice === 'LATE_VETO')!;
     expect(sh).toMatchObject({ f: 'F1', ticker: t, ai: 0, notif: n.id, runIds: ['R-late'] });
@@ -511,7 +511,7 @@ describe('T32b：月報之後才回來的否決（§3.3）', () => {
     const { t, n, it, row } = await lateCase('RESPONDED');
     expect(n.status).toBe('RESPONDED');
     expect(it.aiLine).toContain('在月報之後回來：否決（財報可信度）');
-    expect(it.lateVeto?.push).toBe(`${t} 的進場審查回來了：3 票否決（財報可信度）。你已經決定了；還沒下單的話可以回通知 #${n.id} 對 ${t} 按「排除」。`);
+    expect(it.lateVeto?.push).toBe(`${t} 的進場審查回來了：3 票否決（財報可信度）。你已經決定了；還沒下單的話可以回通知 #${n.id} 對 ${t} 按「排除」（排除會一直有效，之後要在帳戶頁取消）。`);
     expect(row).toMatchObject({ lateVerdict: 'VETO', lateTold: true });
   });
 

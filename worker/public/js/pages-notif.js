@@ -3,12 +3,22 @@ import { api, getMode } from './api.js';
 import { aiOverview, crashLogBlock, runRow, shadowLines } from './pages-ai.js';
 import { actionText, day, h, money, pct, put, qty, toast } from './dom.js';
 import { consoleBox, glass, icon, longDay, menuList, page, tiles } from './layout.js';
-import { actParts, attentionList, bucketTag, chevron, headline, orderRows, refillText, whyBlock } from './parts.js';
-import { thesisTodoList } from './pages-thesis.js';
-import { copyPackButton } from './pages-thesis.js';
+import { HALF_START_TEXT, actParts, attentionList, bucketTag, chevron, headline, orderRows, refillText, whyBlock } from './parts.js';
+import { copyPackButton, newOwnBox } from './pages-thesis.js';
 import { say } from './slime.js';
 
 const errBox = (e) => h('p', { class: 'err', role: 'alert' }, e?.message ?? String(e));
+
+/**
+ * 轉入、認養之後新開、還沒有論點的自選（T45）：通知頁重畫之後放在最上面一次（重畫會把按鈕下面的東西清掉，所以先記在這裡）。
+ * { rows, lead }；用過就清掉。
+ */
+let todoFlash = null;
+const takeFlash = () => {
+  const f = todoFlash;
+  todoFlash = null;
+  return f ? h('div', { style: 'margin-bottom:14px' }, newOwnBox(f.rows, f.lead)) : null;
+};
 const em = (t) => ({ t, tone: 'em' });
 const neg = (t) => ({ t, tone: 'neg' });
 
@@ -404,6 +414,8 @@ function slip(it, v, ui) {
                     try {
                       const r = await api.post(`/notif/${v.id}/action`, { key: it.key, action: a.id, reason: ta.value });
                       toast(a.id === 'EXCLUDE' ? '已排除，清單重算了' : a.id === 'TRANSFER' ? '已轉入自選' : '已認養到自選');
+                      // 新開的自選還沒有論點（T45）：重畫之後在頁首下面列同一張清單
+                      if (r.newOwnRows?.length) todoFlash = { rows: r.newOwnRows, lead: a.id === 'TRANSFER' ? '轉入自選的' : '認養到自選的' };
                       ui.afterAction(r.notifId);
                     } catch (e) {
                       msg.replaceChildren(errBox(e));
@@ -614,7 +626,7 @@ export async function notifPage(ctx, id) {
         steps: stepBar(1),
         bubble: { k: '改決定的時候', say: ['點任何一個選項，我會馬上告訴你', em('那樣做的結果'), '。按下去只是記下決定，我不會替你下單。'], mood: 'watch' },
       }),
-      pane: [reminded, v.text ? h('p', { class: 'dim', style: 'margin-bottom:12px;white-space:pre-line' }, v.text) : null, slips(v, ui, `${live.length} 項建議，點開看完整的理由、改決定。沒改的就照每一張右上角寫的做。`), msg, attentionBox(v)],
+      pane: [takeFlash(), reminded, v.text ? h('p', { class: 'dim', style: 'margin-bottom:12px;white-space:pre-line' }, v.text) : null, slips(v, ui, `${live.length} 項建議，點開看完整的理由、改決定。沒改的就照每一張右上角寫的做。`), msg, attentionBox(v)],
       rail: trayBox,
       cta: h('div', { class: 'sticky-cta' }, sumBox, actionButton('決定好了', 'primary', () => submit('DO'))),
     });
@@ -684,7 +696,7 @@ export async function notifPage(ctx, id) {
   return page({
     view: 'page',
     banner: notifBanner(v, { bubble }),
-    pane: body,
+    pane: [takeFlash(), ...body],
     // 整則沒做的不列「當時合起來要下的單」：那時沒有要下的單（T39a）
     rail: v.composed && v.status !== 'SKIPPED' ? consoleBox(trayTitle(v.composed, '當時合起來要下'), trayBody(v.composed), null, '當時的單') : tiles(st),
   });
@@ -722,12 +734,20 @@ function askForm(v, ctx) {
       const removeOwn = bucket === 'own' && !!remove?.checked;
       const r = await api.post(`/notif/${v.id}/classify`, { bucket, reason: reason.value, removeOwn });
       toast(removeOwn ? `已從自選扣掉，${ticker} 移出自選` : `已歸到${bucket === 'own' ? '自選' : '動能'}`);
-      ctx.go(r.notifId ? `#/n/${r.notifId}` : '#/');
+      const next = r.notifId ? `#/n/${r.notifId}` : '#/';
+      if (!r.newOwnRows?.length) return ctx.go(next);
+      // 清單外買進歸自選、新開的自選還沒有論點（T45）：和快照結果頁一樣列出來，可以接著寫論點
+      await ctx.refresh(false);
+      wrap.replaceChildren(
+        glass('pad', h('h2', { class: 'panel-h' }, `已歸到自選：${ticker} ${qty(quantity)} 股`), h('div', { class: 'btn-row', style: 'margin-top:12px' }, h('a', { class: 'btn primary', href: next }, r.notifId ? '看重算的月報' : '回待辦'))),
+        h('div', { style: 'margin-top:14px' }, newOwnBox(r.newOwnRows)),
+      );
     } catch (e) {
       msg.replaceChildren(errBox(e));
     }
   };
-  return glass(
+  const wrap = h('div');
+  wrap.append(glass(
     'pad',
     h('p', null, '快照裡 ', h('span', { class: 'tk' }, ticker), quantity > 0 ? ' 多了 ' : ' 少了 ', h('b', { class: 'num' }, qty(quantity)), ' 股，不在任何清單上。這筆要記在哪一桶？'),
     h('p', { class: 'small dim', style: 'margin:6px 0 14px' }, quantity > 0 ? '清單以外自己買的股票歸自選，之後由自選的慢規則管。只有它在這個月的動能名單上、而且那一格還沒買足時，才能歸動能。' : '賣出的部分從持有它的那一桶扣。', '回答之前，月報會暫停。'),
@@ -739,7 +759,8 @@ function askForm(v, ctx) {
       : null,
     msg,
     h('div', { class: 'btn-row' }, canOwn ? actionButton(quantity > 0 ? '歸自選' : '從自選扣', 'primary', send('own')) : null, canMom ? actionButton(quantity > 0 ? '歸動能' : '從動能扣', canOwn ? '' : 'primary', send('mom')) : null),
-  );
+  ));
+  return wrap;
 }
 
 // ---------------------------------------------------------------- 填快照
@@ -1024,20 +1045,13 @@ export async function snapshotPage(ctx) {
               '改標準比重。',
             ),
           ),
+          // 新加進自選、現在已經比 52 週高點低 20% 以上的（T45，T41 第 10 條）：和建立帳戶頁同一句
+          r.startsHalved?.length ? h('p', { class: 'starts-half' }, `${r.startsHalved.join('、')} 現在已經比 52 週高點低 20% 以上，${HALF_START_TEXT}`) : null,
           r.cashOther ? h('p', { class: 'small dim' }, `現金和估計的成交金額差 ${r.cashOther > 0 ? '+' : '−'}${money(Math.abs(r.cashOther), 2)}，記成其他現金變動（成交價、手續費、股利）。`) : null,
           r.created.map((n) => h('p', null, n.title)),
           r.cashWarn ? null : h('p', { class: 'small faint' }, '填錯了可以到「我要…」→「復原上一份快照」，回到送出之前再重填。'),
         ),
-        ...(r.newOwn?.length
-          ? [
-              h('div', { style: 'margin-top:14px' }, glass(
-                'pad',
-                h('h2', { class: 'panel-h' }, `新加進自選的 ${r.newOwn.length} 檔還沒有你的論點`),
-                h('p', { class: 'small dim', style: 'margin:4px 0 10px' }, '可以現在寫，也可以之後再做（帳戶頁會有入口）。不寫也不擋月報；目前用系統預設前提做一般健康檢查。'),
-                thesisTodoList(r.newOwnRows ?? r.newOwn.map((t) => ({ ticker: t, buyNote: (ctx.state.thesisTodo ?? []).find((x) => x.ticker === t)?.buyNote ?? null }))),
-              )),
-            ]
-          : []),
+        ...(r.newOwn?.length ? [h('div', { style: 'margin-top:14px' }, newOwnBox(r.newOwnRows ?? r.newOwn.map((t) => ({ ticker: t, buyNote: (ctx.state.thesisTodo ?? []).find((x) => x.ticker === t)?.buyNote ?? null }))))] : []),
         ...(r.cashWarn ? [cashWarnBox(ctx, r.cashOther, null)] : []),
       );
     } catch (e) {

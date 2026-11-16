@@ -2,7 +2,7 @@
 import { api, setToken } from './api.js';
 import { day, h, money, pct, put, qty, toast } from './dom.js';
 import { consoleBox, glass, meterEl, menuList, page, tiles } from './layout.js';
-import { bucketTag, fold, rankTable } from './parts.js';
+import { HALF_START_TEXT, bucketTag, fold, rankTable } from './parts.js';
 import { actionButton, errBox, linkButton, planBubble, slips, trayBody, trayTitle, undoButton } from './pages-notif.js';
 import { say } from './slime.js';
 
@@ -386,7 +386,10 @@ export function setupPage(ctx) {
       sec('core', '核心'),
       glass('pad narrow-sm', h('label', { class: 'field' }, h('span', null, 'VOO 股數'), h('div', { style: 'max-width:10em' }, core)), h('label', { class: 'field' }, h('span', null, 'SGOV（短債）股數'), h('div', { style: 'max-width:10em' }, bond), h('small', null, '沒有就留空。')), h('label', { class: 'field', style: 'margin:0' }, h('span', null, '現金（美元）'), h('div', { style: 'max-width:10em' }, cash))),
       sec('own', '自選'),
-      h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '你自己選的股票。標準比重是這檔的目標：慢規則減半之後加回、入金補自選，都補到這個比重。留空就用現在占總資產的比重（最多 15%）；括號裡的建議值是依波動度在自選預算 20% 內分的，只當參考。現在已經比 52 週高點低 20% 以上的，一開始記成「減半」狀態。持有的原因只是之後討論論點時的開場，不是前提；建立完會列出還沒有論點的自選，可以接著寫，也可以跳過。'),
+      h('p', { class: 'small dim', style: 'margin-bottom:6px' }, '你自己選的股票。標準比重是這檔的目標：慢規則減半之後加回、入金補自選，都補到這個比重。留空就用現在占總資產的比重（最多 15%）；括號裡的建議值是依波動度在自選預算 20% 內分的，只當參考。'),
+      // 已經跌 20% 的（T45，T41 第 10 條）：全額部位沒有慢規則的底線，在建立帳戶這一刻講清楚
+      h('p', { class: 'small half-start', style: 'margin-bottom:6px' }, '現在已經比 52 週高點低 20% 以上的，' + HALF_START_TEXT),
+      h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '持有的原因只是之後討論論點時的開場，不是前提；建立完會列出還沒有論點的自選，可以接著寫，也可以跳過。'),
       glass('', table('own', ['代號', '股數', '標準比重', '持有的原因（選填，討論時當參考）']), h('div', { class: 'pad' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow('own') }, '再加一檔'), sumLine)),
       sec('mom', '動能'),
       h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '照動能名單買的股票。還沒開始照動能買的話，全部留空：下一份月報會給你進場的清單。'),
