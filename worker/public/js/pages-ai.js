@@ -419,16 +419,16 @@ export function ownMonitor(ctx, d) {
   return out;
 }
 
-/** 把出場條件重新送去改寫（編輯論點頁送出失敗、或改寫沒有結果時）。 */
-export async function resendExits(ticker, exits) {
-  return api.post('/ops/own-check', { ticker, exits });
+/** 把出場條件重新送去改寫（編輯論點頁送出失敗、或改寫沒有結果時）。version：那一版論點（T42：伺服器只收最新的那一版）。 */
+export async function resendExits(ticker, exits, version = null) {
+  return api.post('/ops/own-check', { ticker, exits, ...(version ? { version } : {}) });
 }
 
 const ACTION_NAME = Object.fromEntries(COND_ACTIONS);
 const day2 = (iso) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '');
 
 /** 「出場條件還沒送去改寫」與「重送」（own_thesis §1.8 確認的第 3 點：不能沒有提示）。 */
-export function unsentBox(ticker, exits, reason, onSent) {
+export function unsentBox(ticker, exits, reason, onSent, version = null) {
   const msg = h('div');
   return h(
     'div',
@@ -436,13 +436,14 @@ export function unsentBox(ticker, exits, reason, onSent) {
     h('b', null, '出場條件還沒送去改寫'),
     h('p', { class: 'small', style: 'margin-top:4px' }, reason),
     h('ul', { class: 'small', style: 'margin:6px 0 0 1.2em' }, exits.map((x) => h('li', null, `${x.text} → ${ACTION_NAME[x.action] ?? '重新審查'}`))),
+    h('p', { class: 'small faint', style: 'margin-top:6px' }, '送去改寫、回來確認之前，現在的出場條件照舊監測。'),
     h('div', { class: 'btn-row', style: 'margin-top:8px' }, h('button', {
       class: 'btn',
       type: 'button',
       onclick: async (ev) => {
         ev.currentTarget.disabled = true;
         try {
-          await resendExits(ticker, exits);
+          await resendExits(ticker, exits, version);
           toast('已重送，AI 通常幾分鐘內回來');
           onSent?.();
         } catch (e) {
@@ -455,76 +456,110 @@ export function unsentBox(ticker, exits, reason, onSent) {
   );
 }
 
-/** 持股頁：最近 30 天的改寫結果（還沒勾的條件、改寫中、沒有結果）與還沒送出去的出場條件。勾選時可以改成立時的動作。 */
+/** 按了先停用、做完再開（避免按兩次）。 */
+const busyButton = (label, fn) => {
+  const b = h('button', { class: 'btn', type: 'button', onclick: async () => { b.disabled = true; try { await fn(); } finally { b.disabled = false; } } }, label);
+  return b;
+};
+const errLine = (box, e) => box.replaceChildren(h('p', { class: 'small', style: 'color:var(--hot);margin-top:6px' }, e.message ?? e));
+/** 確認後會撤下的那幾條（T42：這次的出場條件沒有提到的）。 */
+const retireList = (xs) =>
+  xs.length
+    ? h('div', { class: 'rw-retire' }, h('b', null, `確認後會撤下（這次的出場條件沒有提到，${xs.length} 條）：`), h('ul', { class: 'small', style: 'margin:4px 0 0 1.2em' }, xs.map((x) => h('li', null, x.text))))
+    : null;
+
+/**
+ * 持股頁：最新一版論點的出場條件改寫結果（T42 整組取代，30 天內）。每一條寫明「和現在的相同（不新增）」「會取代：…」或新的；
+ * 下面列「確認後會撤下」。按確認：勾選的新條件開始監測，被取代的與沒提到的撤下。沒確認之前舊的照舊監測。
+ */
 function rewriteBlock(ctx, d) {
   const rw = d.rewrites;
   if (!rw) return [];
   const out = [];
-  if (rw.unsent) out.push(unsentBox(d.ticker, rw.unsent.exits, `${day2(rw.unsent.at)} 存論點時沒有送出去（AI 層沒設定或送出失敗）。論點與前提已經存好了。`, () => ctx.refresh()));
+  if (rw.unsent) out.push(unsentBox(d.ticker, rw.unsent.exits, `${day2(rw.unsent.at)} 存第 ${rw.unsent.version} 版論點時沒有送出去（AI 層沒設定或送出失敗）。論點與前提已經存好了。`, () => ctx.refresh(), rw.unsent.version));
+  if (rw.dropAll) {
+    const msg = h('div');
+    out.push(
+      h(
+        'div',
+        { class: 'notice', style: 'margin-top:12px' },
+        h('b', null, `第 ${rw.dropAll.version} 版論點拿掉了全部出場條件（${day2(rw.dropAll.at)} 存）`),
+        retireList(rw.dropAll.retire),
+        h('p', { class: 'small faint', style: 'margin-top:6px' }, '確認之前，這幾條照舊監測；不確認就一直照舊。'),
+        h('div', { class: 'btn-row', style: 'margin-top:8px' }, busyButton('確認撤下', async () => {
+          try {
+            const r = await api.post('/ops/own-exits-retire', { ticker: d.ticker, version: rw.dropAll.version });
+            toast(`撤下 ${r.retired.length} 條出場條件`);
+            ctx.refresh();
+          } catch (e) {
+            errLine(msg, e);
+          }
+        })),
+        msg,
+      ),
+    );
+  }
   for (const c of rw.results) {
     if (c.status === 'PENDING') {
-      out.push(h('p', { class: 'small dim', style: 'margin-top:12px' }, `${day2(c.createdAt)} 送出的 ${c.exits.length} 條出場條件，AI 正在改寫成可以追蹤的格式，回來之後會出現在這裡。`));
+      out.push(h('p', { class: 'small dim', style: 'margin-top:12px' }, `${day2(c.createdAt)} 送出的 ${c.exits.length} 條出場條件，AI 正在對照與改寫成可以追蹤的格式，回來之後會出現在這裡。確認之前，現在的出場條件照舊監測。`));
       continue;
     }
     if (c.failed) {
-      out.push(unsentBox(d.ticker, c.exits, `${day2(c.createdAt)} 送去改寫，但沒有結果（${c.summary ?? '原因不明'}）。`, () => ctx.refresh()));
+      out.push(unsentBox(d.ticker, c.exits, `${day2(c.createdAt)} 送去改寫，但沒有結果（${c.summary ?? '原因不明'}）。`, () => ctx.refresh(), c.exitsVersion));
       continue;
     }
     const msg = h('div');
-    const rows = c.conditions
-      .filter((x) => !c.accepted.includes(x.condId))
-      .map((x) => {
-        let act = x.action;
-        const box = h('input', { type: 'checkbox', checked: !x.manual });
-        return { x, box, get act() { return act; }, sel: x.manual ? null : actionSelect(act, (e) => (act = e.target.value)) };
-      });
+    const rows = c.conditions.map((x) => {
+      const same = c.sames?.[x.condId] ?? null;
+      let act = x.action;
+      const box = same ? null : h('input', { type: 'checkbox', checked: !x.manual, 'aria-label': '勾選：開始監測' });
+      return { x, same, box, get act() { return act; }, sel: same || x.manual ? null : actionSelect(act, (e) => (act = e.target.value)) };
+    });
+    const tag = (r) => {
+      if (r.same) return h('span', { class: 'rw-tag same' }, `和現在的「${r.same.text}」相同：不新增，舊的接著監測${r.same.actionTo ? `（成立時改成${ACTION_NAME[r.same.actionTo]}）` : ''}`);
+      if (c.replaces?.[r.x.condId]) return h('span', { class: 'rw-tag sup' }, `會取代：${c.replaces[r.x.condId]}（勾選並確認後，舊的那條撤下）`);
+      return h('span', { class: 'rw-tag new' }, '新的');
+    };
+    const fresh = rows.filter((r) => !r.same).length;
     out.push(
-      h('h5', { style: 'margin-top:18px' }, `AI 改寫回來、你還沒勾的（${day2(c.createdAt)} 送出，${rows.length} 條）`),
-      h('p', { class: 'small dim' }, '勾選的才會開始監測，成立時照你選的動作通知你。沒勾的 30 天後就不再列在這裡。'),
+      h('h5', { style: 'margin-top:18px' }, `出場條件的改寫結果，等你確認（第 ${c.exitsVersion ?? '—'} 版論點，${day2(c.createdAt)} 送出）`),
+      h('p', { class: 'small dim' }, `你這次寫的是完整的出場條件，AI 對照了現在監測中的條件。${fresh ? '勾選的新條件確認後開始監測，成立時照你選的動作通知你。' : ''}確認之前，現在的條件照舊監測；不確認的話，30 天後這份結果不再列，舊的仍照舊監測。`),
       rows.map((r) =>
         h(
           'div',
           { class: 'cond' },
           h(
-            'label',
+            r.box ? 'label' : 'div',
             { class: 'check-row', style: 'margin:0' },
-            r.box,
+            r.box ?? h('span', { class: 'rw-dot', 'aria-hidden': 'true' }),
             h(
               'span',
               null,
               h('b', { style: 'font-weight:500' }, r.x.text),
               r.x.from ? h('span', { class: 'small faint', style: 'display:block' }, `你寫的：${r.x.from}`) : null,
-              h('span', { class: 'small dim', style: 'display:block' }, r.x.then),
-              // 改寫標了 supersedes（T40）：勾選前先講清楚會取代哪一條
-              c.replaces?.[r.x.condId] ? h('span', { class: 'small', style: 'display:block;color:var(--warn)' }, `會取代：${c.replaces[r.x.condId]}（勾選後舊的那條撤下）`) : null,
+              r.same ? null : h('span', { class: 'small dim', style: 'display:block' }, r.x.then),
+              tag(r),
             ),
           ),
           r.sel ? h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, '成立時'), r.sel) : null,
         ),
       ),
+      c.unmatched?.length ? h('div', { class: 'small', style: 'margin-top:8px;color:var(--warn)' }, h('b', null, 'AI 沒有改寫出來、不會監測的：'), h('ul', { style: 'margin:4px 0 0 1.2em' }, c.unmatched.map((x) => h('li', null, `${x.text} → ${ACTION_NAME[x.action] ?? '重新審查'}`))), h('p', { class: 'faint' }, '原因見下面 AI 的說明；要監測的話，改寫法後再存一次論點。')) : null,
+      retireList(c.retire ?? []),
       c.summary ? h('p', { class: 'small faint', style: 'margin-top:6px' }, c.summary) : null,
       h(
         'div',
         { class: 'btn-row', style: 'margin-top:8px' },
-        h(
-          'button',
-          {
-            class: 'btn',
-            type: 'button',
-            onclick: async () => {
-              const pick = rows.filter((r) => r.box.checked);
-              if (!pick.length) return msg.replaceChildren(h('p', { class: 'small', style: 'color:var(--hot)' }, '至少勾一條'));
-              try {
-                const r = await api.post('/ops/own-conditions', { ticker: d.ticker, runId: c.runId, ids: pick.map((p) => p.x.condId), actions: Object.fromEntries(pick.map((p) => [p.x.condId, p.act])) });
-                toast(`開始監測 ${r.added} 條`);
-                ctx.refresh();
-              } catch (e) {
-                msg.replaceChildren(h('p', { class: 'small', style: 'color:var(--hot)' }, e.message));
-              }
-            },
-          },
-          '開始監測勾選的條件',
-        ),
+        busyButton('確認', async () => {
+          const pick = rows.filter((r) => r.box?.checked);
+          try {
+            const r = await api.post('/ops/own-conditions', { ticker: d.ticker, runId: c.runId, ids: pick.map((p) => p.x.condId), actions: Object.fromEntries(pick.map((p) => [p.x.condId, p.act])) });
+            toast([`開始監測 ${r.added} 條`, r.retired?.length ? `撤下 ${r.retired.length} 條` : '', r.actionChanged?.length ? `${r.actionChanged.length} 條改了成立時的動作` : ''].filter(Boolean).join('，'));
+            ctx.refresh();
+          } catch (e) {
+            errLine(msg, e);
+          }
+        }),
       ),
       msg,
     );

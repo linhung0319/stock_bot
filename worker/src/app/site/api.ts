@@ -43,11 +43,12 @@ import {
   notifName,
 } from '../../engine';
 import { VOL_HIST_SEED } from '../../engine/volSeed';
-import { DISCUSSION_MODES, LIVE_CONDITION_CODES, THESIS_LIMITS, matchExits, parseThesisBlock, type LiveCondition } from '../../ai/discussion';
+import { DISCUSSION_MODES, LIVE_CONDITION_CODES, THESIS_LIMITS, parseThesisBlock, planExits, type LiveCondition } from '../../ai/discussion';
 import type { ExitLine } from '../../ai/ownCheck';
 import { demoDiscussion } from '../discussion';
 import type { ThesisLogInput } from '../ledgerStore';
 import { ruleResponseLogs, type CondAction } from '../thesis';
+import { StaleExitsError } from '../ownCheckAi';
 import { errText } from '../../data/util';
 import { normalizeTicker } from '../../data/sources';
 import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
@@ -269,22 +270,21 @@ function addThesisTodo(acct: Account, tickers: string[]): Account {
 
 const COND_ACTION_SET: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
 
-/** 出場條件：[{ text, action, ref? }]，最多 6 條，每條 300 字；動作不認得的當成重新審查。ref：沿用的條件編號（貼回的 [C12]，T40）。 */
-function exitsOf(v: unknown): (ExitLine & { ref: number | null })[] {
+/** 出場條件：[{ text, action }]，最多 6 條，每條 300 字；動作不認得的當成重新審查。T40 的 ref（[C12]）T42 起不收。 */
+function exitsOf(v: unknown): ExitLine[] {
   if (!Array.isArray(v)) return [];
   if (v.length > THESIS_LIMITS.exits) throw new SiteError(422, `出場條件最多 ${THESIS_LIMITS.exits} 條`);
-  const out: (ExitLine & { ref: number | null })[] = [];
+  const out: ExitLine[] = [];
   for (const x of v) {
     const o = (x ?? {}) as Record<string, unknown>;
     const t = text(o.text, '出場條件', THESIS_LIMITS.exit, false);
     if (!t) continue;
-    const ref = typeof o.ref === 'number' && Number.isInteger(o.ref) && o.ref > 0 ? o.ref : null;
-    out.push({ text: t, action: COND_ACTION_SET.includes(o.action as CondAction) ? (o.action as CondAction) : 'REVIEW', ref });
+    out.push({ text: t, action: COND_ACTION_SET.includes(o.action as CondAction) ? (o.action as CondAction) : 'REVIEW' });
   }
   return out;
 }
 
-/** 這檔目前監測中的你定的條件（T40 的對照用；示範模式沒有條件）。 */
+/** 這檔目前監測中的你定的條件（T42 整組取代的範圍；示範模式沒有條件）。 */
 async function liveConditions(backend: SiteBackend, tk: string): Promise<LiveCondition[]> {
   if (!backend.ai) return [];
   const rows = await backend.ai.monitor(tk);
@@ -292,12 +292,14 @@ async function liveConditions(backend: SiteBackend, tk: string): Promise<LiveCon
 }
 
 /**
- * POST /api/ops/own-thesis：{ ticker, thesis, premises: [{ id?, text }], exitConditions: [{ text, action, ref? }], retire?: [條件編號], source, replyTo?, dry? }
- *   1. 論點與前提立刻存進帳戶狀態（version 加 1），log 寫 THESIS（含新的出場條件的原文，免得改寫失敗時不見）
- *   2. 出場條件和目前監測中的對照（T40，own_thesis §1.8）：沿用的不再送去改寫（動作改了就改動作）；retire 裡的（這次沒出現、選了撤下的）寫 RETIRED；
- *      新的送去改寫（一票）；送出失敗或 AI 層沒設定 → 回 rewrite.status = FAILED，頁面顯示「還沒送去改寫」與「重送」
- *   3. 出場條件不存成前提
- * dry：只算前提的對應（沿用、沿用但字改了、新的、會撤下）與出場條件的對照（沿用、新的、這次沒出現的），不存。
+ * POST /api/ops/own-thesis：{ ticker, thesis, premises: [{ id?, text }], exitConditions: [{ text, action }], source, replyTo?, dry? }
+ *   1. 論點與前提立刻存進帳戶狀態（version 加 1），log 寫 THESIS
+ *   2. 出場條件是存檔後要的完整清單（T42，own_thesis §1.8 整組取代）：
+ *      和目前監測中的完全一樣（去空白標點後比、條數相同）→ 不送改寫、條件不動；只有成立時的動作不同的直接改動作
+ *      有任何不同 → 整組連同監測中的條件送改寫（一票；log 的 exitsChanged、exitLines 是這一版要的全部出場條件）；
+ *      確認之前舊的照舊監測。送出失敗或 AI 層沒設定 → rewrite.status = FAILED，頁面顯示「還沒送去改寫」與「重送」
+ *   3. 出場條件不存成前提；沿用編號但字改了的前提，靜默期結束（T42，setThesis）
+ * dry：只算前提的對應（沿用、沿用但字改了、新的、會撤下）與出場條件有沒有改動，不存。
  * replyTo：這是對乙類通知 #N 的回應（修正論點，own_thesis §1.10）：那一項結案、afterBreak 加 1、log 寫 RESPONSE（REVISE）；
  *   新的前提還留著被判不成立的那一條 → 當成不同意（DISAGREE，進靜默期）。通知已經回覆過、或不是這檔的乙類 → 409。
  */
@@ -316,13 +318,14 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
   const source = b.source === 'DISCUSSION' ? 'DISCUSSION' : 'TYPED';
   const replyTo = b.replyTo === undefined || b.replyTo === null || b.replyTo === '' ? null : Number(b.replyTo);
   const dry = b.dry === true;
-  // 出場條件的對照（T40）：沿用的、新的、目前監測中這次沒出現的
+  // 出場條件整組取代（T42）：和監測中的比，有沒有改動
   const live = await liveConditions(backend, tk);
-  const plan = matchExits(exitsIn, live);
-  const exits: ExitLine[] = plan.fresh.map((k) => ({ text: exitsIn[k].text, action: exitsIn[k].action }));
-  const retire = (Array.isArray(b.retire) ? b.retire : []).filter((x): x is number => typeof x === 'number' && Number.isInteger(x));
-  const notMissing = retire.find((id) => !plan.missing.some((c) => c.id === id));
-  if (notMissing !== undefined) throw new SiteError(422, plan.kept.some((k) => k.id === notMissing) ? '要撤下的條件這次的出場條件裡還有，不能同時沿用又撤下。' : '要撤下的條件不是這檔目前監測中的條件（可能已經撤下或成立了），請重新整理。');
+  const plan = planExits(exitsIn, live);
+  const exits: ExitLine[] = plan.changed ? exitsIn : [];
+  // 之前那一版存的出場條件改動還沒確認（這次有改動的話，那一版的改寫結果就不再列）
+  const prevSet = backend.ai ? await backend.ai.exitSet(tk) : null;
+  const pendingVersion = prevSet && !prevSet.confirmed ? prevSet.version : null;
+  let savedVersion = 0;
   const r = await mutate(backend, `${tk} 編輯論點`, [], (d) => {
     if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
     // 對乙類通知的回應（修正論點，own_thesis §1.10）：那則通知要還沒回覆、而且有這檔的乙類項目
@@ -343,19 +346,24 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     if (rv?.ok) out = { ...out, acct: rv.acct };
     const meta = out.acct.own[tk];
     const brief = (ps: Premise[]) => ps.map((p) => ({ id: p.id, text: p.text, origin: p.origin }));
+    const version = meta.thesis!.version;
+    savedVersion = version;
     const result = {
       preview: {
         kept: out.mapping.premises.filter((p) => out.mapping.kept.includes(p.id)).map((p) => ({ id: p.id, text: p.text })),
         added: out.mapping.premises.filter((p) => out.mapping.added.includes(p.id)).map((p) => ({ id: p.id, text: p.text })),
         retired: out.mapping.retired.map((p) => ({ id: p.id, text: p.text, origin: p.origin })),
-        // 沿用編號、但字改了（T40）：左右對照，也算論點變動
+        // 沿用編號、但字改了（T40）：左右對照，也算論點變動；還在靜默期的那幾條，靜默期結束（T42）
         edited: out.mapping.edited,
+        silenceEnded: out.silenceEnded,
         changed: out.changed,
-        version: meta.thesis!.version,
+        version,
+        // 出場條件（T42）：有沒有改動、監測中幾條、只改動作的（沒改動時直接改）、之前還沒確認的那一版
         exits: {
-          kept: plan.kept.map((k) => ({ index: k.index, id: k.id, text: k.text, actionChanged: k.actionChanged, was: k.was })),
-          fresh: plan.fresh,
-          missing: plan.missing,
+          changed: plan.changed,
+          live: live.length,
+          actionChanged: plan.changed ? [] : plan.actionChanged.map((a) => ({ id: a.id, text: a.text, action: a.action, was: a.was })),
+          pendingVersion: plan.changed ? pendingVersion : null,
         },
       },
     };
@@ -367,18 +375,20 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
             session: d.view.date,
             kind: 'THESIS',
             body: {
-              version: meta.thesis!.version,
+              version,
               source,
               before: { text: out.before.text, premises: brief(out.before.premises) },
               after: { text: meta.thesis!.text, premises: brief(meta.premises) },
               retired: out.mapping.retired.map((p) => p.id),
               afterBreak: !!rv?.ok || ruleExit,
               replyTo,
-              // 送去改寫的（新的）出場條件；沿用的與撤下的條件記編號（T40）
+              // 出場條件（T42）：有改動 → 這一版要的全部出場條件（空的 = 全部拿掉）、存檔時監測中的條件、文字相同的；沒改動 → 空的
+              exitsChanged: plan.changed,
               exitLines: exits.map((e) => e.text),
               exitActions: exits.map((e) => e.action),
-              ...(plan.kept.length ? { exitKept: plan.kept.map((k) => k.id) } : {}),
-              ...(retire.length ? { exitRetired: retire } : {}),
+              ...(plan.changed ? { exitsLive: live.map((c) => c.id), exitSame: Object.fromEntries(Object.entries(plan.sameByText).map(([k, id]) => [`U${Number(k) + 1}`, id])) } : {}),
+              ...(!plan.changed && plan.actionChanged.length ? { exitActionChanged: plan.actionChanged.map((a) => a.id) } : {}),
+              ...(out.silenceEnded.length ? { silenceEnded: out.silenceEnded } : {}),
             },
           },
           // 乙類的回應：修正論點（REVISE）；保留了那條前提 → 當成不同意（DISAGREE，理由固定）
@@ -389,18 +399,10 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     return { acct: out.acct, dry, result: { ...result, revised: rv?.ok ? { notif: replyTo, kept: rv.kept, premiseId: rv.premiseId } : null, revisedName: rv?.ok && rn ? notifName(rn) : null }, log };
   });
   if (dry) return json({ ok: true, ...r.result });
-  // 出場條件的對照（T40）：選了撤下的寫 RETIRED、沿用但動作改了的改動作（都在送去改寫之前，改寫的證據包看到的是改完的條件）
-  const conds: { retired: number[]; actionChanged: number[]; errors: string[] } = { retired: [], actionChanged: [], errors: [] };
-  if (backend.ai) {
-    for (const id of retire) {
-      try {
-        await backend.ai.condition(tk, id, 'retire');
-        conds.retired.push(id);
-      } catch (e) {
-        conds.errors.push(`撤下「${live.find((c) => c.id === id)?.text.slice(0, 40) ?? id}」沒有成功：${errText(e)}`);
-      }
-    }
-    for (const k of plan.kept.filter((x) => x.actionChanged)) {
+  // 出場條件沒改動、只有成立時的動作不同：直接改動作（沿用 T40 的 ACTION_CHANGED）
+  const conds: { actionChanged: number[]; errors: string[] } = { actionChanged: [], errors: [] };
+  if (backend.ai && !plan.changed) {
+    for (const k of plan.actionChanged) {
       try {
         await backend.ai.condition(tk, k.id, 'action', k.action);
         conds.actionChanged.push(k.id);
@@ -409,13 +411,15 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
       }
     }
   }
-  // 出場條件送去改寫：失敗要明白告訴使用者（N9），之後持股頁也會一直提示到重送為止
+  // 出場條件有改動：整組連同監測中的條件送去改寫；失敗要明白告訴使用者（N9），之後持股頁也會一直提示到重送為止
   let rewrite: { status: 'SENT' | 'FAILED' | 'NONE'; runId?: string; error?: string } = { status: 'NONE' };
+  const version = savedVersion;
   if (exits.length) {
     if (!backend.ai) rewrite = { status: 'FAILED', error: '示範模式沒有真的 AI，出場條件沒有送去改寫。' };
     else
       try {
-        rewrite = { status: 'SENT', runId: (await backend.ai.ownCheck(tk, exits)).runId };
+        const sameByText = Object.fromEntries(Object.entries(plan.sameByText).map(([k, id]) => [`U${Number(k) + 1}`, id]));
+        rewrite = { status: 'SENT', runId: (await backend.ai.ownCheck(tk, exits, { version, live: live.map((c) => c.id), sameByText })).runId };
       } catch (e) {
         rewrite = { status: 'FAILED', error: errText(e) };
       }
@@ -528,16 +532,30 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     return json({ ...o, events, vetoes: o.vetoes.map((v) => vetoView(book, v, BENCHMARK)) });
   }
   if (rest === 'ops/own-check' && post) {
-    // 重送出場條件去改寫（編輯論點頁送出失敗、或改寫沒有結果時）
+    // 重送出場條件去改寫（編輯論點頁送出失敗、或改寫沒有結果時）。T42：只能重送最近一次出場條件有改動的那一版（version）、
+    // 送的是那一版存下來的出場條件；之前版本的擋下（409）
     if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI，出場條件沒有辦法送去改寫。');
     const b = await body(req);
     const tk = ticker(b.ticker);
-    const exits = exitsOf(b.exits);
-    if (!exits.length) throw new SiteError(422, '沒有要改寫的出場條件');
+    if (!exitsOf(b.exits).length) throw new SiteError(422, '沒有要改寫的出場條件');
+    const version = typeof b.version === 'number' && Number.isInteger(b.version) ? b.version : null;
     try {
-      return json({ ok: true, ...(await backend.ai.ownCheck(tk, exits)) });
+      return json({ ok: true, ...(await backend.ai.resendExits(tk, version)) });
     } catch (e) {
-      throw new SiteError(422, errText(e));
+      throw new SiteError(e instanceof StaleExitsError ? 409 : 422, errText(e));
+    }
+  }
+  // 那一版把出場條件全部拿掉（T42）：持股頁確認後撤下
+  if (rest === 'ops/own-exits-retire' && post) {
+    if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI。');
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const version = typeof b.version === 'number' && Number.isInteger(b.version) ? b.version : null;
+    if (version === null) throw new SiteError(422, '缺少論點的版本');
+    try {
+      return json({ ok: true, ...(await backend.ai.dropAllExits(tk, version)) });
+    } catch (e) {
+      throw new SiteError(e instanceof StaleExitsError ? 409 : 422, errText(e));
     }
   }
   const chk = /^ai\/own-check\/([A-Za-z0-9_.-]{1,100})$/.exec(rest);
@@ -553,13 +571,13 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const tk = ticker(b.ticker);
     const runId = typeof b.runId === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(b.runId) ? b.runId : null;
     if (!runId) throw new SiteError(422, '缺少健檢的編號');
+    // T42：確認改寫結果。勾選的開始監測、被取代的與這次沒提到的撤下；沒有勾也可以確認（只撤下或改動作）
     const ids = Array.isArray(b.ids) ? b.ids.filter((x): x is string => typeof x === 'string').slice(0, 10) : [];
-    if (!ids.length) throw new SiteError(422, '至少勾一條');
     const actions = b.actions && typeof b.actions === 'object' && !Array.isArray(b.actions) ? (b.actions as Record<string, unknown>) : {};
     try {
-      return json({ ok: true, added: await backend.ai.acceptConditions(tk, runId, ids, actions) });
+      return json({ ok: true, ...(await backend.ai.acceptConditions(tk, runId, ids, actions)) });
     } catch (e) {
-      throw new SiteError(422, errText(e));
+      throw new SiteError(e instanceof StaleExitsError ? 409 : 422, errText(e));
     }
   }
   // 條件的所有權（T26，own_thesis §1.5）：勾選 AI 建議的條件（accept）、撤下你定的條件（retire）、改成立時的動作（action）

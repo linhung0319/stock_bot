@@ -246,6 +246,45 @@ export interface ThesisFile {
 export const REWRITE_DAYS = 30;
 
 /**
+ * 最近一次出場條件有改動的那一版論點（T42，own_thesis §1.8）：THESIS log 帶 exitsChanged 的最後一筆。
+ *   version  那一版論點的版本；exits 那一版要的全部出場條件（空的 = 全部拿掉）；at 存檔時間
+ *   live     存檔時監測中的條件（確認後撤下的範圍）；sameByText 文字和監測中的一條相同的（U1 → 列編號）
+ *   confirmed 這一版已經在持股頁確認過（之後有 EXITS_CONFIRMED 帶同一個版本）
+ * 只有這一版的改寫結果與「還沒送去改寫」會列、能勾選或重送；論點只改文字、出場條件沒改的版本不算。沒有是 null（舊資料沒有這個欄位也是 null）。
+ */
+export interface ExitSet {
+  version: number;
+  at: string;
+  exits: ExitLine[];
+  live: number[];
+  sameByText: Record<string, number>;
+  confirmed: boolean;
+}
+
+export function latestExitSet(log: Pick<ThesisLogRow, 'id' | 'kind' | 'at' | 'body'>[]): ExitSet | null {
+  const t = [...log].reverse().find((l) => l.kind === 'THESIS' && l.body.exitsChanged === true);
+  if (!t) return null;
+  const version = Number(t.body.version);
+  const lines = Array.isArray(t.body.exitLines) ? (t.body.exitLines as unknown[]).map(String) : [];
+  const acts = Array.isArray(t.body.exitActions) ? (t.body.exitActions as unknown[]) : [];
+  const live = Array.isArray(t.body.exitsLive) ? (t.body.exitsLive as unknown[]).filter((x): x is number => typeof x === 'number') : [];
+  const sbt = t.body.exitSame && typeof t.body.exitSame === 'object' ? (t.body.exitSame as Record<string, unknown>) : {};
+  const sameByText = Object.fromEntries(Object.entries(sbt).filter((e): e is [string, number] => typeof e[1] === 'number'));
+  const confirmed = log.some((l) => l.kind === 'EXITS_CONFIRMED' && l.id > t.id && Number(l.body.version) === version);
+  return {
+    version,
+    at: t.at,
+    exits: lines.map((text, k) => ({ text, action: COND_ACTIONS.includes(acts[k] as CondAction) ? (acts[k] as CondAction) : 'REVIEW' })),
+    live,
+    sameByText,
+    confirmed,
+  };
+}
+
+/** 這一次改寫屬不屬於這一組出場條件（T42）：證據包記的版本相同、而且是那一版存檔之後送的。 */
+export const runOfSet = (set: Pick<ExitSet, 'version' | 'at'>, detail: { exitsVersion?: unknown } | null | undefined, createdAt: string): boolean => Number(detail?.exitsVersion) === set.version && createdAt >= set.at;
+
+/**
  * 連續票數不一致的定期審查（own_thesis §3.6.4）：次數、這一串的第一次（執行編號）、到第 3 次的那一天（還沒到是 null）。
  * fileId：寫入時這檔的論點檔編號（換了檔就不算）。
  */
@@ -368,19 +407,20 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     return { id: p.id, text: p.text, origin: p.origin, addedAt: p.addedAt ?? null, ...(p.breaksIf ? { breaksIf: p.breaksIf } : {}), lastCheck, splitAfter };
   });
 
-  // 出場條件改寫回來、還沒勾的（最近 30 天；勾過的看這份論點檔的條件裡有沒有同一次改寫、同一個編號、你寫的那一列）
+  // 出場條件改寫回來、還沒確認的（最近 30 天）
   const rewriteRows = (
     await db
       .prepare("SELECT run_id, created_at, outcome, json_extract(pack, '$.rule.detail') AS detail FROM ai_runs WHERE fn = 'OWN_CHECK' AND ticker = ? AND as_of >= ? AND created_at >= ? AND status = 'DONE' ORDER BY created_at DESC LIMIT 10")
       .bind(ticker, openedAt ?? '0000-00-00', minusDays(asOf ?? openedAt ?? '0000-00-00', REWRITE_DAYS))
       .all<{ run_id: string; created_at: string; outcome: string | null; detail: string | null }>()
   ).results;
+  // T42：只算最近一次出場條件有改動的那一版、還沒確認的（之前版本的改寫結果不再列）；和現有條件相同的不算
+  const set = latestExitSet(log);
   const unchecked = rewriteRows.flatMap((r) => {
-    const detail = parseJson<{ mode?: string; exits?: ExitLine[] }>(r.detail);
-    if (detail?.mode === 'DRAFT') return [];
-    const res = ownCheckResult(parseJson<Outcome>(r.outcome), ticker, detail?.exits ?? []);
-    const taken = new Set(conditions.filter((c) => c.runId === r.run_id && c.origin === 'USER').map((c) => c.condId));
-    const pending = res.conditions.filter((c) => !taken.has(c.condId)).length;
+    const detail = parseJson<{ mode?: string; exits?: ExitLine[]; exitsVersion?: number; condMap?: Record<string, number>; sameByText?: Record<string, number>; live?: number[] }>(r.detail);
+    if (detail?.mode === 'DRAFT' || !set || set.confirmed || !runOfSet(set, detail, r.created_at)) return [];
+    const res = ownCheckResult(parseJson<Outcome>(r.outcome), ticker, detail?.exits ?? [], detail?.condMap ?? {}, detail?.sameByText ?? {}, detail?.live ?? null);
+    const pending = res.conditions.filter((c) => c.same === null).length;
     return pending ? [{ runId: r.run_id, at: r.created_at, pending }] : [];
   });
 
@@ -660,6 +700,8 @@ export const MAX_OWNED = 8;
 export const MAX_PROPOSED = 3;
 /** 會自己發通知的「你定的條件」狀態。 */
 export const OWNED_LIVE = ['ACTIVE', 'REVIEW_ONLY'];
+/** 監測中的你定的條件（T40 的對照、T42 整組取代的範圍）：會發通知的兩種，加上只記錄的。 */
+export const LIVE_CODES = ['ACTIVE', 'REVIEW_ONLY', 'MANUAL'];
 
 /** 你定的條件：有勾選時間；舊資料裡使用者確認過的出場條件（origin = USER）也算。 */
 export const isOwned = (c: Pick<FileCondition, 'acceptedAt' | 'origin'>): boolean => !!c.acceptedAt || c.origin === 'USER';
@@ -746,10 +788,13 @@ const STATE_TEXT: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '
  * map：證據包的編號 → own_conditions 的列編號（審查回來時對回條件用，放在 rule.detail.conds）。
  * rows：XBRL 季度表（新的在前）；null = 抓不到。
  */
-export function condFacts(tf: Pick<ThesisFile, 'conditions' | 'lastReview' | 'newSince'>, rows: QuarterRow[] | null): { facts: Fact[]; map: Record<string, number> } {
+export function condFacts(tf: Pick<ThesisFile, 'conditions' | 'lastReview' | 'newSince'>, rows: QuarterRow[] | null, opt: { live?: boolean } = {}): { facts: Fact[]; map: Record<string, number> } {
   const facts: Fact[] = [];
   const map: Record<string, number> = {};
-  const owned = tf.conditions.filter((c) => isOwned(c) && (OWNED_LIVE.includes(c.status) || (c.status === 'MET' && !!c.metAt && afterLastReview(tf, c.metAt.slice(0, 10), c.metAt))));
+  // opt.live（T42，出場條件改寫用）：C 是目前監測中的你定的條件（ACTIVE、REVIEW_ONLY、MANUAL），也就是整組取代的範圍；不放已成立的
+  const owned = opt.live
+    ? tf.conditions.filter((c) => isOwned(c) && LIVE_CODES.includes(c.status))
+    : tf.conditions.filter((c) => isOwned(c) && (OWNED_LIVE.includes(c.status) || (c.status === 'MET' && !!c.metAt && afterLastReview(tf, c.metAt.slice(0, 10), c.metAt))));
   owned.forEach((c, k) => {
     const id = `C${k + 1}`;
     map[id] = c.id;

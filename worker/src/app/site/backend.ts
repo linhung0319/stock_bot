@@ -20,12 +20,12 @@ import { loadSnapshot, type MacroSnapshot } from '../crashAi';
 import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
 import { loadReviews, loadVetoReviews, type MomReview } from '../momAi';
 import { loadStrategyState } from '../strategyAi';
-import { acceptOwnConditions, monitorView, ownCheckView, rewriteView, startOwnCheck, type OwnCheckView, type RewriteView } from '../ownCheckAi';
+import { acceptOwnConditions, confirmDropAll, exitSetOf, monitorView, ownCheckView, resendOwnCheck, rewriteView, startOwnCheck, type ConfirmResult, type ExitSetRef, type OwnCheckView, type RewriteView } from '../ownCheckAi';
 import type { ExitLine } from '../../ai/ownCheck';
 import type { DiscussionMode } from '../../ai/discussion';
 import { realDiscussion } from '../discussion';
 import { conditionOp, type CondOp } from '../ownConds';
-import { holdingAttention, thesisFile } from '../thesis';
+import { holdingAttention, thesisFile, type ExitSet } from '../thesis';
 import { thesisView, type ThesisView } from './thesisView';
 import { holdingMom, vetoEpisodes, type HoldingMom, type VetoEpisode } from '../momNotes';
 import { annotate } from './explain';
@@ -92,14 +92,21 @@ export interface SiteBackend {
 }
 
 export interface SiteAi {
-  /** F14：把使用者寫的出場條件送去改寫（T27 起只有改寫模式）。 */
-  ownCheck(ticker: string, exits: ExitLine[]): Promise<{ runId: string }>;
+  /** F14：把使用者要的出場條件送去改寫（T27 起只有改寫模式；T42 帶整組取代的對照資料）。 */
+  ownCheck(ticker: string, exits: ExitLine[], set?: ExitSetRef): Promise<{ runId: string }>;
+  /** 重送最近一次出場條件有改動的那一版（T42；version 不是最新的 → StaleExitsError）。 */
+  resendExits(ticker: string, version: number | null): Promise<{ runId: string }>;
+  /** 那一版把出場條件全部拿掉：確認後撤下（T42）。 */
+  dropAllExits(ticker: string, version: number): Promise<ConfirmResult>;
+  /** 最近一次出場條件有改動的那一版（T42；編輯論點的預覽用）。 */
+  exitSet(ticker: string): Promise<ExitSet | null>;
   checkView(runId: string): Promise<OwnCheckView | null>;
   /** 持股頁：最近 30 天還沒勾的改寫結果、還沒送出去的出場條件（own_thesis §1.8）。 */
   rewrites(ticker: string): Promise<RewriteView>;
   /** 討論包（own_thesis §1.7）。 */
   discussion(ticker: string, acct: Account, view: MarketView, mode: DiscussionMode | null, notif: number | null): Promise<{ text: string; mode: DiscussionMode }>;
-  acceptConditions(ticker: string, runId: string, ids: string[], actions?: Record<string, unknown>): Promise<number>;
+  /** 確認改寫結果（T42）：勾選的開始監測、被取代的與這次沒提到的撤下。 */
+  acceptConditions(ticker: string, runId: string, ids: string[], actions?: Record<string, unknown>): Promise<ConfirmResult>;
   /** 持股頁的條件操作（T26）：勾選 AI 建議的條件、撤下你定的條件、改成立時的動作。 */
   condition(ticker: string, id: number, op: CondOp, action?: unknown): Promise<{ id: number; status: string; action: string | null; retired?: number }>;
   monitor(ticker: string): Promise<Awaited<ReturnType<typeof monitorView>>>;
@@ -238,12 +245,20 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       return found;
     },
     ai: {
-      async ownCheck(ticker, exits) {
+      async ownCheck(ticker, exits, set) {
         const d = await self.load([ticker]);
         if (!d.acct || !d.view) throw new Error('還沒有帳戶或價格資料');
-        const run = await startOwnCheck(env, fetcher, d.acct, d.view, d.axis, ticker, exits, now);
+        const run = await startOwnCheck(env, fetcher, d.acct, d.view, d.axis, ticker, exits, now, set);
         return { runId: run.runId };
       },
+      async resendExits(ticker, version) {
+        const d = await self.load([ticker]);
+        if (!d.acct || !d.view) throw new Error('還沒有帳戶或價格資料');
+        const run = await resendOwnCheck(env, fetcher, d.acct, d.view, d.axis, ticker, version, now);
+        return { runId: run.runId };
+      },
+      exitSet: async (ticker) => exitSetOf(env.DB, (await loadAccount(env.DB))?.acct.own[ticker]?.fileId),
+      dropAllExits: async (ticker, version) => confirmDropAll(env, ticker, version, now, lastCompletedSession(now, await loadCalendarOverrides(env.DB))),
       checkView: (runId) => ownCheckView(env, runId, now),
       rewrites: (ticker) => rewriteView(env, ticker, now),
       discussion: (ticker, acct, view, mode, notif) => realDiscussion(env, fetcher, acct, view, ticker, mode, notif),

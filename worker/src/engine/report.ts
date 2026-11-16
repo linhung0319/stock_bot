@@ -1008,6 +1008,24 @@ export function addDispute(meta: OwnMeta, premiseId: string, date: string, reaso
   meta.disputes = [...keep, { premiseId, since: date, until: plusDays(date, DISPUTE_MAX_DAYS), reason, notif }];
 }
 
+/** 前提沿用編號、但字改了時靜默期結束的原因（T42，§1.10）。 */
+export const EDITED_REASON = '前提的字改了';
+
+/**
+ * 這幾條前提的靜默期提早結束（T42，own_thesis §1.10）：還在期間內（until ≥ date）的那一筆，until 改成前一天、記結束日與原因。
+ * 沿用編號但字改了的前提：舊的「不同意」針對的是舊的字，不能蓋住意思已經變了的新前提。回傳結束了哪幾條。
+ */
+export function endDisputesFor(meta: OwnMeta, premiseIds: string[], date: string, reason: string): string[] {
+  if (!premiseIds.length || !meta.disputes?.length) return [];
+  const ended: string[] = [];
+  meta.disputes = meta.disputes.map((d) => {
+    if (!premiseIds.includes(d.premiseId) || d.until < date) return d;
+    ended.push(d.premiseId);
+    return { ...d, until: plusDays(date, -1), ended: { date, reason } };
+  });
+  return ended;
+}
+
 /** 財報類申報（§1.10「靜默期」）：10-Q、10-K、8-K Item 2.02。修正版（/A）是舊的期間，不算。 */
 export const endsSilence = (f: { form: string; items?: string[] }): boolean => f.form === '10-Q' || f.form === '10-K' || (f.form === '8-K' && (f.items ?? []).includes('2.02'));
 
@@ -1020,6 +1038,8 @@ export function endDisputes(acct0: Account, ticker: string, filings: { form: str
   const fin = filings.filter(endsSilence).map((f) => f.filingDate).sort();
   const ended: { premiseId: string; until: string }[] = [];
   const next = ds.map((d) => {
+    // 已經提早結束的（T42：前提的字改了）不再動
+    if (d.ended) return d;
     const first = fin.find((day) => day <= d.until && calDays(d.since, day) >= DISPUTE_MIN_DAYS);
     if (!first) return d;
     const until = plusDays(first, -1);

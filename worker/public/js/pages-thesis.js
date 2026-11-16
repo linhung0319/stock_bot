@@ -62,6 +62,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   const replyOpt = replyOption(notifParam, own.pendingBreak?.notif ?? null);
   const replyNotif = replyOpt?.notif ?? null;
   const owned = (d.monitor ?? []).filter((c) => c.owned && c.code !== 'RETIRED');
+  // 目前監測中的你定的條件（T42）：右邊的出場條件預填這些；存檔時和它們比，有改動才整組送 AI 對照
+  const live = owned.filter((c) => ['ACTIVE', 'REVIEW_ONLY', 'MANUAL'].includes(c.code));
   let source = 'TYPED';
 
   // ---- 右邊：新的（三欄都可以手改）
@@ -87,8 +89,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     if (exits.length >= LIMITS.exits) return toast(`出場條件最多 ${LIMITS.exits} 條`);
     const input = h('input', { type: 'text', maxlength: LIMITS.exit, value: x.text, placeholder: '查得到的事，例如：毛利率連兩季低於 70%', 'aria-label': '出場條件' });
     const sel = h('select', { style: 'width:auto', 'aria-label': '成立時' }, ACTIONS.map(([v, t]) => h('option', { value: v, selected: v === x.action }, t)));
-    // ref：貼回的 [C12]（T40）：沿用的條件編號；存檔時程式再和監測中的條件對一次
-    const r = { input, sel, guessed: !!x.guessed, ref: x.ref ?? null };
+    const r = { input, sel, guessed: !!x.guessed };
     input.addEventListener('input', changed);
     sel.addEventListener('change', changed);
     const el = h(
@@ -119,10 +120,12 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   };
   if (own.kind === 'THESIS') for (const p of own.premises) addPrem({ id: p.id, text: p.text.replace(/（不成立的訊號：.*）$/, '') });
   if (!prems.length) addPrem();
-  addExit();
+  // 出場條件預填目前監測中的（T42）：右邊就是存檔後要的完整清單，沒動就是沒改動
+  for (const c of live) addExit({ text: c.text, action: c.action ?? 'REVIEW' });
+  if (!exits.length) addExit();
 
   // ---- 貼上
-  const paste = h('textarea', { rows: 5, placeholder: '把 claude.ai 收尾時輸出的整個區塊貼在這裡（===STOCKBOT 論點 v2 … 到 ===END===）' });
+  const paste = h('textarea', { rows: 5, placeholder: '把 claude.ai 收尾時輸出的整個區塊貼在這裡（===STOCKBOT 論點 v3 … 到 ===END===）' });
   const parseMsg = h('div');
   const conclBox = h('div');
   const doParse = async () => {
@@ -149,15 +152,11 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   // ---- 存檔前的變動（前提的對應：沿用、新的、會撤下；程式算）
   const diff = h('div', { class: 'small', style: 'margin-top:10px' });
   const exitDiff = h('div', { class: 'small', style: 'margin-top:14px' });
-  // 這次沒出現的監測中條件：選了「撤下」的編號（T40；預設繼續監測）
-  const retireSel = new Set();
-  let lastMissing = [];
   const payload = () => ({
     ticker: d.ticker,
     thesis: thesisIn.value.trim(),
     premises: prems.map((r) => ({ id: r.id, text: r.input.value.trim() })).filter((p) => p.text),
-    exitConditions: exits.map((r) => ({ text: r.input.value.trim(), action: r.sel.value, ...(r.ref ? { ref: r.ref } : {}) })).filter((x) => x.text),
-    retire: lastMissing.filter((c) => retireSel.has(c.id)).map((c) => c.id),
+    exitConditions: exits.map((r) => ({ text: r.input.value.trim(), action: r.sel.value })).filter((x) => x.text),
     source,
     replyTo: reply && reply.checked ? replyNotif : null,
   });
@@ -180,28 +179,35 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
               ),
             ),
           ),
-          h('p', { class: 'faint', style: 'margin-top:4px' }, `沿用編號：之前的檢查結果與靜默期接著算。字改了也算論點變動，隔天會開一次審查。意思已經不同的，按「當成新的一條」。`),
+          h('p', { class: 'faint', style: 'margin-top:4px' }, `沿用編號：之前的檢查結果接著算；這條前提如果在靜默期（你不同意過 AI 的判斷），靜默期結束，因為你不同意的是原本的字。字改了也算論點變動，隔天會開一次審查。意思已經不同的，按「當成新的一條」。`),
         )
       : null;
-  /** 出場條件的對照（T40）：沿用的不再送去改寫；這次沒出現的監測中條件，每一條選繼續監測或撤下。 */
+  const actName = (v) => ACTIONS.find(([a]) => a === v)?.[1] ?? '重新審查';
+  /**
+   * 出場條件（T42 整組取代）：沒改動 → 一句「沒有改動」（只改動作的列出來，存檔直接改）；
+   * 有改動 → 一句「存檔後送 AI 對照與改寫，回來後在持股頁確認；確認之前，現在的 N 條照舊監測」。
+   */
   const exitPreview = (x) => {
     if (!x) return null;
     const rows = exits.map((r) => r.input.value.trim()).filter(Boolean);
-    const kept = x.kept.map((k) => h('li', null, h('span', { class: 'st' }, `C${k.id}`), h('span', null, `${k.text}${k.actionChanged ? `（成立時改成${ACTIONS.find(([v]) => v === payload().exitConditions[k.index]?.action)?.[1] ?? ''}）` : ''}`)));
-    const missing = x.missing.map((c) => {
-      const name = `exit-${c.id}`;
-      const keep = h('input', { type: 'radio', name, checked: !retireSel.has(c.id), onchange: () => { retireSel.delete(c.id); } });
-      const drop = h('input', { type: 'radio', name, checked: retireSel.has(c.id), onchange: () => { retireSel.add(c.id); } });
-      return h('li', null, h('div', null, h('p', null, h('span', { class: 'st' }, `C${c.id}`), ' ', c.text), h('p', { class: 'faint' }, `${c.status}${c.action ? `；成立時${ACTIONS.find(([v]) => v === c.action)?.[1] ?? ''}` : ''}`), h('div', { class: 'exit-pick' }, h('label', null, keep, '繼續監測'), h('label', null, drop, '撤下'))));
-    });
-    if (!rows.length && !missing.length) return null;
+    if (!x.changed) {
+      if (!x.live && !rows.length) return null;
+      return [
+        h('b', null, '出場條件'),
+        h('p', { style: 'margin-top:6px' }, x.live ? `出場條件沒有改動：現在的 ${x.live} 條照舊監測，不用送 AI。` : '出場條件沒有改動。'),
+        x.actionChanged.length
+          ? h('div', { style: 'margin-top:6px' }, h('b', null, '只改成立時的動作（存檔時直接改）：'), h('ul', { class: 'diff-list' }, x.actionChanged.map((a) => h('li', null, h('span', null, `${a.text}：${actName(a.was)} → ${actName(a.action)}`)))))
+          : null,
+      ];
+    }
+    const head = rows.length
+      ? `出場條件有改動：存檔後送 AI 對照與改寫，回來後在持股頁確認${x.live ? `；確認之前，現在的 ${x.live} 條照舊監測` : '，確認後才開始監測'}。`
+      : `出場條件全部拿掉：存檔後在持股頁確認才撤下；確認之前，現在的 ${x.live} 條照舊監測。`;
     return [
-      h('b', null, '出場條件的對照'),
-      kept.length ? h('div', { style: 'margin-top:6px' }, h('b', null, '沿用（不用再改寫）：'), h('ul', { class: 'diff-list' }, kept)) : null,
-      x.fresh.length ? h('div', { style: 'margin-top:6px' }, `新的 ${x.fresh.length} 條：存檔後送 AI 改寫，回來後在持股頁勾選才開始監測。`) : null,
-      missing.length
-        ? h('div', { style: 'margin-top:8px' }, h('b', { style: 'color:var(--warn)' }, '目前監測中、這次沒有出現的：'), h('ul', { class: 'edit-cmp' }, missing), h('p', { class: 'faint', style: 'margin-top:4px' }, '預設繼續監測（不會因為這次沒抄到就撤下）。改了門檻的話，舊的選「撤下」，或等新的那一條改寫回來、勾選時取代它。'))
-        : null,
+      h('b', null, '出場條件'),
+      h('p', { style: 'margin-top:6px' }, head),
+      rows.length && x.live ? h('p', { class: 'faint', style: 'margin-top:4px' }, '右邊是存檔後你要的全部出場條件。AI 會標出哪幾條和現在的相同（不新增）、哪幾條取代舊的；右邊沒有寫到的舊條件，確認後撤下。') : null,
+      x.pendingVersion ? h('p', { style: 'margin-top:6px;color:var(--warn)' }, `第 ${x.pendingVersion} 版存的出場條件改動還沒在持股頁確認；這次存檔後以這一版為準，第 ${x.pendingVersion} 版的改寫結果不再列。`) : null,
     ];
   };
   let timer = null;
@@ -214,7 +220,6 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
         // 一條一行（T34 整理：原本用分號接成一段）
         const line = (label, xs, warn) => (xs.length ? h('div', { style: 'margin-top:6px' }, h('b', { style: warn ? 'color:var(--hot)' : null }, label), h('ul', { class: 'diff-list' }, xs.map((x) => h('li', null, h('span', { class: 'st' }, x.id), h('span', null, x.text))))) : null);
         const edited = p.edited ?? [];
-        lastMissing = p.exits?.missing ?? [];
         put(
           diff,
           h('b', null, '存檔後的前提'),
@@ -223,6 +228,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
           line('新的：', p.added, false),
           line('會撤下：', p.retired.map((x) => ({ ...x, text: x.origin === 'SYSTEM_DEFAULT' ? `${x.text}（系統預設）` : x.text })), true),
           h('div', { class: 'faint', style: 'margin-top:4px' }, p.changed ? '前提有增減或字改了：隔天的每日流程會開一次審查，檢查每條前提（每檔 30 天最多 1 次）。' : '前提沒有增減：不另外開審查。'),
+          p.silenceEnded?.length ? h('div', { style: 'margin-top:4px;color:var(--warn)' }, `${p.silenceEnded.join('、')} 正在靜默期，字改了：存檔後靜默期結束，AI 判斷新的字不成立時會照常通知你。`) : null,
           keptWarn(p),
         );
         put(exitDiff, exitPreview(p.exits));
@@ -257,7 +263,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
             h('h2', { class: 'panel-h' }, `論點與前提已經存好（第 ${r.preview.version} 版）`),
             r.preview.changed ? h('p', { class: 'small dim', style: 'margin-top:6px' }, '前提有增減：隔天的每日流程會開一次審查。') : null,
             r.revised ? h('p', { class: 'small dim', style: 'margin-top:6px' }, `${r.revisedName ?? '那則通知'}已結案（修正論點，部位不動）${r.revised.kept ? `；新的論點還留著前提 ${r.revised.premiseId}，當成不同意，這條前提進靜默期` : ''}。`) : null,
-            unsentBox(d.ticker, r.exits, `原因：${r.rewrite.error}`, () => ctx.go(back.href)),
+            unsentBox(d.ticker, r.exits, `原因：${r.rewrite.error}`, () => ctx.go(back.href), r.preview.version),
             h('p', { class: 'small faint', style: 'margin-top:10px' }, '持股頁也會一直提示，直到重送成功。'),
             h('div', { class: 'btn-row', style: 'margin-top:12px' }, h('a', { class: 'btn', href: back.href }, '回持股頁')),
           ),
@@ -272,8 +278,9 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
         return;
       }
       const rv = r.revised ? `；${r.revisedName ?? '那則通知'}結案（修正論點${r.revised.kept ? `，保留的前提 ${r.revised.premiseId} 進靜默期` : ''}）` : '';
-      const cd = r.conds?.retired?.length ? `；撤下 ${r.conds.retired.length} 條出場條件` : '';
-      toast([(r.rewrite.status === 'SENT' ? '論點已存；出場條件送去改寫，回來後在持股頁勾選' : '論點已存') + rv + cd, ...(r.conds?.errors ?? [])].join('；'));
+      const cd = r.conds?.actionChanged?.length ? `；${r.conds.actionChanged.length} 條出場條件改了成立時的動作` : '';
+      const ex = r.rewrite.status === 'SENT' ? '論點已存；出場條件送去 AI 對照與改寫，回來後在持股頁確認（確認之前舊的照舊監測）' : r.preview.exits?.changed ? '論點已存；出場條件全部拿掉，到持股頁確認才撤下' : '論點已存';
+      toast([ex + rv + cd, ...(r.conds?.errors ?? [])].join('；'));
       ctx.go(back.href);
     } catch (e) {
       msg.replaceChildren(errBox(e));
@@ -295,7 +302,14 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     h('h2', { class: 'panel-h' }, '新的（可以直接改）'),
     h('label', { class: 'field', style: 'margin-top:10px' }, h('span', null, '論點'), thesisIn, counter(thesisIn, LIMITS.thesis)),
     h('div', { class: 'field' }, h('span', null, `前提（最多 ${LIMITS.premises} 條）`), own.kind === 'DEFAULT_ONLY' ? h('small', null, '目前用系統預設前提。寫了自己的前提，存檔時就取代預設。') : h('small', null, '和現在的文字相同的沿用原本的編號；拿掉的會撤下。'), premList, h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addPrem(); changed(); } }, '再加一條前提'))),
-    h('div', { class: 'field', style: 'margin-bottom:0' }, h('span', null, `出場條件（最多 ${LIMITS.exits} 條）`), h('small', null, '不會存成前提。存檔後送 AI 改寫成查得到的格式，你在持股頁勾選才開始監測。'), exitList, h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => addExit() }, '再加一條出場條件'))),
+    h(
+      'div',
+      { class: 'field', style: 'margin-bottom:0' },
+      h('span', null, `出場條件（最多 ${LIMITS.exits} 條）`),
+      h('small', null, live.length ? `這裡是存檔後你要的全部出場條件，已經填好現在監測中的 ${live.length} 條。沒改就不會送 AI；改了的話整組送 AI 對照，在持股頁確認後才換上新的。不會存成前提。` : '不會存成前提。存檔後送 AI 改寫成查得到的格式，你在持股頁確認才開始監測。'),
+      exitList,
+      h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addExit(); changed(); } }, '再加一條出場條件')),
+    ),
   );
 
   formBox.append(
@@ -327,8 +341,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       back,
       kicker: own.thesis ? `第 ${own.thesis.version} 版，${day(own.thesis.setAt)} 定` : '還沒有論點本文',
       title: `編輯論點：${d.ticker}`,
-      sub: '貼上 claude.ai 討論的結果，或直接手寫。左邊是現在的、右邊是新的；確認之後論點與前提馬上存好，出場條件送去改寫。',
-      bubble: { k: '編輯論點', say: ['左右對照看一遍再確認。', { t: '出場條件', tone: 'em' }, '要你在持股頁勾選才會開始監測。'], mood: 'watch' },
+      sub: '貼上 claude.ai 討論的結果，或直接手寫。左邊是現在的、右邊是新的；確認之後論點與前提馬上存好，出場條件有改動才送 AI 對照與改寫。',
+      bubble: { k: '編輯論點', say: ['左右對照看一遍再確認。', { t: '出場條件', tone: 'em' }, '改了的話，要你在持股頁確認才會換上新的。'], mood: 'watch' },
     },
     pane: formBox,
     rail: glass(

@@ -1,5 +1,6 @@
 // F14：出場條件改寫（網站觸發；T27 起只留改寫模式，「請 AI 草擬前提」拿掉）。
-//   「編輯論點」頁存檔之後，把使用者寫的出場條件改寫成可追蹤的格式 → 持股頁列出改寫結果、讓使用者勾選（30 天內的都列）。
+//   「編輯論點」頁存檔、出場條件有改動時，把使用者要的完整出場條件連同監測中的條件送去改寫與對照（T42：整組取代）
+//   → 持股頁列出最新一版的改寫結果（30 天內）、使用者確認：勾選的新條件開始監測，被取代的與這次沒提到的撤下。
 //   使用者確認的出場條件 → own_conditions（origin = USER、有勾選時間與成立時的動作，是「你定的條件」；審查換不掉），由 F25 監測。
 import type { PackDoc } from '../ai/check';
 import { OWN_CHECK, ownCheckPack, ownCheckResult, type ExitLine, type OwnCheckResult } from '../ai/ownCheck';
@@ -13,24 +14,52 @@ import { loadAccount, thesisLogStmt } from './ledgerStore';
 import { gatherOwnEvidence, insertConditionStmts, routineReady } from './ownAi';
 import { CONC, corr1y } from './concentration';
 import { SUPERSEDABLE, checkCap, supersedeStmts } from './ownConds';
-import { ACTION_TEXT, COND_ACTIONS, REWRITE_DAYS, acceptStatus, condFacts, confirmText, defaultAction, fileConditions, fmtMetric, isOwned, ownerText, progressText, thesisFile, type CondAction, type FileCondition } from './thesis';
+import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, REWRITE_DAYS, acceptStatus, condFacts, confirmText, defaultAction, fileConditions, fmtMetric, isOwned, latestExitSet, ownerText, progressText, runOfSet, thesisFile, type CondAction, type ExitSet, type FileCondition } from './thesis';
+
+/** 改寫結果或「還沒送去改寫」不是最新一版的出場條件（T42）：不能再勾選或重送。網站回 409。 */
+export class StaleExitsError extends Error {}
 
 /** 這檔現在的論點檔編號（帳戶沒有、不是自選、T25 之前的自選 → null）。 */
 async function currentFileId(db: D1Database, ticker: string): Promise<string | null> {
   return (await loadAccount(db))?.acct.own[ticker]?.fileId ?? null;
 }
 
+/** 這份論點檔最近一次出場條件有改動的那一版（T42；thesis.ts 的 latestExitSet）。沒有論點檔編號 → null。 */
+export async function exitSetOf(db: D1Database, fileId: string | null | undefined): Promise<ExitSet | null> {
+  if (!fileId) return null;
+  const rows = (await db.prepare("SELECT id, kind, at, body FROM own_thesis_log WHERE file_id = ? AND kind IN ('THESIS', 'EXITS_CONFIRMED') ORDER BY id").bind(fileId).all<{ id: number; kind: string; at: string; body: string }>()).results;
+  return latestExitSet(
+    rows.map((r) => {
+      let body: Record<string, unknown> = {};
+      try {
+        body = JSON.parse(r.body) as Record<string, unknown>;
+      } catch {
+        // 壞掉的列當成空的
+      }
+      return { id: r.id, kind: r.kind, at: r.at, body };
+    }),
+  );
+}
+
+/** 整組取代的對照資料（T42）：哪一版論點、存檔時監測中的條件、文字相同的 U（U1 → 列編號）。 */
+export interface ExitSetRef {
+  version: number;
+  live: number[];
+  sameByText: Record<string, number>;
+}
+
 /**
- * 把使用者寫的出場條件送去改寫（own_thesis §1.8 確認的第 2 點；own_check_v3，T40 加 supersedes）。
- * 證據包帶現行的論點（note）、前提與既有的條件（C、W），每條出場條件帶使用者選的動作。
+ * 把使用者要的出場條件送去改寫（own_thesis §1.8 確認的第 2 點；own_check_v4，T42 整組取代、標 same／supersedes）。
+ * 證據包帶現行的論點（note）、前提與目前監測中的條件（C）、觀察項（W），每條出場條件帶使用者選的動作。
+ * set：這組出場條件是第幾版論點存的、存檔時監測中的條件（確認後撤下的範圍）；記在 rule.detail。
  */
-export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, exits: ExitLine[], now: Date): Promise<AiRun> {
+export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, exits: ExitLine[], now: Date, set?: ExitSetRef): Promise<AiRun> {
   if (!routineReady(env)) throw new Error('AI 層的雲端排程還沒設定（SETUP.md 的 T5），沒辦法送去改寫');
   const clean = exits.map((e) => ({ text: e.text.trim().slice(0, 300), action: COND_ACTIONS.includes(e.action) ? e.action : ('REVIEW' as CondAction) })).filter((e) => e.text).slice(0, 6);
   if (!clean.length) throw new Error('沒有要改寫的出場條件');
   const ev = await gatherOwnEvidence(env, fetcher, ticker, view.date);
   const tf = await thesisFile(env.DB, acct, ticker, view.date);
-  const cf = tf ? condFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null) : null;
+  const cf = tf ? condFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null, { live: true }) : null;
   const conds = cf?.facts ?? [];
   const meta = acct.own[ticker];
   const thesisDoc: PackDoc | null = meta?.thesis?.text
@@ -70,9 +99,21 @@ export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, v
     dataQuality: ev.dataQuality,
     thesisVersion: meta?.thesis?.version ?? null,
     condMap: cf?.map ?? {},
+    ...(set ? { exitsVersion: set.version, live: set.live, sameByText: set.sameByText } : {}),
     now,
   });
   return startRun(env, fetcher, pack, now, [...ev.notes, ...(entry?.notes ?? []), ...notes]);
+}
+
+/**
+ * 重送出場條件去改寫（編輯論點頁送出失敗、或改寫沒有結果時；T42）：只能重送最近一次出場條件有改動的那一版、還沒確認的；
+ * 送的是那一版存下來的出場條件（不是網頁送來的）。version：網頁看到的版本（沒給 = 最新的）；不是最新的 → StaleExitsError。
+ */
+export async function resendOwnCheck(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, version: number | null, now: Date): Promise<AiRun> {
+  const set = await exitSetOf(env.DB, acct.own[ticker]?.fileId);
+  if (!set || set.confirmed || !set.exits.length) throw new StaleExitsError('沒有要重送的出場條件（之後的版本改過出場條件，或已經在持股頁確認過）。請重新整理。');
+  if (version !== null && version !== set.version) throw new StaleExitsError(`這是第 ${version} 版論點的出場條件；之後的第 ${set.version} 版改過出場條件，舊的不能再重送。請重新整理。`);
+  return startOwnCheck(env, fetcher, acct, view, axis, ticker, set.exits, now, { version: set.version, live: set.live, sameByText: set.sameByText });
 }
 
 export interface OwnCheckView extends OwnCheckResult {
@@ -88,119 +129,234 @@ export interface OwnCheckView extends OwnCheckResult {
   createdAt: string;
   /** 結論的狀態（AGREED、TIMEOUT…；還在等是 PENDING）。 */
   outcome: string;
+  /** 這組出場條件是第幾版論點存的（T42；之前的執行沒有 = null）。 */
+  exitsVersion: number | null;
+  /** 存檔時監測中的條件（T42：確認後撤下的範圍）。 */
+  live: number[];
 }
 
-/** 證據包記的條件編號 → 列編號（own_check_v3，T40；之前的執行沒有）。 */
-function condMapOf(detail: unknown): Record<string, number> {
-  const m = (detail ?? {}) as { condMap?: Record<string, number> };
-  return m.condMap && typeof m.condMap === 'object' ? m.condMap : {};
+interface RewriteDetail {
+  mode?: 'DRAFT' | 'REWRITE';
+  exits?: ExitLine[];
+  lines?: string[];
+  condMap?: Record<string, number>;
+  exitsVersion?: number;
+  live?: number[];
+  sameByText?: Record<string, number>;
 }
 
 /** 證據包裡送去改寫的出場條件（v1 只有文字，動作當成重新審查）。 */
-function exitsOf(detail: unknown): ExitLine[] {
-  const d = (detail ?? {}) as { exits?: ExitLine[]; lines?: string[] };
+function exitsOf(d: RewriteDetail): ExitLine[] {
   if (Array.isArray(d.exits)) return d.exits;
   return (d.lines ?? []).map((text) => ({ text, action: 'REVIEW' as CondAction }));
 }
+const objOf = (x: unknown): Record<string, number> => (x && typeof x === 'object' ? (x as Record<string, number>) : {});
 
 export async function ownCheckView(env: Env, runId: string, now: Date): Promise<OwnCheckView | null> {
   const run = await getRun(env.DB, runId, now);
   if (!run || run.fn !== OWN_CHECK) return null;
-  const exits = exitsOf(run.pack.rule.detail);
-  const r = ownCheckResult(run.outcome, run.ticker ?? '', exits, condMapOf(run.pack.rule.detail));
+  const d = (run.pack.rule.detail ?? {}) as RewriteDetail;
+  const exits = exitsOf(d);
+  const live = Array.isArray(d.live) ? d.live : null;
+  const r = ownCheckResult(run.outcome, run.ticker ?? '', exits, objOf(d.condMap), objOf(d.sameByText), live);
   // 只算現在這份論點檔勾過的（移出再加回之後，同一次改寫的條件可以重新勾）
   const fileId = await currentFileId(env.DB, run.ticker ?? '');
   const accepted = (await env.DB.prepare(`SELECT cond_id FROM own_conditions WHERE run_id = ? AND origin = 'USER' AND ${fileId ? 'file_id = ?' : 'file_id IS NULL'}`).bind(runId, ...(fileId ? [fileId] : [])).all<{ cond_id: string }>()).results.map((x) => x.cond_id);
-  const mode = (run.pack.rule.detail as { mode?: 'DRAFT' | 'REWRITE' }).mode === 'DRAFT' ? 'DRAFT' : 'REWRITE';
-  return { ...r, runId, status: run.status, mode, accepted, exits, createdAt: run.createdAt, outcome: run.status === 'PENDING' || !run.outcome ? 'PENDING' : run.outcome.status };
+  const mode = d.mode === 'DRAFT' ? 'DRAFT' : 'REWRITE';
+  return { ...r, runId, status: run.status, mode, accepted, exits, createdAt: run.createdAt, outcome: run.status === 'PENDING' || !run.outcome ? 'PENDING' : run.outcome.status, exitsVersion: typeof d.exitsVersion === 'number' ? d.exitsVersion : null, live: live ?? [] };
 }
 
 /** 持股頁列出多少天內的改寫結果（own_thesis §1.8 確認的第 4 點；定義在 thesis.ts，「要看的事」也用）。 */
 export { REWRITE_DAYS };
 
+/**
+ * 確認一份改寫結果會做什麼（純函式，T42，own_thesis §1.8 確認的第 4 點）：
+ *   same（和監測中的一條相同）→ 不新增、舊的保留；動作和現在的不同時改動作
+ *   supersedes → 勾選了這一條，被取代的撤下（沒勾就照舊監測）
+ *   存檔時監測中、現在也還在監測的條件裡，沒有被 same 或 supersedes 指到的 → 撤下（不管勾不勾）
+ * picked：使用者勾選的條件編號（condId）；不給 = 全部新的都勾（持股頁顯示用）。
+ */
+export function confirmPlan(conditions: OwnCheckResult['conditions'], scope: number[], conds: FileCondition[], picked?: string[]): {
+  pick: OwnCheckResult['conditions'];
+  sups: Map<string, FileCondition>;
+  retire: FileCondition[];
+  actionChanges: { cond: FileCondition; action: CondAction }[];
+} {
+  const live = conds.filter((c) => isOwned(c) && LIVE_CODES.includes(c.status));
+  const fresh = conditions.filter((c) => c.same === null);
+  const pick = picked ? fresh.filter((c) => picked.includes(c.condId)) : fresh;
+  const sups = new Map<string, FileCondition>();
+  for (const c of pick) {
+    const old = c.supersedes ? conds.find((x) => x.id === c.supersedes && SUPERSEDABLE.includes(x.status)) : undefined;
+    if (old) sups.set(c.condId, old);
+  }
+  const pointed = new Set(conditions.flatMap((c) => [c.same, c.supersedes]).filter((x): x is number => x !== null));
+  const retire = live.filter((c) => scope.includes(c.id) && !pointed.has(c.id));
+  const actionChanges = conditions.flatMap((c) => {
+    const cond = c.same === null ? undefined : live.find((x) => x.id === c.same);
+    return cond && cond.action && cond.action !== c.action ? [{ cond, action: c.action }] : [];
+  });
+  return { pick, sups, retire, actionChanges };
+}
+
+export interface RewriteResultView extends OwnCheckView {
+  failed: boolean;
+  /** 條件編號（condId）→ 勾選後會取代的那一條的文字（supersedes 指到的條件還在監測、只記錄或建議中時才有）。 */
+  replaces: Record<string, string>;
+  /** 條件編號 → 和它相同的那一條監測中的條件（T42：不新增，舊的保留；actionTo 是確認後改成的動作）。 */
+  sames: Record<string, { text: string; actionTo: CondAction | null }>;
+  /** 確認後會撤下的（存檔時監測中、這次的出場條件沒有提到；T42）。 */
+  retire: { id: number; text: string }[];
+  /** 送去改寫、但 AI 沒有改寫出來的出場條件（不會監測）。 */
+  unmatched: ExitLine[];
+}
+
 export interface RewriteView {
   /**
-   * 最近 30 天的改寫：還在改寫中的、還有沒勾的條件的、沒有結果而且之後沒有重送過的。新的在前。
-   * replaces：條件編號（condId）→ 勾選後會取代的那一條的文字（T40：supersedes 指到的條件還在監測、只記錄或建議中時才有）。
+   * 最近一次出場條件有改動的那一版（T42）、30 天內的改寫：還在改寫中的、要你確認的、沒有結果而且之後沒有重送過的。新的在前。
+   * 之前版本的改寫結果不列；那一版確認過之後也不列。全部都和現有條件相同、也沒有要撤下或改動作的，不列（不用確認）。
    */
-  results: (OwnCheckView & { failed: boolean; replaces: Record<string, string> })[];
-  /** 存了論點、出場條件卻還沒送去改寫（送出失敗或 AI 層沒設定；N9）：當時寫的出場條件。 */
-  unsent: { at: string; exits: ExitLine[] } | null;
+  results: RewriteResultView[];
+  /** 存了論點、出場條件卻還沒送去改寫（送出失敗或 AI 層沒設定；N9）：那一版的出場條件與版本。 */
+  unsent: { at: string; exits: ExitLine[]; version: number } | null;
+  /** 那一版把出場條件全部拿掉（T42）：確認後撤下這些（不用 AI）。 */
+  dropAll: { at: string; version: number; retire: { id: number; text: string }[] } | null;
 }
 
 /**
- * 持股頁的改寫結果（own_thesis §1.8 確認的第 3、4 點；修 N9）：這份論點檔最近 30 天所有改寫結果裡還沒勾的條件，不是只看最近一次；
+ * 持股頁的改寫結果（own_thesis §1.8 確認的第 3、4 點；修 N9；T42 跟著論點版本走）：只看最近一次出場條件有改動的那一版、還沒確認的；
  * 改寫沒有結果、出場條件還沒送出去，都要有提示與「重送」。
  */
 export async function rewriteView(env: Env, ticker: string, now: Date): Promise<RewriteView> {
+  const none: RewriteView = { results: [], unsent: null, dropAll: null };
   const acct = (await loadAccount(env.DB))?.acct;
   const meta = acct?.own[ticker];
-  if (!meta) return { results: [], unsent: null };
+  if (!acct || !meta) return none;
+  const set = await exitSetOf(env.DB, meta.fileId);
+  if (!set || set.confirmed) return none;
+  const conds = await fileConditions(env.DB, acct, ticker);
+  const text = (id: number) => conds.find((c) => c.id === id)?.text ?? '';
+  if (!set.exits.length) {
+    const retire = confirmPlan([], set.live, conds).retire.map((c) => ({ id: c.id, text: c.text }));
+    return { ...none, dropAll: retire.length ? { at: set.at, version: set.version, retire } : null };
+  }
   const since = new Date(now.getTime() - REWRITE_DAYS * 86400_000).toISOString();
   const opened = meta.fileId?.slice(ticker.length + 1, ticker.length + 11) ?? '0000-00-00';
-  const rows = (await env.DB.prepare('SELECT run_id, created_at FROM ai_runs WHERE fn = ? AND ticker = ? AND created_at >= ? AND as_of >= ? ORDER BY created_at DESC').bind(OWN_CHECK, ticker, since, opened).all<{ run_id: string; created_at: string }>()).results;
+  const rows = (await env.DB.prepare('SELECT run_id, created_at FROM ai_runs WHERE fn = ? AND ticker = ? AND created_at >= ? AND as_of >= ? ORDER BY created_at DESC').bind(OWN_CHECK, ticker, set.at, opened).all<{ run_id: string; created_at: string }>()).results;
   const results: RewriteView['results'] = [];
-  const live = rows.length ? (await fileConditions(env.DB, acct, ticker)).filter((c) => SUPERSEDABLE.includes(c.status)) : [];
-  for (const [k, r] of rows.entries()) {
+  let sent = false;
+  let k = 0;
+  for (const r of rows) {
     const v = await ownCheckView(env, r.run_id, now);
-    if (!v || v.mode !== 'REWRITE') continue;
+    if (!v || v.mode !== 'REWRITE' || !runOfSet(set, { exitsVersion: v.exitsVersion }, v.createdAt)) continue;
+    sent = true;
+    const first = k++ === 0;
+    if (r.created_at < since) continue;
     const failed = v.status === 'DONE' && !v.conditions.length;
-    // 沒有結果的：之後重送過就不再列；有結果的：全部勾過就不再列
-    if (failed && k > 0) continue;
-    if (v.status === 'DONE' && !failed && v.conditions.every((c) => v.accepted.includes(c.condId))) continue;
+    // 沒有結果的：之後重送過就不再列
+    if (failed && !first) continue;
+    const plan = confirmPlan(v.conditions, set.live, conds);
     const replaces: Record<string, string> = {};
-    for (const c of v.conditions) {
-      const old = c.supersedes ? live.find((x) => x.id === c.supersedes) : undefined;
-      if (old) replaces[c.condId] = old.text;
-    }
-    results.push({ ...v, failed, replaces });
+    for (const [id, old] of plan.sups) replaces[id] = old.text;
+    const sames: RewriteResultView['sames'] = {};
+    for (const c of v.conditions) if (c.same !== null) sames[c.condId] = { text: text(c.same), actionTo: plan.actionChanges.find((a) => a.cond.id === c.same)?.action ?? null };
+    // 全部都和現有條件相同、也沒有要撤下或改動作的：不用確認
+    if (v.status === 'DONE' && !failed && !plan.pick.length && !plan.retire.length && !plan.actionChanges.length) continue;
+    const lines = new Set(v.conditions.map((c) => c.line));
+    results.push({ ...v, failed, replaces, sames, retire: plan.retire.map((c) => ({ id: c.id, text: c.text })), unmatched: v.status === 'DONE' && !failed ? v.exits.filter((_, i) => !lines.has(i)) : [] });
   }
-  let unsent: RewriteView['unsent'] = null;
-  if (meta.fileId) {
-    const log = await env.DB.prepare("SELECT at, body FROM own_thesis_log WHERE file_id = ? AND kind = 'THESIS' AND body LIKE '%\"exitLines\":[\"%' ORDER BY id DESC LIMIT 1").bind(meta.fileId).first<{ at: string; body: string }>();
-    if (log) {
-      const b = JSON.parse(log.body) as { exitLines?: string[]; exitActions?: CondAction[] };
-      const sent = await env.DB.prepare('SELECT 1 AS x FROM ai_runs WHERE fn = ? AND ticker = ? AND created_at >= ? LIMIT 1').bind(OWN_CHECK, ticker, log.at).first();
-      if (!sent && b.exitLines?.length) unsent = { at: log.at, exits: b.exitLines.map((text, k) => ({ text, action: b.exitActions?.[k] ?? 'REVIEW' })) };
-    }
-  }
-  return { results, unsent };
+  return { results, unsent: sent ? null : { at: set.at, exits: set.exits, version: set.version }, dropAll: null };
 }
 
+export interface ConfirmResult {
+  /** 開始監測幾條。 */
+  added: number;
+  /** 撤下的條件（被取代的與這次沒提到的）。 */
+  retired: number[];
+  /** 改了成立時動作的條件（和現有條件相同、動作不同的）。 */
+  actionChanged: number[];
+}
+
+const retireNote = (date: string, version: number) => `你在 ${date} 確認第 ${version} 版論點的出場條件時撤下（這次的出場條件沒有提到）`;
+
 /**
- * 使用者勾選的出場條件 → 你定的條件（origin = USER，帶勾選時間與成立時的動作；T26）。回傳寫入幾條。
- * actions：每一條成立時做什麼（沒給就帶 AI 改寫時的檔位）。會自己發通知的你定的條件一檔最多 8 條。
+ * 確認改寫結果（own_thesis §1.8 確認的第 4 點；T42 整組取代）：勾選的新條件 → 你定的條件（origin = USER，帶勾選時間與成立時的動作）；
+ * 被取代的（勾選了取代它的那一條）與這次沒提到的撤下（RETIRED，log 寫原因）；和現有條件相同、動作不同的改動作。log 寫 EXITS_CONFIRMED。
+ * 只能確認最近一次出場條件有改動的那一版、還沒確認過的（不是 → StaleExitsError）。會自己發通知的你定的條件一檔最多 8 條。
  */
-export async function acceptOwnConditions(env: Env, ticker: string, runId: string, ids: string[], now: Date, actions: Record<string, unknown> = {}, session?: string): Promise<number> {
+export async function acceptOwnConditions(env: Env, ticker: string, runId: string, ids: string[], now: Date, actions: Record<string, unknown> = {}, session?: string): Promise<ConfirmResult> {
   const v = await ownCheckView(env, runId, now);
   if (!v || v.status !== 'DONE') throw new Error('這次改寫還沒有結果');
-  const pick = v.conditions
-    .filter((c) => ids.includes(c.condId) && !v.accepted.includes(c.condId))
-    .map((c) => ({ ...c, action: COND_ACTIONS.includes(actions[c.condId] as CondAction) ? (actions[c.condId] as CondAction) : (c.action ?? defaultAction(c)) }));
-  if (!pick.length) return 0;
   const acct = (await loadAccount(env.DB))?.acct;
   if (!acct?.own[ticker]) throw new Error(`${ticker} 不是自選股`);
   const fileId = acct.own[ticker].fileId ?? null;
+  const set = await exitSetOf(env.DB, fileId);
+  if (!set || !runOfSet(set, { exitsVersion: v.exitsVersion }, v.createdAt)) throw new StaleExitsError('這份改寫結果是之前版本的論點送的；之後的版本改過出場條件，不能再勾選。請看持股頁最新的那一份。');
+  if (set.confirmed) throw new StaleExitsError('這一版的出場條件已經確認過了。');
   const conds = await fileConditions(env.DB, acct, ticker);
-  // 帶 supersedes 的（T40）：勾選時被取代的那一條撤下，和勾選 AI 建議時的取代同一套（ownConds.ts）
-  const sups = new Map<number, FileCondition>();
-  pick.forEach((c, k) => {
-    const old = c.supersedes ? conds.find((x) => x.id === c.supersedes && SUPERSEDABLE.includes(x.status)) : undefined;
-    if (old) sups.set(k, old);
-  });
-  checkCap(conds, pick.filter((c) => acceptStatus({ kind: c.kind, check: c.check, auto: !c.manual, status: 'PROPOSED' }) !== 'MANUAL').length, [...sups.values()].map((x) => x.id));
+  const plan = confirmPlan(v.conditions, set.live, conds, ids);
+  const pick = plan.pick.map((c) => ({ ...c, action: COND_ACTIONS.includes(actions[c.condId] as CondAction) ? (actions[c.condId] as CondAction) : (c.action ?? defaultAction(c)) }));
+  if (!pick.length && !plan.retire.length && !plan.actionChanges.length) throw new Error('至少勾一條');
+  checkCap(
+    conds,
+    pick.filter((c) => acceptStatus({ kind: c.kind, check: c.check, auto: !c.manual, status: 'PROPOSED' }) !== 'MANUAL').length,
+    [...plan.sups.values(), ...plan.retire].map((x) => x.id),
+  );
   const at = now.toISOString();
-  const res = await env.DB.batch(insertConditionStmts(env.DB, ticker, runId, pick.map((c, k) => ({ ...c, supersedes: sups.get(k)?.id ?? null })), at, 'USER', fileId));
   const ses = session ?? at.slice(0, 10);
-  // log 寫 CONDITION（列編號要等寫入之後才知道）；被取代的那一條 RETIRED
+  const log = (kind: 'CONDITION' | 'EXITS_CONFIRMED', ref: string, body: Record<string, unknown>) => (fileId ? [thesisLogStmt(env.DB, { ticker, fileId, session: ses, kind, ref, body }, null, at)] : []);
+  const res = pick.length ? await env.DB.batch(insertConditionStmts(env.DB, ticker, runId, pick.map((c) => ({ ...c, supersedes: plan.sups.get(c.condId)?.id ?? null })), at, 'USER', fileId)) : [];
   const after: D1PreparedStatement[] = [];
+  const retired: number[] = [];
   res.forEach((r, k) => {
-    if (fileId) after.push(thesisLogStmt(env.DB, { ticker, fileId, session: ses, kind: 'CONDITION', ref: String(r.meta.last_row_id), body: { id: r.meta.last_row_id, change: 'ACCEPTED', action: pick[k].action, by: 'USER' } }, null, at));
-    const old = sups.get(k);
-    if (old) after.push(...supersedeStmts(env.DB, ticker, fileId ?? undefined, ses, at, old, pick[k].text));
+    after.push(...log('CONDITION', String(r.meta.last_row_id), { id: r.meta.last_row_id, change: 'ACCEPTED', action: pick[k].action, by: 'USER' }));
+    // 帶 supersedes 的（T40）：被取代的那一條撤下，和勾選 AI 建議時的取代同一套（ownConds.ts）
+    const old = plan.sups.get(pick[k].condId);
+    if (old) {
+      after.push(...supersedeStmts(env.DB, ticker, fileId ?? undefined, ses, at, old, pick[k].text));
+      retired.push(old.id);
+    }
   });
+  // 這次的出場條件沒有提到的（T42）：確認時撤下，log 寫原因
+  for (const c of plan.retire) {
+    after.push(env.DB.prepare("UPDATE own_conditions SET status = 'RETIRED', note = ? WHERE id = ? AND status IN ('ACTIVE', 'REVIEW_ONLY', 'MANUAL')").bind(retireNote(ses, set.version), c.id));
+    after.push(...log('CONDITION', String(c.id), { id: c.id, change: 'RETIRED', action: c.action, by: 'USER', reason: 'NOT_IN_EXITS', version: set.version }));
+    retired.push(c.id);
+  }
+  // 和現有條件相同、成立時的動作不同的：改動作（沿用 ACTION_CHANGED）
+  for (const a of plan.actionChanges) {
+    after.push(env.DB.prepare('UPDATE own_conditions SET action = ? WHERE id = ?').bind(a.action, a.cond.id));
+    after.push(...log('CONDITION', String(a.cond.id), { id: a.cond.id, change: 'ACTION_CHANGED', action: a.action, by: 'USER' }));
+  }
+  const accepted = res.map((r) => r.meta.last_row_id);
+  after.push(...log('EXITS_CONFIRMED', runId, { runId, version: set.version, accepted, retired, actionChanged: plan.actionChanges.map((a) => a.cond.id) }));
   if (after.length) await env.DB.batch(after);
-  return pick.length;
+  return { added: pick.length, retired, actionChanged: plan.actionChanges.map((a) => a.cond.id) };
+}
+
+/**
+ * 那一版把出場條件全部拿掉（T42）：使用者在持股頁確認後，存檔時監測中、現在也還在監測的條件撤下（不用 AI）。log 寫 EXITS_CONFIRMED。
+ * version 要是最近一次出場條件有改動的那一版、還沒確認、而且那一版的出場條件是空的（不是 → StaleExitsError）。
+ */
+export async function confirmDropAll(env: Env, ticker: string, version: number, now: Date, session?: string): Promise<ConfirmResult> {
+  const acct = (await loadAccount(env.DB))?.acct;
+  if (!acct?.own[ticker]) throw new Error(`${ticker} 不是自選股`);
+  const fileId = acct.own[ticker].fileId ?? null;
+  const set = await exitSetOf(env.DB, fileId);
+  if (!set || set.version !== version || set.exits.length) throw new StaleExitsError('之後的版本改過出場條件，這個確認不適用了。請重新整理。');
+  if (set.confirmed) throw new StaleExitsError('這一版的出場條件已經確認過了。');
+  const conds = await fileConditions(env.DB, acct, ticker);
+  const retire = confirmPlan([], set.live, conds).retire;
+  const at = now.toISOString();
+  const ses = session ?? at.slice(0, 10);
+  const stmts: D1PreparedStatement[] = [];
+  for (const c of retire) {
+    stmts.push(env.DB.prepare("UPDATE own_conditions SET status = 'RETIRED', note = ? WHERE id = ? AND status IN ('ACTIVE', 'REVIEW_ONLY', 'MANUAL')").bind(retireNote(ses, version), c.id));
+    if (fileId) stmts.push(thesisLogStmt(env.DB, { ticker, fileId, session: ses, kind: 'CONDITION', ref: String(c.id), body: { id: c.id, change: 'RETIRED', action: c.action, by: 'USER', reason: 'NOT_IN_EXITS', version } }, null, at));
+  }
+  if (fileId) stmts.push(thesisLogStmt(env.DB, { ticker, fileId, session: ses, kind: 'EXITS_CONFIRMED', ref: `v${version}`, body: { runId: null, version, accepted: [], retired: retire.map((c) => c.id), actionChanged: [] } }, null, at));
+  if (stmts.length) await env.DB.batch(stmts);
+  return { added: 0, retired: retire.map((c) => c.id), actionChanged: [] };
 }
 
 export interface MonitorRow {

@@ -394,10 +394,16 @@ describe('T34：「要看的事」', () => {
     expect(concentrationHits(acct2, view)[0].link).toBeUndefined();
   });
 
-  it('出場條件改寫回來、還沒勾（EXITS_UNCHECKED）：列一件；勾完不列；超過 30 天不列（走一遍的缺口：沒勾的 30 天後就不在持股頁）', async () => {
+  it('出場條件改寫回來、還沒勾（EXITS_UNCHECKED）：列一件；確認後不列；超過 30 天不列（走一遍的缺口：沒勾的 30 天後就不在持股頁）', async () => {
     await withWorld(async (c) => {
       const acct = (await loadAccount(c.db))!.acct;
-      await insertRun(c.db, { runId: '2026-11-19_OWN_CHECK_NVDA_aaa', fn: 'OWN_CHECK', ticker: 'NVDA', asOf: '2026-11-19', createdAt: '2026-11-19T15:00:00Z', outcome: checkOutcome(['毛利率連兩季低於 45%', '營收年增率連兩季是負的']), detail: { mode: 'REWRITE', exits: [{ text: '毛利率掉到 45% 以下', action: 'EXIT' }, { text: '營收衰退', action: 'HALF' }] } });
+      // T42：只算最近一次出場條件有改動的那一版論點（THESIS log 的 exitsChanged）送的改寫
+      const exits = [{ text: '毛利率掉到 45% 以下', action: 'EXIT' }, { text: '營收衰退', action: 'HALF' }];
+      await c.db
+        .prepare("INSERT INTO own_thesis_log (ticker, file_id, at, session, kind, ref, body) VALUES ('NVDA', ?, '2026-11-19T14:00:00Z', '2026-11-19', 'THESIS', NULL, ?)")
+        .bind(acct.own.NVDA.fileId, JSON.stringify({ version: 1, exitsChanged: true, exitLines: exits.map((e) => e.text), exitActions: exits.map((e) => e.action), exitsLive: [], exitSame: {} }))
+        .run();
+      await insertRun(c.db, { runId: '2026-11-19_OWN_CHECK_NVDA_aaa', fn: 'OWN_CHECK', ticker: 'NVDA', asOf: '2026-11-19', createdAt: '2026-11-19T15:00:00Z', outcome: checkOutcome(['毛利率連兩季低於 45%', '營收年增率連兩季是負的']), detail: { mode: 'REWRITE', exits, exitsVersion: 1, live: [], sameByText: {} } });
       const f = (await thesisFile(c.db, acct, 'NVDA', '2026-11-19'))!;
       expect(f.unchecked).toEqual([{ runId: '2026-11-19_OWN_CHECK_NVDA_aaa', at: '2026-11-19T15:00:00Z', pending: 2 }]);
       const hits = ownAttention([f], acct, { date: '2026-11-19' }).filter((x) => x.kind === 'EXITS_UNCHECKED');
@@ -406,15 +412,14 @@ describe('T34：「要看的事」', () => {
       // 持股頁也看得到
       const h = await c.api<{ attention: { kind: string }[] }>('GET', 'holding/NVDA');
       expect(h.body.attention.map((x) => x.kind)).toContain('EXITS_UNCHECKED');
-      // 勾一條 → 剩 1 條；兩條都勾 → 不列
-      expect((await c.api('POST', 'ops/own-conditions', { ticker: 'NVDA', runId: '2026-11-19_OWN_CHECK_NVDA_aaa', ids: ['U1'] })).status).toBe(200);
-      expect((await thesisFile(c.db, acct, 'NVDA', '2026-11-19'))!.unchecked).toMatchObject([{ pending: 1 }]);
-      expect((await c.api('POST', 'ops/own-conditions', { ticker: 'NVDA', runId: '2026-11-19_OWN_CHECK_NVDA_aaa', ids: ['U2'] })).status).toBe(200);
-      expect((await thesisFile(c.db, acct, 'NVDA', '2026-11-19'))!.unchecked).toEqual([]);
-      // 超過 30 天的改寫不算（持股頁也不再列）
+      // 沒有記版本的改寫（之前版本的、或 T42 之前的）不算
       await insertRun(c.db, { runId: '2026-11-19_OWN_CHECK_NVDA_old', fn: 'OWN_CHECK', ticker: 'NVDA', asOf: '2026-11-19', createdAt: '2026-11-19T16:00:00Z', outcome: checkOutcome(['淨利率低於 20%']), detail: { mode: 'REWRITE', exits: [] } });
       expect((await thesisFile(c.db, acct, 'NVDA', '2026-11-19'))!.unchecked).toHaveLength(1);
+      // 超過 30 天的改寫不算（持股頁也不再列）
       expect((await thesisFile(c.db, acct, 'NVDA', '2026-12-20'))!.unchecked).toEqual([]);
+      // 確認（T42：一次做完，只勾一條也算確認了這一版）→ 不列（原本：勾一條剩 1 條、兩條都勾才不列）
+      expect((await c.api('POST', 'ops/own-conditions', { ticker: 'NVDA', runId: '2026-11-19_OWN_CHECK_NVDA_aaa', ids: ['U1'] })).status).toBe(200);
+      expect((await thesisFile(c.db, acct, 'NVDA', '2026-11-19'))!.unchecked).toEqual([]);
     });
   });
 

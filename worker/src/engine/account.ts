@@ -82,8 +82,9 @@ export interface OwnMeta {
   /**
    * 「不同意」之後的靜默期（own_thesis §1.10）：乙類選「不同意，不動」、月報裡沒動它（SKIPPED）、修正論點但保留那條前提時寫入。
    * until 先寫 since 加 100 天；滿 45 天之後出現第一份財報類申報時改成那份申報的前一天。過期的留著給網站顯示。
+   * ended（T42）：提早結束的那一天與原因（沿用編號但字改了的前提：「前提的字改了」）；until 同時改成那天的前一天。舊資料沒有這個欄位。
    */
-  disputes?: { premiseId: string; since: string; until: string; reason: string; notif: number | null }[];
+  disputes?: { premiseId: string; since: string; until: string; reason: string; notif: number | null; ended?: { date: string; reason: string } }[];
   /**
    * 「要看的事」上次列進月報的訊號日（own_thesis §3.6.6）：鍵是那一件事的鍵（`NO_THESIS`、`COND_NEAR:<列編號>@<季末日>`…），
    * 由 `app/thesis.ts` 的 dueAttention 決定多久再列。沒有這個欄位（舊資料）= 都還沒列過。

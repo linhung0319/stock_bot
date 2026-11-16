@@ -4,9 +4,10 @@
 //   2. 存完之後的引導：快照結果與建立帳戶回傳還沒有論點的新自選；帳戶頁的清單直到有論點或關掉
 //   3. 前提帶編號：解析 [P2] 沿用編號；改了字的排審查；只改標點的不排
 //   4. 出場條件的對照：沒出現的出場條件預設保留、選撤下的變 RETIRED；勾選帶 supersedes 的改寫結果時舊條件撤下
+//      （T42 改了設計：出場條件不帶編號、整組取代，對照交給改寫的 AI；這一節的測試照新設計改，細節在 t42-exits.test.ts）
 // 對外請求全部是假的：價格、成分股（固定檔）、EDGAR、Nasdaq RSS、雲端排程、LINE。
 import { describe, expect, it } from 'vitest';
-import { discussionPack, matchExits, parseThesisBlock, pickMode, type DiscussionNumbers } from '../src/ai/discussion';
+import { discussionPack, parseThesisBlock, pickMode, planExits, type DiscussionNumbers } from '../src/ai/discussion';
 import { finalizeRun, getRun } from '../src/app/aiRuns';
 import type { Env, Fetcher } from '../src/app/env';
 import { runFlow, type Attempt } from '../src/app/flow';
@@ -266,28 +267,29 @@ describe('T40 ①：買進時的一句話不是前提（own_thesis §1.8）', ()
 // ---------------------------------------------------------------- 2. 前提帶編號
 
 describe('T40 ②：前提在討論包與貼回之間帶編號（own_thesis §1.7、§1.8）', () => {
-  it('討論包的前提寫成「P2. …」、你定的出場條件寫成「C<列編號>. …」；固定指示要沒改的照抄並保留編號', async () => {
+  it('討論包的前提寫成「P2. …」；固定指示要沒改的前提照抄並保留編號（T42：出場條件不再帶 C 編號，區塊標記 v3）', async () => {
     await withWorld(async (c) => {
       const id = await seed(c.db, { text: '毛利率連兩季低於 58%', status: 'ACTIVE', action: 'EXIT' });
       const t = (await c.api<{ text: string }>('GET', 'own/NVDA/discussion')).body.text;
       expect(t).toContain('P2. 毛利率維持在 65% 以上');
-      expect(t).toContain(`C${id}. 毛利率連兩季低於 58% → 出清`);
+      expect(t).toContain('- 毛利率連兩季低於 58% → 出清');
+      expect(t).not.toContain(`C${id}.`);
       expect(t).toContain('沒改的前提照抄原文並保留編號，例如 `1. [P2] …`；');
       expect(t).toContain('意思改了就不要寫編號，寫成新的一條');
       expect(t).toContain('1. [P2] （沒改的前提：照抄原文，保留編號）');
-      expect(t).toContain('===STOCKBOT 論點 v2 NVDA===');
+      expect(t).toContain('===STOCKBOT 論點 v3 NVDA===');
     });
   });
 
-  it('解析：行首的 [P2] 讀成沿用的編號、[C12] 讀成條件編號（文字去掉標記）；舊的 v1 區塊照收', () => {
+  it('解析：行首的 [P2] 讀成沿用的編號；v2 區塊出場條件的 [C12] 只去掉標記（T42：不讀編號）；舊的 v1 區塊照收', () => {
     const v2 = ['===STOCKBOT 論點 v2 NVDA===', '論點：', '一句話', '前提：', '1. [P2] 毛利率維持在 60% 以上', '2. ［P1］資料中心需求延續到 2027', '3. 新的一條', '出場條件：', '1. [C12] 毛利率連兩季低於 58% → 出清', '2. 新的條件 → 減半', '這次的結論：維持', '理由：x', '===END==='].join('\n');
     const p = parseThesisBlock(v2, 'NVDA');
     expect(p.found).toBe(true);
     expect(p.premises).toEqual(['毛利率維持在 60% 以上', '資料中心需求延續到 2027', '新的一條']);
     expect(p.premiseIds).toEqual(['P2', 'P1', null]);
     expect(p.exits).toEqual([
-      { text: '毛利率連兩季低於 58%', action: 'EXIT', guessed: false, ref: 12 },
-      { text: '新的條件', action: 'HALF', guessed: false, ref: null },
+      { text: '毛利率連兩季低於 58%', action: 'EXIT', guessed: false },
+      { text: '新的條件', action: 'HALF', guessed: false },
     ]);
     const v1 = parseThesisBlock(['===STOCKBOT 論點 v1 NVDA===', '論點：', 'x', '前提：', '1. 舊格式的前提', '===END==='].join('\n'), 'NVDA');
     expect(v1).toMatchObject({ found: true, premises: ['舊格式的前提'], premiseIds: [null] });
@@ -332,79 +334,70 @@ describe('T40 ②：前提在討論包與貼回之間帶編號（own_thesis §1.
   });
 });
 
-// ---------------------------------------------------------------- 3. 出場條件的對照
+// ---------------------------------------------------------------- 3. 出場條件的對照（T42 起：整組取代）
 
-describe('T40 ③：出場條件的對照（own_thesis §1.8）', () => {
-  it('matchExits：帶 [C] 編號或文字相同 → 沿用（動作不同標出來）；其他是新的；監測中、沒出現的列在 missing', () => {
+describe('T40 ③：出場條件的對照（own_thesis §1.8；T42 改成整組取代）', () => {
+  it('planExits（取代 matchExits）：每一條都對到監測中的、條數相同 → 沒改動（動作不同另列）；改字、多一條、少一條 → 有改動', () => {
     const live = [
       { id: 7, text: '毛利率連兩季低於 58%', action: 'EXIT' as const, status: '監測中' },
       { id: 8, text: '公司在 8-K 下修全年財測', action: 'HALF' as const, status: '監測中' },
       { id: 9, text: '收盤跌破 100', action: 'REVIEW' as const, status: '只記錄' },
     ];
-    const plan = matchExits(
+    const same = planExits(
       [
-        { text: '（claude.ai 改了寫法）毛利率連兩季低於 58%', action: 'EXIT', ref: 7 },
-        { text: '公司在 8-K 下修全年財測。', action: 'EXIT' },
-        { text: '執行長離職', action: 'REVIEW' },
+        { text: '收盤跌破 100。', action: 'REVIEW' },
+        { text: '毛利率 連兩季低於 58%', action: 'EXIT' },
+        { text: '公司在 8-K 下修全年財測', action: 'EXIT' },
       ],
       live,
     );
-    expect(plan.kept.map((k) => [k.index, k.id, k.actionChanged])).toEqual([
-      [0, 7, false],
-      [1, 8, true],
-    ]);
-    expect(plan.fresh).toEqual([2]);
-    expect(plan.missing.map((c) => c.id)).toEqual([9]);
+    expect(same.changed).toBe(false);
+    expect(same.actionChanged.map((a) => [a.index, a.id, a.was, a.action])).toEqual([[2, 8, 'HALF', 'EXIT']]);
+    expect(same.sameByText).toEqual({ 0: 9, 1: 7, 2: 8 });
+    // 少一條、改字、多一條：都是有改動
+    expect(planExits([{ text: '毛利率連兩季低於 58%', action: 'EXIT' }, { text: '公司在 8-K 下修全年財測', action: 'HALF' }], live).changed).toBe(true);
+    expect(planExits([...live.slice(0, 2).map((c) => ({ text: c.text, action: c.action })), { text: '收盤跌破 90', action: 'REVIEW' as const }], live)).toMatchObject({ changed: true, sameByText: { 0: 7, 1: 8 } });
+    expect(planExits([...live.map((c) => ({ text: c.text, action: c.action })), { text: '執行長離職', action: 'REVIEW' as const }], live).changed).toBe(true);
+    expect(planExits([], []).changed).toBe(false);
   });
 
-  it('沒出現的監測中條件預設繼續監測；選撤下的變 RETIRED（log CONDITION）；沿用的不再送去改寫，動作改了就改動作', async () => {
+  it('出場條件沒改動（預填的監測中條件原樣送回）→ 不送改寫、條件不動；只改動作 → 存檔時直接改動作（log CONDITION ACTION_CHANGED）', async () => {
     await withWorld(async (c) => {
       const gm = await seed(c.db, { text: '毛利率連兩季低於 58%', status: 'ACTIVE', action: 'EXIT', condId: 'U1' });
       const ev = await seed(c.db, { text: '公司在 8-K 下修全年財測', kind: 'EVENT', check: { type: 'event', confirm_by: ['8-K'] }, status: 'ACTIVE', action: 'HALF', condId: 'U2' });
       const base = { ticker: 'NVDA', thesis: '論點', premises: USER_PREMISES.map((p) => ({ id: p.id, text: p.text })), source: 'DISCUSSION' };
-      type Ex = { preview: { exits: { kept: { id: number; actionChanged: boolean }[]; fresh: number[]; missing: { id: number; text: string }[] } } };
-      // 預覽：貼回只抄到毛利率那一條（帶 [C] 編號）→ 沿用；下修財測沒出現 → missing
-      const exits1 = [{ text: '毛利率連兩季低於 58%', action: 'EXIT', ref: gm }];
+      type Ex = { preview: { exits: { changed: boolean; live: number; actionChanged: { id: number }[] } } };
+      const exits1 = [
+        { text: '毛利率連兩季低於 58%', action: 'EXIT' },
+        { text: '公司在 8-K 下修全年財測', action: 'HALF' },
+      ];
       const dry = await c.api<Ex>('POST', 'ops/own-thesis', { ...base, exitConditions: exits1, dry: true });
-      expect(dry.body.preview.exits).toMatchObject({ kept: [{ id: gm, actionChanged: false }], fresh: [], missing: [{ id: ev, text: '公司在 8-K 下修全年財測' }] });
-      // 存檔、什麼都沒選 → 預設繼續監測；沿用的不送去改寫
+      expect(dry.body.preview.exits).toMatchObject({ changed: false, live: 2, actionChanged: [] });
       const s1 = await c.api<{ rewrite: { status: string }; exits: unknown[] }>('POST', 'ops/own-thesis', { ...base, exitConditions: exits1 });
       expect(s1.status).toBe(200);
       expect(s1.body.rewrite.status).toBe('NONE');
       expect(s1.body.exits).toEqual([]);
-      let conds = await loadConditions(c.db, 'NVDA');
-      expect(conds.map((x) => [x.id, x.status])).toEqual([
-        [gm, 'ACTIVE'],
-        [ev, 'ACTIVE'],
-      ]);
-      expect((await thesisLogs(c.db)).at(-1)).toMatchObject({ exitLines: [], exitKept: [gm] });
-      // 這次選「撤下」下修財測、毛利率那一條成立時改成減半
-      const s2 = await c.api<{ conds: { retired: number[]; actionChanged: number[]; errors: string[] } }>('POST', 'ops/own-thesis', { ...base, exitConditions: [{ text: '毛利率連兩季低於 58%', action: 'HALF', ref: gm }], retire: [ev] });
-      expect(s2.status).toBe(200);
-      expect(s2.body.conds).toEqual({ retired: [ev], actionChanged: [gm], errors: [] });
-      conds = await loadConditions(c.db, 'NVDA');
-      expect(conds.find((x) => x.id === ev)!.status).toBe('RETIRED');
+      expect((await thesisLogs(c.db)).at(-1)).toMatchObject({ exitsChanged: false, exitLines: [] });
+      // 毛利率那一條成立時改成減半：直接改動作
+      const s2 = await c.api<{ rewrite: { status: string }; conds: { actionChanged: number[]; errors: string[] } }>('POST', 'ops/own-thesis', { ...base, exitConditions: [{ text: '毛利率連兩季低於 58%', action: 'HALF' }, exits1[1]] });
+      expect(s2.body.rewrite.status).toBe('NONE');
+      expect(s2.body.conds).toEqual({ actionChanged: [gm], errors: [] });
+      const conds = await loadConditions(c.db, 'NVDA');
       expect(conds.find((x) => x.id === gm)).toMatchObject({ status: 'ACTIVE', action: 'HALF' });
-      expect(await condLogs(c.db)).toEqual([
-        { id: ev, change: 'RETIRED', action: 'HALF', by: 'USER' },
-        { id: gm, change: 'ACTION_CHANGED', action: 'HALF', by: 'USER' },
-      ]);
-      // 撤下的不是這次沒出現的監測中條件 → 擋下
-      const bad = await c.api<{ error: string }>('POST', 'ops/own-thesis', { ...base, exitConditions: [{ text: '毛利率連兩季低於 58%', action: 'HALF', ref: gm }], retire: [gm] });
-      expect(bad.status).toBe(422);
-      expect(bad.body.error).toContain('不能同時沿用又撤下');
+      expect(conds.find((x) => x.id === ev)).toMatchObject({ status: 'ACTIVE', action: 'HALF' });
+      expect(await condLogs(c.db)).toEqual([{ id: gm, change: 'ACTION_CHANGED', action: 'HALF', by: 'USER' }]);
     });
   });
 
-  it('改寫帶 supersedes：持股頁列「會取代：…」；勾選新的那一條時舊的撤下（同一套取代流程）', async () => {
+  it('改寫帶 supersedes：持股頁列「會取代：…」；確認時新的開始監測、舊的撤下（同一套取代流程）', async () => {
     await withWorld(async (c) => {
       const old = await seed(c.db, { text: '毛利率連兩季低於 58%', status: 'ACTIVE', action: 'EXIT', condId: 'U1' });
       const base = { ticker: 'NVDA', thesis: '論點', premises: USER_PREMISES.map((p) => ({ id: p.id, text: p.text })), source: 'DISCUSSION' };
-      // 門檻改了：新的一條送去改寫；舊的這次沒出現、先繼續監測
+      // 門檻改了：整組（這一條）連同監測中的條件送去改寫；確認之前舊的照舊監測
       const s = await c.api<{ rewrite: { status: string; runId: string } }>('POST', 'ops/own-thesis', { ...base, exitConditions: [{ text: '毛利率連兩季低於 55%', action: 'EXIT' }] });
       expect(s.body.rewrite.status).toBe('SENT');
       const run = (await getRun(c.db, s.body.rewrite.runId))!;
-      expect(run.pack.prompt_version).toBe('own_check_v3');
+      expect(run.pack.prompt_version).toBe('own_check_v4');
       expect(run.pack.question).toContain('supersedes');
       expect((run.pack.rule.detail as { condMap: Record<string, number> }).condMap).toEqual({ C1: old });
       expect(run.pack.facts.find((f) => f.id === 'C1')!.value).toBe('毛利率連兩季低於 58%');
@@ -423,13 +416,15 @@ describe('T40 ③：出場條件的對照（own_thesis §1.8）', () => {
         ],
         new Date('2026-11-20T02:10:00Z'),
       );
-      type Rw = { rewrites: { results: { runId: string; replaces: Record<string, string>; conditions: { condId: string; supersedes: number | null }[] }[] } };
+      type Rw = { rewrites: { results: { runId: string; replaces: Record<string, string>; retire: unknown[]; conditions: { condId: string; supersedes: number | null }[] }[] } };
       const h = await c.api<Rw>('GET', 'holding/NVDA', undefined, new Date('2026-11-20T03:00:00Z'));
       expect(h.body.rewrites.results[0].conditions[0]).toMatchObject({ condId: 'U1', supersedes: old });
       expect(h.body.rewrites.results[0].replaces).toEqual({ U1: '毛利率連兩季低於 58%' });
-      // 勾選新的 → 舊的 RETIRED（寫明被哪一條取代），新的一列記 supersedes
-      const acc = await c.api<{ added: number }>('POST', 'ops/own-conditions', { ticker: 'NVDA', runId: run.runId, ids: ['U1'] }, new Date('2026-11-20T03:05:00Z'));
-      expect(acc.body.added).toBe(1);
+      expect(h.body.rewrites.results[0].retire).toEqual([]); // 被取代的不算「沒提到」
+      expect((await loadConditions(c.db, 'NVDA')).find((x) => x.id === old)!.status).toBe('ACTIVE'); // 確認之前照舊監測
+      // 確認（勾新的）→ 舊的 RETIRED（寫明被哪一條取代），新的一列記 supersedes
+      const acc = await c.api<{ added: number; retired: number[] }>('POST', 'ops/own-conditions', { ticker: 'NVDA', runId: run.runId, ids: ['U1'] }, new Date('2026-11-20T03:05:00Z'));
+      expect(acc.body).toMatchObject({ added: 1, retired: [old] });
       const conds = await loadConditions(c.db, 'NVDA');
       const o = conds.find((x) => x.id === old)!;
       expect(o.status).toBe('RETIRED');

@@ -11,7 +11,7 @@ import { buildPack } from './pack';
 import type { CondAction } from '../app/thesis';
 
 export const OWN_CHECK = 'OWN_CHECK';
-export const OWN_CHECK_PROMPT = 'own_check_v3';
+export const OWN_CHECK_PROMPT = 'own_check_v4';
 
 /** 使用者寫的一條出場條件與選的成立時動作。 */
 export interface ExitLine {
@@ -41,6 +41,13 @@ export interface OwnCheckInput {
   thesisVersion: number | null;
   /** 證據包的條件編號（C1、W1…）→ own_conditions 的列編號（T40：改寫寫了 supersedes 時換成列編號；記在 rule.detail）。 */
   condMap?: Record<string, number>;
+  /**
+   * 出場條件整組取代（T42，記在 rule.detail）：exitsVersion = 這組出場條件是第幾版論點存的；
+   * live = 存檔時監測中的條件（確認後撤下的範圍）；sameByText = 文字和監測中的一條相同的 U（U1 → 列編號，AI 沒標 same 時的後備）。
+   */
+  exitsVersion?: number | null;
+  live?: number[];
+  sameByText?: Record<string, number>;
   now: Date;
 }
 
@@ -57,13 +64,24 @@ export function ownCheckPack(inp: OwnCheckInput) {
     question:
       `${who}，寫了 ${exits.length} 條出場條件（facts 的 U 開頭，每條附使用者選的成立時動作）。` +
       '請把每一條改寫成可追蹤的格式（payload.conditions，格式和定期審查相同），每一條寫 line（對應的 U 編號）；數字門檻要對應證據包裡的數字；改寫不了的在 report 說明。' +
-      '現行的論點、前提（premises）與既有的條件（facts 的 C、W 開頭）是背景：不用逐條檢查前提，已經有的條件不要重複改寫。' +
-      '某一條 U 是在更新一條既有的條件（例如門檻改了）時，那一條寫 supersedes（被更新的 C 或 W 編號）；使用者勾選新的那一條時，舊的會撤下。不要評論該不該買。',
+      'U 是使用者這次要的全部出場條件（整組取代 facts 的 C 開頭：目前監測中的條件）。每一條 U 都要標出和既有條件的關係：' +
+      '和某條 C 是同一件事、門檻也一樣 → 寫 same（那條 C 的編號），不會新增、舊的保留；是在更新某條 C 或 W（例如門檻改了）→ 寫 supersedes（被更新的編號），使用者確認後舊的撤下；都不是就兩個都不寫（新的）。' +
+      '沒有被任何 U 標成 same 或 supersedes 的 C，使用者確認後會撤下。現行的論點、前提（premises）是背景：不用逐條檢查前提。不要評論該不該買。',
     policy: { level: 'A1', verdicts: ['DONE', 'INSUFFICIENT'], abstain: 'INSUFFICIENT', min_evidence: 0, samples: 1 },
-    rule: { action: '只提供資訊（不給買或不買的結論）', detail: { mode: 'REWRITE', lines: exits.map((e) => e.text), exits, thesisVersion: inp.thesisVersion, ...(inp.condMap && Object.keys(inp.condMap).length ? { condMap: inp.condMap } : {}) } },
+    rule: {
+      action: '只提供資訊（不給買或不買的結論）',
+      detail: {
+        mode: 'REWRITE',
+        lines: exits.map((e) => e.text),
+        exits,
+        thesisVersion: inp.thesisVersion,
+        ...(inp.condMap && Object.keys(inp.condMap).length ? { condMap: inp.condMap } : {}),
+        ...(inp.exitsVersion !== undefined && inp.exitsVersion !== null ? { exitsVersion: inp.exitsVersion, live: inp.live ?? [], sameByText: inp.sameByText ?? {} } : {}),
+      },
+    },
     facts: [
       ...inp.facts,
-      ...exits.map((e, k) => ({ id: `U${k + 1}`, label: `使用者寫的出場條件（成立時：${ACTION_TEXT[e.action]}）`, value: e.text })),
+      ...exits.map((e, k) => ({ id: `U${k + 1}`, label: `使用者要的出場條件（整組取代目前監測中的；成立時：${ACTION_TEXT[e.action]}）`, value: e.text })),
       ...inp.condFacts,
       ...inp.hits.map((h, k) => ({ id: `H${k + 1}`, label: `硬事件掃描：${h.code}（${h.sub}）`, value: h.date ?? inp.asOf, note: h.detail })),
     ],
@@ -85,8 +103,10 @@ export interface OwnCheckResult {
   /**
    * 改寫好的條件；action 是勾選時預設的動作（對到使用者寫的那一條就用使用者選的，否則帶 AI 寫的檔位）。
    * supersedes：AI 認為這條是在更新哪一條既有條件（own_conditions 的列編號，T40）；沒有或對不到是 null。
+   * same（T42）：和哪一條監測中的條件是同一件事（列編號）：不新增、舊的保留。AI 寫的 same，或文字和那一條相同（程式的後備）。
+   * line：對到使用者寫的第幾條（0 起；對不到是 null）。
    */
-  conditions: (ConditionDraft & { then: string; action: CondAction; from: string | null; supersedes: number | null })[];
+  conditions: (ConditionDraft & { then: string; action: CondAction; from: string | null; supersedes: number | null; same: number | null; line: number | null })[];
   summary: string | null;
 }
 
@@ -98,9 +118,11 @@ const confirmOf = (kind: string, check: Record<string, unknown>): string => {
 
 /**
  * 改寫的結果（網站顯示，讓使用者勾選）。exits：送去改寫的那幾條（證據包的 rule.detail.exits）；
- * condMap：證據包的條件編號 → 列編號（rule.detail.condMap，T40），把 supersedes 換成列編號。
+ * condMap：證據包的條件編號 → 列編號（rule.detail.condMap，T40），把 supersedes、same 換成列編號；
+ * sameByText：文字和監測中的一條相同的 U（rule.detail.sameByText，T42）：AI 沒標 same、也沒標 supersedes 時當成 same。
+ * live：same 只認這幾條（存檔時監測中的；沒給 = 不限）。
  */
-export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: ExitLine[] = [], condMap: Record<string, number> = {}): OwnCheckResult {
+export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: ExitLine[] = [], condMap: Record<string, number> = {}, sameByText: Record<string, number> = {}, live: number[] | null = null): OwnCheckResult {
   const s = outcome?.samples.find((x) => x.valid && x.verdict === 'DONE');
   if (!s) return { conditions: [], summary: outcome?.reason ?? null };
   const conditions = s.conditions
@@ -115,6 +137,12 @@ export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: E
       const src = line ? exits[Number(line[1]) - 1] : undefined;
       const action: CondAction = src?.action ?? (direction === 'DOWN' && (tier === 'EXIT' || tier === 'HALF') ? tier : 'REVIEW');
       const sup = typeof c.raw.supersedes === 'string' ? c.raw.supersedes.trim().toUpperCase() : '';
+      const supId = sup && condMap[sup] ? condMap[sup] : null;
+      // same（T42）：只認證據包的 C（監測中的你定的條件）；AI 沒標時，文字和監測中的一條相同的 U 當成 same
+      const sm = typeof c.raw.same === 'string' ? c.raw.same.trim().toUpperCase() : '';
+      const okLive = (id: number | undefined) => (id && (!live || live.includes(id)) ? id : null);
+      const aiSame = sm.startsWith('C') ? okLive(condMap[sm]) : null;
+      const same = aiSame ?? (supId === null && line ? okLive(sameByText[`U${line[1]}`]) : null);
       return {
         ticker,
         runId: '',
@@ -127,7 +155,9 @@ export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: E
         manual: !c.auto,
         action,
         from: src?.text ?? null,
-        supersedes: sup && condMap[sup] ? condMap[sup] : null,
+        supersedes: same === null ? supId : null,
+        same,
+        line: src ? Number(line![1]) - 1 : null,
         then: c.auto ? confirmOf(kind, check) : `只記錄：${c.why ?? ''}`,
       };
     });

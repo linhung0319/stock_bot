@@ -857,9 +857,14 @@ describe('F14：新增自選健檢 → 確認出場條件 → 之後的 F24 不�
       const { view, axis } = buildMarketView(await loadSeries(db, ['VOO', 'SGOV', 'NVDA']), '2026-11-20', 'VOO');
       const now = new Date('2026-11-21T01:00:00Z');
       // T27：出場條件每條帶使用者選的動作（own_check_v2）
-      const r = await startOwnCheck(env, fetcher, loaded.acct, view, axis, 'NVDA', [{ text: '公司下修營收財測就賣', action: 'EXIT' }, { text: '收盤跌破 100 就賣', action: 'EXIT' }], now);
-      expect(r.pack.rule.detail).toMatchObject({ mode: 'REWRITE', lines: ['公司下修營收財測就賣', '收盤跌破 100 就賣'] });
-      expect(r.pack.prompt_version).toBe('own_check_v3'); // T40：改寫多一個 supersedes
+      // T42：改寫結果只能確認最近一次出場條件有改動的那一版論點（THESIS log 的 exitsChanged）；這裡直接寫那一筆
+      await db
+        .prepare("INSERT INTO own_thesis_log (ticker, file_id, at, session, kind, ref, body) VALUES ('NVDA', ?, '2026-11-21T00:59:00.000Z', '2026-11-20', 'THESIS', NULL, ?)")
+        .bind(loaded.acct.own.NVDA.fileId, JSON.stringify({ version: 1, exitsChanged: true, exitLines: ['公司下修營收財測就賣', '收盤跌破 100 就賣'], exitActions: ['EXIT', 'EXIT'], exitsLive: [], exitSame: {} }))
+        .run();
+      const r = await startOwnCheck(env, fetcher, loaded.acct, view, axis, 'NVDA', [{ text: '公司下修營收財測就賣', action: 'EXIT' }, { text: '收盤跌破 100 就賣', action: 'EXIT' }], now, { version: 1, live: [], sameByText: {} });
+      expect(r.pack.rule.detail).toMatchObject({ mode: 'REWRITE', lines: ['公司下修營收財測就賣', '收盤跌破 100 就賣'], exitsVersion: 1 });
+      expect(r.pack.prompt_version).toBe('own_check_v4'); // T42：整組取代、每一條標 same／supersedes
       const price = r.pack.documents.find((d) => d.source_id === 'price:NVDA')!;
       const quote = price.text.split('\n').at(-1)!;
       await postResult(
@@ -886,8 +891,9 @@ describe('F14：新增自選健檢 → 確認出場條件 → 之後的 F24 不�
         ['U1', 'EVENT', false],
         ['U2', 'PRICE', true],
       ]);
-      expect(await acceptOwnConditions(env, 'NVDA', r.runId, ['U1', 'U2'], now)).toBe(2);
-      expect(await acceptOwnConditions(env, 'NVDA', r.runId, ['U1'], now)).toBe(0); // 不重複寫
+      expect(await acceptOwnConditions(env, 'NVDA', r.runId, ['U1', 'U2'], now)).toMatchObject({ added: 2, retired: [] });
+      // 不重複寫（T42：同一版確認過就不能再確認）
+      await expect(acceptOwnConditions(env, 'NVDA', r.runId, ['U1'], now)).rejects.toThrow('已經確認過');
       // 之後一次 F24（3 票減半）整組替換：使用者的兩條留著
       // T25：條件屬於這檔現在的論點檔（file_id）
       await db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, file_id) VALUES ('NVDA', 'old', 'C9', 'DOWN', 'XBRL', '舊的 AI 條件', '{}', 'HALF', 'ACTIVE', 'x', ?)").bind(loaded.acct.own.NVDA.fileId).run();

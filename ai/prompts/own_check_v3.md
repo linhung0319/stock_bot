@@ -1,3 +1,5 @@
+> 不再使用（2026-11-17）：T42 起改用 `own_check_v4.md`（出場條件整組取代，每一條標 same／supersedes）。
+
 # own_check_v3：出場條件改寫（F14）
 
 共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`docs/design/own_thesis_design_2026-11-15.md` 的 §1.8（和 `ai_layer_design_2026-11-08.md` 的 F14 卡片不同時以前者為準）。

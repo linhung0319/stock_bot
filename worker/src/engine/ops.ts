@@ -33,7 +33,7 @@ import {
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, crashCoreLines, planToLines, type OrderLine } from './orders';
-import { KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, afterOpenLists, composeNotif, coreContext, crashReviewOf, monthlyReport, monthlyWait, owedCoreLines, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
+import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, endDisputesFor, afterOpenLists, composeNotif, coreContext, crashReviewOf, monthlyReport, monthlyWait, owedCoreLines, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
 import { cellKey, type Bucket } from './types';
 
@@ -1103,8 +1103,9 @@ export interface ThesisInput {
  * 前提有新增或撤下、或沿用編號但字改了（T40）→ thesisReviewDue 記今天（下一次每日第一次流程開論點變動後的審查）；
  * 只改論點本文、只改前提的標點或空白不算。
  * inp.afterBreak（對乙類通知的回應）→ thesis.afterBreak 加 1、lastAfterBreakAt 記今天（§1.10 的 REVISE）。
+ * 沿用編號、但字改了的前提（T42，§1.10）：這條前提還在期間內的靜默期結束（記結束日與原因「前提的字改了」）；silenceEnded 列出是哪幾條。
  */
-export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { acct: Account; mapping: PremiseMapping; before: { text: string; premises: Premise[] }; changed: boolean } {
+export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { acct: Account; mapping: PremiseMapping; before: { text: string; premises: Premise[] }; changed: boolean; silenceEnded: string[] } {
   const acct = clone(acct0);
   const meta = acct.own[ticker];
   if (!meta) throw new Error(`${ticker} 不在自選裡`);
@@ -1118,7 +1119,8 @@ export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { a
   meta.premiseSeq = mapping.premiseSeq;
   const changed = mapping.added.length > 0 || mapping.retired.length > 0 || mapping.edited.length > 0;
   if (changed) meta.thesisReviewDue = inp.date;
-  return { acct, mapping, before, changed };
+  const silenceEnded = endDisputesFor(meta, mapping.edited.map((e) => e.id), inp.date, EDITED_REASON);
+  return { acct, mapping, before, changed, silenceEnded };
 }
 
 /** 可以用「修正論點」結案的乙類項目：還沒回覆的通知裡、這檔還沒取消的乙類（own_thesis §1.10）。 */

@@ -52,7 +52,7 @@ async function withSplits(db: D1Database, acct: Account): Promise<Account> {
 const ownFilesOf = (acct: Pick<Account, 'own'>): Record<string, string | undefined> => Object.fromEntries(Object.entries(acct.own ?? {}).map(([t, m]) => [t, m.fileId]));
 
 /** PRESS_CHECK：財報新聞稿成立的條件，10-Q／10-K 核對不一致（T29c，own_thesis §1.11 的「log 記一筆」）。 */
-export type ThesisLogKind = 'OPEN' | 'THESIS' | 'BREAK_NOTICE' | 'RESPONSE' | 'CONDITION' | 'CLOSE' | 'PRESS_CHECK';
+export type ThesisLogKind = 'OPEN' | 'THESIS' | 'BREAK_NOTICE' | 'RESPONSE' | 'CONDITION' | 'CLOSE' | 'PRESS_CHECK' | 'EXITS_CONFIRMED';
 export interface ThesisLogInput {
   ticker: string;
   fileId: string;

@@ -1,5 +1,5 @@
 // T27：討論包與貼回的解析（own_thesis §1.7、§1.8）。論點在 claude.ai 討論（方案 B），stock bot 只做頭和尾：
-//   頭：discussionPack 組一段 markdown（固定指示 DISCUSSION_V2 ＋ 論點檔 ＋ 數字），使用者複製貼到 claude.ai
+//   頭：discussionPack 組一段 markdown（固定指示 DISCUSSION_V3 ＋ 論點檔 ＋ 數字），使用者複製貼到 claude.ai
 //   尾：parseThesisBlock 解析 claude.ai 收尾時輸出的固定格式區塊，給「編輯論點」頁預覽
 // 純函式：不讀資料庫、網路、時鐘。固定指示和解析器要同一個版本，所以指示放在這裡（Worker 讀不到 repo 的 md）。
 // 討論包只放比重，不放金額與股數。
@@ -9,7 +9,7 @@ import { normalizeTicker } from '../data/sources';
 import { outcomeText, type CondAction, type ThesisFile } from '../app/thesis';
 import { eventDetail, eventLabel } from '../app/eventText';
 
-export const DISCUSSION_VERSION = 'discussion_v2';
+export const DISCUSSION_VERSION = 'discussion_v3';
 
 /** 舊版固定指示（不再使用，2026-11-16 T40 改用 DISCUSSION_V2）。留著對照；它輸出的 v1 區塊解析器照收。 */
 export const DISCUSSION_V1 = `你是我的反方審查員，不是我的啦啦隊。我們要討論的是我持有這檔股票的理由還成不成立。
@@ -40,8 +40,8 @@ export const DISCUSSION_V1 = `你是我的反方審查員，不是我的啦啦�
 ===END===`;
 
 /**
- * 固定指示（own_thesis §1.7，照抄；2026-11-16 使用者同意改，T40）：和 v1 的差別是第 8 點（前提與出場條件帶編號來回）
- * 與輸出格式裡的 `[P2]`、`[C12]`、區塊標記 v2。`<代號>` 在組討論包時換成這一檔的代號。
+ * 舊版固定指示（不再使用，2026-11-17 T42 改用 DISCUSSION_V3）：和 v1 的差別是第 8 點（前提與出場條件帶編號來回）
+ * 與輸出格式裡的 `[P2]`、`[C12]`、區塊標記 v2。它輸出的 v2 區塊解析器照收（出場條件的 `[C12]` 忽略、只取文字）。
  */
 export const DISCUSSION_V2 = `你是我的反方審查員，不是我的啦啦隊。我們要討論的是我持有這檔股票的理由還成不成立。
 
@@ -68,6 +68,42 @@ export const DISCUSSION_V2 = `你是我的反方審查員，不是我的啦啦�
 出場條件：
 1. [C12] （沒改的出場條件：照抄原文，保留編號） → 出清
 2. （新的、或改了的：查得到的事） → 減半
+3. （查得到的事） → 重新審查
+這次的結論：維持｜修正論點｜減半｜出清
+理由：（一句）
+===END===`;
+
+/**
+ * 固定指示（own_thesis §1.7，照抄；2026-11-16 使用者同意改，T42）：和 v2 的差別是第 8 點與輸出格式——
+ * 出場條件不再帶編號，收尾區塊寫「討論完要的全部出場條件」（沒改的也照抄、沒寫的確認後撤下）；前提照舊帶 `[P2]`；區塊標記 v3。
+ * `<代號>` 在組討論包時換成這一檔的代號。
+ */
+export const DISCUSSION_V3 = `你是我的反方審查員，不是我的啦啦隊。我們要討論的是我持有這檔股票的理由還成不成立。
+
+1. 站在反方。不要順著我說；我講得越肯定，你越要問證據在哪裡。
+2. 把「論點壞了」和「價格跌了」分開。價格下跌本身不是論點壞了的證據，價格上漲也不是論點成立的證據。
+3. 討論中一定要問我，並且自己也回答：「如果我現在沒有這檔股票，今天會不會用現在的價格買進？」
+4. 你可以上網查資料。每一件事都要給來源與日期，並分清楚「公司申報或財報裡寫的」和「報導或分析師說的」。
+   查不到來源的事，就說查不到。下面這份資料是 stock bot 整理的，數字由程式算好，可以直接用。
+5. 不要給目標價，不要建議買賣幾股。部位大小由 stock bot 的規則決定。
+6. 如果「這次為什麼討論」寫的是前提被判不成立：先講這個判斷站不站得住，再談要不要改論點。
+   在前提不成立之後才改論點，很容易只是替「繼續持有」找新理由；發現我在這樣做的時候請直接指出來。
+7. 出場條件要寫成之後查得到的事：財報數字的門檻（例如毛利率連兩季低於 70%），
+   或公司申報裡會寫的事（例如公司在 8-K 下修全年財測）。「基本面轉差」這種不算。
+8. 下面「前提」一節的每一條都有編號（P2）。收尾時，沒改的前提照抄原文並保留編號，例如 \`1. [P2] …\`；
+   意思改了就不要寫編號，寫成新的一條。
+   出場條件不用編號：收尾區塊的「出場條件」要寫討論完我要的全部出場條件，沒改的也照抄原文；沒寫進去的，會在我確認之後撤下。
+9. 我說「收尾」的時候，只輸出下面這個區塊，格式一字不改，裡面用我們討論出來的內容：
+
+===STOCKBOT 論點 v3 <代號>===
+論點：
+（一段，300 字以內：我為什麼持有它）
+前提：
+1. [P2] （沒改的前提：照抄原文，保留編號）
+2. （新的、或意思改了的前提：不寫編號。一條一行，合計最多 5 條）
+出場條件：
+1. （討論完我要的全部出場條件，沒改的也照抄：查得到的事） → 出清
+2. （查得到的事） → 減半
 3. （查得到的事） → 重新審查
 這次的結論：維持｜修正論點｜減半｜出清
 理由：（一句）
@@ -221,9 +257,6 @@ function premiseSection(file: ThesisFile): string[] {
   return L;
 }
 
-/** 條件在討論包與貼回之間的編號（T40）：`C` 加 own_conditions 的列編號，發出去就不重用。 */
-export const condRef = (id: number) => `C${id}`;
-
 function conditionSection(file: ThesisFile): string[] {
   const isMine = (c: ThesisFile['conditions'][number]) => !!c.acceptedAt || c.origin === 'USER';
   const owned = file.conditions.filter((c) => isMine(c) && c.status in COND_STATE && c.status !== 'MET');
@@ -232,11 +265,11 @@ function conditionSection(file: ThesisFile): string[] {
   if (!owned.length && !met.length && !proposed.length) return ['還沒有'];
   const L: string[] = [];
   if (owned.length) {
-    // 帶編號（T40）：收尾時沒改的照抄、保留編號（[C12]），stock bot 就知道是同一條、不用再改寫
-    L.push('你定的（編號是 stock bot 的條件編號）：');
+    // 不帶編號（T42）：收尾區塊寫要的全部出場條件；哪一條和舊的相同、取代哪一條，由 stock bot 改寫的 AI 對照
+    L.push('你定的（目前監測中；收尾時要留的照抄進區塊，沒寫進去的會在我確認後撤下）：');
     owned.forEach((c) => {
       const act = c.action ? ACTION_TEXT[c.action] : '重新審查';
-      L.push(`${condRef(c.id)}. ${c.text} → ${act}（${md(c.acceptedAt ?? c.createdAt)} 定；${COND_STATE[c.status]}）`);
+      L.push(`- ${c.text} → ${act}（${md(c.acceptedAt ?? c.createdAt)} 定；${COND_STATE[c.status]}）`);
     });
   }
   if (met.length) {
@@ -298,9 +331,9 @@ function numberSection(n: DiscussionNumbers, xbrl: string | null): string[] {
  * 長度目標 12,000 字以內：事件最多 10 件、審查最多 3 次；還是太長時先縮財報表，最後截斷。
  */
 export function discussionPack(file: ThesisFile, n: DiscussionNumbers, mode: DiscussionMode, brk: BreakInfo | null = null): string {
-  const cut = DISCUSSION_V2.indexOf('\n9. ');
-  const ask = DISCUSSION_V2.slice(0, cut).trim();
-  const out = DISCUSSION_V2.slice(cut + 1).replace('<代號>', file.ticker);
+  const cut = DISCUSSION_V3.indexOf('\n9. ');
+  const ask = DISCUSSION_V3.slice(0, cut).trim();
+  const out = DISCUSSION_V3.slice(cut + 1).replace('<代號>', file.ticker);
   const build = (xbrl: string | null) =>
     [
       `# ${file.ticker} 論點討論包（stock bot，${n.date}，${DISCUSSION_VERSION}）`,
@@ -357,8 +390,6 @@ export interface ParsedExit {
   action: CondAction;
   /** 動作沒寫或不認得，當成「重新審查」（預覽要標出來）。 */
   guessed: boolean;
-  /** 行首的 `[C12]`（T40）：沿用的條件編號（own_conditions 的列編號）；沒有是 null。 */
-  ref: number | null;
 }
 
 export interface ParsedThesis {
@@ -384,14 +415,14 @@ export const THESIS_LIMITS = { thesis: 600, premises: 5, premise: 200, exits: 6,
 const ACTIONS: Record<string, CondAction> = { 出清: 'EXIT', 減半: 'HALF', 重新審查: 'REVIEW' };
 const TAG = /^\s*(論點|前提|出場條件|這次的結論|理由)\s*[：:]\s*(.*)$/;
 const ITEM = /^\s*(\d+)\s*[.、)）．]\s*(.*)$/;
-/** 行首的編號標記（T40）：`[P2]`、`[C12]`（全形括號也收）。 */
+/** 行首的編號標記：前提的 `[P2]`（T40）；v2 區塊出場條件的 `[C12]`（T42 起忽略編號、只去掉標記）。全形括號也收。 */
 const PREM_TAG = /^[[［]\s*(P\d{1,4})\s*[\]］]\s*/i;
 const COND_TAG = /^[[［]\s*C(\d{1,9})\s*[\]］]\s*/i;
 
 /**
  * 解析 claude.ai 收尾時輸出的區塊（own_thesis §1.8）：
- *   先去掉 markdown 的程式碼圍欄；找 `===STOCKBOT 論點 v2 <代號>===`（舊的 v1 照收）到 `===END===`（有好幾個時取最後一個）；代號要和這一頁相同。
- *   前提行首的 `[P2]`、出場條件行首的 `[C12]`（T40）讀成沿用的編號，文字去掉標記。
+ *   先去掉 markdown 的程式碼圍欄；找 `===STOCKBOT 論點 v3 <代號>===`（舊的 v1、v2 照收）到 `===END===`（有好幾個時取最後一個）；代號要和這一頁相同。
+ *   前提行首的 `[P2]`（T40）讀成沿用的編號，文字去掉標記；出場條件行首的 `[C12]`（v2 區塊）只去掉標記、不讀編號（T42）。
  *   區塊內照行首的標籤切（全形或半形冒號）；前提、出場條件只算行首是「數字 + . 、 )」的行；
  *   出場條件用最後一個 → 或 -> 切成條件與動作，動作只收出清、減半、重新審查，其他當成重新審查並標出來；
  *   超過上限的截掉並標出來；找不到標記時整段放進論點欄。
@@ -402,7 +433,7 @@ export function parseThesisBlock(text: string, ticker: string): ParsedThesis {
     .replace(/\r\n?/g, '\n')
     .split('\n')
     .filter((l) => !/^\s*(```|~~~)/.test(l));
-  const starts = lines.map((l, i) => ({ i, m: /^\s*===\s*STOCKBOT\s+論點\s+v[12]\s+([A-Za-z0-9.-]+)\s*===\s*$/.exec(l) })).filter((x) => x.m);
+  const starts = lines.map((l, i) => ({ i, m: /^\s*===\s*STOCKBOT\s+論點\s+v[123]\s+([A-Za-z0-9.-]+)\s*===\s*$/.exec(l) })).filter((x) => x.m);
   const start = starts.at(-1);
   const end = start ? lines.findIndex((l, i) => i > start.i && /^\s*===\s*END\s*===\s*$/.test(l)) : -1;
   if (!start || end < 0) {
@@ -468,9 +499,8 @@ export function parseThesisBlock(text: string, ticker: string): ParsedThesis {
     exitRows = exitRows.slice(0, THESIS_LIMITS.exits);
   }
   const exits: ParsedExit[] = exitRows.map((row0, k) => {
-    // 行首的 [C12]（T40）：沿用的條件編號
+    // v2 區塊行首的 [C12]（T40）：T42 起出場條件是整組取代，編號忽略、只取文字
     const tag = COND_TAG.exec(row0);
-    const ref = tag ? Number(tag[1]) : null;
     const row = tag ? row0.slice(tag[0].length) : row0;
     const a = row.lastIndexOf('→');
     const b = row.lastIndexOf('->');
@@ -483,15 +513,15 @@ export function parseThesisBlock(text: string, ticker: string): ParsedThesis {
       notes.push(`出場條件第 ${k + 1} 條超過 ${THESIS_LIMITS.exit} 字，後面截掉了`);
       cond = cond.slice(0, THESIS_LIMITS.exit);
     }
-    return { text: cond, action: action ?? 'REVIEW', guessed: !action, ref };
+    return { text: cond, action: action ?? 'REVIEW', guessed: !action };
   });
   const one = (rows: string[]) => rows.map((l) => l.trim()).filter(Boolean).join(' ') || null;
   return { found: true, error: null, thesis, premises, premiseIds, exits, conclusion: one(sec.這次的結論), reason: one(sec.理由), notes };
 }
 
-// ---------------------------------------------------------------- 出場條件的對照（T40，own_thesis §1.8）
+// ---------------------------------------------------------------- 出場條件整組取代（T42，own_thesis §1.8）
 
-/** 這檔目前監測中的你定的條件（ACTIVE、REVIEW_ONLY、MANUAL）。 */
+/** 這檔目前監測中的你定的條件（ACTIVE、REVIEW_ONLY、MANUAL）：編輯論點頁預填、存檔時比對、改寫時的對照範圍。 */
 export interface LiveCondition {
   id: number;
   text: string;
@@ -501,32 +531,33 @@ export interface LiveCondition {
 }
 
 export interface ExitPlan {
-  /** 沿用的：這一條（index）就是條件 id；動作和現在的不同時，確認時改成新的動作。 */
-  kept: { index: number; id: number; text: string; action: CondAction; was: CondAction | null; actionChanged: boolean }[];
-  /** 新的（index）：確認後送去改寫。 */
-  fresh: number[];
-  /** 目前監測中、這次沒有出現的：每一條選繼續監測（預設）或撤下。 */
-  missing: LiveCondition[];
+  /** 出場條件和監測中的不同（新增、改字、少了幾條）→ 整組連同監測中的條件送改寫。 */
+  changed: boolean;
+  /** 文字和監測中的一條相同、成立時的動作不同的（沒改動時存檔直接改動作；有改動時等確認才改）。 */
+  actionChanged: { index: number; id: number; text: string; action: CondAction; was: CondAction | null }[];
+  /** 文字和監測中的一條相同（去掉空白與標點後比）的：這一條（index）→ 那一條的列編號。改寫結果當「相同」的後備。 */
+  sameByText: Record<number, number>;
 }
 
-/** 狀態代號 → 算不算「監測中」（會出現在對照裡的）。 */
+/** 狀態代號 → 算不算「監測中」（編輯論點頁預填、整組取代的範圍）。 */
 export const LIVE_CONDITION_CODES = ['ACTIVE', 'REVIEW_ONLY', 'MANUAL'] as const;
 
 /**
- * 編輯論點的出場條件和目前監測中的條件對照（純函式）：
- *   帶 ref（貼回的 [C12]）、而且是監測中的一條 → 沿用；沒帶 ref、但文字和監測中的一條相同（去掉空白與標點後比）→ 沿用；
- *   其他 → 新的；監測中、沒有被沿用的 → missing。一條條件只能被沿用一次。
+ * 編輯論點的出場條件（存檔後要的完整清單）和目前監測中的條件比（純函式，T42）：
+ *   每一條都能對到一條監測中的（文字去掉空白與標點後相同；一條只能對一次）、而且條數相同 → 沒改動；
+ *   其他（新增、改字、少了幾條）→ 有改動。動作不同不算改動（只記在 actionChanged）。
  */
-export function matchExits(exits: { text: string; action: CondAction; ref?: number | null }[], live: LiveCondition[]): ExitPlan {
+export function planExits(exits: { text: string; action: CondAction }[], live: LiveCondition[]): ExitPlan {
   const used = new Set<number>();
-  const kept: ExitPlan['kept'] = [];
-  const fresh: number[] = [];
+  const actionChanged: ExitPlan['actionChanged'] = [];
+  const sameByText: Record<number, number> = {};
   exits.forEach((x, index) => {
-    const pool = live.filter((c) => !used.has(c.id));
-    const hit = (x.ref ? pool.find((c) => c.id === x.ref) : undefined) ?? pool.find((c) => premiseKey(c.text) === premiseKey(x.text));
-    if (!hit) return fresh.push(index);
+    const hit = live.find((c) => !used.has(c.id) && premiseKey(c.text) === premiseKey(x.text));
+    if (!hit) return;
     used.add(hit.id);
-    kept.push({ index, id: hit.id, text: hit.text, action: x.action, was: hit.action, actionChanged: !!hit.action && hit.action !== x.action });
+    sameByText[index] = hit.id;
+    if (hit.action && hit.action !== x.action) actionChanged.push({ index, id: hit.id, text: hit.text, action: x.action, was: hit.action });
   });
-  return { kept, fresh, missing: live.filter((c) => !used.has(c.id)) };
+  const changed = exits.length !== live.length || Object.keys(sameByText).length !== exits.length;
+  return { changed, actionChanged, sameByText };
 }
