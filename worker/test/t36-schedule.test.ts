@@ -354,7 +354,7 @@ describe('逾時的兩種原因', () => {
       const r = await runFlow(env, noNet, { now: new Date('2026-12-01T03:30:00Z'), attempt: 'APPLY' });
       expect(r.alerts).toContain('AI_TIMEOUT');
       const alert = await db.prepare("SELECT message FROM alerts WHERE kind = 'AI_TIMEOUT'").first<{ message: string }>();
-      expect(alert!.message).toBe(`2 個 AI 任務逾時，已照規則處理：雲端排程沒有來取證據包（多半是額度用完或 session 沒開成）：1 個（${never.taskId}）；雲端排程取了證據包，但 45 分鐘內沒有送回結果：1 個（${fetched.taskId}）。`);
+      expect(alert!.message).toBe(`2 個 AI 任務逾時，已照規則處理：雲端排程沒有來取證據包（多半是額度用完或 session 沒開成）：1 個（自選定期審查 ZZZ）；雲端排程取了證據包，但 45 分鐘內沒有送回結果：1 個（自選定期審查 ZZZ）。`);
 
       expect((await getRun(db, never.runId))!.outcome!.reason).toBe('超過 45 分鐘沒有收到結果：雲端排程沒有來取證據包（多半是額度用完或 session 沒開成），照規則。');
       expect((await getRun(db, fetched.runId))!.outcome!.reason).toBe('超過 45 分鐘沒有收到結果：雲端排程取了證據包，但 45 分鐘內沒有送回結果，照規則。');

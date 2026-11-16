@@ -70,7 +70,9 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   const exits = [];
   const addPrem = (p = { id: null, text: '' }) => {
     if (prems.length >= LIMITS.premises) return toast(`前提最多 ${LIMITS.premises} 條`);
-    const input = h('input', { type: 'text', maxlength: LIMITS.premise, value: p.text, placeholder: '要繼續成立的事', 'aria-label': '前提' });
+    // 多行：長的前提也看得到全文（T39a：單行輸入框會把後半截掉）；Enter 不換行，前提是一句話
+    const input = h('textarea', { class: 'prem-in', rows: 2, maxlength: LIMITS.premise, value: p.text, placeholder: '要繼續成立的事', 'aria-label': '前提' });
+    input.addEventListener('keydown', (ev) => ev.key === 'Enter' && ev.preventDefault());
     const r = { id: p.id, input };
     const el = h('div', { style: rowStyle }, input, removeBtn(() => { prems.splice(prems.indexOf(r), 1); el.remove(); changed(); }));
     r.el = el;
@@ -127,7 +129,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
         p.found ? h('p', { class: 'small', style: 'color:var(--core);margin-top:8px' }, `解析好了：論點 ${p.thesis.length} 字、前提 ${p.premises.length} 條、出場條件 ${p.exits.length} 條。請在右邊確認，需要的話直接改。`) : null,
         p.notes.length ? h('ul', { class: 'notice small', style: 'margin-top:8px;padding-left:2em' }, p.notes.map((n) => h('li', null, n))) : null,
       );
-      const hint = p.conclusion && /減半|出清/.test(p.conclusion) && own.pendingBreak ? h('p', { class: 'small', style: 'margin-top:6px' }, `要減碼的話：回到 `, h('a', { href: `#/n/${own.pendingBreak.notif}` }, `通知 #${own.pendingBreak.notif}`), ' 按「照 AI」。') : null;
+      const hint = p.conclusion && /減半|出清/.test(p.conclusion) && own.pendingBreak ? h('p', { class: 'small', style: 'margin-top:6px' }, `要減碼的話：回到 `, h('a', { href: `#/n/${own.pendingBreak.notif}` }, own.pendingBreakName ?? '那則通知'), ' 按「照 AI」。') : null;
       conclBox.replaceChildren(p.conclusion ? h('div', { class: 'glass pad', style: 'margin-top:12px' }, h('b', null, `這次的結論：${p.conclusion}`), p.reason ? h('p', { class: 'small dim', style: 'margin-top:4px' }, `理由：${p.reason}`) : null, h('p', { class: 'small faint', style: 'margin-top:4px' }, '只顯示，不會自動做任何事；部位照規則與你回覆的通知。'), hint) : '');
     } catch (e) {
       parseMsg.replaceChildren(errBox(e));
@@ -192,7 +194,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
             'pad',
             h('h2', { class: 'panel-h' }, `論點與前提已經存好（第 ${r.preview.version} 版）`),
             r.preview.changed ? h('p', { class: 'small dim', style: 'margin-top:6px' }, '前提有增減：隔天的每日流程會開一次審查。') : null,
-            r.revised ? h('p', { class: 'small dim', style: 'margin-top:6px' }, `通知 #${r.revised.notif} 已結案（修正論點，部位不動）${r.revised.kept ? `；新的論點還留著前提 ${r.revised.premiseId}，當成不同意，這條前提進靜默期` : ''}。`) : null,
+            r.revised ? h('p', { class: 'small dim', style: 'margin-top:6px' }, `${r.revisedName ?? '那則通知'}已結案（修正論點，部位不動）${r.revised.kept ? `；新的論點還留著前提 ${r.revised.premiseId}，當成不同意，這條前提進靜默期` : ''}。`) : null,
             unsentBox(d.ticker, r.exits, `原因：${r.rewrite.error}`, () => ctx.go(back.href)),
             h('p', { class: 'small faint', style: 'margin-top:10px' }, '持股頁也會一直提示，直到重送成功。'),
             h('div', { class: 'btn-row', style: 'margin-top:12px' }, h('a', { class: 'btn', href: back.href }, '回持股頁')),
@@ -207,7 +209,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
         window.scrollTo({ top: 0 });
         return;
       }
-      const rv = r.revised ? `；通知 #${r.revised.notif} 結案（修正論點${r.revised.kept ? `，保留的前提 ${r.revised.premiseId} 進靜默期` : ''}）` : '';
+      const rv = r.revised ? `；${r.revisedName ?? '那則通知'}結案（修正論點${r.revised.kept ? `，保留的前提 ${r.revised.premiseId} 進靜默期` : ''}）` : '';
       toast((r.rewrite.status === 'SENT' ? '論點已存；出場條件送去改寫，回來後在持股頁勾選' : '論點已存') + rv);
       ctx.go(back.href);
     } catch (e) {
@@ -247,7 +249,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     glass(
       'pad',
       diff,
-      reply ? h('label', { class: 'check-row', style: 'margin-top:12px' }, reply, h('span', null, `這是對通知 #${replyNotif} 的回應：修正論點，部位不動`)) : null,
+      reply ? h('label', { class: 'check-row', style: 'margin-top:12px' }, reply, h('span', null, `這是對${own.pendingBreakName ?? '那則通知'}的回應：修正論點，部位不動`)) : null,
       reply ? h('p', { class: 'small faint', style: 'margin:4px 0 0 1.8em' }, '勾著存檔：那則通知結案，論點記一次「失效後修改」。新的前提如果還留著被判不成立的那一條，當成不同意：那條前提到下一季財報出來之前不再通知你。') : null,
       h('div', { class: 'btn-row', style: 'margin-top:14px' }, save, h('a', { class: 'linkbtn', href: back.href }, '算了')),
       msg,

@@ -163,11 +163,26 @@ export function todoBubble(todo: TodoView[], plan: { composed: ComposedView | nu
   if (t.type === 'DECIDE' && plan?.composed) {
     const c = plan.composed;
     const n = orderCount(c);
-    const sells = listOrders(c, -1);
-    const buys = listOrders(c, 1);
+    // 核心補差額的那幾張（清單做完多的現金交給核心、不夠的錢從核心拿）另外講：卡片上只列建議本身，不然兩邊對不起來（T39a）
+    const isBal = (o: ComposedView['orders'][number]) => !o.transfer && o.parts.length > 0 && o.parts.every((p) => p.balance);
+    const main = { ...c, orders: c.orders.filter((o) => !isBal(o)) };
+    const bal = c.orders.filter(isBal);
+    const sells = listOrders(main, -1);
+    const buys = listOrders(main, 1);
+    const own = orderCount(main);
+    const balText = (side: -1 | 1) => {
+      const xs = bal.filter((o) => Math.sign(o.shares) === side);
+      if (!xs.length) return '';
+      const what = xs.map((o) => `${side < 0 ? '賣' : '買'} ${o.ticker} ${Math.abs(o.shares)} 股`).join('、');
+      return side > 0 ? `${own ? '剩下的' : '帳上原本的'}現金交給核心：${what}` : `不夠的錢從核心拿：${what}`;
+    };
     const say: Seg[] = [];
-    if (n) say.push([sells, buys].filter(Boolean).join('，'), '，共 ', em(`${n} 張單`));
-    else say.push(em('不用下任何單'));
+    // 好幾件待辦：先講是哪一則（排在最前面、最要緊的那一則）
+    if (todo.length > 1) say.push('先看「', em(t.title), '」：');
+    if (n) {
+      const parts = [[sells, buys].filter(Boolean).join('，'), ...(own ? [] : ['這則本身不用下單']), balText(-1), balText(1)].filter(Boolean);
+      say.push(parts.join('；'), '，共 ', em(`${n} 張單`));
+    } else say.push(em('不用下任何單'));
     say.push('，做完現金約 ', c.cashAfter < NEG_CASH ? neg(money(c.cashAfter)) : em(money(c.cashAfter)), '。');
     const off = plan.items.filter((i) => !i.cancelled && i.choice === 'SKIP' && (i.kind === 'AI_ONLY' || i.kind === 'HARD'));
     if (off.length) say.push(`${off.map((i) => i.ticker ?? i.headline).join('、')} 的 AI 建議預設不做。`);

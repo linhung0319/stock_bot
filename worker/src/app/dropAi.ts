@@ -8,7 +8,7 @@ import type { PackDoc } from '../ai/check';
 import { attribution, highIndex, idioDrop, idioDropText } from '../ai/detect';
 import { OWN_DROP, dropDecision, ownDropPack } from '../ai/drops';
 import { newRunId } from '../ai/pack';
-import { clone, newNotif, recordAiTier, refreshOwnAiChoice, routeReview, type Account, type DropReview, type MarketView, type Notif } from '../engine';
+import { clone, newNotif, notifName, recordAiTier, refreshOwnAiChoice, routeReview, type Account, type DropReview, type MarketView, type Notif } from '../engine';
 import { fetchCompanyFacts, fetchFilingDoc, quarterTable, type QuarterRow } from '../data/edgar';
 import type { FilingHit } from '../data/secEvents';
 import { errText } from '../data/util';
@@ -203,7 +203,7 @@ export async function applyOwnDrop(ctx: ApplyCtx, run: AiRun): Promise<void> {
   }
   if (d.status === 'HOLD' && answered.status === 'RESPONDED' && it.choice === 'RULE') {
     const acct = clone(ctx.acct);
-    const n = newNotif(acct, ctx.view, { kind: 'INFO', title: `${t} 的 AI 論點檢查回來了`, text: `${t} 的 AI 論點檢查回來了：建議不動。你已經選了照規則；還沒下單的話可以回通知 #${answered.id} 改決定。`, ref: answered.id, coreAbsorb: false });
+    const n = newNotif(acct, ctx.view, { kind: 'INFO', title: `${t} 的 AI 論點檢查回來了`, text: `${t} 的 AI 論點檢查回來了：建議不動。你已經選了照規則；還沒下單的話可以回${notifName(answered)}改決定。`, ref: answered.id, coreAbsorb: false });
     ctx.acct = acct;
     return void ctx.log.push(`${run.runId}：${t} 的論點檢查建議不動，通知 #${answered.id} 已經選了照規則、還沒填快照 → 提醒 #${n.id}`);
   }

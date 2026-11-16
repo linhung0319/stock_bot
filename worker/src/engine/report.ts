@@ -25,6 +25,7 @@ import {
   type ReviewTrigger,
   type SavedState,
   type Tier,
+  usd,
 } from './account';
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
 import { drawdownFromHigh, excessVol } from './indicators';
@@ -666,12 +667,12 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
   for (const n of acct.notifs) {
     if (n.status === 'PENDING' && !n.reminded && n.items.length && n.kind !== 'INFO' && view.i - n.seq >= 2) {
       n.reminded = true;
-      created.push(newNotif(acct, view, { kind: 'INFO', title: `提醒：通知 #${n.id}（${n.date}）還沒回報`, text: '照做了嗎？回覆時選「忘了」會用當天價格重算清單；選「這次不做」就不再提醒。', ref: n.id, coreAbsorb: false }));
+      created.push(newNotif(acct, view, { kind: 'INFO', title: `提醒：「${n.title}」（${mdOf(n.date)}）還沒回報`, text: '照做了嗎？還沒回覆的話，打開原來那則通知選一項；選「整則這次不做」就不再提醒。', ref: n.id, coreAbsorb: false }));
     }
     // 決定了、2 個交易日還沒填快照（設計 §10 第 40 點）
     if (n.status === 'RESPONDED' && n.composed && !n.fillReminded && n.kind !== 'INFO' && view.i - (n.respondedSeq ?? n.seq) >= 2) {
       n.fillReminded = true;
-      created.push(newNotif(acct, view, { kind: 'INFO', title: `提醒：清單 #${n.id}（${n.date}）決定了還沒填快照`, text: '下單了就去填快照（股數、現金照券商填）；沒下單就回上一步改「這次不做」。月報日還沒填，月報會先暫停。', ref: n.id, coreAbsorb: false }));
+      created.push(newNotif(acct, view, { kind: 'INFO', title: `提醒：「${n.title}」（${mdOf(n.date)}）決定了還沒填快照`, text: '下單了就去填快照（股數、現金照券商填）；沒下單就回上一步改「這次不做」。月報日還沒填，月報會先暫停。', ref: n.id, coreAbsorb: false }));
     }
   }
   return { acct, created, log };
@@ -733,7 +734,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
     const notif =
       wait.kind === 'UNC'
         ? newNotif(acct, view, { kind: 'INFO', title: '月報暫停：有未分類的持股變動', text: '請先回答那筆變動是手動交易、新增自選還是轉入自選，屬於哪一桶。分類後會重算月報。', coreAbsorb: false })
-        : newNotif(acct, view, { kind: 'INFO', title: `月報暫停：清單 #${wait.notif.id} 決定了還沒填快照`, text: `「${wait.notif.title}」（${wait.notif.date}）決定了還沒填快照，帳本還是下單前的樣子，這時出月報會叫你重複下單。下單了就去填快照；沒下單就回上一步改「這次不做」。之後會用今天的排名重算月報。`, ref: wait.notif.id, coreAbsorb: false });
+        : newNotif(acct, view, { kind: 'INFO', title: `月報暫停：「${wait.notif.title}」決定了還沒填快照`, text: `「${wait.notif.title}」（${wait.notif.date}）決定了還沒填快照，帳本還是下單前的樣子，這時出月報會叫你重複下單。下單了就去填快照；沒下單就回上一步改「這次不做」。之後會用今天的排名重算月報。`, ref: wait.notif.id, coreAbsorb: false });
     // 留下這份月報的輸入（訊號日的排名與超額波動），分類後用它重算（resumeMonthly）
     notif.monthly = { input: withSignalVol(acct, view, input), before: savedState(acct) };
     return { acct, notif, plan: null };
@@ -753,7 +754,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   for (const [tk, m] of Object.entries(acct.own)) {
     if (m.pending) {
       ownActions[tk] = m.pending.action;
-      ownNotes[tk] = `（${m.pending.date} 觸發，變動 < 5%，併入月報）`;
+      ownNotes[tk] = `（${m.pending.date} 觸發；這一筆不到總資產的 5%，所以併入月報）`;
     }
   }
   const core = acct.cfg.coreTicker;
@@ -797,7 +798,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
     // 入金合併在月報裡：入金補的格子併成一項
     const flowLines = items.filter((i) => i.f === 'SYS').flatMap((i) => i.choices[0].lines);
     items = items.filter((i) => i.f !== 'SYS');
-    items.push(makeItem({ f: 'F11', kind: 'CASHFLOW', title: `入金 ${flow.amount}：只買不賣（和月報合成一份）`, choices: [{ id: 'DO', label: '照做', lines: flowLines }], noSkip: true }));
+    items.push(makeItem({ f: 'F11', kind: 'CASHFLOW', title: `入金 ${usd(flow.amount)}：只買不賣（和月報合成一份）`, choices: [{ id: 'DO', label: '照做', lines: flowLines }], noSkip: true }));
   }
   // 月審確認成立的你定的條件（甲類，own_thesis §1.10）：進月報，項目和當天通知相同
   for (const [tk, m] of Object.entries(acct.own)) {

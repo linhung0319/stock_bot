@@ -178,7 +178,7 @@ export function menuItems(st) {
   if (!a) return [['setup', '#/setup', '建立帳戶', '填第一份快照：每一檔的股數、現金，放自選還是動能。']];
   return [
     ['deposit', '#/do/deposit', '入金', '把錢匯進券商之後登記。只買不賣，先補離目標最遠的格子。'],
-    ['withdraw', '#/do/withdraw', '出金', '要把錢領出來。只賣不買，先動核心、最後才是自選。'],
+    ['withdraw', '#/do/withdraw', '出金', '要把錢領出來。只賣不買：先用帳上現金和動能超過目標的部分，不夠再賣核心，最後才動自選。'],
     ['snapshot', '#/snapshot', '填快照', '自己交易過（含新增、賣掉自選），或只是想和券商對帳。變動放哪一桶由你決定。'],
     ['undo', '#/do/undo', '復原上一份快照', st.undo ? `把 ${day(st.undo.date)} 送出的快照退回，帳戶回到送出之前再重填。` : '現在沒有可以復原的快照：只能復原最後一份，而且之後帳戶還沒有其他變動。'],
     ['ratio', '#/do/ratio', '改三桶的比例', `現在是自選 ${pct(a.ratio.own, 0)}／動能 ${pct(a.ratio.strat, 0)}／核心 ${pct(a.ratio.core, 0)}。`],

@@ -35,13 +35,28 @@ function ruleBubble(main) {
   return main ? { k: '這一檔現在', say: [em(main.state), main.detail ? `。${main.detail}。` : '。'], mood: main.tone === 'alert' ? 'alert' : main.tone === 'warn' ? 'worry' : 'watch' } : { k: '這一檔現在', say: ['目前沒有持有。'], mood: 'idle' };
 }
 
+/**
+ * 前提最近一次的檢查。示範模式的論點檔沒有審查紀錄（partial），但持股頁下面有示範的 AI 審查（d.ai）：
+ * 從那次審查的前提結果補上，史萊姆才不會說「還沒有被 AI 審查過」（T39a）。
+ */
+function premiseChecks(d) {
+  const checks = { ...(d.thesis?.premiseChecks ?? {}) };
+  const ai = d.ai?.premises ?? [];
+  for (const p of d.own?.premises ?? []) {
+    if (checks[p.id]?.status) continue;
+    const a = ai.find((x) => x.text && (x.text === p.text || p.text.startsWith(x.text) || x.text.startsWith(p.text)));
+    if (a && ['HOLDS', 'BROKEN', 'INSUFFICIENT'].includes(a.status)) checks[p.id] = { status: a.status, when: `${day(d.ai.date)}審查`, split: false };
+  }
+  return checks;
+}
+
 /** 自選股的那一句：先講論點（有沒有你的論點、前提最近一次檢查），再講慢規則。 */
 function ownBubble(d, main) {
   const o = d.own;
-  const checks = d.thesis?.premiseChecks ?? {};
+  const checks = premiseChecks(d);
   const rule = main ? `慢規則：${main.state}。` : '';
   const mood = main?.tone === 'alert' ? 'alert' : main?.tone === 'warn' ? 'worry' : 'watch';
-  if (o.pendingBreak) return { k: '這一檔現在', say: [`通知 #${o.pendingBreak.notif} 等你決定：`, em(`AI 審查認為前提${o.pendingBreak.premiseId ? ` ${o.pendingBreak.premiseId} ` : ''}不成立`), `。${rule}`], mood: 'alert' };
+  if (o.pendingBreak) return { k: '這一檔現在', say: [`${o.pendingBreakName ?? '一則通知'}等你決定：`, em(`AI 審查認為前提${o.pendingBreak.premiseId ? ` ${o.pendingBreak.premiseId} ` : ''}不成立`), `。${rule}`], mood: 'alert' };
   if (o.kind === 'DEFAULT_ONLY') return { k: '這一檔現在', say: [em('還沒有你的論點'), `，AI 用系統預設前提做一般健康檢查。${rule}`], mood };
   const broken = o.premises.filter((p) => checks[p.id]?.status === 'BROKEN').map((p) => p.id);
   if (broken.length) return { k: '這一檔現在', say: [`前提 ${broken.join('、')} 最近一次檢查`, em('不成立'), `。${rule}`], mood: 'worry' };
@@ -55,7 +70,7 @@ function ownBubble(d, main) {
 // ---------------------------------------------------------------- 自選股
 
 function ownPanels(ctx, d, main) {
-  return [thesisPanel(d), attentionPanel(d), condPanel(ctx, d), eventPanel(d), reviewPanel(d), rulePanel(ctx, d, main), d.mom ? momPanel(d.mom) : null, historyBlock(d)];
+  return [openBox(d), thesisPanel(d), attentionPanel(d), condPanel(ctx, d), eventPanel(d), reviewPanel(d), rulePanel(ctx, d, main), d.mom ? momPanel(d.mom) : null, historyBlock(d)];
 }
 
 /** 論點、前提與最近一次檢查、編輯與討論的入口。 */
@@ -68,14 +83,15 @@ function thesisPanel(d) {
   const pb = o.pendingBreak;
   return glass(
     'pad hp',
-    panelTop('論點', h('span', { class: 'chip ' + (def ? 'warn' : 'ok') }, def ? '只有系統預設前提' : '有你的論點')),
-    pb ? h('p', { class: 'notice', style: 'margin:4px 0 12px' }, `通知 #${pb.notif} 等你決定：AI 審查認為前提${pb.premiseId ? ` ${pb.premiseId} ` : ''}不成立。`, h('a', { href: `#/n/${pb.notif}` }, '打開通知')) : null,
+    // 只有前提、沒有論點本文時不寫「有你的論點」（T39a：和下面「還沒有論點本文」矛盾）
+    panelTop('論點', h('span', { class: 'chip ' + (def ? 'warn' : 'ok') }, def ? '只有系統預設前提' : th ? '有你的論點' : '有你寫的前提')),
+    pb ? h('p', { class: 'notice', style: 'margin:4px 0 12px' }, `${o.pendingBreakName ?? '一則通知'}等你決定：AI 審查認為前提${pb.premiseId ? ` ${pb.premiseId} ` : ''}不成立。`, h('a', { href: `#/n/${pb.notif}` }, '打開通知')) : null,
     th
       ? [h('p', { class: 'th-text' }, th.text), h('p', { class: 'small faint', style: 'margin-top:6px' }, `${day(th.setAt, true)} 定，${th.source}，第 ${th.version} 版${th.afterBreak ? `；失效後修改第 ${th.afterBreak} 次` : ''}`)]
-      : h('p', { class: 'dim' }, def ? '還沒有你的論點。AI 審查時用下面三條系統預設前提做一般健康檢查，它們不是你持有的理由。' : '還沒有論點本文，只有下面的前提。'),
+      : h('p', { class: 'dim' }, def ? '還沒有你的論點。AI 審查時用下面三條系統預設前提做一般健康檢查，它們不是你持有的理由。' : '還沒有論點本文（為什麼持有它的那一段話），只有下面你寫的前提；AI 審查照這些前提檢查。'),
     o.openNote ? h('p', { class: 'notice', style: 'margin-top:12px' }, o.openNote) : null,
     h('h5', { style: 'margin-top:18px' }, def ? '前提（系統預設）' : `前提（${o.premises.length} 條，你為什麼持有它）`),
-    premiseList(o, t),
+    premiseList(o, t, premiseChecks(d)),
     silencedRetired(o, t),
     o.reviewSkip ? h('p', { class: 'small dim', style: 'margin-top:10px' }, o.reviewSkip) : null,
     h(
@@ -88,8 +104,7 @@ function thesisPanel(d) {
 }
 
 /** 前提：編號、文字、誰寫的、最近一次 3 票一致的檢查；之後沒有一致結論、靜默中的各一行。 */
-function premiseList(o, t) {
-  const checks = t?.premiseChecks ?? {};
+function premiseList(o, t, checks) {
   return h(
     'ul',
     { class: 'plist' },
@@ -139,7 +154,7 @@ function condPanel(ctx, d) {
     panelTop('出場條件'),
     body.length
       ? body
-      : h('p', { class: 'small dim' }, partial ? '示範資料沒有條件紀錄。' : ['還沒有出場條件。在「', h('a', { href: edit }, '編輯論點'), '」寫下出場條件，AI 改寫成查得到的格式之後，回到這裡勾選才會開始監測。']),
+      : h('p', { class: 'small dim' }, partial ? '示範模式不記出場條件（通知裡提到的條件是示範腳本寫的）。真實帳戶這裡會列出你定的條件、AI 建議的條件和進度。' : ['還沒有出場條件。在「', h('a', { href: edit }, '編輯論點'), '」寫下出場條件，AI 改寫成查得到的格式之後，回到這裡勾選才會開始監測。']),
   );
 }
 
@@ -199,7 +214,7 @@ function reviewPanel(d) {
             null,
             h('p', { class: 'tl-h' }, h('b', null, r.label), r.trigger ? h('span', { class: 'small faint' }, r.trigger) : null),
             h('p', { class: 'rv-res' }, h('span', { class: 'chip ' + r.tone }, r.result), r.broken.length ? h('span', { class: 'small rv-broken' }, `不成立：${r.broken.join('、')}`) : null),
-            r.response ? h('p', { class: 'small dim' }, `${r.notif ? `通知 #${r.notif}，` : ''}你的回應：${r.response}`) : null,
+            r.response ? h('p', { class: 'small dim' }, `${r.notifName ? `${r.notifName}，` : ''}你的回應：${r.response}`) : null,
           ),
           h('span', { class: 'chev', 'aria-hidden': 'true' }),
         ),
@@ -218,7 +233,7 @@ function rulePanel(ctx, d, main) {
     panelTop('慢規則（底線）', h('span', { class: 'chip ' + (o.state === '減半中' ? 'warn' : '') }, o.state)),
     h('p', { class: 'small dim' }, '比 52 週高點低 20% 減半，站回 200 日均線連續 10 天再買回。它是底線：不管論點，到了就照做；論點由上面的 AI 審查與你的出場條件管。'),
     main?.meter ? meterEl({ ...main.meter, say: `${main.state}。${main.detail}` }, 'big') : null,
-    dr ? h('p', { class: 'ai-line', style: 'margin-top:12px' }, dr.text, dr.notif ? [' ', h('a', { href: `#/n/${dr.notif}` }, `到通知 #${dr.notif} 決定`)] : null) : null,
+    dr ? h('p', { class: 'ai-line', style: 'margin-top:12px' }, dr.text, dr.notif ? [' ', h('a', { href: `#/n/${dr.notif}` }, `到 ${d.thesis.dropReviewNotifName ?? '那則通知'} 決定`)] : null) : null,
     h('div', { style: 'margin-top:16px' }, chart(d.chart)),
     h('dl', { class: 'facts', style: 'margin-top:16px' }, d.facts.map((f) => [h('dt', null, f.label), h('dd', null, h('span', { class: 'num' }, f.value), f.note ? h('small', null, f.note) : null)])),
     ...stdWeightEdit(ctx, d),
@@ -251,10 +266,22 @@ function stdWeightEdit(ctx, d) {
   ];
 }
 
+/** 還沒成交的清單上這一檔的單（T39a：動能這個月超過目標 ±50% 要賣，持股頁原本沒提）。 */
+function openBox(d) {
+  if (!d.open?.length) return null;
+  return h(
+    'div',
+    { class: 'notice', style: 'margin:0' },
+    h('b', null, '還沒成交的單：'),
+    d.open.map((x, k) => [k ? '；' : '', `${x.name}${x.decided ? '（你已經決定、等下單）' : '（等你決定）'}：${x.text} `, h('a', { href: `#/n/${x.notif}` }, '打開')]),
+  );
+}
+
 // ---------------------------------------------------------------- 動能、核心（照舊）
 
 function otherPanels(d, main) {
   return [
+    openBox(d),
     main?.meter ? glass('pad', h('h2', { class: 'panel-h' }, main.meter.zone === '賣出' ? '離動能的賣出門檻多遠' : main.meter.zone === '啟動' ? '離崩盤規則多遠' : main.meter.zone === '買回' ? '離買回多遠' : '離慢規則的減半門檻多遠'), meterEl({ ...main.meter, say: `${main.state}。${main.detail}` }, 'big')) : null,
     glass('pad', chart(d.chart)),
     glass('pad', h('dl', { class: 'facts' }, d.facts.map((f) => [h('dt', null, f.label), h('dd', null, h('span', { class: 'num' }, f.value), f.note ? h('small', null, f.note) : null)]))),

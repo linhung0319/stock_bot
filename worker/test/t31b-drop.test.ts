@@ -37,6 +37,7 @@ import {
   type DropReview,
   type Item,
   type Notif,
+  notifName,
 } from '../src/engine';
 import { handle } from '../src/index';
 import { freshDb } from './helpers/d1';
@@ -270,7 +271,7 @@ describe('T31b：減半項目上 AI 的那一行與選項（own_thesis §3.4）'
     sim.runUntil('2027-01-04');
     const jan = sim.preOpen()!;
     const it7 = item(jan, 'F7', 'META');
-    expect(it7.title).toBe(`META：比 52 週高點低 ${ddText}% → 慢規則減半（2026-12-24 觸發，變動 < 5%，併入月報）`);
+    expect(it7.title).toBe(`META：比 52 週高點低 ${ddText}% → 慢規則減半（2026-12-24 觸發；這一筆不到總資產的 5%，所以併入月報）`);
     expect(it7.why).toBe(REDUCE_WHY + DEFAULT_ONLY_WHY);
     expect(it7.choices.map((c) => c.id)).toEqual(['RULE', 'SKIP']);
     expect(it7.aiLine).toBe('AI 論點檢查沒有一致結論，照規則');
@@ -1008,7 +1009,7 @@ describe('T31b：整條流程——出清、回應的紀錄、回覆之後才回
       const a = await acct();
       const info = a.notifs.find((x) => x.kind === 'INFO' && x.ref === n.id && x.title.includes('AI 論點檢查回來了'))!;
       expect(r2.created).toEqual([info.id]);
-      expect(info.text).toBe(`NVDA 的 AI 論點檢查回來了：建議不動。你已經選了照規則；還沒下單的話可以回通知 #${n.id} 改決定。`);
+      expect(info.text).toBe(`NVDA 的 AI 論點檢查回來了：建議不動。你已經選了照規則；還沒下單的話可以回${notifName(n)}改決定。`);
       expect(sec.line.some((t) => t.includes('你已經選了照規則'))).toBe(true);
       expect(reduceNotif(a).items[0].choices.map((c) => c.id)).toEqual(['RULE', 'SKIP']); // 已回覆的不動
       expect(a.own.NVDA.dropReview).toMatchObject({ status: 'HOLD', told: true });

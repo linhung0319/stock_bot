@@ -1,7 +1,7 @@
 // 持股頁的論點那一塊（T34，own_thesis §1.3）：從論點檔組出畫面要的白話——前提最近一次的檢查、事件時間軸、
 // 歷次審查與你的回應、靜默中的前提、減半檢視的狀態。純函式：論點檔由呼叫的地方組好（真實模式 thesisFile，示範模式 metaFile）。
 import { verdictText } from '../../ai/functions';
-import { DROP_CAUSE_TEXT, type Account, type Attention, type MarketView, type OwnMeta } from '../../engine';
+import { DROP_CAUSE_TEXT, notifName, type Account, type Attention, type MarketView, type OwnMeta } from '../../engine';
 import { concentrationHits } from '../concentration';
 import { CODE_TEXT, eventDetail, eventLabel, eventSource, eventStatus, eventVia } from '../eventText';
 import { metaFile, outcomeText, ownAttention, toAttention, type ThesisFile, type ThesisReview } from '../thesis';
@@ -47,6 +47,8 @@ export interface ReviewView {
   /** 三票都判不成立的前提（編號）。 */
   broken: string[];
   notif: number | null;
+  /** 那則通知的名字（日期與種類，不用內部編號；T39a）。沒有通知或找不到是 null。 */
+  notifName?: string | null;
   /** 「不同意：…」「還沒回」；沒有通知是 null。 */
   response: string | null;
 }
@@ -62,6 +64,8 @@ export interface ThesisView {
   silenced: { premiseId: string; text: string; since: string; until: string; reason: string }[];
   /** 減半之後的論點檢查（own_thesis §3.3；那則通知有最後結果時就清掉）。 */
   dropReview: { text: string; tone: 'ok' | 'warn' | 'hot' | 'now'; notif: number | null } | null;
+  /** 減半檢視那一行連到的通知的名字（日期與種類，不用內部編號；T39a）。 */
+  dropReviewNotifName: string | null;
   /** 示範模式：論點檔只有帳戶狀態（沒有條件、事件、審查紀錄）。 */
   partial: boolean;
 }
@@ -151,7 +155,11 @@ export function thesisView(file: ThesisFile, meta: OwnMeta, acct: Pick<Account, 
       isNew: e.isNew,
       displayOnly: e.displayOnly,
     }));
-  const reviews = file.reviews.map(reviewView);
+  const nameOf = (id: number | null): string | null => {
+    const n = id === null ? undefined : acct.notifs.find((x) => x.id === id);
+    return n ? notifName(n) : null;
+  };
+  const reviews = file.reviews.map(reviewView).map((v) => ({ ...v, notifName: nameOf(v.notif) }));
   const silenced = (meta.disputes ?? [])
     .filter((d) => d.until >= date)
     .map((d) => ({ premiseId: d.premiseId, text: file.premises.find((p) => p.id === d.premiseId)?.text ?? '（已撤下的前提）', since: d.since, until: d.until, reason: d.reason }));
@@ -164,6 +172,7 @@ export function thesisView(file: ThesisFile, meta: OwnMeta, acct: Pick<Account, 
     reviewCount: reviews.length,
     silenced,
     dropReview: dr ? { ...dropText(dr), notif: pendingRuleNotif(acct, file.ticker) } : null,
+    dropReviewNotifName: dr ? nameOf(pendingRuleNotif(acct, file.ticker)) : null,
     partial,
   };
 }
@@ -183,5 +192,7 @@ export function demoHolding(acct: Account, view: MarketView, ticker: string): { 
       return []; // 價格不齊算不出來：這次不列集中度
     }
   })();
-  return { thesis: thesisView(file, meta, acct, view.date, true), attention: [...ownAttention([file], acct, view), ...conc].map(toAttention) };
+  // 示範模式不記出場條件：「減半中而你沒有定任何出場條件」會和示範腳本裡的甲類通知矛盾，不列（T39a）
+  const own = ownAttention([file], acct, view).filter((x) => x.key !== 'HALF_NO_EXIT');
+  return { thesis: thesisView(file, meta, acct, view.date, true), attention: [...own, ...conc].map(toAttention) };
 }

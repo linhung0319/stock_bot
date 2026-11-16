@@ -605,7 +605,7 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     await web.post('/advance', { mode: 'month' });
     let st = await web.state();
     const paused = st.todo.find((t) => t.title.startsWith('月報暫停'));
-    expect(paused?.title).toBe(`月報暫停：清單 #${w.notifId} 決定了還沒填快照`);
+    expect(paused?.title).toBe('月報暫停：「入金 $3,000 的清單」決定了還沒填快照');
     expect(st.account!.monthlyBlocked).toBe(true);
     await web.post(`/notif/${w.notifId}/cancel`);
     v = await web.notif(w.notifId);
@@ -871,7 +871,7 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     expect(acct.own.COST).toBeUndefined();
     expect(acct.rule.own.COST).toBeUndefined();
     const hist = await web.get<HistoryView>('/history');
-    expect(hist.events.some((e) => e.text === '分類：自選 COST -2 股（要用錢（賣光並移出自選））')).toBe(true);
+    expect(hist.events.some((e) => e.text === '分類：自選 COST -2 股（要用錢：賣光並移出自選）')).toBe(true);
     expect(hist.events.some((e) => e.text === '成交：核心 VOO -1 股（核心的手動交易：要用錢）')).toBe(true);
     // 只賣一部分不能移出；理由太長擋下
     const f2 = await web.get<SnapshotForm>('/snapshot/form');

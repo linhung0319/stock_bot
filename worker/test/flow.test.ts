@@ -165,7 +165,7 @@ describe('當天通知', () => {
       const a3 = await acctOf(db);
       const remind = r3.created.map((id) => notifOf(a3, id)).find((x) => x.ref === n.id)!;
       expect(remind.kind).toBe('INFO');
-      expect(line.sent.at(-1)!.text.split('\n')[0]).toBe(`【紙上】【提醒】提醒：通知 #${n.id}（2026-11-24）還沒回報`);
+      expect(line.sent.at(-1)!.text.split('\n')[0]).toBe(`【紙上】【提醒】提醒：「${n.title}」（11/24）還沒回報`);
     });
   });
 });

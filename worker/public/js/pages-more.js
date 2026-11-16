@@ -92,7 +92,7 @@ export function accountPage(ctx) {
       ? h(
           'div',
           { style: 'margin-top:30px' },
-          fold('account.ranking', [h('h2', { class: 'fold-title' }, '動能排名'), st.rankDate ? h('span', { class: 'small dim num' }, day(st.rankDate)) : null], [glass('pad', rankTable(a.ranking), h('p', { class: 'small faint', style: 'margin-top:8px' }, '買前 5 名；持有的掉出前 15 名才賣。'))]),
+          fold('account.ranking', [h('h2', { class: 'fold-title' }, '動能排名'), st.rankDate ? h('span', { class: 'small dim num' }, day(st.rankDate)) : null], [glass('pad', rankTable(a.ranking), h('p', { class: 'small faint', style: 'margin-top:8px' }, '買前 5 名；持有的掉出前 15 名才賣。「持有」是帳上實際有的；「這次買」「這次賣」是月報上還沒成交的單。'))]),
         )
       : null,
   ];
@@ -260,7 +260,8 @@ export const ratioPage = (() => {
 
 export function undoPage(ctx) {
   const u = ctx.state.undo;
-  const at = u ? new Date(u.at).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  // 示範模式用模擬的今天，不寫電腦的真實時間（T39a）
+  const at = !u ? '' : ctx.state.mode === 'demo' ? `示範的今天（${day(ctx.state.today)}）` : new Date(u.at).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const body = u
     ? [
         h('p', null, `最後一份快照：${day(u.date)} 的收盤價，${at} 送出。`),
@@ -301,7 +302,8 @@ export function setupPage(ctx) {
     const r = { ticker: h('input', { type: 'text', placeholder: '代號', style: 'text-transform:uppercase;width:6.5em' }), shares: h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '股數', style: 'width:6em' }), std: kind === 'own' ? h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '建議值', style: 'width:5.5em' }) : null, why: kind === 'own' ? h('input', { type: 'text', placeholder: '為什麼持有（選填）', style: 'min-width:13em' }) : null };
     rows[kind].push(r);
     r.ticker.addEventListener('input', recount);
-    lists[kind].append(h('tr', null, h('td', null, r.ticker), h('td', { class: 'r' }, r.shares), kind === 'own' ? [h('td', { class: 'r wide' }, h('div', { style: 'display:flex;gap:6px;align-items:center;justify-content:flex-end' }, r.std, '%')), h('td', { class: 'wide' }, r.why)] : null));
+    // 自選的「標準比重」「為什麼持有」手機上也要填得到（T39a）：窄螢幕時「為什麼持有」換到下一行
+    lists[kind].append(h('tr', null, h('td', null, r.ticker), h('td', { class: 'r' }, r.shares), kind === 'own' ? [h('td', { class: 'r std-c' }, h('div', { style: 'display:flex;gap:6px;align-items:center;justify-content:flex-end' }, r.std, '%')), h('td', { class: 'why-c' }, r.why)] : null));
   };
   for (let k = 0; k < 4; k++) addRow('own');
   for (let k = 0; k < 5; k++) addRow('mom');
@@ -320,7 +322,7 @@ export function setupPage(ctx) {
       msg.scrollIntoView({ block: 'center' });
     }
   };
-  const table = (kind, heads) => h('div', { class: 'scroll-x' }, h('table', { class: 'snap' }, h('thead', null, h('tr', null, heads.map((x, k) => h('th', { class: k === 1 ? 'r' : k > 1 ? 'wide' : null }, x)))), lists[kind]));
+  const table = (kind, heads) => h('div', { class: 'scroll-x' }, h('table', { class: 'snap' + (kind === 'own' ? ' setup-own' : '') }, h('thead', null, h('tr', null, heads.map((x, k) => h('th', { class: [null, 'r', 'r std-c', 'why-c'][k] }, x)))), lists[kind]));
   const sec = (b, name) => h('h2', { class: 'sec' }, bucketTag(b, name));
   return page({
     view: 'flow',
@@ -378,7 +380,7 @@ export function authPage(reason, retry, data = {}) {
         retry();
       },
     },
-    h('label', { class: 'field' }, h('span', null, loginHref ? '備用：管理金鑰（ADMIN_TOKEN）' : '管理金鑰（ADMIN_TOKEN）'), key, h('small', null, '只留在這個分頁，關掉就沒了。')),
+    h('label', { class: 'field' }, h('span', null, loginHref ? '備用：管理金鑰' : '管理金鑰'), key, h('small', null, '設定 Worker 時你自己設的那一組金鑰（步驟在 worker/SETUP.md）。只留在這個分頁，關掉就沒了。')),
     h('button', { class: 'btn' + (loginHref ? '' : ' primary'), type: 'submit' }, '進入'),
   );
   if (loginHref) {

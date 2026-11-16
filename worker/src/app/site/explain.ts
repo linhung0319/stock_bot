@@ -23,6 +23,7 @@ import {
   type Notif,
   type OrderLine,
   type StrategyReviewState,
+  notifName,
 } from '../../engine';
 import { BUCKET_NAME, type AiNote, type Explain, type Fact, type Gauge, type RankRow } from './types';
 
@@ -553,7 +554,7 @@ function ownReduce(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const exit = aiChoice?.tier === 'EXIT';
   const total = totalValue(acct, view);
   return {
-    short: `比 52 週高點低 ${fmtPct(-dd)}，門檻是 20%`,
+    short: `比 52 週高點低 ${fmtPct(-dd, 1)}，門檻是 20%`,
     why: `${t} ${late ? `在 ${md(trig.date)} ` : ''}收盤 ${fmtPx(px)}，比 52 週高點 ${fmtPx(high)} 低 ${fmtPct(-dd, 1)}。慢規則：跌超過 20% 就賣掉一半。它是底線：你沒有另外決定時照它做；這是保險，不是判斷它會繼續跌。${late ? '當時變動不到總資產 5%，所以沒有當天通知，併到這份月報。' : ''}`,
     gauge: Number.isFinite(dd) ? drawdownGauge(dd) : undefined,
     rule: RULE.slow,
@@ -706,7 +707,7 @@ function openBefore(acct: Account, n: Notif): Fact | null {
   if (!xs.length) return null;
   return {
     label: '先算進',
-    value: xs.map((o) => `#${o.id} ${o.title}（${o.status === 'RESPONDED' ? '等你下單' : '等你決定'}）`).join('、'),
+    value: xs.map((o) => `${notifName(o)}（${o.status === 'RESPONDED' ? '等你下單' : '等你決定'}）`).join('、'),
     note: '這幾份清單還沒填快照，這份先當成它們照目前的選擇做完了才算，所以不會把同一張單再列一次；那幾份之後改了決定，這份不會跟著改。',
   };
 }
@@ -734,7 +735,7 @@ function cashflow(ctx: ExplainContext, n: Notif, it: Item): Explain {
     const cap = lines.filter((l) => l.reason === '單檔上限').map((l) => l.ticker);
     return {
       short: `出金 ${fmtMoney(amt)}：只賣不買${cap.length ? `，${cap.join('、')} 先減回 10%` : ''}`,
-      why: `你要出金 ${fmtMoney(amt)}。出金只賣不買${cap.length ? `：${cap.join('、')} 在出金後會超過總資產 15%，所以先在這份清單減回 10%，賣得的錢抵出金` : ''}；其餘照順序從核心、動能、最後才是自選拿。清單做完後，從券商轉出 ${fmtMoney(amt)}，再回來填快照。`,
+      why: `你要出金 ${fmtMoney(amt)}。出金只賣不買${cap.length ? `：${cap.join('、')} 在出金後會超過總資產 15%，所以先在這份清單減回 10%，賣得的錢抵出金` : ''}；其餘依序從：帳上現金 → 動能高於每檔目標的部分（賣回目標）→ 核心 ${core} → 動能其餘的部分 → 最後才是自選。清單做完後，從券商轉出 ${fmtMoney(amt)}，再回來填快照。`,
       rule: RULE.withdraw,
       facts: [...head, ...lineFacts(ctx, lines)],
     };

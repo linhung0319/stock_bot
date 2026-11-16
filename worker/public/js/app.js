@@ -30,6 +30,8 @@ const ctx = {
   },
   setMode(m) {
     setMode(m);
+    // 網址上的 ?demo 也拿掉，不然重新整理又回到示範（T39a）
+    if (m === 'real' && new URLSearchParams(location.search).has('demo')) window.history.replaceState(null, '', location.pathname + (location.hash || '#/'));
     ctx.go('#/');
   },
 };
@@ -63,7 +65,9 @@ async function loadState() {
   badge.textContent = String(n);
   document.title = (n ? `(${n}) ` : '') + 'stock bot' + (st.mode === 'demo' ? '（示範）' : '');
   modeBtn.setAttribute('aria-pressed', String(st.mode === 'demo'));
-  modeBtn.textContent = st.mode === 'demo' ? '示範資料：開' : '示範資料：關';
+  // 手機上只寫「示範：開」（T39a：原本手機的頁首沒有這個開關）
+  modeBtn.replaceChildren(h('span', { class: 'mode-l' }, '示範資料'), h('span', { class: 'mode-s' }, '示範'), st.mode === 'demo' ? '：開' : '：關');
+  document.body.removeAttribute('data-auth');
   drawDemoBar(st);
   notices.replaceChildren(...st.warnings.map((w) => h('p', { class: 'notice', role: 'status' }, w)));
   doMenu.replaceChildren(h('p', null, '你自己發起的操作。每一種都先試算給你看清單和理由，確定了才記下來。'), menuList(st));
@@ -119,6 +123,7 @@ function drawDemoBar(st) {
         ctx.go('#/');
       }),
       h('details', { class: 'demo-tips' }, h('summary', null, `這個情境：${d.summary}`), h('ul', null, d.tips.map((t) => h('li', null, t)))),
+      h('button', { type: 'button', class: 'demo-exit', onclick: () => ctx.setMode('real') }, '離開示範，回到我的帳本'),
     ),
   );
 }
@@ -151,6 +156,8 @@ async function render() {
     if (my !== seq) return;
     if (e instanceof ApiError && e.status === 401) {
       demoBar.hidden = true;
+      // 沒登入：頁首的導覽、示範開關、「我要…」都還不能用，先藏起來（T39a）
+      document.body.dataset.auth = 'out';
       show(authPage(e.data.reason, render, e.data));
     } else {
       show(page({ banner: { title: '這一頁打不開', bubble: { k: '出錯了', say: [e.message], mood: 'worry' } }, pane: h('div', { class: 'btn-row' }, h('button', { class: 'btn primary', type: 'button', onclick: render }, '再試一次'), h('a', { class: 'btn', href: '#/' }, '回待辦')) }));

@@ -122,7 +122,8 @@ export function chart(c) {
   return h(
     'div',
     null,
-    h('div', { class: 'chart-legend' }, h('span', null, h('i'), '收盤'), h('span', null, h('i', { class: 'ma' }), '200 日均線'), h('span', null, h('i', { class: 'half' }), '減半線（52 週高點 −20%）'), c.marks.length ? h('span', null, '● 這檔出現在通知的日子') : null),
+    // 減半線只有自選股有（動能、核心沒有這條規則，伺服器不給，T39a）
+    h('div', { class: 'chart-legend' }, h('span', null, h('i'), '收盤'), h('span', null, h('i', { class: 'ma' }), '200 日均線'), c.halfLine.some((v) => v !== null) ? h('span', null, h('i', { class: 'half' }), '減半線（52 週高點 −20%）') : null, c.marks.length ? h('span', null, '● 這檔出現在通知的日子') : null),
     box,
   );
 }

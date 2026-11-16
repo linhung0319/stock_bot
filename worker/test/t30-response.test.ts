@@ -39,6 +39,7 @@ import {
   type Account,
   type MarketView,
   type Notif,
+  notifName,
 } from '../src/engine';
 import { handle } from '../src/index';
 import { freshDb } from './helpers/d1';
@@ -301,7 +302,7 @@ describe('T30：乙類的三種回應', () => {
       // 已經結案的通知再回應 → 409，論點不動
       const again = await c.api<{ error: string }>('POST', 'ops/own-thesis', { ...body, thesis: '再改一次' });
       expect(again.status).toBe(409);
-      expect(again.body.error).toContain(`通知 #${n.id} 已經回覆過了`);
+      expect(again.body.error).toContain(`${notifName(n)}已經回覆過了`);
       expect((await acctNow(c.db)).own.NVDA.thesis!.version).toBe(1);
       // 不是乙類的通知（例如還沒回覆的慢規則通知）→ 409：慢規則通知不能用修正論點結案（§3.4）
       const l2 = (await loadAccount(c.db))!;

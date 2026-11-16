@@ -334,7 +334,8 @@ function slip(it, v, ui) {
             },
           }),
           h('span', { class: 'lab' }, c.label, c.isDefault && it.choices.length > 1 ? h('span', { class: 'dflt' }, '沒選就是這個') : null),
-          h('span', { class: 'what' }, c.text),
+          // 選項標題已經寫了股數（甲類「照當時的決定：出清，賣 58 股」）就不再重複（T39a：手機上會斷成兩行）
+          c.label.includes(c.text) ? null : h('span', { class: 'what' }, c.text),
           c.note ? h('span', { class: 'note' }, c.note) : null,
         ),
       ),
@@ -474,7 +475,8 @@ function notifBanner(v, extra = {}) {
   return {
     back: { href: '#/', label: '待辦與紀錄' },
     title: actionText(v.title),
-    sub: [`${v.kindLabel}，用 ${day(v.date)}的收盤價算的。`, h('span', { class: 'chip' + (v.status === 'PENDING' || v.status === 'RESPONDED' ? ' now' : '') }, v.status === 'PENDING' || v.status === 'RESPONDED' ? h('i', { class: 'led' }) : null, v.statusLabel)],
+    // 沒有清單的通知（提醒）沒有用收盤價算什麼，只寫哪天發的（T39a）
+    sub: [v.items.length ? `${v.kindLabel}，用 ${day(v.date)}的收盤價算的。` : `${v.kindLabel}，${day(v.date)}發出。`, h('span', { class: 'chip' + (v.status === 'PENDING' || v.status === 'RESPONDED' ? ' now' : '') }, v.status === 'PENDING' || v.status === 'RESPONDED' ? h('i', { class: 'led' }) : null, v.statusLabel)],
     ...extra,
   };
 }
@@ -507,7 +509,7 @@ export async function notifPage(ctx, id) {
       // 策略檢討提醒：AI 的正反證據報告（沒有回來時文字已經寫明，不給連結）
       v.aiRun && !/AI 說明沒有回來/.test(v.text ?? '') ? h('p', { style: 'margin-top:8px' }, h('a', { href: `#/ai/${v.aiRun}` }, 'AI 列出的正反證據（報告）')) : null,
       v.note ? h('p', { class: 'dim' }, '你的回答：' + ({ own: '歸自選', mom: '歸動能' }[v.note] ?? v.note)) : null,
-      v.ref ? h('p', { style: 'margin-top:8px' }, h('a', { href: `#/n/${v.ref}` }, `打開通知 #${v.ref}`)) : null,
+      v.ref ? h('p', { style: 'margin-top:8px' }, h('a', { href: `#/n/${v.ref}` }, `打開原來那則通知：${v.refName ?? '這則提醒說的通知'}`)) : null,
       v.status === 'PENDING'
         ? h(
             'div',
@@ -523,7 +525,8 @@ export async function notifPage(ctx, id) {
   }
 
   const backToDecide = reopenAndGo(ctx, v.id);
-  const reminded = v.reminded && v.status === 'PENDING' ? h('p', { class: 'notice', style: 'margin:0 0 16px' }, '這則通知已經超過 2 個交易日。現在回覆的話，自選慢規則的單會用最新的收盤價重算；如果這段時間規則狀態已經反轉，那一項會取消。') : null;
+  // 晚回覆的警告：只有自選慢規則的單會用最新的收盤價重算，只在有這種項目時出現、只講那幾檔（T39a）
+  const reminded = v.lateReprice?.length ? h('p', { class: 'notice', style: 'margin:0 0 16px' }, `這則通知已經超過 2 個交易日。現在回覆的話，${v.lateReprice.join('、')} 的慢規則單會用最新的收盤價重算；如果這段時間規則狀態已經反轉，那一項會取消。其他項目照原本的股數。`) : null;
 
   if (v.step === 1) {
     // ---------- 第一步：每張建議單左邊是做什麼、右邊是為什麼；右邊的主控台隨時顯示合起來要下的單
@@ -647,6 +650,8 @@ export async function notifPage(ctx, id) {
   if (v.status === 'DONE') bubble = { k: '當時', say: ['這份清單', em('已經完成'), v.filled.length ? `，${v.filled.length} 筆成交照快照記進帳本了。` : '。'], mood: 'happy' };
   if (v.status === 'DONE' && v.items.length && v.items.every((i) => i.revised)) bubble = { k: '當時', say: ['你用', em('修正論點'), '回應了這則通知，部位不動。'], mood: 'watch' };
   if (v.status === 'SKIPPED') bubble = { k: '當時', say: ['這次', em('整則沒做'), '。差異記在「沒照規則做的」紀錄裡。'], mood: 'watch' };
+  // 每一項本來就是不動（乙類你選「不同意，不動」）：不是「沒照規則」（T39a）
+  if (v.kept) bubble = { k: '當時', say: ['你選了', em(v.kept), '。規則本來就沒有動作，所以不用下單，這不算沒照規則；AI 的建議和你的選擇會留在紀錄裡，之後可以對照。'], mood: 'watch' };
   if (v.status === 'SUPERSEDED') bubble = { k: '當時', say: ['這份清單被', em('重算過的新清單'), '取代了，以新的為準。'], mood: 'watch' };
   if (v.status === 'CANCELLED') bubble = { k: '當時', say: ['這份清單', em('取消了'), v.withdraw ? '，出金沒有記帳。' : '。'], mood: 'watch' };
   if (v.followUp) {
@@ -682,12 +687,13 @@ export async function notifPage(ctx, id) {
       glass('pad', h('table', { class: 'orders' }, h('tbody', null, v.filled.map((f) => h('tr', null, h('td', { class: 'sd' }, h('span', { class: 'side ' + (f.shares < 0 ? 'sell' : 'buy') }, f.shares < 0 ? '賣' : '買')), h('td', null, h('span', { class: 'tk' }, f.ticker), ' ', h('span', { class: 'small faint' }, f.bucketName)), h('td', { class: 'q' }, qty(f.shares), h('small', null, '股'))))))),
     );
   }
-  body.push(h('h2', { class: 'sec' }, v.status === 'SKIPPED' ? '當時的建議與理由（這次沒做）' : '當時的建議、你的決定與理由'), slips(v, { editable: false }), attentionBox(v));
+  body.push(h('h2', { class: 'sec' }, v.status === 'SKIPPED' && !v.kept ? '當時的建議與理由（這次沒做）' : '當時的建議、你的決定與理由'), slips(v, { editable: false }), attentionBox(v));
   return page({
     view: 'page',
     banner: notifBanner(v, { bubble }),
     pane: body,
-    rail: v.composed ? consoleBox(trayTitle(v.composed, '當時合起來要下'), trayBody(v.composed), null, '當時的單') : tiles(st),
+    // 整則沒做的不列「當時合起來要下的單」：那時沒有要下的單（T39a）
+    rail: v.composed && v.status !== 'SKIPPED' ? consoleBox(trayTitle(v.composed, '當時合起來要下'), trayBody(v.composed), null, '當時的單') : tiles(st),
   });
 }
 
@@ -844,7 +850,8 @@ export async function snapshotPage(ctx) {
   for (const u of f.unc) addRow('own', { ticker: u.ticker, book: 0, listed: 0, expected: u.shares }, true);
   cash.addEventListener('input', recount);
 
-  const fill = f.autofill
+  // 沒有等成交的清單時沒東西可填，不放這個按鈕（T39a）
+  const fill = f.autofill && f.lists.length
     ? h(
         'button',
         {

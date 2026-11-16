@@ -28,6 +28,8 @@ import {
   type ShadowRecord,
   type Thesis,
   type Tier,
+  usd,
+  notifDay,
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
@@ -778,8 +780,8 @@ export function deposit(acct0: Account, view: MarketView, amount: number): { acc
   // 補「低於目標最多」的格子：照缺口由大到小排，買單合計不超過現金的 98%
   const lines = planToLines(plan, values, { price, shares: shareCells(base) }).sort((a, b) => b.shares * price(b.ticker) - a.shares * price(a.ticker));
   const capped = capBuys(lines, BUY_CASH_FRACTION * Math.max(0, base.cash + amount), price);
-  const item = makeItem({ f: 'F11', kind: 'CASHFLOW', title: `入金 ${amount}：只買不賣`, choices: [{ id: 'DO', label: '照做', lines: capped }], noSkip: true, why: '依序補低於目標最多的格子；缺口小於總資產 0.25% 的不補；剩下的進核心' });
-  const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: `入金 ${amount} 的清單`, items: [item], deposit: amount });
+  const item = makeItem({ f: 'F11', kind: 'CASHFLOW', title: `入金 ${usd(amount)}：只買不賣`, choices: [{ id: 'DO', label: '照做', lines: capped }], noSkip: true, why: '依序補低於目標最多的格子；缺口小於總資產 0.25% 的不補；剩下的進核心' });
+  const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: `入金 ${usd(amount)} 的清單`, items: [item], deposit: amount });
   notif.preview = composeNotif(acct, view, notif);
   return { acct, notif, mergedIntoMonthly: false };
 }
@@ -794,8 +796,8 @@ export function withdraw(acct0: Account, view: MarketView, amount: number): { ac
   const values = cellValues(base, view);
   const plan = planDay({ cfg: acct.cfg, values, state: base.rule, flow: { kind: '出金', amount } });
   const lines = planToLines(plan, values, { price: (t) => priceOf(view, t), shares: shareCells(base) });
-  const item = makeItem({ f: 'F12', kind: 'CASHFLOW', title: `出金 ${amount}：只賣不買`, choices: [{ id: 'DO', label: '照做', lines }], noSkip: true, why: '先做單檔上限檢查；再照 核心現金 → 動能高於目標 → 核心 ETF → 動能 → 自選' });
-  const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: `出金 ${amount} 的清單`, items: [item], withdraw: amount });
+  const item = makeItem({ f: 'F12', kind: 'CASHFLOW', title: `出金 ${usd(amount)}：只賣不買`, choices: [{ id: 'DO', label: '照做', lines }], noSkip: true, why: '先做單檔上限檢查；再照 核心現金 → 動能高於目標 → 核心 ETF → 動能 → 自選' });
+  const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: `出金 ${usd(amount)} 的清單`, items: [item], withdraw: amount });
   notif.preview = composeNotif(acct, view, notif);
   return { acct, notif };
 }
@@ -812,14 +814,14 @@ export function cancelCashflow(acct0: Account, view: MarketView, id: number): { 
   // 之後的入金、出金、改比例是照這一筆做完之後算的（T38）：先取消後面那一份。
   // 例如改了兩次比例（A → B → C），取消第一次會把比例改回 A，第二份清單卻還是照 C 列的
   const later = acct.notifs.find((x) => x.id > id && cashflowKind(x) && (x.status === 'PENDING' || x.status === 'RESPONDED'));
-  if (later) return { acct: acct0, ok: false, error: `之後的「${later.title}」（通知 #${later.id}）是照這一筆做完之後算的，還沒填快照：先取消那一份，再取消這一筆` };
+  if (later) return { acct: acct0, ok: false, error: `之後的「${later.title}」（${notifDay(later.date)}）是照這一筆做完之後算的，還沒填快照：先取消那一份，再取消這一筆` };
   const kind = cashflowKind(n)!;
   if (kind === '入金') {
     const amt = n.deposit ?? 0;
     acct.cash -= amt;
     recordExternalFlow(acct, view, -amt);
     const ev = acct.events.at(-1);
-    if (ev) ev.reason = `取消入金（通知 #${id}）`;
+    if (ev) ev.reason = `取消 ${notifDay(n.date)} 的入金`;
   } else if (kind === '改比例' && n.ratioBefore) {
     acct.cfg = { ...acct.cfg, ratio: { ...n.ratioBefore.ratio } };
     for (const [t, w] of Object.entries(n.ratioBefore.std)) if (acct.rule.own[t]) acct.rule.own[t].stdWeight = w;

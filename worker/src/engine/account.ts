@@ -566,6 +566,27 @@ export function addLot(acct: Account, bucket: keyof Lots, ticker: string, n: num
   } else acct.lots[bucket][ticker] = v;
 }
 
+/** 金額的寫法：$10,000（通知標題用；T39a）。 */
+export const usd = (x: number): string => `$${x.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+
+/** 2026-12-24 → 12/24。 */
+export const notifDay = (d: string): string => (d ? `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}` : '');
+
+const NOTIF_KIND_NAME: Partial<Record<Notif['kind'], string>> = { URGENT: '當天通知', FIX: '補做的清單', INFO: '提醒', CLASSIFY: '問題', CASH_DIFF: '問題' };
+
+/**
+ * 畫面上指到另一則通知時的名字（T39a：不用內部的通知編號）：日期與種類，再加標題。
+ * 月報：「12 月月報」；你的操作：「12/10 的「入金 $10,000 的清單」」；其他：「12/24 的當天通知「MU 慢規則減半」」。
+ */
+export function notifName(n: Pick<Notif, 'kind' | 'date' | 'title'>): string {
+  if (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY') {
+    const m = /^\d{4}-(\d{2}) 月報/.exec(n.title);
+    return `${Number(m ? m[1] : n.date.slice(5, 7))} 月月報`;
+  }
+  const kind = NOTIF_KIND_NAME[n.kind];
+  return `${n.date ? `${notifDay(n.date)} 的` : ''}${kind ?? ''}「${n.title}」`;
+}
+
 export function newNotif(acct: Account, view: MarketView, o: Partial<Notif> & Pick<Notif, 'kind' | 'title'>): Notif {
   const n: Notif = { id: acct.nextId++, date: view.date, seq: view.i, items: [], status: 'PENDING', coreAbsorb: true, reminded: false, ...o };
   syncRunIds(n);

@@ -24,6 +24,8 @@ import {
   type BucketShares,
   type MarketView,
   type Notif,
+  notifDay,
+  notifName,
 } from '../src/engine';
 import type { OrderLine } from '../src/engine/orders';
 import { scenarios } from './helpers/scenarios';
@@ -110,7 +112,7 @@ describe('T38：已回覆、還沒填快照時，入金、出金、改比例又�
     expect((20 + ge) * priceOf(sim.pre, 'GE')).toBeLessThanOrEqual(slot + priceOf(sim.pre, 'GE'));
     const ctx: ExplainContext = { acct: dep.acct, view: sim.pre, axis: [], rankOrder: [], aiNotes: [] };
     const facts = explainItem(ctx, dep.notif, dep.notif.items[0]).facts!;
-    expect(facts.find((f) => f.label === '先算進')!.value).toBe(`#${m.id} ${m.title}（等你決定）`);
+    expect(facts.find((f) => f.label === '先算進')!.value).toBe(`${notifName(m)}（等你決定）`);
     // GE 那一行的「目前」從月報做完之後算（月報買 20 股），不是 0%
     expect(facts.find((f) => f.label === '動能 GE')?.note ?? '目前 有').not.toMatch(/^目前 0\.0%/);
   });
@@ -276,7 +278,7 @@ describe('T38：先取消前面那一筆入金、出金、改比例，後面那�
     const a2 = respond(c2.acct, view, c2.notif.id, { mode: 'DO' });
     const bad = cancelCashflow(a2, view, c1.notif.id);
     expect(bad.ok).toBe(false);
-    expect(bad.error).toBe(`之後的「改比例的清單」（通知 #${c2.notif.id}）是照這一筆做完之後算的，還沒填快照：先取消那一份，再取消這一筆`);
+    expect(bad.error).toBe(`之後的「改比例的清單」（${notifDay(c2.notif.date)}）是照這一筆做完之後算的，還沒填快照：先取消那一份，再取消這一筆`);
     expect(bad.acct.cfg.ratio).toEqual({ own: 0.2, strat: 0, core: 0.8 });
     const x2 = cancelCashflow(a2, view, c2.notif.id);
     expect(x2.ok).toBe(true);

@@ -12,9 +12,14 @@ const dl = (rows) => h('dl', { class: 'facts' }, rows.map(([k, v, note]) => [h('
 const paras = (text) => String(text ?? '').split(/\n\s*\n/).map((p) => h('p', { style: 'margin-top:8px;white-space:pre-wrap' }, p.trim()));
 const details = (title, body, open = false) => h('details', { class: 'more', open }, h('summary', null, title), h('div', { class: 'more-body' }, body));
 
+// 出場條件改寫（OWN_CHECK）：結果在持股頁勾選，不會列在通知或月報（T39a）
+const REWRITE = 'OWN_CHECK';
+const useText = (d) => (d.fn === REWRITE ? '改寫好的出場條件列在持股頁，你勾選了才開始監測；不會列在通知或月報。' : '會列在通知或月報上，由你決定。');
+
 function bubbleOf(d) {
   if (d.status === 'PENDING') return { k: 'AI 還在想', say: ['雲端排程還沒送回結果。', '回來之前照規則。'], mood: 'watch' };
-  if (d.status === 'AGREED' && !d.followRule) return { k: 'AI 的建議', say: [`${d.samplesWanted} 票一致：`, { t: d.verdict, tone: 'em' }, '。會列在通知或月報上，由你決定。'], mood: 'alert' };
+  if (d.fn === REWRITE && d.status === 'AGREED') return { k: '改寫好了', say: [`${d.ticker ?? ''} 的出場條件`, { t: '改寫好了', tone: 'em' }, `。${useText(d)}`], mood: 'watch' };
+  if (d.status === 'AGREED' && !d.followRule) return { k: 'AI 的建議', say: [`${d.samplesWanted} 票一致：`, { t: d.verdict, tone: 'em' }, `。${useText(d)}`], mood: 'alert' };
   if (d.status === 'AGREED') return { k: 'AI 的意見', say: [`${d.samplesWanted} 票一致：`, { t: d.verdict, tone: 'em' }, '。這個功能只說明、不改變下單。'], mood: 'watch' };
   return { k: '照規則', say: [d.reason], mood: 'worry' };
 }
@@ -107,7 +112,7 @@ export async function aiRunPage(ctx, id) {
   );
   return page({
     view: 'page',
-    banner: { back, kicker: `${d.label} · 決策日 ${day(d.date)}`, title: actionText(`${d.ticker ? d.ticker + '：' : ''}${d.verdict}`), sub: [h('span', { class: 'chip ' + (TONE[d.status] ?? '') }, d.statusLabel), d.followRule ? ' 照規則，AI 的意見只記錄。' : ' AI 的建議可以採用，由你決定。'], bubble: bubbleOf(d) },
+    banner: { back, kicker: `${d.label} · 決策日 ${day(d.date)}`, title: actionText(`${d.ticker ? d.ticker + '：' : ''}${d.fn === REWRITE && d.status === 'AGREED' ? '出場條件改寫好了' : d.verdict}`), sub: [h('span', { class: 'chip ' + (TONE[d.status] ?? '') }, d.statusLabel), d.fn === REWRITE ? ' 改寫的結果要你在持股頁勾選才會監測。' : d.followRule ? ' 照規則，AI 的意見只記錄。' : ' AI 的建議可以採用，由你決定。'], bubble: bubbleOf(d) },
     pane: h(
       'div',
       { class: 'stackv' },
@@ -118,7 +123,8 @@ export async function aiRunPage(ctx, id) {
         h('div', { style: 'display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px' }, d.votes.map((v) => h('span', { class: 'chip' }, `${v.text} ${v.n} 票`)), h('span', { class: 'faint small' }, `（要 ${d.samplesWanted} 票）`)),
         h('div', { style: 'margin-top:14px' }, dl([['問 AI 的問題', d.question], ['規則這次的動作', d.rule]])),
       ),
-      d.premises.length
+      // 沒有一票判斷前提的功能（例如出場條件改寫）：前提只是背景，不列「沒有判斷」（T39a）
+      d.premises.length && (d.status === 'PENDING' || d.premises.some((p) => p.votes.length))
         ? glass(
             'pad',
             h('h2', { class: 'panel-h' }, '前提逐條'),
@@ -313,7 +319,8 @@ export function aiOverview() {
         );
       }
       if (o.events?.length)
-        parts.push(details('最近的申報事件（規則偵測、每日掃描）', h('table', { class: 'plain' }, h('tbody', null, o.events.map((e) => h('tr', null, h('td', { class: 'num', style: 'white-space:nowrap' }, day(e.event_date)), h('td', { class: 'tk' }, e.ticker), h('td', null, `${e.form === 'NEWS' ? '新聞標題' : e.form} · ${CODE[e.code] ?? e.code}`, e.detail ? h('div', { class: 'small faint' }, plain(e.detail)) : null), h('td', { class: 'small', style: 'white-space:nowrap' }, e.status === 'IN_COURT' && e.handled_note ? h('a', { href: `#/ai/${e.handled_note}` }, '審查中') : e.status === 'HANDLED' && /^法庭 ([^\s：]+)：/.test(e.handled_note ?? '') ? h('a', { href: `#/ai/${/^法庭 ([^\s：]+)：/.exec(e.handled_note)[1]}` }, '已審查') : e.status === 'HANDLED' && /開法庭 (\S+)/.test(e.handled_note ?? '') ? h('a', { href: `#/ai/${/開法庭 (\S+)/.exec(e.handled_note)[1]}` }, '已開審查') : ({ NEW: '待處理', HANDLED: e.handled_note ?? '已處理', INFO: '只記錄', IN_COURT: '審查中' }[e.status] ?? e.status))))))));
+        // 日期和代號放同一欄（T39a：手機上原本四欄，中間的說明欄被擠得很窄）
+        parts.push(details('最近的申報事件（規則偵測、每日掃描）', h('table', { class: 'plain' }, h('tbody', null, o.events.map((e) => h('tr', null, h('td', { style: 'white-space:nowrap' }, h('span', { class: 'num' }, day(e.event_date)), h('div', { class: 'tk' }, e.ticker)), h('td', null, `${e.form === 'NEWS' ? '新聞標題' : e.form} · ${CODE[e.code] ?? e.code}`, e.detail ? h('div', { class: 'small faint' }, plain(e.detail)) : null), h('td', { class: 'small', style: 'white-space:nowrap' }, e.status === 'IN_COURT' && e.handled_note ? h('a', { href: `#/ai/${e.handled_note}` }, '審查中') : e.status === 'HANDLED' && /^法庭 ([^\s：]+)：/.test(e.handled_note ?? '') ? h('a', { href: `#/ai/${/^法庭 ([^\s：]+)：/.exec(e.handled_note)[1]}` }, '已審查') : e.status === 'HANDLED' && /開法庭 (\S+)/.test(e.handled_note ?? '') ? h('a', { href: `#/ai/${/開法庭 (\S+)/.exec(e.handled_note)[1]}` }, '已開審查') : ({ NEW: '待處理', HANDLED: e.handled_note ?? '已處理', INFO: '只記錄', IN_COURT: '審查中' }[e.status] ?? e.status))))))));
       box.replaceChildren(...parts);
     })
     .catch(() => box.replaceChildren());

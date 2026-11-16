@@ -2,6 +2,7 @@
 //   Worker 存好證據包並給任務編號 → 觸發雲端排程（觸發文字只帶編號）
 //   → Claude Code 向 Worker 取證據包 → 把固定格式的 JSON 送回 Worker → Worker 檢查
 // Worker 把送回的內容當成不可信輸入：只接受固定欄位與列舉值，不合格或逾時就照規則並記錄。
+import { fnInfo } from '../ai/functions';
 import type { Env, Fetcher } from './env';
 
 export const ROUTINE_BETA_HEADER = 'experimental-cc-routine-2026-04-01';
@@ -17,9 +18,13 @@ export type TaskStatus = 'PENDING' | 'FETCHED' | 'DONE' | 'REJECTED' | 'TIMEOUT'
  * 逾時的兩種原因（T23 的溝通修補）：看 fetched_at 有沒有值。寫進「照規則」結論的原因（aiRuns.closeStaleRuns）與 AI_TIMEOUT 告警；
  * 其他「沒有結論」的告警要寫逾時原因時用同一句。
  */
-export function timeoutReason(fetched: boolean): string {
+export function timeoutReason(fetched: boolean, lateFetch = false): string {
+  if (lateFetch) return `雲端排程超過 ${TASK_TIMEOUT_MS / 60000} 分鐘才來取證據包，太晚了沒有給它（多半是 session 開得太晚）`;
   return fetched ? `雲端排程取了證據包，但 ${TASK_TIMEOUT_MS / 60000} 分鐘內沒有送回結果` : '雲端排程沒有來取證據包（多半是額度用完或 session 沒開成）';
 }
+
+/** 超過時限才來取證據包（readEvidence 標 TIMEOUT 時記在 ai_tasks.error）：逾時原因不是「沒有來取」（T36 留下的，T39a 修）。 */
+export const LATE_FETCH_ERROR = '超過時限才來取證據包';
 
 export interface AiTaskRow {
   id: string;
@@ -137,7 +142,7 @@ export async function readEvidence(db: D1Database, id: string, now: Date): Promi
   if (!t) return Response.json({ error: 'not_found' }, { status: 404 });
   if (t.status !== 'PENDING' && t.status !== 'FETCHED') return Response.json({ error: 'task_closed', status: t.status }, { status: 410 });
   if (now.getTime() - Date.parse(t.created_at) > TASK_TIMEOUT_MS) {
-    await db.prepare("UPDATE ai_tasks SET status = 'TIMEOUT' WHERE id = ?").bind(id).run();
+    await db.prepare("UPDATE ai_tasks SET status = 'TIMEOUT', error = ?, completed_at = ? WHERE id = ?").bind(LATE_FETCH_ERROR, now.toISOString(), id).run();
     return Response.json({ error: 'task_expired' }, { status: 410 });
   }
   await db.prepare("UPDATE ai_tasks SET status = 'FETCHED', fetched_at = COALESCE(fetched_at, ?) WHERE id = ?").bind(now.toISOString(), id).run();
@@ -224,10 +229,22 @@ export async function sweepTimeouts(db: D1Database, now: Date): Promise<string[]
   return (await sweepTimeoutTasks(db, now)).map((t) => t.id);
 }
 
-/** AI_TIMEOUT 告警的文字：依兩種原因分開列。 */
-export function timeoutAlert(tasks: TimedOutTask[]): string {
+/**
+ * 逾時任務的名字（T39a：告警原本列一串任務編號）：「自選定期審查 NVDA」；不是 AI 執行的任務（連線測試）沒有名字。
+ */
+export async function taskLabels(db: D1Database, ids: string[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const id of ids) {
+    const r = await db.prepare('SELECT fn, ticker FROM ai_runs WHERE task_id = ?').bind(id).first<{ fn: string; ticker: string | null }>();
+    if (r) out[id] = `${fnInfo(r.fn).label}${r.ticker ? ` ${r.ticker}` : ''}`;
+  }
+  return out;
+}
+
+/** AI_TIMEOUT 告警的文字：依兩種原因分開列；有名字的寫名字（taskLabels），沒有的才寫任務編號。 */
+export function timeoutAlert(tasks: TimedOutTask[], labels: Record<string, string> = {}): string {
   const parts = [false, true]
-    .map((fetched) => ({ fetched, ids: tasks.filter((t) => t.fetched === fetched).map((t) => t.id) }))
+    .map((fetched) => ({ fetched, ids: tasks.filter((t) => t.fetched === fetched).map((t) => labels[t.id] ?? t.id) }))
     .filter((g) => g.ids.length)
     .map((g) => `${timeoutReason(g.fetched)}：${g.ids.length} 個（${g.ids.join('、')}）`);
   return `${tasks.length} 個 AI 任務逾時，已照規則處理：${parts.join('；')}。`;

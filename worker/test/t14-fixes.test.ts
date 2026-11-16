@@ -1,6 +1,6 @@
 // T14 使用者角度走一遍時發現、修掉的問題（設計 §10 第 37 點）。
 import { describe, expect, it } from 'vitest';
-import { addPremises, annualizedVol, applySnapshot, bookShares, cancelCashflow, changeRatio, classify, deposit, liveShadow, monthlyWait, navPerUnit, priceOf, recentVol, recommendStdWeights, removeOwn, respond, resumeMonthly, setStdWeight, withdraw, type Account, type BucketShares, type MarketView } from '../src/engine';
+import { addPremises, annualizedVol, notifDay, applySnapshot, bookShares, cancelCashflow, changeRatio, classify, deposit, liveShadow, monthlyWait, navPerUnit, priceOf, recentVol, recommendStdWeights, removeOwn, respond, resumeMonthly, setStdWeight, withdraw, type Account, type BucketShares, type MarketView } from '../src/engine';
 import { scenarios } from './helpers/scenarios';
 import { Sim } from './helpers/sim';
 
@@ -309,7 +309,7 @@ describe('決定了還沒填快照：提醒一次；月報日先暫停，填完�
       sim.d++;
     }
     const fill = titles.filter((t) => t.includes('決定了還沒填快照'));
-    expect(fill).toEqual([`提醒：清單 #${dep.notif.id}（${dep.notif.date}）決定了還沒填快照`]);
+    expect(fill).toEqual([`提醒：「${dep.notif.title}」（${notifDay(dep.notif.date)}）決定了還沒填快照`]);
   });
 
   it('月報日還有決定了沒填快照的清單 → 月報暫停；填完快照 → 用暫停時的輸入重算', () => {
@@ -323,7 +323,7 @@ describe('決定了還沒填快照：提醒一次；月報日先暫停，填完�
     }
     expect(monthlyWait(sim.acct)).toMatchObject({ kind: 'FILL', notif: { id: dep.notif.id } });
     const paused = sim.preOpen()!;
-    expect(paused.title).toBe(`月報暫停：清單 #${dep.notif.id} 決定了還沒填快照`);
+    expect(paused.title).toBe(`月報暫停：「${dep.notif.title}」決定了還沒填快照`);
     expect(sim.acct.monthlyBlocked).toBe(true);
     const s = sim.open()!; // 填快照：入金清單完成
     expect(s.completed).toEqual([dep.notif.id]);
@@ -346,7 +346,7 @@ describe('取消自己發起的入金／出金／改比例（填快照之前）'
     expect(c.acct.cash).toBe(sim.acct.cash);
     expect(c.acct.units.total).toBeCloseTo(sim.acct.units.total, 9);
     expect(navPerUnit(c.acct, sim.pre).total).toBeCloseTo(nav0.total, 9);
-    expect(c.acct.events.at(-1)).toMatchObject({ kind: 'WITHDRAW', amount: 5000, reason: `取消入金（通知 #${dep.notif.id}）` });
+    expect(c.acct.events.at(-1)).toMatchObject({ kind: 'WITHDRAW', amount: 5000, reason: `取消 ${notifDay(dep.notif.date)} 的入金` });
     expect(c.acct.notifs.find((n) => n.id === dep.notif.id)!.status).toBe('CANCELLED');
     expect(cancelCashflow(c.acct, sim.pre, dep.notif.id).ok).toBe(false);
     // 回覆後也能取消；填過快照就不行

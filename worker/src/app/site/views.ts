@@ -29,6 +29,7 @@ import {
   type ShadowRecord,
   type Snapshot,
   cashflowKind,
+  notifName,
 } from '../../engine';
 import { CRASH_REVIEW } from '../../ai/crash';
 import { HORIZONS, indexOn, type PriceBook } from '../../ai/shadow';
@@ -96,6 +97,34 @@ const STATUS_LABEL: Record<Notif['status'], string> = {
   SUPERSEDED: '已被新的清單取代',
 };
 
+/**
+ * 回覆後整則都沒下單，但每一項本來就是「不動」（規則的選項就是不做，例如乙類預設不動、你選「不同意，不動」）：
+ * 這不是「這次不做／沒照規則」（T39a）。回傳要顯示的狀態；不是這種情況回傳 null。
+ */
+export function keptAsRule(n: Notif): string | null {
+  if (n.status !== 'SKIPPED') return null;
+  const live = n.items.filter((i) => !i.cancelled);
+  if (!live.length || !live.every((i) => i.choice === 'SKIP' && i.ruleChoice === 'SKIP')) return null;
+  return live.some((i) => i.brk?.type === 'B') ? '不同意 AI，不動' : '照規則，不動';
+}
+
+/** 一則通知的狀態（通知頁與紀錄共用）：提醒與沒有清單的通知沒有「等你決定」（T39a）。 */
+function statusLabelOf(n: Notif): string {
+  if (n.followUpOpen) return '快照和清單不同';
+  const listLike = n.items.length > 0 && n.kind !== 'INFO';
+  if (n.status === 'PENDING' && !listLike) return n.kind === 'INFO' || n.kind === 'MONTHLY_EMPTY' ? '未讀' : '等你回答';
+  return keptAsRule(n) ?? STATUS_LABEL[n.status];
+}
+
+/**
+ * 晚回覆（提醒過才回）時會用回覆當天的收盤價重算的項目（設計 §2.3.1；ops.ts 的 lateReprice）：自選慢規則的單。
+ * 回傳那幾檔的代號；沒有這種項目回傳空陣列（不顯示晚回覆的警告，T39a）。
+ */
+export function lateRepriceTickers(n: Notif): string[] {
+  if (!n.reminded || n.status !== 'PENDING') return [];
+  return [...new Set(n.items.filter((i) => !i.cancelled && i.kind === 'OWN_RULE' && i.ticker).map((i) => i.ticker!))];
+}
+
 export interface LineView {
   ticker: string;
   bucket: string;
@@ -104,6 +133,8 @@ export interface LineView {
   /** 用訊號日收盤估的金額（正 = 買）。 */
   amount: number | null;
   reason: string;
+  /** 核心那一行是算出來補差額的（清單做完多出的現金交給核心、不夠的錢從核心拿），不是哪一項建議本身的單（T39a）。 */
+  balance?: boolean;
 }
 
 export interface ChoiceView {
@@ -207,12 +238,23 @@ export interface NotifView {
   attention: { ticker: string; kind: string; text: string; since: string; src: 'own' | 'mom' }[];
   /** 沒有清單的通知（策略檢討提醒）用到的 AI 執行：通知頁連到報告（momentum_ai §3.8）。沒有是 null。 */
   aiRun: string | null;
+  /** 提醒指到的那一則通知的名字（日期與種類，不用內部編號；T39a）。沒有是 null。 */
+  refName: string | null;
+  /** 晚回覆會用當天收盤價重算的自選慢規則項目（那幾檔的代號）；空的 = 不顯示晚回覆的警告（T39a）。 */
+  lateReprice: string[];
+  /** 回覆後整則沒下單、但每一項本來就是不動（例如乙類你選「不同意，不動」）：那一句狀態；不是是 null（T39a）。 */
+  kept: string | null;
 }
+
+const isBalance = (l: OrderLine): boolean => l.bucket === 'core' && /^(錢交給核心|從核心拿錢)/.test(String(l.reason));
 
 function lineView(view: MarketView, l: OrderLine, acct: Account): LineView {
   const px = priceAt(view, l.ticker);
-  return { ticker: l.ticker, bucket: l.bucket, bucketName: BUCKET_NAME[l.bucket], shares: l.shares, amount: px === null ? null : l.shares * px, reason: l.bucket === 'core' ? coreLineWhy(String(l.reason), acct) : String(l.reason) };
+  return { ticker: l.ticker, bucket: l.bucket, bucketName: BUCKET_NAME[l.bucket], shares: l.shares, amount: px === null ? null : l.shares * px, reason: l.bucket === 'core' ? coreLineWhy(String(l.reason), acct) : String(l.reason), balance: isBalance(l) };
 }
+
+/** 清單本身不用下單、只有帳上原本的現金交給核心時，核心那一行的說明（T39a：乙類預設不動，右邊卻列「買 VOO」看起來像這則要你下單）。 */
+const cashOnlyWhy = (core: string): string => `帳上原本就有的現金交給核心買 ${core}。這則通知本身不用下單；這張只是順便把閒著的現金投入核心，不下也可以，下次月報會再列。`;
 
 function linesText(lines: OrderLine[], single: boolean): string {
   if (!lines.length) return '不動';
@@ -255,7 +297,7 @@ export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: st
       const th = sc.th;
       sc = { ...sc, hit: g.value > th };
       zone = '賣出';
-      capText = `一年報酬排名（共 ${Math.round(g.to)} 名，越左邊越強）`;
+      capText = `一年報酬排名（50 檔大型股裡的名次；條的左端是第 1 名，越右邊名次越後面、越接近賣出）`;
       say = g.value > th ? `已經掉出前 ${th} 名 → ${act}` : `已不在動能名單上（上次沒賣）→ ${act}`;
       break;
     }
@@ -266,13 +308,13 @@ export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: st
       sc = { start: g.to, th, end: 1, value: rank, hit: true };
       zone = '進場';
       kind = 'go';
-      capText = `一年報酬排名（共 ${Math.round(g.to)} 名，越右邊越強）`;
+      capText = `一年報酬排名（50 檔大型股裡的名次；條的左端是第 ${Math.round(g.to)} 名，越右邊名次越前面、越接近進場）`;
       say = rank <= cfg.momSlots ? `排第 ${rank} 名，在前 ${cfg.momSlots} 名內 → ${act}` : `排在前面的不能買，輪到第 ${rank} 名 → ${act}`;
       break;
     }
     case 'F3': {
       zone = '調回';
-      capText = '離每檔目標多遠（越左邊越接近目標）';
+      capText = '離每檔目標多遠（越右邊離目標越遠、越接近調回）';
       say = `${g.value > 1 ? '高出' : '低於'}目標 ${pctTxt(g.value - 1, 0)}，超過 ±${pctTxt(sc.th, 0)} → ${total < 0 ? `這次順便賣 ${n0} 股` : `這次順便買 ${n0} 股`}調回`;
       break;
     }
@@ -310,7 +352,7 @@ export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: st
     }
     case 'F7': {
       zone = '減半';
-      capText = '收盤距 52 週高點（越右邊跌越多）';
+      capText = '收盤距 52 週高點（越右邊跌越多、越接近減半）';
       say = `比高點低 ${pctTxt(g.value)}，超過 20% → 這次賣一半，${n0} 股`;
       break;
     }
@@ -330,7 +372,7 @@ export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: st
     }
     case 'F14': {
       zone = '減半';
-      capText = '收盤距 52 週高點（越右邊跌越多）';
+      capText = '收盤距 52 週高點（越右邊跌越多、越接近減半）';
       const hit = g.value <= sc.th;
       say = hit ? `已經比高點低 ${pctTxt(g.value)}（超過 20%）→ 先買標準比重的一半，${n0} 股` : `比高點低 ${pctTxt(g.value)}，還沒到減半的範圍 → 買到標準比重，${n0} 股`;
       break;
@@ -428,9 +470,11 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
 }
 
 export function composedView(d: Ready, n: Notif, c: Composed): ComposedView {
+  const cashOnly = c.merged.every((m) => m.parts.every((l) => isBalance(l) && l.shares > 0));
   const orders: OrderView[] = c.merged.map((m) => {
     const px = priceAt(d.view, m.ticker);
-    return { ticker: m.ticker, shares: m.shares, transfer: m.shares === 0, price: px, amount: px === null ? null : m.shares * px, parts: m.parts.map((l) => lineView(d.view, l, d.acct)) };
+    const parts = m.parts.map((l) => lineView(d.view, l, d.acct));
+    return { ticker: m.ticker, shares: m.shares, transfer: m.shares === 0, price: px, amount: px === null ? null : m.shares * px, parts: cashOnly ? parts.map((p) => ({ ...p, reason: cashOnlyWhy(d.acct.cfg.coreTicker) })) : parts };
   });
   // 賣的排前面（先賣才有錢買），各自照金額大小
   orders.sort((a, b) => Number(a.shares > 0) - Number(b.shares > 0) || Math.abs(b.amount ?? 0) - Math.abs(a.amount ?? 0));
@@ -488,7 +532,7 @@ export function notifView(d: Ready, n: Notif): NotifView {
     // 失效通知（甲類、乙類，own_thesis §1.10）的說明是 LINE 那幾行，和項目的標題、理由重複：網站不另外顯示（T34）
     text: listLike && n.items.every((i) => i.brk && !(i.brk.type === 'B' && i.brk.withRule)) ? null : plainText(n.text),
     status: n.status,
-    statusLabel: n.followUpOpen ? '快照和清單不同' : n.status === 'PENDING' && !listLike ? (n.kind === 'INFO' || n.kind === 'MONTHLY_EMPTY' ? '未讀' : '等你回答') : STATUS_LABEL[n.status],
+    statusLabel: statusLabelOf(n),
     step: !listLike ? 0 : n.status === 'PENDING' ? 1 : n.status === 'RESPONDED' ? 2 : 0,
     cancel: cashflowKind(n) && (n.status === 'PENDING' || n.status === 'RESPONDED') && !n.followUpOpen ? { label: `取消這筆${cashflowKind(n)}` } : null,
     reminded: n.reminded,
@@ -507,8 +551,16 @@ export function notifView(d: Ready, n: Notif): NotifView {
     withdraw: n.withdraw ?? null,
     attention: (n.attention ?? []).map((x) => ({ ticker: x.ticker, kind: x.kind, text: x.text, since: x.since, src: x.src ?? 'own', ...(x.link ? { link: x.link } : {}) })),
     aiRun: !n.items.length ? (n.runIds?.[0] ?? null) : null,
+    refName: refNameOf(d.acct, n.ref),
+    lateReprice: lateRepriceTickers(n),
+    kept: keptAsRule(n),
   };
 }
+
+const refNameOf = (acct: Account, id: number | null | undefined): string | null => {
+  const r = id ? acct.notifs.find((x) => x.id === id) : undefined;
+  return r ? notifName(r) : null;
+};
 
 // ---------------------------------------------------------------- 待辦
 
@@ -728,12 +780,24 @@ function coreHoldings(d: Ready, total: number): HoldingView[] {
   return out;
 }
 
+/**
+ * 帳戶頁的動能排名（T39a）：「持有」看帳上實際的動能持股，不看規則的目標名單（月報要買、還沒成交的不算持有）。
+ * 還沒成交的清單上的動能進場、出場照月報頁的標法（這次買、這次賣）；最近一份月報被 AI 否決的標「AI 否決」。
+ */
 export function rankingView(d: Ready, n = 15): RankRow[] {
-  const held = new Set(d.acct.rule.heldMom);
+  const { acct } = d;
+  const held = (t: string) => (acct.lots.mom[t] ?? 0) > 0;
+  const open = acct.notifs.filter((x) => x.status === 'PENDING' || x.status === 'RESPONDED');
+  // 還沒成交的清單上，這一檔動能的單（照目前選的選項）
+  const listed = (t: string, fs: string[]) =>
+    open.some((x) => x.items.some((i) => !i.cancelled && i.ticker === t && fs.includes(i.f) && (i.choices.find((c) => c.id === i.choice)?.lines ?? []).some((l) => l.ticker === t && l.bucket === 'mom' && l.shares !== 0)));
+  const lastMonthly = [...acct.notifs].reverse().find((x) => (x.kind === 'MONTHLY' || x.kind === 'MONTHLY_EMPTY') && x.monthly);
+  const vetoed = new Set(lastMonthly?.monthly?.input.vetoed ?? []);
   return d.rankOrder.slice(0, n).map((ticker, k) => {
     const c = d.view.close[ticker];
     const ok = c && Number.isFinite(c[d.view.i]);
-    return { rank: k + 1, ticker, ret: ok ? trailingReturn(c, d.view.i) : null, mark: held.has(ticker) ? 'HELD' : d.acct.mom.excluded[ticker] ? 'EXCLUDED' : null };
+    const mark: RankRow['mark'] = held(ticker) ? (listed(ticker, ['F2']) ? 'OUT' : 'HELD') : listed(ticker, ['F1', 'F17']) ? 'IN' : vetoed.has(ticker) ? 'VETO' : acct.mom.excluded[ticker] ? 'EXCLUDED' : null;
+    return { rank: k + 1, ticker, ret: ok ? trailingReturn(c, d.view.i) : null, mark };
   });
 }
 
@@ -809,11 +873,13 @@ function historyRow(n: Notif): HistoryRow {
   const did = live.filter((i) => i.choice !== 'SKIP');
   const ai = did.filter((i) => i.choice === 'AI').length;
   let summary = '';
+  const kept = keptAsRule(n);
   if (n.status === 'SUPERSEDED') summary = '清單重算過，以新的為準';
+  else if (kept) summary = live.some((i) => i.brk?.type === 'B') ? '你不同意 AI 的建議，部位不動（規則本來就沒有動作）' : '規則本來就沒有動作，不用下單';
   else if (n.status === 'SKIPPED') summary = '整則沒做';
   else if (live.length && n.status !== 'PENDING') summary = `${live.length} 項裡做了 ${did.length} 項${ai ? `（其中 ${ai} 項照 AI）` : ''}`;
   else if (n.note) summary = n.note;
-  return { id: n.id, date: n.date, title: n.title, kindLabel: KIND_LABEL[n.kind], status: n.status, statusLabel: n.followUpOpen ? '快照和清單不同' : STATUS_LABEL[n.status], summary };
+  return { id: n.id, date: n.date, title: n.title, kindLabel: KIND_LABEL[n.kind], status: n.status, statusLabel: statusLabelOf(n), summary };
 }
 
 export interface StateView {
@@ -833,15 +899,28 @@ export interface StateView {
   undo: { date: string; at: string; cashOther: number; cashWarn: boolean } | null;
 }
 
+/**
+ * 等你決定的通知排在待辦裡的順序（T39a：首頁史萊姆講排第一的那一則，原本挑到最新、往往是預設不動的 AI 建議）：
+ * 0 當天通知、預設要下單（你定的條件成立、慢規則）→ 1 月報 → 2 其他預設要下單的 → 3 預設不動的（AI 的建議、乙類）。同一級先舊後新（晚了的先處理）。
+ */
+export function decideRank(n: Notif): number {
+  const trades = n.items.some((i) => !i.cancelled && i.f !== 'CORE' && (i.choices.find((c) => c.id === i.ruleChoice)?.lines.length ?? 0) > 0);
+  if (!trades) return 3;
+  if (n.kind === 'URGENT') return 0;
+  if (n.kind === 'MONTHLY') return 1;
+  return 2;
+}
+
 export function stateView(d: SiteData): StateView {
   const base = { mode: d.mode, demo: d.demo ?? null, today: d.today, priceDate: d.view?.date ?? null, rankDate: d.rankSession, warnings: d.warnings, undo: d.undoable ? { date: d.undoable.date, at: d.undoable.at, cashOther: d.undoable.cashOther, cashWarn: d.undoable.cashWarn } : null };
   if (!d.acct || !d.view) return { ...base, hasAccount: !!d.acct, account: null, todo: [], recent: [], bubble: { todo: { k: '開始', say: [d.acct ? '帳戶在，但還沒有可用的價格資料。' : '還沒有帳戶。填一次券商裡現在的持股，我就從那裡開始記帳。'], mood: 'idle' }, account: null } };
   const r = d as Ready;
   const order = { ANSWER: 0, TRADE: 1, DECIDE: 2, INFO: 3 };
+  const byId = new Map(r.acct.notifs.map((n) => [n.id, n]));
   const todo = r.acct.notifs
     .map((n) => todoOf(r, n))
     .filter((x): x is TodoView => !!x)
-    .sort((a, b) => order[a.type] - order[b.type] || b.id - a.id);
+    .sort((a, b) => order[a.type] - order[b.type] || (a.type === 'DECIDE' && b.type === 'DECIDE' ? decideRank(byId.get(a.id)!) - decideRank(byId.get(b.id)!) || a.id - b.id : b.id - a.id));
   const open = new Set(todo.map((t) => t.id));
   const recent = r.acct.notifs
     .filter((n) => !open.has(n.id))
@@ -865,6 +944,22 @@ export interface HistoryView {
 
 const EVENT_TEXT: Record<string, string> = { DEPOSIT: '入金', WITHDRAW: '出金', DIVIDEND: '股利', CASH_OTHER: '其他現金變動', UNCLASSIFIED: '清單外的變動（還沒分類）', CLASSIFIED: '分類', TRANSFER: '桶之間搬動（不用下單）', TRADE: '成交' };
 
+/**
+ * 帳本那一行括號裡的原因（T39a）：核心那一行寫成白話（不寫「核心 ETF」），原因本身的括號換成冒號，不會括號套括號。
+ * 「錢交給核心（買核心 ETF）」→「剩下的現金交給核心：買 VOO」。
+ */
+export function eventReason(reason: string, acct: Account): string {
+  const core = acct.cfg.coreTicker;
+  const r = reason
+    .replace(/^錢交給核心（崩盤規則啟動中：一半買核心 ETF）$/, `剩下的現金交給核心：崩盤規則啟動中，一半買 ${core}`)
+    .replace(/^錢交給核心（崩盤規則啟動中：(一半)?放短債）$/, (_, h: string | undefined) => `剩下的現金交給核心：崩盤規則啟動中，${h ?? ''}放短債`)
+    .replace(/^錢交給核心（買核心 ETF）$/, `剩下的現金交給核心：買 ${core}`)
+    .replace(/^從核心拿錢（賣核心 ETF）$/, `不夠的錢從核心拿：賣 ${core}`)
+    .replace(/^從核心拿錢（先用短債）$/, '不夠的錢從核心拿：先用短債')
+    .replace(/核心 ETF/g, core);
+  return r.replace(/（/g, '：').replace(/）/g, '');
+}
+
 export function historyView(d: Ready): HistoryView {
   const events = [...d.events, ...d.acct.events];
   const shadow = liveShadow([...d.shadow, ...d.acct.shadow]);
@@ -876,7 +971,8 @@ export function historyView(d: Ready): HistoryView {
       .map((e) => {
         const who = e.bucket ? `${BUCKET_NAME[e.bucket] ?? e.bucket} ` : '';
         const what = e.ticker ? `${who}${e.ticker} ${e.shares !== undefined ? (e.shares > 0 ? `+${e.shares}` : String(e.shares)) + ' 股' : ''}` : e.amount !== undefined ? fmtMoney(e.amount) : '';
-        return { date: e.date, text: `${EVENT_TEXT[e.kind] ?? e.kind}：${what}${e.reason ? `（${e.reason}）` : ''}`, notif: e.notif ?? null };
+        const why = e.reason ? eventReason(e.reason, d.acct) : '';
+        return { date: e.date, text: `${EVENT_TEXT[e.kind] ?? e.kind}：${what}${why ? `（${why}）` : ''}`, notif: e.notif ?? null };
       }),
     shadow: shadow
       .slice(-150)
@@ -1016,10 +1112,30 @@ export interface HoldingDetail {
     openNote: string | null;
     /** 還沒回覆、建議這檔照 AI 調整的通知（編輯論點頁的「這是對通知 #N 的回應」）。 */
     pendingBreak: { notif: number; tier: string | null; premiseId: string | null } | null;
+    /** 那則通知的名字（日期與種類，不用內部編號；T39a）。 */
+    pendingBreakName: string | null;
   } | null;
   ai: AiNote | null;
   history: { date: string; text: string; notif: number | null }[];
   canRemove: boolean;
+  /** 還沒成交的清單上這一檔的單（照目前選的選項）：持股頁也要看得到，例如動能這個月超過目標 ±50% 要賣（T39a）。 */
+  open: { notif: number; name: string; text: string; decided: boolean }[];
+}
+
+/** 還沒成交的清單上這一檔的單：「賣 PLTR 19 股（動能比例調回）」。 */
+function openOrdersOf(acct: Account, ticker: string): HoldingDetail['open'] {
+  const out: HoldingDetail['open'] = [];
+  for (const n of acct.notifs) {
+    if (n.status !== 'PENDING' && n.status !== 'RESPONDED') continue;
+    for (const it of n.items) {
+      if (it.cancelled) continue;
+      const lines = (it.choices.find((c) => c.id === it.choice)?.lines ?? []).filter((l) => l.ticker === ticker && l.bucket !== 'core');
+      const sh = lines.reduce((a, l) => a + l.shares, 0);
+      if (!sh) continue;
+      out.push({ notif: n.id, name: notifName(n), text: `${sh < 0 ? '賣' : '買'} ${ticker} ${Math.abs(sh)} 股（${ITEM_LABEL[it.f] ?? '清單'}）`, decided: n.status === 'RESPONDED' });
+    }
+  }
+  return out;
 }
 
 const ORIGIN: Record<string, string> = { USER: '你寫的', AI_DRAFT_ACCEPTED: 'AI 草擬、你勾選的', SYSTEM_DEFAULT: '系統預設' };
@@ -1035,12 +1151,14 @@ export function chartOf(d: Ready, ticker: string, days = 250): HoldingDetail['ch
   const ma200: (number | null)[] = [];
   const halfLine: (number | null)[] = [];
   const off = d.axis.length - 1 - end;
+  // 減半線（52 週高點 −20%）只是自選慢規則的門檻：動能、核心沒有這條規則，不畫（T39a）
+  const half = !!d.acct.own[ticker];
   for (let i = start; i <= end; i++) {
     dates.push(d.axis[i + off] ?? '');
     close.push(Math.round(c[i] * 100) / 100);
     const ma = sma(c, i, 200);
     ma200.push(Number.isFinite(ma) ? Math.round(ma * 100) / 100 : null);
-    const hi = rollingMax(c, i, SLOW.highDays);
+    const hi = half ? rollingMax(c, i, SLOW.highDays) : NaN;
     halfLine.push(Number.isFinite(hi) ? Math.round(hi * (1 + SLOW.drawdown) * 100) / 100 : null);
   }
   const marks = d.acct.notifs.filter((n) => n.items.some((i) => i.ticker === ticker) && n.date >= dates[0]).map((n) => ({ date: n.date, label: n.title }));
@@ -1144,11 +1262,13 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
             kind: meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT') ? 'THESIS' : 'DEFAULT_ONLY',
             openNote: openNoteOf(acct, ticker),
             pendingBreak: pendingBreakOf(acct, ticker),
+            pendingBreakName: refNameOf(acct, pendingBreakOf(acct, ticker)?.notif),
           }
         : null,
     ai: note,
     history: history.slice(0, 30),
     canRemove: !!meta,
+    open: openOrdersOf(acct, ticker),
   };
 }
 

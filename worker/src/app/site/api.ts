@@ -40,6 +40,7 @@ import {
   type Notif,
   type Premise,
   type Snapshot,
+  notifName,
 } from '../../engine';
 import { VOL_HIST_SEED } from '../../engine/volSeed';
 import { DISCUSSION_MODES, THESIS_LIMITS, parseThesisBlock } from '../../ai/discussion';
@@ -127,7 +128,7 @@ function text(v: unknown, name: string, max = 300, required = true): string {
 
 function findNotif(acct: Account, id: number): Notif {
   const n = acct.notifs.find((x) => x.id === id);
-  if (!n) throw new SiteError(404, `找不到通知 #${id}`);
+  if (!n) throw new SiteError(404, '找不到這則通知（網址可能打錯了）');
   return n;
 }
 
@@ -290,7 +291,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     // 對乙類通知的回應（修正論點，own_thesis §1.10）：那則通知要還沒回覆、而且有這檔的乙類項目
     if (replyTo !== null) {
       const n = findNotif(d.acct, Number.isInteger(replyTo) ? replyTo : -1);
-      if (!dry && !revisableBreak(d.acct, n.id, tk)) throw new SiteError(409, n.status !== 'PENDING' ? `通知 #${n.id} 已經回覆過了，不能再用「修正論點」回應。取消勾選「這是對通知 #${n.id} 的回應」再存。` : `通知 #${n.id} 不是 ${tk} 的「AI 判斷前提不成立」通知，不能用「修正論點」回應。取消勾選再存。`);
+      if (!dry && !revisableBreak(d.acct, n.id, tk)) throw new SiteError(409, n.status !== 'PENDING' ? `${notifName(n)}已經回覆過了，不能再用「修正論點」回應。取消勾選「這是對…的回應」再存。` : `${notifName(n)}不是 ${tk} 的「AI 判斷前提不成立」通知，不能用「修正論點」回應。取消勾選再存。`);
     }
     // 這檔有還沒回覆、帶「AI 建議出清」那一行的慢規則通知時存論點：一樣算「失效後修改」（§3.4；通知本身仍要回去選一項）
     const ruleExit = !dry && d.acct.notifs.some((n) => n.status === 'PENDING' && n.items.some((i) => i.ticker === tk && !i.cancelled && i.brk?.type === 'B' && !!i.brk.withRule));
@@ -337,7 +338,8 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
           ...(rv?.ok ? [{ ticker: tk, fileId: meta.fileId, session: d.view.date, kind: 'RESPONSE' as const, ref: String(replyTo), body: { notif: replyTo, type: 'B', outcome: rv.kept ? 'DISAGREE' : 'REVISE', reason: rv.kept ? KEPT_REASON : null, premiseId: rv.premiseId } }] : []),
         ]
       : [];
-    return { acct: out.acct, dry, result: { ...result, revised: rv?.ok ? { notif: replyTo, kept: rv.kept, premiseId: rv.premiseId } : null }, log };
+    const rn = replyTo === null ? undefined : d.acct.notifs.find((x) => x.id === replyTo);
+    return { acct: out.acct, dry, result: { ...result, revised: rv?.ok ? { notif: replyTo, kept: rv.kept, premiseId: rv.premiseId } : null, revisedName: rv?.ok && rn ? notifName(rn) : null }, log };
   });
   if (dry) return json({ ok: true, ...r.result });
   // 出場條件送去改寫：失敗要明白告訴使用者（N9），之後持股頁也會一直提示到重送為止

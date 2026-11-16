@@ -27,7 +27,7 @@ import { monthOfSignal, prepareEntries, recordReplacements, signalsIn, type Mont
 import { STRATEGY_STATE_KEY, loadStrategyState } from './strategyAi';
 import { noteOfRun } from './site/aiViews';
 import type { AiNote } from './site/types';
-import { sweepTimeoutTasks, timeoutAlert } from './aiTasks';
+import { sweepTimeoutTasks, taskLabels, timeoutAlert } from './aiTasks';
 import { breakLogs, monthOwnAttention } from './thesis';
 import { momHoldings, monthMomAttention } from './momNotes';
 import type { Env, Fetcher } from './env';
@@ -520,7 +520,7 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
   if (plan.sweep) {
     const timedOut = await sweepTimeoutTasks(db, opt.now);
     await closeStaleRuns(db, opt.now);
-    if (timedOut.length) alerts.push({ kind: 'AI_TIMEOUT', message: timeoutAlert(timedOut) });
+    if (timedOut.length) alerts.push({ kind: 'AI_TIMEOUT', message: timeoutAlert(timedOut, await taskLabels(db, timedOut.map((t) => t.id))) });
   }
   await saveAlerts(db, at, session, alerts);
   res.alerts = alerts.map((a) => a.kind);
