@@ -200,14 +200,14 @@ describe('情境 ① 平常的月報：用網站走完', () => {
     expect(await web.post(`/notif/${n.id}/respond`, { mode: 'DO', choices: { [msft.key]: 'AI' } })).toMatchObject({ status: 'RESPONDED' });
     await expectSame(sim);
 
-    // 第二步：下單清單；待辦變成「等你下單、填快照」
+    // 第二步：下單後填快照（2026-11-16 起「到券商下單」併進填快照）；待辦變成「等你下單、填快照」
     const st = await web.state();
     expect(st.todo[0]).toMatchObject({ id: n.id, type: 'TRADE' });
     expect((await web.notif(n.id)).step).toBe(2);
 
-    // 第三步：填快照
+    // 填快照頁要有下單用的資料：清單的日期（股數用哪天的收盤價算）、月報不是自己發起的（可以回去改決定）
     const form = await web.get<SnapshotForm>('/snapshot/form');
-    expect(form.lists).toEqual([{ id: n.id, title: '2026-12 月報' }]);
+    expect(form.lists).toEqual([{ id: n.id, title: '2026-12 月報', date: n.date, cancel: false }]);
     expect(form.rows.find((r) => r.ticker === 'ORCL')).toMatchObject({ book: 28, expected: 0, listed: -28 });
     const simR = sim.open()!;
     const webR = await web.fill();
@@ -602,6 +602,8 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     const w = await web.post<{ notifId: number }>('/ops/deposit', { amount: 3000 });
     let v = await web.notif(w.notifId);
     expect(v).toMatchObject({ status: 'RESPONDED', step: 2, cancel: { label: '取消這筆入金' } });
+    // 填快照頁：入金清單只能取消、不能回去改決定（畫面上不給「上一步：改決定」）
+    expect((await web.get<SnapshotForm>('/snapshot/form')).lists).toEqual([{ id: w.notifId, title: v.title, date: v.date, cancel: true }]);
     await web.post('/advance', { mode: 'month' });
     let st = await web.state();
     const paused = st.todo.find((t) => t.title.startsWith('月報暫停'));

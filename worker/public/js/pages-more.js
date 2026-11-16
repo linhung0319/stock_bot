@@ -138,7 +138,9 @@ function opPage({ title, sub, fields, payload, path, confirmLabel, note }) {
         msg.replaceChildren();
         if (!dry) {
           toast('清單建立好了');
-          return ctx.go(`#/n/${r.notifId}`);
+          // 自己發起的清單按確定就是決定了 → 直接到填快照照著下單；併進還沒回覆的月報、或要再決定的 → 到那則通知
+          const n = await api.get(`/notif/${r.notifId}`).catch(() => null);
+          return ctx.go(n?.step === 2 ? '#/snapshot' : `#/n/${r.notifId}`);
         }
         const v = r.preview;
         trial = v;

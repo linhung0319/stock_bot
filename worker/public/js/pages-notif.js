@@ -1,4 +1,4 @@
-// 待辦與紀錄、通知頁（三步驟：看建議與理由 → 下單 → 填快照）、填快照。
+// 待辦與紀錄、通知頁（兩步驟：看建議與理由、做決定 → 照清單下單後填快照）、填快照。
 import { api, getMode } from './api.js';
 import { aiOverview, crashLogBlock, runRow, shadowLines } from './pages-ai.js';
 import { actionText, day, h, money, put, qty, toast } from './dom.js';
@@ -39,7 +39,7 @@ export function linkButton(label, fn) {
 
 const TODO = {
   ANSWER: { chip: '要你回答', cls: 'hot', cta: '回答' },
-  TRADE: { chip: '等你下單、填快照', cls: 'now', cta: '看下單清單' },
+  TRADE: { chip: '等你下單、填快照', cls: 'now', cta: '下單、填快照' },
   DECIDE: { chip: '等你決定', cls: 'now', cta: '看理由、做決定' },
   INFO: { chip: '提醒', cls: 'warn', cta: '打開' },
 };
@@ -55,8 +55,9 @@ function todoCard(t, ctx) {
     h(
       'div',
       { class: 'todo-foot btn-row' },
-      h('a', { class: 'btn primary', href: `#/n/${t.id}` }, k.cta),
-      t.type === 'TRADE' ? h('a', { class: 'btn', href: '#/snapshot' }, '下完單了，填快照') : null,
+      // 決定好了的清單直接到填快照：那一頁每一檔有 +／− 幾股和做完的股數，照著下單（第二步「下單」併進來了）
+      h('a', { class: 'btn primary', href: t.type === 'TRADE' ? '#/snapshot' : `#/n/${t.id}` }, k.cta),
+      t.type === 'TRADE' ? h('a', { class: 'btn', href: `#/n/${t.id}` }, '看決定與理由') : null,
       t.type === 'INFO'
         ? actionButton('知道了', '', async () => {
             await api.post(`/notif/${t.id}/respond`, { mode: 'DO' });
@@ -186,9 +187,10 @@ function noAccount(ctx) {
 
 // ---------------------------------------------------------------- 通知頁
 
-const STEPS = ['看建議、做決定', '到券商下單', '回來填快照'];
+const STEPS = ['看建議、做決定', '下單後填快照'];
 /**
- * 三步驟（放在橫幅裡）。cur：現在在第幾步（4 = 都做完了）。
+ * 兩步驟（放在橫幅裡）。cur：現在在第幾步（3 = 都做完了）。
+ * 原本中間還有「到券商下單」一步，2026-11-16 使用者決定併進填快照：那一步不記任何東西，填快照頁本來就列出每一檔要 +／− 幾股。
  * back：可以點回去的步驟，{ 1: { label, go 或 href }, 2: … }；沒給的步驟只是顯示。
  */
 export function stepBar(cur, back = {}) {
@@ -566,7 +568,9 @@ export async function notifPage(ctx, id) {
       try {
         const r = await api.post(`/notif/${v.id}/respond`, { mode, choices, reasons });
         toast(r.status === 'RESPONDED' ? '已記下你的決定' : r.status === 'SKIPPED' ? '這次不做，已記下' : '完成');
-        await ctx.refresh();
+        // 決定了、有單要下 → 直接到填快照照著下單
+        if (r.status === 'RESPONDED') ctx.go('#/snapshot');
+        else await ctx.refresh();
       } catch (e) {
         msg.replaceChildren(errBox(e));
         msg.scrollIntoView({ block: 'center' });
@@ -575,7 +579,7 @@ export async function notifPage(ctx, id) {
     const live = v.items.filter((i) => !i.cancelled);
     const skippable = live.some((i) => i.choices.some((c) => c.id === 'SKIP'));
     const drawTray = (prev) => {
-      const foot = [actionButton('決定好了，看下單清單', 'primary block', () => submit('DO')), skippable ? h('div', { class: 'linkrow' }, linkButton('整則這次不做', () => submit('SKIP'))) : null, v.cancel ? h('div', { class: 'linkrow' }, cancelButton(ctx, v)) : null, h('p', { class: 'small faint', style: 'text-align:center' }, '按下去只是記下你的決定，系統不會替你下單。')];
+      const foot = [actionButton('決定好了，去下單、填快照', 'primary block', () => submit('DO')), skippable ? h('div', { class: 'linkrow' }, linkButton('整則這次不做', () => submit('SKIP'))) : null, v.cancel ? h('div', { class: 'linkrow' }, cancelButton(ctx, v)) : null, h('p', { class: 'small faint', style: 'text-align:center' }, '按下去只是記下你的決定，系統不會替你下單。')];
       trayBox.replaceChildren(consoleBox(trayTitle(composed), trayBody(composed, { prev }), foot));
       sumBox.textContent = `${orderN(composed)} 張單，做完現金約 ${money(composed.cashAfter)}`;
     };
@@ -616,37 +620,19 @@ export async function notifPage(ctx, id) {
   }
 
   if (v.step === 2) {
-    // ---------- 第二步：拿著這張清單去券商下單
-    const c = v.composed;
-    const text = c.orders.filter((o) => !o.transfer).map((o) => `${o.shares < 0 ? '賣' : '買'} ${o.ticker} ${qty(o.shares)} 股`).join('\n');
-    const copy = linkButton('複製清單', async () => {
-      try {
-        await navigator.clipboard.writeText(text);
-        toast('已複製');
-      } catch {
-        toast('複製失敗，請手動選取');
-      }
-    });
-    const n = orderN(c);
+    // ---------- 已經決定、還沒填快照：下單和填快照在同一頁（#/snapshot），這裡只留決定與理由
+    const n = orderN(v.composed);
+    // 一個節點只能放一個地方：右邊的主控台和手機的底部列各做一個
+    const back = () => (v.cancel ? cancelButton(ctx, v) : linkButton('上一步：改決定', backToDecide));
     return page({
       view: 'flow',
       banner: notifBanner(v, {
         steps: stepBar(2, v.cancel ? {} : { 1: { label: '回去改決定', go: backToDecide } }),
-        bubble: { k: '下單的時候', say: ['到券商下這 ', em(`${n} 張單`), '（開盤市價單、整股）', v.withdraw ? `，做完從券商轉出 ${money(v.withdraw)}` : '', '，下完回來填快照。'], mood: 'alert' },
+        bubble: { k: '已經決定了', say: ['到', em('填快照'), `那一頁照著下 ${n} 張單：每一檔寫了要 +／− 幾股、做完是幾股。下完照券商畫面送出。`], mood: 'watch' },
       }),
-      pane: [
-        glass(
-          'pad',
-          h('p', null, '下單方式：開盤市價單、整股。股數是用 ', h('span', { class: 'num' }, day(v.date)), '的收盤價換算的。'),
-          v.withdraw ? h('p', { style: 'margin-top:6px' }, '清單做完後，從券商轉出 ', h('b', { class: 'num' }, money(v.withdraw)), '，再回來填快照。') : null,
-          h('p', { class: 'dim', style: 'margin-top:6px' }, '沒有全部做完也沒關係：照實填快照，系統會問你要補做還是就這樣。右邊每下完一張可以打勾，只是幫你記，不會存。'),
-        ),
-        h('h2', { class: 'sec' }, '你的決定與理由'),
-        slips(v, { editable: false }),
-        attentionBox(v),
-      ],
-      rail: consoleBox(trayTitle(c, '到券商下這'), trayBody(c, { check: true }), [h('a', { class: 'btn primary block', href: '#/snapshot' }, '下完單了，填快照'), h('div', { class: 'linkrow' }, v.cancel ? cancelButton(ctx, v) : linkButton('上一步：改決定', backToDecide), copy)]),
-      cta: h('div', { class: 'sticky-cta' }, h('div', { class: 'sum' }, v.cancel ? cancelButton(ctx, v) : linkButton('上一步', backToDecide)), h('a', { class: 'btn primary', href: '#/snapshot' }, '下完單了，填快照')),
+      pane: [h('h2', { class: 'sec' }, '你的決定與理由'), slips(v, { editable: false }), attentionBox(v)],
+      rail: consoleBox('下一步', h('p', { class: 'small dim' }, '填快照那一頁有下單方式、每一檔的股數變化和「複製清單」。還沒下單就先別送出。'), [h('a', { class: 'btn primary block', href: '#/snapshot' }, '去下單、填快照'), h('div', { class: 'linkrow' }, back())]),
+      cta: h('div', { class: 'sticky-cta' }, h('div', { class: 'sum' }, back()), h('a', { class: 'btn primary', href: '#/snapshot' }, '去下單、填快照')),
     });
   }
 
@@ -794,7 +780,9 @@ export async function snapshotPage(ctx) {
     );
     const b = off.length
       ? { k: '和清單不同的地方', say: [em(off.slice(0, 3).join('、')), off.length > 3 ? ` 等 ${off.length} 處` : '', '。照你填的桶記帳；可以在下面寫一句原因。'], mood: 'watch' }
-      : { k: '填快照', say: [f.lists.length ? '股數都和「清單做完」一樣。' : '股數和帳本一樣。', Number.isFinite(c) ? '送出就完成。' : '最後填上券商顯示的現金。'], mood: f.lists.length ? 'happy' : 'watch' };
+      : f.lists.length && !Number.isFinite(c)
+        ? { k: '下單的時候', say: ['照', em('「清單」那一欄'), '到券商下單（+ 買、− 賣）。下完照券商畫面改不一樣的股數、填上現金，再送出。'], mood: 'alert' }
+        : { k: '填快照', say: [f.lists.length ? '股數都和「清單做完」一樣。' : '股數和帳本一樣。', Number.isFinite(c) ? '送出就完成。' : '最後填上券商顯示的現金。'], mood: f.lists.length ? 'happy' : 'watch' };
     const key = JSON.stringify(b.say);
     if (key !== lastSaid) {
       if (lastSaid) say(b);
@@ -893,6 +881,39 @@ export async function snapshotPage(ctx) {
       ),
     );
 
+  // 下單：原本第二步那一頁的內容（下單方式、出金、複製清單），2026-11-16 併進這裡
+  const net = {};
+  for (const b of ['own', 'mom', 'core']) for (const r of f.buckets[b]) if (r.listed) net[r.ticker] = (net[r.ticker] ?? 0) + r.listed;
+  const orders = Object.entries(net).filter(([, q]) => Math.abs(q) > 1e-9).sort(([a, x], [b, y]) => Math.sign(x) - Math.sign(y) || a.localeCompare(b));
+  const copyText = orders.map(([t, q]) => `${q < 0 ? '賣' : '買'} ${t} ${qty(q)} 股`).join('\n');
+  const dates = [...new Set(f.lists.map((l) => l.date))];
+  const orderBox = f.lists.length
+    ? glass(
+        'pad',
+        h('h2', { class: 'panel-h' }, orders.length ? `先到券商下這 ${orders.length} 張單` : '這份清單不用下單'),
+        // 三桶分開的表要捲到底才看得到核心那一檔，這裡先合起來列一次
+        orders.length ? h('ul', { class: 'sum-list', style: 'margin:4px 0 10px' }, orders.map(([t, q]) => h('li', null, h('span', null, h('span', { class: 'side ' + (q < 0 ? 'sell' : 'buy') }, q < 0 ? '賣' : '買'), ' ', h('span', { class: 'tk' }, t)), h('span', { class: 'num' }, `${qty(q)} 股`)))) : null,
+        orders.length ? h('p', null, '下單方式：開盤市價單、整股。下面每一桶的「清單」那一欄是同樣的單（+ 買、− 賣）；股數是用 ', dates.map((d, k) => [k ? '、' : '', h('span', { class: 'num' }, day(d))]), '的收盤價換算的。') : null,
+        f.withdraw ? h('p', { style: 'margin-top:6px' }, '清單做完後，從券商轉出 ', h('b', { class: 'num' }, money(f.withdraw)), '，再回來填快照。') : null,
+        h('p', { class: 'dim small', style: 'margin-top:6px' }, '沒有全部做完也沒關係：照實填快照，系統會問你要補做還是就這樣。還沒下單就先別送出。'),
+        h(
+          'div',
+          { class: 'linkrow', style: 'justify-content:flex-start;margin-top:8px' },
+          orders.length
+            ? linkButton('複製清單', async () => {
+                try {
+                  await navigator.clipboard.writeText(copyText);
+                  toast('已複製');
+                } catch {
+                  toast('複製失敗，請手動選取');
+                }
+              })
+            : null,
+          f.lists.map((l) => h('a', { class: 'linkbtn', href: `#/n/${l.id}` }, f.lists.length > 1 ? `${l.title}的決定與理由` : '看決定與理由')),
+        ),
+      )
+    : null;
+
   const msg = h('div');
   const out = h('div');
   const foot = h('div', { style: 'display:contents' });
@@ -922,7 +943,7 @@ export async function snapshotPage(ctx) {
       document.querySelector('.sticky-cta')?.remove();
       // 帳本已經照快照更新，不能再回上一步
       const stepsEl = document.querySelector('.banner .steps');
-      if (stepsEl) stepsEl.replaceWith(stepBar(4));
+      if (stepsEl) stepsEl.replaceWith(stepBar(3));
       const more = r.followUps.length + r.created.length;
       foot.replaceChildren(h('a', { class: 'btn primary block', href: r.monthlyId ? `#/n/${r.monthlyId}` : '#/' }, more ? '去回答' : r.monthlyId ? '看重算的月報' : '回待辦'), h('div', { class: 'linkrow' }, h('a', { class: 'linkbtn', href: '#/account' }, '看帳戶')));
       say(more ? { k: '快照收到了', say: ['帳本更新了，', neg(`還有 ${more} 件事要你回答`), '。'], mood: 'alert' } : { k: '快照收到了', say: [em('帳本已更新'), r.completed.length ? `，${r.completed.length} 份清單完成。` : '，這份快照是新的起點。'], mood: 'happy' }, 'hop');
@@ -946,8 +967,9 @@ export async function snapshotPage(ctx) {
   const form = h(
     'div',
     { class: 'stackv' },
+    orderBox,
     f.lists.length
-      ? h('p', null, '等成交的清單：', f.lists.map((l, k) => [k ? '、' : '', h('a', { href: `#/n/${l.id}` }, l.title)]), '。每一桶的股數先幫你填好「照清單做完」的數字，和券商不一樣的地方直接改。')
+      ? h('p', null, '等成交的清單：', f.lists.map((l, k) => [k ? '、' : '', h('a', { href: `#/n/${l.id}` }, l.title)]), '。「券商現在的股數」先幫你填好照清單做完的數字；下完單和券商不一樣的地方直接改。')
       : h('p', null, '現在沒有等成交的清單。自己交易過、或只是想對帳，都可以填：把和券商不一樣的地方改掉，變動放在哪一桶由你決定。'),
     f.unc.length ? h('p', { class: 'small', style: 'color:var(--warn)' }, `改版前有還沒分類的持股（${f.unc.map((u) => `${u.ticker} ${qty(u.shares)} 股`).join('、')}），先放在自選那一桶；要放動能就把它移過去。`) : null,
     section('own'),
@@ -956,13 +978,14 @@ export async function snapshotPage(ctx) {
     msg,
     f.lists.length ? h('p', { class: 'small faint' }, '送出之前都可以回上一步。送出之後帳本就照這份快照更新；填錯了再填一次快照就好。') : null,
   );
-  foot.append(send, h('div', { class: 'linkrow' }, f.lists.length ? h('a', { class: 'linkbtn', href: only ? `#/n/${only.id}` : '#/' }, '上一步：回下單清單') : null, h('a', { class: 'linkbtn', href: '#/' }, '先不填')));
-  const pickOne = { label: '回待辦挑一份清單', href: '#/' };
-  const steps = f.lists.length ? stepBar(3, only ? { 1: { label: '回去改決定', go: reopenAndGo(ctx, only.id) }, 2: { label: '回去看下單清單', href: `#/n/${only.id}` } } : { 1: pickOne, 2: pickOne }) : null;
+  // 上一步：一份清單時退回第一步；自己發起的入金／出金／改比例不能改決定，到那則通知取消
+  const backLink = !only ? null : only.cancel ? h('a', { class: 'linkbtn', href: `#/n/${only.id}` }, '看清單、取消這筆') : linkButton('上一步：改決定', reopenAndGo(ctx, only.id));
+  foot.append(send, h('div', { class: 'linkrow' }, backLink, h('a', { class: 'linkbtn', href: '#/' }, '先不填')));
+  const steps = f.lists.length ? stepBar(2, only ? (only.cancel ? {} : { 1: { label: '回去改決定', go: reopenAndGo(ctx, only.id) } }) : { 1: { label: '回待辦挑一份清單', href: '#/' } }) : null;
   const first = recount();
   return page({
     view: 'flow',
-    banner: { back: { href: '#/', label: '待辦與紀錄' }, title: '填快照', sub: '照券商現在的畫面，填每一桶每一檔的股數和現金。這份快照就是帳本新的起點。', steps, bubble: first },
+    banner: { back: { href: '#/', label: '待辦與紀錄' }, title: f.lists.length ? '下單、填快照' : '填快照', sub: f.lists.length ? '照「清單」那一欄到券商下單；下完照券商現在的畫面，填每一桶每一檔的股數和現金。這份快照就是帳本新的起點。' : '照券商現在的畫面，填每一桶每一檔的股數和現金。這份快照就是帳本新的起點。', steps, bubble: first },
     pane: [form, out],
     rail: consoleBox('送出快照', h('div', null, summary, h('label', { class: 'field', style: 'margin:16px 0 0' }, h('span', null, '這次自己交易的原因（選填）'), note, h('small', null, '有清單以外的買賣時寫一句，記在帳本那幾筆變動上。'))), foot, '快照'),
     cta: h('div', { class: 'sticky-cta' }, h('div', { class: 'sum' }, '填好股數與現金'), h('button', { class: 'btn primary', type: 'button', onclick: () => send.click() }, '送出快照')),

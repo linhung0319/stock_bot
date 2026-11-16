@@ -1286,8 +1286,8 @@ export interface SnapshotForm {
   rows: { ticker: string; book: number; expected: number; listed: number; where: string }[];
   cashBook: number;
   cashExpected: number;
-  /** 已經決定、等成交的清單。 */
-  lists: { id: number; title: string }[];
+  /** 已經決定、等成交的清單。date：股數用哪天的收盤價算的；cancel：自己發起的入金／出金／改比例（只能取消，不回去改決定）。 */
+  lists: { id: number; title: string; date: string; cancel: boolean }[];
   withdraw: number;
   autofill: Snapshot | null;
   /** 分桶快照（2026-11-15）：每一桶每一檔的帳本股數、清單、照清單做完的股數。 */
@@ -1315,7 +1315,7 @@ export function snapshotForm(d: Ready): SnapshotForm {
   const fill = d.fill ?? ((t: string) => priceAt(view, t) ?? 0);
   for (const n of acct.notifs) {
     if (n.status !== 'RESPONDED' || !n.composed) continue;
-    lists.push({ id: n.id, title: n.title });
+    lists.push({ id: n.id, title: n.title, date: n.date, cancel: !!cashflowKind(n) });
     for (const m of n.composed.merged) {
       delta[m.ticker] = (delta[m.ticker] ?? 0) + m.shares;
       cash -= m.shares * fill(m.ticker);
