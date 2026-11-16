@@ -217,6 +217,8 @@ async function createFromSnapshot(backend: SiteBackend, b: Record<string, unknow
   const rec = own.length ? recommendStdWeights(view, own.map((x) => x.ticker), 0.2) : {};
   const init: InitialAccount = {
     paper: b.paper !== false,
+    // 券商現在顯示的股數已經包含生效日在今天（美東）以前的拆股（design_v2 §10 第 48 點）
+    ...(d.asOf ? { asOf: d.asOf } : {}),
     // 依波動度減碼的起始歷史：接上回測重放到 2026-09 的每月 σ（design_v2 §10 第 31 點）；不補的話要等 24 個月才會開始減碼
     volHist: [...VOL_HIST_SEED.values],
     cash,
@@ -688,9 +690,12 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     // 現金可以是負的（融資帳戶，或示範裡買超過現金）；畫面上會提醒
     const note = text(b.note, '這次自己交易的原因', 300, false);
     const snap: Snapshot = { shares, cash: num(b.cash, '現金', -1e10, 1e10), ...(lots ? { lots } : {}), ...(note ? { note } : {}), ...(Object.keys(why).length ? { why } : {}), ...(b.withdrawPending === true ? { withdrawPending: true } : {}) };
+    // 拆股生效、每日流程還沒跑就照券商填了 N 倍的股數：先向 Yahoo 查那幾檔，記到的拆股在載入帳戶時套用（design_v2 §10 第 48 點）
+    if (backend.checkSplits) await backend.checkSplits(shares);
     let before: Account | null = null;
     const r = await mutate(backend, '填快照', Object.keys(shares), (d) => {
       before = d.acct;
+      if (d.asOf) snap.asOf = d.asOf;
       const noPrice = Object.keys(shares).filter((t) => !d.view.close[t] || !Number.isFinite(d.view.close[t][d.view.i]));
       if (noPrice.length) throw new SiteError(422, `抓不到 ${noPrice.join('、')} 在 ${d.view.date} 的收盤價。請確認代號有沒有打錯。`);
       const wasBlocked = d.acct.monthlyBlocked;

@@ -6,7 +6,9 @@
 //   own_thesis_log   論點檔的開檔與結案：存檔時比較存檔前後的自選（fileId），和帳戶同一筆交易寫（own_thesis §1.2）
 import type { Account, LedgerEvent, Notif, ShadowRecord } from '../engine/account';
 import type { Snapshot } from '../engine/ops';
+import { applySplits, splitBase } from '../engine/split';
 import { CASH } from '../engine/types';
+import { loadSplits } from '../data/store';
 
 export class ConflictError extends Error {}
 
@@ -26,8 +28,25 @@ export async function loadAccount(db: D1Database): Promise<LoadedAccount | null>
   if (!row) return null;
   const notifRows = (await db.prepare('SELECT id, body FROM notifications ORDER BY id').all<{ id: number; body: string }>()).results;
   const state = JSON.parse(row.state) as StateOnly;
-  const acct: Account = { ...state, notifs: notifRows.map((r) => JSON.parse(r.body) as Notif), events: [], shadow: [] };
+  let acct: Account = { ...state, notifs: notifRows.map((r) => JSON.parse(r.body) as Notif), events: [], shadow: [] };
+  acct = await withSplits(db, acct);
   return { acct, rev: row.rev, notifJson: new Map(notifRows.map((r) => [r.id, r.body])), ownFiles: ownFilesOf(acct) };
+}
+
+/**
+ * 帳本跟著價格資料走（design_v2 §10 第 48 點）：splits 表記到、生效日在帳戶最後一次對照券商之後、還沒套用過的拆股，
+ * 載入時就套用（持股與還沒成交的清單股數、帳本那一行），和這次操作一起存；只讀的請求不存，下一次載入再套用一次（結果相同）。
+ * splits 表讀不到（migration 還沒套用）就照舊，不擋帳戶載入。
+ */
+async function withSplits(db: D1Database, acct: Account): Promise<Account> {
+  let rows;
+  try {
+    rows = await loadSplits(db, splitBase(acct));
+  } catch (e) {
+    console.error('讀不到拆股紀錄（splits）', e);
+    return acct;
+  }
+  return rows.length ? applySplits(acct, rows).acct : acct;
 }
 
 const ownFilesOf = (acct: Pick<Account, 'own'>): Record<string, string | undefined> => Object.fromEntries(Object.entries(acct.own ?? {}).map(([t, m]) => [t, m.fileId]));
@@ -209,7 +228,8 @@ export async function undoSnapshot(db: D1Database, now: Date): Promise<{ ok: tru
     db.prepare('UPDATE account_state SET rev = ?, updated_at = ?, state = ? WHERE id = 1 AND rev = ?').bind(row.rev + 1, at, row.state, row.rev),
     ...changed.map((n) => upsert.bind(n.id, n.kind, n.date, n.status, at, JSON.stringify(n))),
     ...created.map((id) => db.prepare('DELETE FROM notifications WHERE id = ?').bind(id)),
-    db.prepare('DELETE FROM ledger_events WHERE rev = ?').bind(row.rev),
+    // 拆股那一行留著：送出前的帳戶（要回到的那一份）已經套用了那次拆股（design_v2 §10 第 48 點）
+    db.prepare("DELETE FROM ledger_events WHERE rev = ? AND kind != 'SPLIT'").bind(row.rev),
     db.prepare('DELETE FROM shadow_records WHERE rev = ?').bind(row.rev),
     db.prepare('DELETE FROM snapshots WHERE rev = ?').bind(row.rev),
     // 那一版寫的論點檔紀錄（開檔、結案…）：帳戶回到之前，論點檔編號與條件也就接回來（own_thesis §1.2）

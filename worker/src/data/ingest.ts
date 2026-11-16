@@ -4,7 +4,7 @@
 //   rebalanceOk SPY 持股檔和 Wikipedia 名單一致 → 可以換股（設計 §2.4）
 import { rankUniverse, universeOf, type UniverseRow } from '../engine/momentum';
 import { isLastTradingDayOfMonth, lastCompletedSession, nextTradingDay } from './calendar';
-import { compareMembership, fetchSpyHoldings, fetchWikiSp500, fetchYahooDaily, normalizeTicker, type DailyBar, type Fetcher } from './sources';
+import { compareMembership, fetchSpyHoldings, fetchWikiSp500, fetchYahooDaily, normalizeTicker, type DailyBar, type Fetcher, type YahooSplit } from './sources';
 import {
   lastDate,
   loadCalendarOverrides,
@@ -14,6 +14,7 @@ import {
   saveRanking,
   saveRun,
   saveSeries,
+  saveSplits,
   seriesFromBars,
   type Alert,
   type ConstituentSnapshot,
@@ -47,18 +48,23 @@ export const MAX_MISSING_FRAC = 0.05;
 /** 市值前幾名之內只要有一檔抓不到就不排名（它很可能在 50 檔股票池裡）。 */
 export const MUST_HAVE_TOP = 60;
 
-type Got = { ticker: string; bars: DailyBar[]; error?: string };
+type Got = { ticker: string; bars: DailyBar[]; splits: YahooSplit[]; error?: string };
 
 async function fetchBars(fetcher: Fetcher, tickers: string[], range: string, session: string): Promise<Got[]> {
   return pool(tickers, 6, async (ticker): Promise<Got> => {
     try {
       const s = await retry(() => fetchYahooDaily(fetcher, ticker, range));
-      // 盤中手動跑的時候 Yahoo 會帶一根還沒收盤的 K 線：訊號日之後的都丟掉
-      return { ticker, bars: s.bars.filter((b) => b.date <= session) };
+      // 盤中手動跑的時候 Yahoo 會帶一根還沒收盤的 K 線：訊號日之後的都丟掉（拆股事件照記：之前的價格已經換算好了）
+      return { ticker, bars: s.bars.filter((b) => b.date <= session), splits: s.splits };
     } catch (e) {
-      return { ticker, bars: [], error: errText(e) };
+      return { ticker, bars: [], splits: [], error: errText(e) };
     }
   });
+}
+
+/** 抓到的拆股事件記進 splits（design_v2 §10 第 48 點）：先記拆股、再存價格。 */
+async function recordSplits(db: D1Database, got: Got[], at: string): Promise<void> {
+  for (const g of got) if (g.splits.length) await saveSplits(db, g.ticker, g.splits, at);
 }
 
 const isFresh = (g: Got, session: string) => g.bars.length > 0 && g.bars[g.bars.length - 1].date === session;
@@ -111,6 +117,7 @@ export async function runIngest(db: D1Database, fetcher: Fetcher, opt: IngestOpt
   const lastRanking = await loadRanking(db);
   const tracked = [...new Set([...required, BENCHMARK, ...top, ...(lastRanking?.order ?? []), ...(opt.track ?? [])])];
   const got = await fetchBars(fetcher, tracked, '2y', session);
+  await recordSplits(db, got, at);
   const series = new Map<string, Series>();
   for (const g of got) if (g.bars.length) series.set(g.ticker, seriesFromBars(g.ticker, g.bars, at, session));
   await saveSeries(db, [...series.values()]);
@@ -175,6 +182,7 @@ async function buildRanking(db: D1Database, fetcher: Fetcher, snap: ConstituentS
   };
   const tickers = snap.holdings.map((h) => h[0]);
   const short = await fetchBars(fetcher, tickers.filter((t) => !fresh(t)), '5d', session);
+  await recordSplits(db, short, at);
   const lastBar = new Map(short.filter((g) => isFresh(g, session)).map((g) => [g.ticker, g.bars[g.bars.length - 1]]));
 
   const rows: UniverseRow[] = [];
@@ -196,6 +204,7 @@ async function buildRanking(db: D1Database, fetcher: Fetcher, snap: ConstituentS
   const need = universe.map((r) => r.ticker).filter((t) => !fresh(t));
   if (need.length) {
     const more = await fetchBars(fetcher, need, '2y', session);
+    await recordSplits(db, more, at);
     const bad = more.filter((g) => !isFresh(g, session)).map((g) => g.ticker);
     if (bad.length) return { ok: false, why: `股票池裡有抓不到整段日線的：${bad.join(' ')}`, detail: { bad } };
     const add = more.map((g) => seriesFromBars(g.ticker, g.bars, at, session));

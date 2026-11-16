@@ -40,6 +40,7 @@ export const EXPORT_TABLES: Record<string, ExportTable> = {
   rankings: { mode: 'append', json: ['ord', 'detail'], key: 'session', pageRows: 50 },
   constituents: { mode: 'append', json: ['only_spy', 'only_wiki', 'holdings'], key: 'session', pageRows: 50 },
   calendar_overrides: { mode: 'replace', json: [], pageRows: 1000 },
+  splits: { mode: 'append', json: [], pageRows: 1000 },
   // 系統運作
   data_runs: { mode: 'append', json: ['detail'], pageRows: 500 },
   flow_runs: { mode: 'append', json: ['detail'], pageRows: 500 },

@@ -8,4 +8,5 @@ export * from './orders';
 export * from './account';
 export * from './report';
 export * from './ops';
+export * from './split';
 export * from './replay';

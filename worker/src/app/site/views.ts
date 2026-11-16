@@ -23,6 +23,7 @@ import {
   type Account,
   type Composed,
   type Item,
+  type LedgerEvent,
   type MarketView,
   type Notif,
   type OrderLine,
@@ -944,6 +945,12 @@ export interface HistoryView {
 
 const EVENT_TEXT: Record<string, string> = { DEPOSIT: '入金', WITHDRAW: '出金', DIVIDEND: '股利', CASH_OTHER: '其他現金變動', UNCLASSIFIED: '清單外的變動（還沒分類）', CLASSIFIED: '分類', TRANSFER: '桶之間搬動（不用下單）', TRADE: '成交' };
 
+/** 帳本那一行的種類：拆股（SPLIT）依股數多出或少掉寫「拆股」或「合股」（T39c，design_v2 §10 第 48 點）。 */
+function eventKindName(e: Pick<LedgerEvent, 'kind' | 'shares'>): string {
+  if (e.kind === 'SPLIT') return (e.shares ?? 0) < 0 ? '合股' : '拆股';
+  return EVENT_TEXT[e.kind] ?? e.kind;
+}
+
 /**
  * 帳本那一行括號裡的原因（T39a）：核心那一行寫成白話（不寫「核心 ETF」），原因本身的括號換成冒號，不會括號套括號。
  * 「錢交給核心（買核心 ETF）」→「剩下的現金交給核心：買 VOO」。
@@ -971,8 +978,8 @@ export function historyView(d: Ready): HistoryView {
       .map((e) => {
         const who = e.bucket ? `${BUCKET_NAME[e.bucket] ?? e.bucket} ` : '';
         const what = e.ticker ? `${who}${e.ticker} ${e.shares !== undefined ? (e.shares > 0 ? `+${e.shares}` : String(e.shares)) + ' 股' : ''}` : e.amount !== undefined ? fmtMoney(e.amount) : '';
-        const why = e.reason ? eventReason(e.reason, d.acct) : '';
-        return { date: e.date, text: `${EVENT_TEXT[e.kind] ?? e.kind}：${what}${why ? `（${why}）` : ''}`, notif: e.notif ?? null };
+        const why = e.reason ? (e.kind === 'SPLIT' ? e.reason : eventReason(e.reason, d.acct)) : '';
+        return { date: e.date, text: `${eventKindName(e)}：${what}${why ? `（${why}）` : ''}`, notif: e.notif ?? null };
       }),
     shadow: shadow
       .slice(-150)
@@ -1241,7 +1248,7 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
   const events = [...d.events, ...acct.events].filter((e) => e.ticker === ticker);
   const history = [
     ...acct.notifs.filter((n) => n.items.some((i) => i.ticker === ticker) || n.ticker === ticker).map((n) => ({ date: n.date, text: `${KIND_LABEL[n.kind]}：${n.items.find((i) => i.ticker === ticker)?.title ?? n.title}`, notif: n.id as number | null })),
-    ...events.map((e) => ({ date: e.date, text: `${EVENT_TEXT[e.kind] ?? e.kind}：${BUCKET_NAME[e.bucket ?? ''] ?? ''} ${e.shares !== undefined ? (e.shares > 0 ? '+' : '') + e.shares + ' 股' : ''}`, notif: null as number | null })),
+    ...events.map((e) => ({ date: e.date, text: `${eventKindName(e)}：${BUCKET_NAME[e.bucket ?? ''] ?? ''} ${e.shares !== undefined ? (e.shares > 0 ? '+' : '') + e.shares + ' 股' : ''}${e.kind === 'SPLIT' && e.reason ? `（${e.reason}）` : ''}`, notif: null as number | null })),
   ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   return {
     ticker,

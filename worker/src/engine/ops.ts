@@ -359,6 +359,15 @@ export interface Snapshot {
   why?: Record<string, string>;
   /** 出金（這次完成的與之前還沒轉出的）還沒從券商轉出：券商的現金還沒扣掉（設計 §10 第 40 點）。 */
   withdrawPending?: boolean;
+  /** 送出那一刻的美東日期（拆股用，design_v2 §10 第 48 點）：券商的股數已經包含生效日在這一天以前的拆股。沒給 = 訊號日。 */
+  asOf?: string;
+}
+
+/** 快照之後的 splitAsOf：送出那一刻的美東日期（沒給用訊號日），不往回退。 */
+function splitAsOfAfter(acct0: Account, view: MarketView, snap: Snapshot): string {
+  const at = snap.asOf && snap.asOf > view.date ? snap.asOf : view.date;
+  const prev = acct0.splitAsOf ?? '';
+  return prev > at ? prev : at;
 }
 
 export interface SnapshotResult {
@@ -520,6 +529,7 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
   // 現金
   const cashRes = settleCash(acct, view, snap.cash - (acct0.pendingWithdraw ?? 0), expectedCash, withdrawn, traded);
   acct.snapshotDate = view.date;
+  acct.splitAsOf = splitAsOfAfter(acct0, view, snap);
   return { acct, completed, followUps, created, ...cashRes, removedOwn: [] };
 }
 
@@ -752,6 +762,7 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
   if (pendingAfter) acct.pendingWithdraw = pendingAfter;
   else delete acct.pendingWithdraw;
   acct.snapshotDate = view.date;
+  acct.splitAsOf = splitAsOfAfter(acct0, view, snap);
   return { acct, completed, followUps, created: [], ...cashRes, removedOwn };
 }
 

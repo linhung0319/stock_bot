@@ -48,6 +48,12 @@ export interface World {
   calls: string[];
   /** 個別代號從某一天起價格乘上一個倍數（Yahoo 的寫法；做暴跌用）。 */
   shock: Record<string, { from: string; factor: number }>;
+  /**
+   * 拆股（Yahoo 的寫法；T39c）：生效日起實際成交價 = 假價格 ÷ 比例（比例 = numerator ÷ denominator）。
+   * adjusted：Yahoo 已經把生效日之前的價格換算好（整段都除以比例）；false = 還沒換算（之前的照舊，生效日那一根跳一大格）。
+   * 回應的最後一根到了生效日才帶拆股事件。
+   */
+  splits?: Record<string, { date: string; numerator: number; denominator: number; adjusted: boolean }>;
 }
 
 export function newWorld(dataDate: string): World {
@@ -62,10 +68,14 @@ function yahooBody(sym: string, range: string, w: World) {
   const days = ALL_DAYS.slice(Math.max(0, end - n + 1), end + 1);
   const { volume } = fakeParams(sym);
   const sh = w.shock[sym];
-  const px = days.map((d) => fakeClose(sym, d) * (sh && d >= sh.from ? sh.factor : 1));
+  const sp = w.splits?.[sym];
+  const live = !!sp && last >= sp.date;
+  const ratio = sp ? sp.numerator / sp.denominator : 1;
+  const px = days.map((d) => fakeClose(sym, d) * (sh && d >= sh.from ? sh.factor : 1) / (live && (d >= sp!.date || sp!.adjusted) ? ratio : 1));
   // 14:30 UTC = 美東 09:30；gmtoffset 固定 -18000，換回來是同一天
   const ts = days.map((d) => Date.parse(d + 'T14:30:00Z') / 1000);
-  return { chart: { result: [{ meta: { symbol: sym, currency: 'USD', gmtoffset: -18000 }, timestamp: ts, indicators: { quote: [{ open: px, high: px, low: px, close: px, volume: px.map(() => volume) }], adjclose: [{ adjclose: px }] } }], error: null } };
+  const events = live ? { events: { splits: { [String(Date.parse(sp!.date + 'T14:30:00Z') / 1000)]: { date: Date.parse(sp!.date + 'T14:30:00Z') / 1000, numerator: sp!.numerator, denominator: sp!.denominator, splitRatio: `${sp!.numerator}:${sp!.denominator}` } } } } : {};
+  return { chart: { result: [{ meta: { symbol: sym, currency: 'USD', gmtoffset: -18000 }, timestamp: ts, ...events, indicators: { quote: [{ open: px, high: px, low: px, close: px, volume: px.map(() => volume) }], adjclose: [{ adjclose: px }] } }], error: null } };
 }
 
 export function fakeFetcher(w: World): Fetcher {

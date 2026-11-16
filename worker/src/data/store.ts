@@ -1,6 +1,6 @@
 // 資料層的 D1 存取：價格、成分股快照、排名、每日抓取紀錄、告警、交易日曆例外。
 import type { CalendarOverrides } from './calendar';
-import type { DailyBar } from './sources';
+import type { DailyBar, YahooSplit } from './sources';
 
 /** 一檔的整段日線（欄位分開存，比較省空間）。 */
 export interface Series {
@@ -61,6 +61,28 @@ export async function loadSeries(db: D1Database, tickers: string[]): Promise<Map
 
 export async function seriesFreshness(db: D1Database): Promise<{ ticker: string; last_date: string; session: string; n: number }[]> {
   return (await db.prepare('SELECT ticker, last_date, session, n FROM price_series ORDER BY ticker').all<{ ticker: string; last_date: string; session: string; n: number }>()).results;
+}
+
+// ---------------------------------------------------------------- 拆股（design_v2 §10 第 48 點）
+
+/** 記到的一筆拆股（代號是系統的寫法，例如 BRK.B）。和引擎的 Split 同形狀。 */
+export interface SplitRow {
+  ticker: string;
+  date: string;
+  numerator: number;
+  denominator: number;
+}
+
+/** 記下 Yahoo 回應裡的拆股事件；同一檔同一個生效日記過就不再記。 */
+export async function saveSplits(db: D1Database, ticker: string, splits: YahooSplit[], at: string): Promise<void> {
+  if (!splits.length) return;
+  const stmt = db.prepare('INSERT OR IGNORE INTO splits (ticker, date, numerator, denominator, seen_at) VALUES (?, ?, ?, ?, ?)');
+  await db.batch(splits.map((x) => stmt.bind(ticker, x.date, x.numerator, x.denominator, at)));
+}
+
+/** 生效日在 after 之後的拆股（舊到新）。 */
+export async function loadSplits(db: D1Database, after: string): Promise<SplitRow[]> {
+  return (await db.prepare('SELECT ticker, date, numerator, denominator FROM splits WHERE date > ? ORDER BY date, ticker').bind(after).all<SplitRow>()).results;
 }
 
 // ---------------------------------------------------------------- 成分股快照

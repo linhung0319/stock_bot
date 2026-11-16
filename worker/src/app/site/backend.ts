@@ -2,12 +2,12 @@
 //   真實：帳本與價格都在 D1（T6 的資料層）。
 //   示範：假市場＋腳本（src/demo），整個狀態存在 D1 的 demo_state 一列；和真實帳本完全分開。
 // 網站的程式只認這個介面，所以兩種模式走同一套畫面與操作。
-import type { Account, Attention, LedgerEvent, MarketView, ShadowRecord, Snapshot, StrategyReviewState } from '../../engine';
-import { lastCompletedSession } from '../../data/calendar';
+import { bookShares, pendingSplits, type Account, type Attention, type LedgerEvent, type MarketView, type ShadowRecord, type Snapshot, type StrategyReviewState } from '../../engine';
+import { easternTime, lastCompletedSession } from '../../data/calendar';
 import { BENCHMARK } from '../../data/ingest';
 import { buildMarketView, rebaseNotifSeq } from '../../data/marketView';
 import { fetchYahooDaily, type Fetcher } from '../../data/sources';
-import { loadCalendarOverrides, loadRanking, loadSeries, saveSeries, seriesFromBars } from '../../data/store';
+import { loadCalendarOverrides, loadRanking, loadSeries, saveSeries, saveSplits, seriesFromBars } from '../../data/store';
 import { errText, retry } from '../../data/util';
 import { DEMO_IDS, DEMO_SCRIPTS, type DemoId } from '../../demo/demoScripts';
 import { advanceDemo, demoAtEnd, demoFill, demoFilledSnapshot, demoMarket, demoView, resetDemo, type AdvanceMode, type DemoState, type OnNotifs } from '../../demo/driver';
@@ -57,6 +57,8 @@ export interface SiteData {
   fill?: (ticker: string) => number;
   /** 使用者操作的這一天。 */
   today: string;
+  /** 現在的美東日期（真實模式；快照與建立帳戶記下來，拆股用，design_v2 §10 第 48 點）。示範模式沒有（用訊號日）。 */
+  asOf?: string;
   warnings: string[];
   demo?: DemoInfo;
   /** 示範：照清單以開盤價成交後的數字（幫使用者填快照用）。 */
@@ -80,6 +82,11 @@ export interface SiteBackend {
   /** 快照存檔後：留下送出前的帳戶，好讓使用者復原（設計 §10 第 39 點）。 */
   saveUndo(before: Account, after: Account, date: string, warn: SnapshotWarn): Promise<void>;
   undoSnapshot(): Promise<{ ok: true; date: string } | { ok: false; reason: string }>;
+  /**
+   * 填快照前先查拆股（design_v2 §10 第 48 點；只有真實模式有）：股數和帳本差很多倍的代號向 Yahoo 重抓一次，
+   * 有拆股就記進 splits、存好換算後的價格（之後載入帳戶就會套用）。回傳這次新記到拆股的代號。查不到不丟錯。
+   */
+  checkSplits?(shares: Record<string, number>): Promise<string[]>;
   /** AI 層的網站操作（只有真實模式有）。 */
   ai?: SiteAi;
 }
@@ -106,6 +113,9 @@ export interface SiteAi {
   overview(): Promise<{ macro: MacroSnapshot | null; reviews: MomReview[]; vetoes: VetoEpisode[]; events: SecEventRow[] }>;
 }
 
+/** 填快照前要查拆股的代號：快照的股數是帳本（也是照清單做完）的 1.5 倍以上或 2/3 以下；一次最多查 8 檔（design_v2 §10 第 48 點）。 */
+export const SPLIT_SUSPECT = { hi: 1.5, lo: 2 / 3, max: 8 } as const;
+
 const taipeiDate = (now: Date): string => new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
 
 // ---------------------------------------------------------------- 真實
@@ -117,7 +127,7 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
     mode: 'real',
     async load(extra = []) {
       loaded = await loadAccount(env.DB);
-      const acct = loaded?.acct ?? null;
+      let acct = loaded?.acct ?? null;
       const warnings: string[] = [];
       const ranking = await loadRanking(env.DB);
       const core = acct?.cfg.coreTicker ?? 'VOO';
@@ -129,11 +139,16 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const session = series.get(core)?.d.at(-1) ?? null;
       // 這次操作要用、但沒有存或不是最新的代號：當場抓一次（新增自選、快照出現新代號、建立帳戶）
       const missing = session ? extra.filter((t) => series.get(t)?.d.at(-1) !== session) : [];
+      let newSplits = false;
       if (missing.length && session) {
         const got = await Promise.all(
           missing.map(async (t) => {
             try {
               const s = await retry(() => fetchYahooDaily(fetcher, t, '2y'));
+              if (s.splits.length) {
+                await saveSplits(env.DB, t, s.splits, now.toISOString());
+                newSplits = true;
+              }
               return seriesFromBars(t, s.bars.filter((b) => b.date <= session), now.toISOString(), session);
             } catch (e) {
               warnings.push(`抓不到 ${t} 的價格（${errText(e)}）`);
@@ -145,6 +160,11 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
         if (ok.length) {
           await saveSeries(env.DB, ok);
           series = await loadSeries(env.DB, want);
+        }
+        // 剛抓到的價格已經是拆股後的：帳戶重新載入，才會套用剛記到的拆股（design_v2 §10 第 48 點）
+        if (newSplits && loaded) {
+          loaded = await loadAccount(env.DB);
+          acct = loaded?.acct ?? null;
         }
       }
       let view: MarketView | null = null;
@@ -170,7 +190,7 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const aiNotes = (await listRuns(env.DB, now, { limit: 200 })).map(noteOfRun).filter((n): n is AiNote => n !== null);
       const undoable = acct ? await snapshotUndoInfo(env.DB, loaded?.rev ?? null) : null;
       const strategy = acct ? await loadStrategyState(env.DB) : null;
-      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), warnings, undoable, strategy };
+      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), asOf: easternTime(now).date, warnings, undoable, strategy };
     },
     async save(acct, cause, log = []) {
       // 論點檔紀錄和這一版帳戶同一筆交易寫（account_version = 這次存檔的 rev，復原快照時一起刪）
@@ -187,6 +207,36 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       if (rev !== null) await saveSnapshotUndo(env.DB, rev, before, after, date, now, warn);
     },
     undoSnapshot: () => undoSnapshot(env.DB, now),
+    async checkSplits(shares) {
+      const acct = (await loadAccount(env.DB))?.acct;
+      if (!acct) return [];
+      const book = bookShares(acct);
+      // 照等你下單的清單做完的股數：快照和帳本、和做完的都差很多倍才查（只差在有沒有下單的不算）
+      const done: Record<string, number> = { ...book };
+      for (const n of acct.notifs) if (n.status === 'RESPONDED' && n.composed) for (const m of n.composed.merged) done[m.ticker] = (done[m.ticker] ?? 0) + m.shares;
+      const off = (x: number, base: number) => !(base > 0) || x / base >= SPLIT_SUSPECT.hi || x / base <= SPLIT_SUSPECT.lo;
+      const suspects = Object.keys(shares)
+        .filter((t) => (book[t] ?? 0) > 0 && shares[t] > 0 && off(shares[t], book[t]) && off(shares[t], done[t] ?? 0))
+        .slice(0, SPLIT_SUSPECT.max);
+      if (!suspects.length) return [];
+      const session = lastCompletedSession(now, await loadCalendarOverrides(env.DB));
+      const at = now.toISOString();
+      const found: string[] = [];
+      for (const t of suspects) {
+        try {
+          const s = await retry(() => fetchYahooDaily(fetcher, t, '2y'));
+          // 先記拆股、再存價格（價格已經是拆股後的數字）
+          if (!pendingSplits(acct, s.splits.map((x) => ({ ticker: t, ...x }))).length) continue;
+          await saveSplits(env.DB, t, s.splits, at);
+          const bars = s.bars.filter((b) => b.date <= session);
+          if (bars.length) await saveSeries(env.DB, [seriesFromBars(t, bars, at, session)]);
+          found.push(t);
+        } catch (e) {
+          console.error(`填快照前查 ${t} 的拆股失敗`, e);
+        }
+      }
+      return found;
+    },
     ai: {
       async ownCheck(ticker, exits) {
         const d = await self.load([ticker]);

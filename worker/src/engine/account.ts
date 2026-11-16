@@ -438,7 +438,8 @@ export interface ShadowRecord {
   runIds?: string[];
 }
 
-export type LedgerEventKind = 'TRADE' | 'TRANSFER' | 'DEPOSIT' | 'WITHDRAW' | 'DIVIDEND' | 'CASH_OTHER' | 'UNCLASSIFIED' | 'CLASSIFIED';
+/** SPLIT：拆股或合股（T39c，design_v2 §10 第 48 點）：shares 是這一桶多出來（合股是少掉）的股數，reason 寫比例與前後股數。 */
+export type LedgerEventKind = 'TRADE' | 'TRANSFER' | 'DEPOSIT' | 'WITHDRAW' | 'DIVIDEND' | 'CASH_OTHER' | 'UNCLASSIFIED' | 'CLASSIFIED' | 'SPLIT';
 export interface LedgerEvent {
   date: string;
   kind: LedgerEventKind;
@@ -497,6 +498,13 @@ export interface Account {
   ownClosed?: Record<string, { fileId: string; reason: CloseReason; date: string }>;
   /** 自選的比例改成 0% 時記下的每檔標準比重（T39b，design_v2 §10 第 47 點）；從 0% 改回時用它。沒有這個欄位 = 沒有記錄。 */
   ownZero?: OwnZero;
+  /**
+   * 最後一次對照券商（快照、建立帳戶）送出那一刻的美東日期（T39c，design_v2 §10 第 48 點）：券商那時顯示的股數已經包含
+   * 生效日在這一天以前的拆股，之後才記到的這種拆股不再套用。沒有這個欄位（舊帳戶）= 用 snapshotDate。
+   */
+  splitAsOf?: string;
+  /** 套用過的拆股：`<代號>@<生效日>` → 生效日（engine/split.ts 的 applySplits）。沒有這個欄位 = 都還沒套用過。 */
+  splits?: Record<string, string>;
 }
 
 /**
@@ -737,6 +745,8 @@ export interface InitialAccount {
   volW?: number | null;
   volHist?: number[];
   crash?: boolean;
+  /** 送出建立帳戶那一刻的美東日期（拆股用，design_v2 §10 第 48 點）；沒給 = 訊號日。 */
+  asOf?: string;
 }
 
 /** 上線那天：使用者填第一份快照並決定每一檔放哪一桶（設計 §2.3 起步）。 */
@@ -759,6 +769,7 @@ export function createAccount(init: InitialAccount, view: MarketView): Account {
     units: { total: 0, own: 0, mom: 0, core: 0 },
     monthlyBlocked: false,
     snapshotDate: view.date,
+    splitAsOf: init.asOf && init.asOf > view.date ? init.asOf : view.date,
   };
   for (const [t, o] of Object.entries(init.own ?? {})) {
     acct.lots.own[t] = o.shares;

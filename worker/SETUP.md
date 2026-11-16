@@ -232,7 +232,7 @@ npx wrangler deploy
 階段八（`docs/plan/thesis_plan_2026-11-15.md`）改了資料表、排程與 prompt。照順序：
 
 1. `git push`：雲端排程從 repo 讀 prompt（`own_review_v2`、`event_scan_v2`、`own_check_v2`、`own_earnings_v1`、`own_drop_v2`、`mom_entry_v2`、`crash_review_v2`），push 之後才用新版。
-2. 資料表：套用新的 migration `0010`～`0014`（`npx wrangler d1 migrations apply stock-bot --remote`），或照 T17 清掉帳戶與 AI 的資料、重建資料庫（上線前本來就要做）。
+2. 資料表：套用新的 migration `0010`～`0015`（`npx wrangler d1 migrations apply stock-bot --remote`；`0015` 是 T39c 的拆股表 `splits`，市場資料，重建資料庫時也要有），或照 T17 清掉帳戶與 AI 的資料、重建資料庫（上線前本來就要做）。
 3. `npx wrangler deploy`：新的 03:30 排程（`30 3 * * TUE-SAT`）部署之後才生效。
 4. 把 `ai/prompts/run.md`、`ai/prompts/ping.md` 的「排程的 prompt」重新貼到 claude.ai 的雲端排程（T36 改過）。
 5. 部署後第一個交易日看 `GET /admin/flow/status`：三次排程都有紀錄、沒有 `ERROR`。

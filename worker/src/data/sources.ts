@@ -26,10 +26,19 @@ export interface DailyBar {
   volume: number;
 }
 
+/** Yahoo 的拆股事件（design_v2 §10 第 48 點）：生效日（美東）與比例；1 拆 10 是 numerator 10、denominator 1，合股相反。 */
+export interface YahooSplit {
+  date: string;
+  numerator: number;
+  denominator: number;
+}
+
 export interface YahooSeries {
   symbol: string;
   currency: string | null;
   bars: DailyBar[];
+  /** 回應裡的拆股事件（舊到新）；沒有就是空的。 */
+  splits: YahooSplit[];
 }
 
 /** Yahoo 的代號把「.」寫成「-」（BRK.B → BRK-B）。 */
@@ -47,6 +56,7 @@ export function parseYahooChart(json: unknown): YahooSeries {
     | {
         meta: { symbol: string; currency?: string; gmtoffset?: number };
         timestamp?: number[];
+        events?: { splits?: Record<string, { date?: number; numerator?: number; denominator?: number }> };
         indicators: { quote: { open: (number | null)[]; high: (number | null)[]; low: (number | null)[]; close: (number | null)[]; volume: (number | null)[] }[]; adjclose?: { adjclose: (number | null)[] }[] };
       }
     | undefined;
@@ -69,13 +79,46 @@ export function parseYahooChart(json: unknown): YahooSeries {
       volume: q.volume[i] ?? 0,
     });
   }
-  return { symbol: r.meta.symbol, currency: r.meta.currency ?? null, bars };
+  const splits: YahooSplit[] = [];
+  for (const [k, e] of Object.entries(r.events?.splits ?? {})) {
+    const num = Number(e?.numerator);
+    const den = Number(e?.denominator);
+    const t = Number(e?.date ?? k);
+    if (!(num > 0) || !(den > 0) || num === den || !Number.isFinite(t)) continue;
+    splits.push({ date: new Date((t + offset) * 1000).toISOString().slice(0, 10), numerator: num, denominator: den });
+  }
+  splits.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return { symbol: r.meta.symbol, currency: r.meta.currency ?? null, bars, splits };
+}
+
+/** 判斷「還沒換算」的門檻（對數）：生效日那一根乘上比例後和前一根差不到 10%，而且原本差超過 25%。 */
+export const SPLIT_GAP = { near: 0.1, far: 0.25 } as const;
+
+/**
+ * 拆股之後 Yahoo 偶爾晚一兩天才把之前的價格換算（design_v2 §10 第 48 點）。回應裡有拆股事件、而且生效日那一根和前一根的比
+ * 接近拆股比例（不像正常的單日漲跌）時，把生效日之前的價格除以比例、成交量乘回去，存下來的價格才會和記到的拆股一致。
+ * 已經換算好的（生效日前後只差正常的漲跌）、或回應裡還沒有生效日那一根的，原樣回傳。純函式。
+ */
+export function adjustUnadjustedSplits(s: YahooSeries): YahooSeries {
+  let bars = s.bars;
+  for (const sp of s.splits) {
+    const ratio = sp.numerator / sp.denominator;
+    const k = bars.findIndex((b) => b.date >= sp.date);
+    if (k <= 0 || bars[k].date !== sp.date) continue;
+    const r = bars[k].close / bars[k - 1].close;
+    if (!(r > 0)) continue;
+    // 還沒換算：生效日那一根約是前一根的 1/比例（例如 1 拆 10 → 約 0.1 倍）
+    if (Math.abs(Math.log(r * ratio)) < SPLIT_GAP.near && Math.abs(Math.log(r)) > SPLIT_GAP.far) {
+      bars = bars.map((b, j) => (j < k ? { ...b, open: b.open / ratio, high: b.high / ratio, low: b.low / ratio, close: b.close / ratio, adjClose: b.adjClose / ratio, volume: b.volume * ratio } : b));
+    }
+  }
+  return bars === s.bars ? s : { ...s, bars };
 }
 
 export async function fetchYahooDaily(fetcher: Fetcher, ticker: string, range = '2y'): Promise<YahooSeries> {
   const res = await fetcher(yahooChartUrl(ticker, range), { headers: { 'User-Agent': BROWSER_UA, Accept: 'application/json' } });
   if (!res.ok) throw new Error(`Yahoo ${ticker} HTTP ${res.status}`);
-  return parseYahooChart(await res.json());
+  return adjustUnadjustedSplits(parseYahooChart(await res.json()));
 }
 
 // ---------------------------------------------------------------- SSGA：SPY 每日持股檔
