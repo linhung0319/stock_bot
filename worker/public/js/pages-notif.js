@@ -1034,7 +1034,7 @@ export async function snapshotPage(ctx) {
                 'pad',
                 h('h2', { class: 'panel-h' }, `新加進自選的 ${r.newOwn.length} 檔還沒有你的論點`),
                 h('p', { class: 'small dim', style: 'margin:4px 0 10px' }, '可以現在寫，也可以之後再做（帳戶頁會有入口）。不寫也不擋月報；目前用系統預設前提做一般健康檢查。'),
-                thesisTodoList(r.newOwn.map((t) => ({ ticker: t, buyNote: (ctx.state.thesisTodo ?? []).find((x) => x.ticker === t)?.buyNote ?? null }))),
+                thesisTodoList(r.newOwnRows ?? r.newOwn.map((t) => ({ ticker: t, buyNote: (ctx.state.thesisTodo ?? []).find((x) => x.ticker === t)?.buyNote ?? null }))),
               )),
             ]
           : []),

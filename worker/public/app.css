@@ -714,6 +714,15 @@ select option { background: #14162a; }
 .todo-thesis > li { display: grid; gap: 8px 16px; grid-template-columns: minmax(0, 1fr); align-items: center; padding: 12px 0; border-top: 1px solid var(--line-2); }
 .todo-thesis > li:first-child { border-top: 0; }
 .todo-thesis .tt-main p { overflow-wrap: anywhere; }
+/* T44：上一次持有時（賣光之後又買回；持股頁）、還沒有論點的自選那一行的「上次持有時有論點」 */
+.prev-file { display: grid; gap: 10px; margin-top: 16px; padding: 12px 14px; border-left: 2px solid var(--line-hi); }
+.prev-file h5 { margin: 0; }
+.prev-file-body { gap: 10px; }
+.prev-text { font-size: 15px; color: var(--ink-2); }
+.prev-list { display: grid; gap: 4px; margin: 4px 0 0 1.2em; list-style: disc; }
+.prev-list li { overflow-wrap: anywhere; }
+.tt-prev { color: var(--ink-2); }
+.prev-fill { margin-top: 10px; padding: 10px 14px; border-left: 2px solid var(--line-hi); }
 @media (min-width: 640px) { .todo-thesis > li { grid-template-columns: minmax(0, 1fr) auto; } }
 
 /* ------------------------------------------------ 持股頁（T34）：自選股以論點為主、慢規則為輔 */

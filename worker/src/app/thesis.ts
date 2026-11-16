@@ -9,7 +9,7 @@
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
 import { ownCheckResult, type ExitLine } from '../ai/ownCheck';
 import { confirmMode, type OwnCondition } from '../ai/ownReview';
-import { DEFAULT_CONFIG, clone, type Account, type Attention, type MarketView, type Notif, type OwnMeta, type Thesis, type Tier } from '../engine';
+import { DEFAULT_CONFIG, clone, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Thesis, type Tier } from '../engine';
 import { concentrationHits, sizeText } from './concentration';
 import type { ThesisLogInput } from './ledgerStore';
 import { XBRL_METRICS, type QuarterRow } from '../data/edgar';
@@ -477,6 +477,79 @@ export function metaFile(acct: Pick<Account, 'own'>, ticker: string, asOf: strin
     newSince: minusDays(asOf, NO_REVIEW_DAYS),
     log: [],
   };
+}
+
+// ---------------------------------------------------------------- 上一份論點檔（T44，own_thesis §1.2）
+
+/** 上一份論點檔裡的出場條件（你定的）：結案時監測中的（LIVE），或已經成立的（MET）。 */
+export interface PrevCondition {
+  text: string;
+  action: CondAction | null;
+  state: 'LIVE' | 'MET';
+  /** LIVE：監測中、只在定期審查時檢查、只記錄；MET：成立日。 */
+  note: string;
+}
+
+/**
+ * 這檔賣光（或出清、移出）之後又買回時，上一份論點檔（T44，2026-11-16 使用者同意改）：
+ * 持股頁、「還沒有論點的自選」、討論包、編輯論點頁的「帶入上次的論點」用；**L2 的證據包不放**（thesisFile 只組現在這一份）。
+ * 舊的條件只顯示、不監測（所有監測讀現在這份的 fileId）。
+ */
+export interface PrevFile {
+  fileId: string;
+  /** 開檔的訊號日（從編號來；舊資料沒有是 null）。 */
+  openedAt: string | null;
+  /** 結案的訊號日。 */
+  closedAt: string;
+  reason: CloseReason;
+  /** 「自己賣光」「AI 建議出清後照做」…。 */
+  reasonText: string;
+  /** 「賣光」「出清」「移出自選」（「M/D 開檔 → M/D 賣光」用）。 */
+  closedVerb: string;
+  thesis: ClosedThesis['thesis'];
+  premises: ClosedThesis['premises'];
+  /** 有論點：論點本文或自己的前提至少一樣。 */
+  hasThesis: boolean;
+  /** 當時監測中的、已成立的出場條件；null = 沒有讀（示範模式只有帳戶狀態）。 */
+  conditions: PrevCondition[] | null;
+}
+
+export const CLOSE_TEXT: Record<CloseReason, string> = { SOLD_OUT: '自己賣光', REMOVED: '移出自選', EXIT_AI: 'AI 審查建議出清，你照做', EXIT_CONDITION: '你定的出場條件成立，出清', HARD_EVENT: '硬事件審查建議出清，你照做' };
+const CLOSE_VERB: Record<CloseReason, string> = { SOLD_OUT: '賣光', REMOVED: '移出自選', EXIT_AI: '出清', EXIT_CONDITION: '出清', HARD_EVENT: '出清' };
+const LIVE_TEXT: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '只在定期審查時檢查', MANUAL: '只記錄' };
+
+/**
+ * 上一份論點檔（純函式）：這檔現在是自選、而且 ownClosed 記著一份編號和現在不同的論點檔。沒有是 null。
+ * conds：上一份的條件（loadConditions 讀 file_id = 上一份編號的）；不給 = 沒有讀（conditions 是 null）。
+ * T44 之前結案的沒有 last：當成沒有記到論點。
+ */
+export function prevFileOf(acct: Pick<Account, 'own' | 'ownClosed'>, ticker: string, conds: FileCondition[] | null = null): PrevFile | null {
+  const meta = acct.own[ticker];
+  const c = acct.ownClosed?.[ticker];
+  if (!meta || !c?.fileId || c.fileId === meta.fileId) return null;
+  const last = c.last ?? { thesis: null, premises: [] };
+  return {
+    fileId: c.fileId,
+    openedAt: fileDate(c.fileId, ticker),
+    closedAt: c.date,
+    reason: c.reason,
+    reasonText: CLOSE_TEXT[c.reason] ?? '移出自選',
+    closedVerb: CLOSE_VERB[c.reason] ?? '移出自選',
+    thesis: last.thesis,
+    premises: last.premises,
+    hasThesis: !!last.thesis?.text || last.premises.length > 0,
+    conditions: conds
+      ? conds
+          .filter((x) => isOwned(x) && (LIVE_CODES.includes(x.status) || x.status === 'MET'))
+          .map((x) => ({ text: x.text, action: x.action, state: x.status === 'MET' ? ('MET' as const) : ('LIVE' as const), note: x.status === 'MET' ? `${x.metAt?.slice(0, 10) ?? ''} 成立` : (LIVE_TEXT[x.status] ?? '監測中') }))
+      : null,
+  };
+}
+
+/** 上一份論點檔，連同它的條件（讀資料庫）。 */
+export async function loadPrevFile(db: D1Database, acct: Pick<Account, 'own' | 'ownClosed'>, ticker: string): Promise<PrevFile | null> {
+  const p = prevFileOf(acct, ticker);
+  return p ? prevFileOf(acct, ticker, await loadConditions(db, ticker, p.fileId)) : null;
 }
 
 /** 在上一次有結論的審查之後嗎（同一天的看時間：事件的建立時間、申報的接受時間晚於那次審查開始）。沒有審查時看最近 120 天。 */

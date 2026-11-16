@@ -62,7 +62,7 @@ import { BENCHMARK } from '../../data/ingest';
 import { exportMd, rowOfNote, runDetail, runRow, vetoView } from './aiViews';
 import { choiceEffect } from './bubble';
 import { annotate } from './explain';
-import { accountView, composedView, crashLogView, ctxOf, historyView, withPreviewNote, holdingDetail, notifView, pendingBreakOf, snapshotForm, stateView } from './views';
+import { accountView, composedView, crashLogView, ctxOf, historyView, withPreviewNote, holdingDetail, notifView, pendingBreakOf, snapshotForm, stateView, thesisTodoOf } from './views';
 import { demoHolding } from './thesisView';
 import { eventDetail, eventSource } from '../eventText';
 
@@ -539,6 +539,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     // 真實模式：這檔監測中的條件（AI 寫的、你寫的）、最近 30 天還沒勾的改寫結果、要看的事
     // 動能持股：最近 90 天的事件與動能的「要看的事」（含進場時的附註；momentum_ai §3.6）
     // 論點那一塊（T34）：前提最近一次的檢查、事件時間軸、歷次審查與回應、靜默中的前提、減半檢視
+    // 賣光之後又買回（T44）：上一份論點檔補上當時的出場條件（帳戶狀態沒有條件）
+    if (backend.ai && hd.own?.prev) hd.own.prev = await backend.ai.prevFile(tk, d.acct).catch(() => hd.own!.prev);
     if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), rewrites: await backend.ai.rewrites(tk), attention: await backend.ai.attention(tk, d.acct, d.view).catch(() => []), mom: await backend.ai.mom(tk, d.acct, d.view, d.rankOrder).catch(() => null), thesis: await backend.ai.thesis(tk, d.acct, d.view).catch(() => null) });
     // 示範模式（T34 的決定）：論點檔只有帳戶狀態（沒有條件、事件、審查紀錄），論點那一塊與「要看的事」從它算
     return json({ ...hd, ...demoHolding(d.acct, d.view, tk) });
@@ -855,7 +857,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       return {
         acct,
         snapshot: snap,
-        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, belowStd: out.belowStd, monthlyId, newOwn },
+        // newOwnRows：結果頁那張清單的每一行（買進時的一句話；賣光又買回、上次有論點的帶 prev，T44）
+        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, belowStd: out.belowStd, monthlyId, newOwn, newOwnRows: thesisTodoOf(acct, newOwn) },
       };
     });
     // 送出前的帳戶留下來，填錯了可以復原（只留最後一份；之後帳戶有變動就不能復原）

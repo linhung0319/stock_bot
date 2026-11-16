@@ -6,7 +6,7 @@
 import { SLOW, TIER_NAME, bucketValue, premiseKey, rollingMax, sma, totalValue, trailingReturn, type Account, type MarketView, type Tier } from '../engine';
 import { sizeOf } from '../app/concentration';
 import { normalizeTicker } from '../data/sources';
-import { outcomeText, type CondAction, type ThesisFile } from '../app/thesis';
+import { outcomeText, type CondAction, type PrevFile, type ThesisFile } from '../app/thesis';
 import { eventDetail, eventLabel } from '../app/eventText';
 
 export const DISCUSSION_VERSION = 'discussion_v3';
@@ -209,12 +209,20 @@ const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半'
 const SP = '　';
 const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '—');
 
-function whySection(file: ThesisFile, n: DiscussionNumbers, mode: DiscussionMode, brk: BreakInfo | null): string[] {
+function whySection(file: ThesisFile, n: DiscussionNumbers, mode: DiscussionMode, brk: BreakInfo | null, prev: PrevFile | null): string[] {
   if (mode === 'NEW') {
+    // 賣光之後又買回（T44）：從「上次為什麼賣、這次為什麼買回」問起
     // 有買進時的一句話（T40）：從那句話問起，不再要 claude.ai 先問為什麼買
-    const L = file.buyNote?.text
-      ? ['我持有這檔，但還沒有寫下論點。下面「我買進時的想法」是我買的時候隨手寫的一句話。', '請從那句話問起：它背後的理由是什麼、哪幾件事要繼續成立、什麼情況下我會承認看錯。', '我回答之後再和我討論，不要直接替我寫。']
-      : ['我持有這檔，但還沒有寫下論點。請先問我 3 個問題（為什麼買、哪幾件事要繼續成立、什麼情況下我會承認看錯），', '我回答之後再和我討論，不要直接替我寫。'];
+    const L = prev
+      ? [
+          '我持有這檔，這一次還沒有寫下論點。我之前持有過它，下面「上一次持有時的論點」記著那一次的論點與賣出的原因。',
+          ...(file.buyNote?.text ? ['「我買進時的想法」是這次買的時候隨手寫的一句話。'] : []),
+          '請先問我：上次為什麼賣、這次為什麼買回；再問哪幾件事要繼續成立、什麼情況下我會承認看錯。',
+          '我回答之後再和我討論，不要直接替我寫。',
+        ]
+      : file.buyNote?.text
+        ? ['我持有這檔，但還沒有寫下論點。下面「我買進時的想法」是我買的時候隨手寫的一句話。', '請從那句話問起：它背後的理由是什麼、哪幾件事要繼續成立、什麼情況下我會承認看錯。', '我回答之後再和我討論，不要直接替我寫。']
+        : ['我持有這檔，但還沒有寫下論點。請先問我 3 個問題（為什麼買、哪幾件事要繼續成立、什麼情況下我會承認看錯），', '我回答之後再和我討論，不要直接替我寫。'];
     if (n.openedHalf !== null) L.push(`這檔是在大跌之後買的（加入時比 52 週高點低 ${pc(-n.openedHalf, 0)}）。`, '請先問我：它為什麼跌、為什麼我認為市場錯了。');
     return L;
   }
@@ -236,6 +244,37 @@ function buyNoteSection(file: ThesisFile): string[] {
   const b = file.buyNote;
   if (!b?.text) return [];
   return ['## 我買進時的想法', '這是我買的時候隨手寫的一句話，不一定對，也不是論點；請拿來當開場，不要當成已經成立的前提。', `「${b.text}」（${b.at} 寫的）`, ''];
+}
+
+/**
+ * 上一次持有時的論點（T44，own_thesis §1.2）：賣光之後又買回、有上一份論點檔時才有這一節。
+ * 前提不帶編號：收尾區塊的 `[P2]` 只指這一份的前提，上一份的編號放進來會混在一起。
+ */
+function prevSection(prev: PrevFile | null): string[] {
+  if (!prev) return [];
+  const L = ['## 上一次持有時的論點', '這是上一次持有時的論點與賣出的原因，不一定還成立；請拿來比較這次買回的理由。'];
+  L.push(`持有期間：${prev.openedAt ? `${prev.openedAt} 開檔` : '開檔日不明'} → ${prev.closedAt} ${prev.closedVerb}（原因：${prev.reasonText}）`);
+  if (prev.thesis) L.push(`論點（第 ${prev.thesis.version} 版，${prev.thesis.setAt} 定）：`, prev.thesis.text);
+  if (prev.premises.length) {
+    L.push('前提：');
+    prev.premises.forEach((p) => L.push(`- ${p.text}`));
+  }
+  if (!prev.hasThesis) L.push('那一次沒有寫下論點（只用系統預設前提做一般健康檢查）。');
+  if (prev.conditions) {
+    const live = prev.conditions.filter((c) => c.state === 'LIVE');
+    const met = prev.conditions.filter((c) => c.state === 'MET');
+    if (live.length) {
+      L.push('當時監測中的出場條件（買回後不會再監測）：');
+      live.forEach((c) => L.push(`- ${c.text} → ${c.action ? ACTION_TEXT[c.action] : '重新審查'}（${c.note}）`));
+    }
+    if (met.length) {
+      L.push('那一次已經成立的出場條件：');
+      met.forEach((c) => L.push(`- ${c.text} → ${c.action ? ACTION_TEXT[c.action] : '重新審查'}（${c.note}）`));
+    }
+    if (!live.length && !met.length) L.push('那一次沒有定出場條件。');
+  }
+  L.push('');
+  return L;
 }
 
 function thesisSection(file: ThesisFile): string[] {
@@ -329,8 +368,9 @@ function numberSection(n: DiscussionNumbers, xbrl: string | null): string[] {
 /**
  * 組討論包（own_thesis §1.7）。file：論點檔；n：程式算好的數字；mode：情境；brk：BREAK 情境的依據。
  * 長度目標 12,000 字以內：事件最多 10 件、審查最多 3 次；還是太長時先縮財報表，最後截斷。
+ * prev：賣光之後又買回時的上一份論點檔（T44；多一節「## 上一次持有時的論點」，NEW 情境從上次為什麼賣問起）。
  */
-export function discussionPack(file: ThesisFile, n: DiscussionNumbers, mode: DiscussionMode, brk: BreakInfo | null = null): string {
+export function discussionPack(file: ThesisFile, n: DiscussionNumbers, mode: DiscussionMode, brk: BreakInfo | null = null, prev: PrevFile | null = null): string {
   const cut = DISCUSSION_V3.indexOf('\n9. ');
   const ask = DISCUSSION_V3.slice(0, cut).trim();
   const out = DISCUSSION_V3.slice(cut + 1).replace('<代號>', file.ticker);
@@ -342,9 +382,10 @@ export function discussionPack(file: ThesisFile, n: DiscussionNumbers, mode: Dis
       ask,
       '',
       '## 這次為什麼討論',
-      ...whySection(file, n, mode, brk),
+      ...whySection(file, n, mode, brk, prev),
       '',
       ...buyNoteSection(file),
+      ...prevSection(prev),
       '## 我的論點',
       ...thesisSection(file),
       '',

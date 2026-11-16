@@ -93,6 +93,8 @@ function thesisPanel(d) {
     def && o.buyNote
       ? h('div', { class: 'buy-note' }, h('p', { class: 'small faint' }, `買進時的一句話（${day(o.buyNote.at, true)} 寫的）`), h('p', null, `「${o.buyNote.text}」`), h('p', { class: 'small faint' }, '只當討論論點時的開場，不是前提；AI 審查不看這句話。'))
       : null,
+    // 賣光之後又買回（T44）：還沒有這一次的論點時，上一次持有時的論點整塊攤開放在這裡
+    def && o.prev ? prevBlock(o.prev, true) : null,
     o.openNote ? h('p', { class: 'notice', style: 'margin-top:12px' }, o.openNote) : null,
     h('h5', { style: 'margin-top:18px' }, def ? '前提（系統預設）' : `前提（${o.premises.length} 條，你為什麼持有它）`),
     premiseList(o, t, premiseChecks(d)),
@@ -103,8 +105,38 @@ function thesisPanel(d) {
       { class: 'btn-row', style: 'margin-top:18px' },
       def ? [copyPackButton(d.ticker, null, '複製討論包', 'primary'), h('a', { class: 'btn', href: edit }, '編輯論點')] : [h('a', { class: 'btn primary', href: edit }, '編輯論點'), copyPackButton(d.ticker)],
     ),
-    h('p', { class: 'small faint', style: 'margin-top:8px' }, def ? `按「複製討論包」貼到 claude.ai 的新對話，它會${o.buyNote ? '從你買進時寫的那一句問起' : '先問你為什麼買'}；討論完說「收尾」，把結果貼回「編輯論點」。` : '「複製討論包」把論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論；說「收尾」後把結果貼回「編輯論點」。'),
+    h('p', { class: 'small faint', style: 'margin-top:8px' }, def ? `按「複製討論包」貼到 claude.ai 的新對話，它會${o.prev ? '從上次為什麼賣、這次為什麼買回問起' : o.buyNote ? '從你買進時寫的那一句問起' : '先問你為什麼買'}；討論完說「收尾」，把結果貼回「編輯論點」。` : '「複製討論包」把論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論；說「收尾」後把結果貼回「編輯論點」。'),
+    // 這一次已經有論點：上一次的收起來放在最下面，還是找得到（T44）
+    !def && o.prev ? prevBlock(o.prev, false) : null,
   );
+}
+
+/**
+ * 上一次持有時（T44，own_thesis §1.2）：賣光（或出清、移出）之後又買回，上一份論點檔的論點本文、你的前提、
+ * 當時監測中的出場條件、結案的原因。只是紀錄：不沿用、舊條件不恢復監測。open：攤開（還沒有這一次的論點）或收合。
+ */
+function prevBlock(p, open) {
+  const head = `上一次持有時（${p.openedAt ? `${day(p.openedAt, true)} 開檔` : '開檔日不明'} → ${day(p.closedAt, true)} ${p.closedVerb}）`;
+  const conds = p.conditions;
+  const live = (conds ?? []).filter((c) => c.state === 'LIVE');
+  const met = (conds ?? []).filter((c) => c.state === 'MET');
+  const act = (c) => ({ EXIT: '出清', HALF: '減半', REVIEW: '重新審查' })[c.action] ?? '重新審查';
+  const condList = (xs) => h('ul', { class: 'prev-list' }, xs.map((c) => h('li', null, `${c.text} → ${act(c)}`, h('span', { class: 'faint' }, `（${c.note}）`))));
+  const body = [
+    h('p', null, h('span', { class: 'faint' }, '結案的原因：'), p.reasonText),
+    p.thesis ? h('div', null, h('p', { class: 'small faint' }, `那時的論點（第 ${p.thesis.version} 版，${day(p.thesis.setAt, true)} 定）`), h('p', { class: 'th-text prev-text' }, p.thesis.text)) : null,
+    p.premises.length ? h('div', null, h('p', { class: 'small faint' }, `那時你的前提（${p.premises.length} 條）`), h('ul', { class: 'prev-list' }, p.premises.map((x) => h('li', null, x.text)))) : null,
+    p.hasThesis ? null : h('p', { class: 'small dim' }, '那一次沒有寫下論點，只用系統預設前提做一般健康檢查。'),
+    conds === null
+      ? null
+      : live.length || met.length
+        ? h('div', null, live.length ? [h('p', { class: 'small faint' }, '當時監測中的出場條件（買回後不會再監測）'), condList(live)] : null, met.length ? [h('p', { class: 'small faint', style: live.length ? 'margin-top:8px' : null }, '那一次已經成立的出場條件'), condList(met)] : null)
+        : h('p', { class: 'small dim' }, '那一次沒有定出場條件。'),
+    h('p', { class: 'small faint' }, '只是紀錄：上一次的論點不會沿用，當時的出場條件也不會因為買回而恢復監測。「複製討論包」會附上這一段；想從上次的論點改起，到「編輯論點」按「帶入上次的論點」。'),
+  ];
+  return open
+    ? h('div', { class: 'prev-file' }, h('h5', null, head), ...body)
+    : h('details', { class: 'more prev-file-more' }, h('summary', null, head), h('div', { class: 'more-body prev-file-body' }, ...body));
 }
 
 /** 前提：編號、文字、誰寫的、最近一次 3 票一致的檢查；之後沒有一致結論、靜默中的各一行。 */

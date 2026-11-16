@@ -22,7 +22,7 @@ import { defaultFacts, fileConditions, loadConditions, pickFilings, thesisFile, 
 import type { CompanyFacts, QuarterRow, XbrlFact } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
-import { SYSTEM_DEFAULT_PREMISES, addOwn, addPremises, applySnapshot, createAccount, newOwnMeta, priceOf, type Account, type MarketView } from '../src/engine';
+import { SYSTEM_DEFAULT_PREMISES, addOwn, closedThesisOf, addPremises, applySnapshot, createAccount, newOwnMeta, priceOf, type Account, type MarketView } from '../src/engine';
 import { freshDb } from './helpers/d1';
 import { cronTime, fakeFetcher, newWorld, type World } from './helpers/fakeSources';
 
@@ -272,7 +272,8 @@ describe('T25：結案與再加回、復原快照', () => {
       const s = applySnapshot(loaded.acct, view, sellAllSnap(loaded.acct, view, 'NVDA'));
       expect(s.error).toBeUndefined();
       expect(s.removedOwn).toEqual(['NVDA']);
-      expect(s.acct.ownClosed?.NVDA).toEqual({ fileId: 'NVDA@2026-11-19', reason: 'SOLD_OUT', date: '2026-11-19' });
+      // T44：結案那一刻的論點本文與自己的前提也記下來（last）
+      expect(s.acct.ownClosed?.NVDA).toEqual({ fileId: 'NVDA@2026-11-19', reason: 'SOLD_OUT', date: '2026-11-19', last: closedThesisOf(loaded.acct.own.NVDA) });
       await saveAccount(db, s.acct, loaded, '快照', new Date('2026-11-19T13:00:00Z'));
       // 同一天又加回 → #2；舊條件不屬於新的論點檔
       loaded = (await loadAccount(db))!;

@@ -20,6 +20,7 @@ import {
   totalValue,
   type Account,
   type CloseReason,
+  closedThesisOf,
   type Effect,
   type Item,
   type MarketView,
@@ -109,10 +110,14 @@ export function applyTier(acct: Account, view: MarketView, ticker: string, tier:
   }
 }
 
-/** 移出自選 = 論點檔結案（own_thesis §1.2）：記下結案的論點檔與原因，存檔時寫 log 的 CLOSE。 */
+/**
+ * 移出自選 = 論點檔結案（own_thesis §1.2）：記下結案的論點檔與原因，存檔時寫 log 的 CLOSE。
+ * T44：也記下那一刻的論點本文與自己的前提（last），再買回時新的論點檔看得到上一份。
+ */
 function removeOwnPick(acct: Account, ticker: string, reason: CloseReason, date: string): void {
-  const fileId = acct.own[ticker]?.fileId;
-  if (fileId) acct.ownClosed = { ...(acct.ownClosed ?? {}), [ticker]: { fileId, reason, date } };
+  const meta = acct.own[ticker];
+  const fileId = meta?.fileId;
+  if (meta && fileId) acct.ownClosed = { ...(acct.ownClosed ?? {}), [ticker]: { fileId, reason, date, last: closedThesisOf(meta) } };
   delete acct.own[ticker];
   delete acct.rule.own[ticker];
   cancelOwnItems(acct, ticker, reason, date);

@@ -7,6 +7,7 @@ import { unsentBox } from './pages-ai.js';
 import { actionButton, errBox } from './pages-notif.js';
 import { say } from './slime.js';
 import { replyOption } from './thesis-reply.js';
+import { prevFill } from './thesis-prev.js';
 
 const ACTIONS = [
   ['EXIT', '出清'],
@@ -297,9 +298,44 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     h('h5', { style: 'margin-top:12px' }, '你定的條件'),
     owned.length ? h('ul', { class: 'small', style: 'margin:6px 0 0 1.2em' }, owned.map((c) => h('li', null, `${c.text} → ${c.actionText ?? '只記錄'}（${c.status}）`))) : h('p', { class: 'small faint', style: 'margin-top:4px' }, '還沒有'),
   );
+  // 賣光之後又買回（T44）：把上一次持有時的論點本文與前提填進右邊；前提當成新的，出場條件不帶
+  const pf = prevFill(own.prev);
+  const prevMsg = h('div');
+  const prevBox = pf
+    ? h(
+        'div',
+        { class: 'prev-fill' },
+        h('p', { class: 'small' }, `上一次持有時（${own.prev.openedAt ? `${day(own.prev.openedAt)}開檔` : '開檔日不明'} → ${day(own.prev.closedAt)}${own.prev.closedVerb}）有論點${pf.thesis ? '' : '（沒有本文）'}${pf.premises.length ? `與 ${pf.premises.length} 條前提` : ''}。`),
+        h(
+          'div',
+          { class: 'btn-row', style: 'margin-top:6px' },
+          h(
+            'button',
+            {
+              class: 'btn',
+              type: 'button',
+              onclick: () => {
+                thesisIn.value = pf.thesis;
+                thesisIn.dispatchEvent(new Event('input'));
+                prems.splice(0).forEach((r) => r.el.remove());
+                pf.premises.forEach((p) => addPrem(p));
+                if (!prems.length) addPrem();
+                source = 'TYPED';
+                put(prevMsg, h('p', { class: 'small', style: 'color:var(--core);margin-top:6px' }, `已帶入上次的論點${pf.premises.length ? `與 ${pf.premises.length} 條前提（當成新的前提，存檔時發新的編號）` : ''}。出場條件沒有帶，要重新寫。`));
+                changed();
+              },
+            },
+            '帶入上次的論點',
+          ),
+        ),
+        h('p', { class: 'small faint', style: 'margin-top:6px' }, '把上次的論點本文與前提填進下面，再照這次買回的理由改。前提當成新的；出場條件不帶，要重新寫（舊的條件不會恢復監測）。'),
+        prevMsg,
+      )
+    : null;
   const next = glass(
     'pad',
     h('h2', { class: 'panel-h' }, '新的（可以直接改）'),
+    prevBox,
     h('label', { class: 'field', style: 'margin-top:10px' }, h('span', null, '論點'), thesisIn, counter(thesisIn, LIMITS.thesis)),
     h('div', { class: 'field' }, h('span', null, `前提（最多 ${LIMITS.premises} 條）`), own.kind === 'DEFAULT_ONLY' ? h('small', null, '目前用系統預設前提。寫了自己的前提，存檔時就取代預設。') : h('small', null, '和現在的文字相同的沿用原本的編號；拿掉的會撤下。'), premList, h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addPrem(); changed(); } }, '再加一條前提'))),
     h(
@@ -374,7 +410,9 @@ export function thesisTodoList(rows) {
           'div',
           { class: 'tt-main' },
           h('p', null, h('span', { class: 'tk' }, r.ticker), ' 還沒有你的論點'),
-          r.buyNote ? h('p', { class: 'small dim' }, `買進時的一句話：「${r.buyNote.text}」`) : h('p', { class: 'small faint' }, '沒有寫買進時的一句話；討論包會請 claude.ai 先問你為什麼買。'),
+          // 賣光之後又買回、上次持有時有論點（T44）：討論包會附上上次的論點，從上次為什麼賣問起
+          r.prev ? h('p', { class: 'small tt-prev' }, `上次持有時有論點（${day(r.prev.closedAt)}${r.prev.closedVerb}）：討論包會附上，請 claude.ai 從上次為什麼賣、這次為什麼買回問起；也可以在「編輯論點」帶入上次的論點。`) : null,
+          r.buyNote ? h('p', { class: 'small dim' }, `買進時的一句話：「${r.buyNote.text}」`) : r.prev ? null : h('p', { class: 'small faint' }, '沒有寫買進時的一句話；討論包會請 claude.ai 先問你為什麼買。'),
         ),
         h('div', { class: 'btn-row tt-act' }, copyPackButton(r.ticker), h('a', { class: 'btn', href: `#/h/${encodeURIComponent(r.ticker)}/thesis` }, '編輯論點')),
       ),

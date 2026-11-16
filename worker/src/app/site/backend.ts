@@ -25,7 +25,7 @@ import type { ExitLine } from '../../ai/ownCheck';
 import type { DiscussionMode } from '../../ai/discussion';
 import { realDiscussion } from '../discussion';
 import { conditionOp, type CondOp } from '../ownConds';
-import { holdingAttention, thesisFile, type ExitSet } from '../thesis';
+import { holdingAttention, loadPrevFile, thesisFile, type ExitSet, type PrevFile } from '../thesis';
 import { thesisView, type ThesisView } from './thesisView';
 import { holdingMom, vetoEpisodes, type HoldingMom, type VetoEpisode } from '../momNotes';
 import { annotate } from './explain';
@@ -112,6 +112,8 @@ export interface SiteAi {
   monitor(ticker: string): Promise<Awaited<ReturnType<typeof monitorView>>>;
   /** 持股頁：這檔現在成立的「要看的事」（全部，不看頻率；own_thesis §3.6.6）。 */
   attention(ticker: string, acct: Account, view: MarketView): Promise<Attention[]>;
+  /** 賣光之後又買回時的上一份論點檔，連同當時的出場條件（T44，own_thesis §1.2）。沒有是 null。 */
+  prevFile(ticker: string, acct: Account): Promise<PrevFile | null>;
   /** 持股頁的論點那一塊（T34）：前提最近一次的檢查、事件、歷次審查與回應、靜默中的前提、減半檢視。不是自選是 null。 */
   thesis(ticker: string, acct: Account, view: MarketView): Promise<ThesisView | null>;
   /** 持股頁的動能那一塊（momentum_ai §3.6）：最近 90 天的事件、現在成立的「要看的事」（含進場時的附註）。不是動能持股是 null。 */
@@ -270,6 +272,7 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       },
       monitor: (ticker) => monitorView(env, ticker),
       attention: (ticker, acct, view) => holdingAttention(env.DB, acct, view, ticker),
+      prevFile: (ticker, acct) => loadPrevFile(env.DB, acct, ticker),
       async thesis(ticker, acct, view) {
         const file = await thesisFile(env.DB, acct, ticker, view.date);
         const meta = acct.own[ticker];

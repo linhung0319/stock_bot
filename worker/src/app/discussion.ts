@@ -9,7 +9,7 @@ import type { Account, MarketView, Tier } from '../engine';
 import { getRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { cikFor } from './filings';
-import { metaFile, thesisFile, type ThesisFile } from './thesis';
+import { loadPrevFile, metaFile, prevFileOf, thesisFile, type ThesisFile } from './thesis';
 
 /** 最近一次審查證據包裡的 XBRL 八季表（不用再抓）。 */
 async function reviewXbrl(db: D1Database, ticker: string): Promise<string | null> {
@@ -78,7 +78,9 @@ export async function realDiscussion(env: Env, fetcher: Fetcher, acct: Account, 
   const m = mode ?? pickMode(file, notif);
   const xbrl = await discussionXbrl(env, fetcher, ticker, view.date);
   const brk = m === 'BREAK' ? await breakInfo(env.DB, acct, file, notif) : null;
-  return { text: discussionPack(file, discussionNumbers(acct, view, ticker, xbrl), m, brk), mode: m };
+  // 賣光之後又買回（T44）：上一份論點檔連同當時的出場條件
+  const prev = await loadPrevFile(env.DB, acct, ticker);
+  return { text: discussionPack(file, discussionNumbers(acct, view, ticker, xbrl), m, brk, prev), mode: m };
 }
 
 /** 示範模式的討論包：只用帳戶狀態（示範的帳戶不在 D1 的那幾張表裡），沒有財報表。 */
@@ -87,5 +89,5 @@ export async function demoDiscussion(acct: Account, view: MarketView, ticker: st
   if (!file) throw new Error(`${ticker} 不在自選裡`);
   const m = mode ?? pickMode(file, notif);
   const brk = m === 'BREAK' ? await breakInfo(null, acct, file, notif) : null;
-  return { text: discussionPack(file, discussionNumbers(acct, view, ticker, null), m, brk), mode: m };
+  return { text: discussionPack(file, discussionNumbers(acct, view, ticker, null), m, brk, prevFileOf(acct, ticker)), mode: m };
 }

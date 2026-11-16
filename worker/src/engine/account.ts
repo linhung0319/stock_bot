@@ -39,6 +39,24 @@ export interface Thesis {
 /** 論點檔結案的原因（own_thesis §1.2 的 own_thesis_log `CLOSE`）。 */
 export type CloseReason = 'REMOVED' | 'SOLD_OUT' | 'EXIT_AI' | 'EXIT_CONDITION' | 'HARD_EVENT';
 
+/**
+ * 結案那一刻的論點（T44，own_thesis §1.2，2026-11-16 使用者同意改）：賣光再買回時，新的論點檔看得到上一份。
+ * thesis：論點本文（沒有本文是 null）；premises：自己的前提（不是系統預設的）。只顯示、給討論包，不進 L2 的證據包。
+ */
+export interface ClosedThesis {
+  thesis: { text: string; setAt: string; version: number } | null;
+  premises: { id: string; text: string }[];
+}
+
+/** 結案時記下的論點：本文或自己的前提至少一樣有東西才算「有論點」。 */
+export function closedThesisOf(meta: Pick<OwnMeta, 'thesis' | 'premises'>): ClosedThesis {
+  const t = meta.thesis;
+  return {
+    thesis: t?.text ? { text: t.text, setAt: t.setAt, version: t.version } : null,
+    premises: meta.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT').map((p) => ({ id: p.id, text: p.text })),
+  };
+}
+
 export interface OwnMeta {
   /** 慢規則狀態機（每天收盤後前進）。 */
   slow: SlowRuleState;
@@ -500,8 +518,9 @@ export interface Account {
   /**
    * 每檔最近一次結案的論點檔（own_thesis §1.2）：存檔時寫 log 的 `CLOSE` 用它的原因；
    * 同一天結案又重新加入時，用它避免論點檔編號重複。
+   * last：結案那一刻的論點本文與自己的前提（T44：再買回時持股頁、討論包、編輯論點頁看得到上一份）；T44 之前結案的沒有這個欄位。
    */
-  ownClosed?: Record<string, { fileId: string; reason: CloseReason; date: string }>;
+  ownClosed?: Record<string, { fileId: string; reason: CloseReason; date: string; last?: ClosedThesis }>;
   /** 自選的比例改成 0% 時記下的每檔標準比重（T39b，design_v2 §10 第 47 點）；從 0% 改回時用它。沒有這個欄位 = 沒有記錄。 */
   ownZero?: OwnZero;
   /**

@@ -38,6 +38,7 @@ import { CRASH_REVIEW } from '../../ai/crash';
 import { HORIZONS, indexOn, type PriceBook } from '../../ai/shadow';
 import type { AiRun } from '../aiRuns';
 import type { RunRow } from './aiViews';
+import { prevFileOf, type PrevFile } from '../thesis';
 import type { SiteData } from './backend';
 import { accountBubble, todoBubble, type Bubble } from './bubble';
 import { coreLineWhy, crashReasonText, explainItem, findNote, liveCashflow, liveCrash, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
@@ -908,16 +909,21 @@ export interface ThesisTodoRow {
   ticker: string;
   /** 買進時的一句話（沒寫是 null）。 */
   buyNote: { text: string; at: string } | null;
+  /** 賣光之後又買回、上一次持有時有論點（T44）：那一行寫「上次持有時有論點」。沒有就不帶這個欄位。 */
+  prev?: { closedAt: string; closedVerb: string };
 }
 
 /**
  * 「還沒有論點的自選」那張清單（T40）：帳戶狀態 thesisTodo 記的代號裡，還在自選、還是「只有預設」的。
  * 每一檔都有論點（或已經不在自選）時是空的，入口也就不見；使用者關掉時 thesisTodo 是空陣列。
  */
-export function thesisTodoOf(acct: Pick<Account, 'own' | 'thesisTodo'>): ThesisTodoRow[] {
-  return (acct.thesisTodo ?? [])
+export function thesisTodoOf(acct: Pick<Account, 'own' | 'thesisTodo' | 'ownClosed'>, tickers: string[] = acct.thesisTodo ?? []): ThesisTodoRow[] {
+  return tickers
     .filter((t) => acct.own[t] && acct.own[t].premises.every((p) => p.origin === 'SYSTEM_DEFAULT'))
-    .map((t) => ({ ticker: t, buyNote: acct.own[t].buyNote ?? null }));
+    .map((t) => {
+      const prev = prevFileOf(acct, t);
+      return { ticker: t, buyNote: acct.own[t].buyNote ?? null, ...(prev?.hasThesis ? { prev: { closedAt: prev.closedAt, closedVerb: prev.closedVerb } } : {}) };
+    });
 }
 
 /**
@@ -1147,6 +1153,11 @@ export interface HoldingDetail {
     buyNote: { text: string; at: string } | null;
     /** 開檔時就是減半、還沒加回過（own_thesis §3.8）的那一句。 */
     openNote: string | null;
+    /**
+     * 賣光之後又買回時的上一份論點檔（T44，own_thesis §1.2）：持股頁「上一次持有時」那一塊、編輯論點頁的「帶入上次的論點」。
+     * 這裡只有帳戶狀態記的（conditions 是 null）；真實模式的路由再補上當時的出場條件。沒有是 null。
+     */
+    prev: PrevFile | null;
     /** 還沒回覆、建議這檔照 AI 調整的通知（編輯論點頁的「這是對通知 #N 的回應」）。 */
     pendingBreak: { notif: number; tier: string | null; premiseId: string | null } | null;
     /** 那則通知的名字（日期與種類，不用內部編號；T39a）。 */
@@ -1303,6 +1314,7 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
             kind: meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT') ? 'THESIS' : 'DEFAULT_ONLY',
             buyNote: meta.buyNote ?? null,
             openNote: openNoteOf(acct, ticker),
+            prev: prevFileOf(acct, ticker),
             pendingBreak: pendingBreakOf(acct, ticker),
             pendingBreakName: refNameOf(acct, pendingBreakOf(acct, ticker)?.notif),
           }

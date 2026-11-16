@@ -486,7 +486,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 畫面：有。建立帳戶自選那一段、快照新加自選那一列、快照結果頁的減碼提示、持股頁標準比重那一行、入金清單的理由，桌機與手機，存 `records/stage8/screens/T43/`。
 - 完成條件：每一項至少一個測試，包括：建立帳戶留空 → 標準比重 = 現在的比重（超過上限的取上限）；轉入、認養同樣；減半之後加回會補回原本的部位；上線第一個月不會因為預設值列「部位是標準比重的 N 倍」；自己減碼後快照結果頁有提示、入金清單的理由寫標準比重。既有測試裡依賴推薦值當預設的斷言照新設計改，回報列出。全部測試、typecheck、lint、重放驗收通過。
 
-##### [ ] T44 賣光再買回：接上一次持有時的論點（2026-11-16 使用者同意）
+##### [x] T44 賣光再買回：接上一次持有時的論點（2026-11-16 使用者同意）
 - 起因：T41 第 7 條。自選賣光 = 論點檔結案；同一檔再買回時開一份新的論點檔，上一段的論點、前提、條件、審查、為什麼賣，畫面上都找不到，討論包也從「還沒有寫下論點」開始。
 - 讀：`docs/test-records/t41_meaning_walkthrough_2026-11-16.md` 第 7 條；`own_thesis_design` §1.2、§1.3、§1.8；`worker/src/engine/ops.ts` 的 `removeOwnPick`；`worker/src/engine/account.ts` 的 `newOwnMeta`、`Account.ownClosed`；`worker/src/app/thesis.ts` 的 `thesisFile`；`own_thesis_log`（`CLOSE` 與 `THESIS` 的內容）；`worker/src/ai/discussion.ts`（情境、各節）；`public/js/pages-holding.js`、`pages-thesis.js`（還沒有論點的自選、編輯論點）。
 - 做：先改設計（`own_thesis_design` §1.2 或 §1.8，寫明「2026-11-16 使用者同意改，T44」），再照設計實作：
