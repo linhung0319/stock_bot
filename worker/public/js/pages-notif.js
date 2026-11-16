@@ -4,6 +4,7 @@ import { aiOverview, crashLogBlock, runRow, shadowLines } from './pages-ai.js';
 import { actionText, day, h, money, put, qty, toast } from './dom.js';
 import { consoleBox, glass, icon, longDay, menuList, page, tiles } from './layout.js';
 import { actParts, attentionList, bucketTag, chevron, headline, orderRows, whyBlock } from './parts.js';
+import { thesisTodoList } from './pages-thesis.js';
 import { copyPackButton } from './pages-thesis.js';
 import { say } from './slime.js';
 
@@ -731,7 +732,7 @@ function askForm(v, ctx) {
     h('p', null, '快照裡 ', h('span', { class: 'tk' }, ticker), quantity > 0 ? ' 多了 ' : ' 少了 ', h('b', { class: 'num' }, qty(quantity)), ' 股，不在任何清單上。這筆要記在哪一桶？'),
     h('p', { class: 'small dim', style: 'margin:6px 0 14px' }, quantity > 0 ? '清單以外自己買的股票歸自選，之後由自選的慢規則管。只有它在這個月的動能名單上、而且那一格還沒買足時，才能歸動能。' : '賣出的部分從持有它的那一桶扣。', '回答之前，月報會暫停。'),
     quantity > 0
-      ? h('label', { class: 'field' }, h('span', null, '為什麼買（選填，會成為這檔的前提）'), reason, h('small', null, '沒寫就用系統預設的前提。'))
+      ? h('label', { class: 'field' }, h('span', null, '買進時的一句話（選填，討論時當參考）'), reason, h('small', null, '不是前提：這檔先用系統預設前提檢查。要寫論點，之後到持股頁按「複製討論包」。'))
       : h('label', { class: 'field' }, h('span', null, '為什麼賣（選填）'), reason, h('small', null, '記在帳本與「沒照規則做的」紀錄上，之後回頭看這次自己的判斷。')),
     remove
       ? h('label', { class: 'check-row' }, remove, h('span', null, '自選的 ', h('span', { class: 'tk' }, ticker), ' 全部賣掉了：同時移出自選（之後不再追蹤，也不會被加回或入金買回來）'))
@@ -748,7 +749,7 @@ export async function snapshotPage(ctx) {
   const only = f.lists.length === 1 ? f.lists[0] : null;
   const NAMES = { own: '自選', mom: '動能', core: '核心' };
   const HINT = {
-    own: '你自己選的股票。清單以外自己買的放這裡（新代號會加進自選、可以寫為什麼買）；股數改成 0 就移出自選。',
+    own: '你自己選的股票。清單以外自己買的放這裡（新代號會加進自選、可以寫一句買進時的想法）；股數改成 0 就移出自選。',
     mom: '照動能清單買的。清單以外的買進，只有那檔在這個月的動能名單上、那一格還沒買足時才能放這裡。',
     core: `${f.coreTickers.join('、')} 和現金。現金照券商畫面填就好，不用算成交價；和估計的差額會記成其他現金變動，不會問你。入金、出金請用「我要…」登記。`,
   };
@@ -794,7 +795,8 @@ export async function snapshotPage(ctx) {
   const addRow = (bucket, r, isNew = false) => {
     const input = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', value: String(r.expected), 'aria-label': `${NAMES[bucket]} ${r.ticker || '新代號'} 的股數` });
     const tkIn = isNew ? h('input', { type: 'text', placeholder: '代號', value: r.ticker || '', style: 'width:6.5em;text-transform:uppercase', 'aria-label': '股票代號' }) : null;
-    const why = isNew && bucket === 'own' ? h('input', { type: 'text', maxlength: 300, placeholder: '為什麼買（選填，會成為這檔的前提）', style: 'width:100%', 'aria-label': '為什麼買' }) : null;
+    // 買進時的一句話（T40）：不是前提，只當之後討論的開場
+    const why = isNew && bucket === 'own' ? h('input', { type: 'text', maxlength: 300, placeholder: '買進時的一句話（選填，討論時當參考）', style: 'width:100%', 'aria-label': '買進時的一句話' }) : null;
     const delta = h('span', { class: 'delta' });
     const tr = h(
       'tr',
@@ -818,7 +820,7 @@ export async function snapshotPage(ctx) {
     tkIn?.addEventListener('input', recount);
     rows.push(row);
     tbodies[bucket].append(tr);
-    // 新加進自選的「為什麼買」放在下一列，橫跨整張表（手機上代號那一欄太窄）
+    // 新加進自選的「買進時的一句話」放在下一列，橫跨整張表（手機上代號那一欄太窄）
     if (why) tbodies[bucket].append(h('tr', { class: 'why-row' }, h('td', { colspan: 5, style: 'padding-top:0' }, why)));
     if (isNew && !r.ticker) tkIn.focus();
     if (isNew) upd();
@@ -937,7 +939,7 @@ export async function snapshotPage(ctx) {
     try {
       const r = await api.post('/snapshot', { lots, cash: c, note: note.value, why, withdrawPending: !!wdPending?.checked });
       msg.replaceChildren();
-      // 「為什麼買」只存成一條前提，不送去改寫（出場條件在持股頁的「編輯論點」寫；own_thesis §1.8）
+      // 「買進時的一句話」不是前提（T40，own_thesis §1.8）：這次新加進自選、還沒有論點的列在結果頁，可以接著去寫論點
       await ctx.refresh(false);
       form.hidden = true;
       document.querySelector('.sticky-cta')?.remove();
@@ -958,6 +960,16 @@ export async function snapshotPage(ctx) {
           r.created.map((n) => h('p', null, n.title)),
           r.cashWarn ? null : h('p', { class: 'small faint' }, '填錯了可以到「我要…」→「復原上一份快照」，回到送出之前再重填。'),
         ),
+        ...(r.newOwn?.length
+          ? [
+              h('div', { style: 'margin-top:14px' }, glass(
+                'pad',
+                h('h2', { class: 'panel-h' }, `新加進自選的 ${r.newOwn.length} 檔還沒有你的論點`),
+                h('p', { class: 'small dim', style: 'margin:4px 0 10px' }, '可以現在寫，也可以之後再做（帳戶頁會有入口）。不寫也不擋月報；目前用系統預設前提做一般健康檢查。'),
+                thesisTodoList(r.newOwn.map((t) => ({ ticker: t, buyNote: (ctx.state.thesisTodo ?? []).find((x) => x.ticker === t)?.buyNote ?? null }))),
+              )),
+            ]
+          : []),
         ...(r.cashWarn ? [cashWarnBox(ctx, r.cashOther, null)] : []),
       );
     } catch (e) {

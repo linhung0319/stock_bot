@@ -264,9 +264,9 @@ function linesText(lines: OrderLine[], single: boolean): string {
 }
 
 const ACTIONS: Record<string, { label: string; hint: string; reasonLabel: string }> = {
-  TRANSFER: { label: '我想留著，轉入自選', hint: '不用下單。這些股數改歸自選桶，之後照自選的慢規則管；動能桶下個月用核心的錢補。「如果照賣」會記在紀錄裡。', reasonLabel: '為什麼想留著（會成為這檔的前提）' },
+  TRANSFER: { label: '我想留著，轉入自選', hint: '不用下單。這些股數改歸自選桶，之後照自選的慢規則管；動能桶下個月用核心的錢補。「如果照賣」會記在紀錄裡。', reasonLabel: '為什麼想留著（存成買進時的一句話，討論時當參考）' },
   EXCLUDE: { label: '排除這一檔', hint: '不買這一檔，改由排名下一名遞補，清單會重算。排除一直有效，可以在「帳戶」取消。「如果沒排除」會記在紀錄裡。', reasonLabel: '為什麼排除' },
-  ADOPT: { label: '我也看好，認養到自選', hint: '照常買進，但記在自選桶。之後動能就算把它排除也不會叫你賣；動能那一格下個月再遞補。', reasonLabel: '為什麼看好（會成為這檔的前提）' },
+  ADOPT: { label: '我也看好，認養到自選', hint: '照常買進，但記在自選桶。之後動能就算把它排除也不會叫你賣；動能那一格下個月再遞補。', reasonLabel: '為什麼看好（存成買進時的一句話，討論時當參考）' },
 };
 
 // ---------------------------------------------------------------- 建議單上的門檻條
@@ -898,6 +898,24 @@ export interface StateView {
   bubble: { todo: Bubble; account: Bubble | null };
   /** 可以復原的快照（設計 §10 第 39 點）。 */
   undo: { date: string; at: string; cashOther: number; cashWarn: boolean } | null;
+  /** 還沒有論點的新自選（T40，own_thesis §1.8「存完之後的引導」）：帳戶頁的入口與那張清單。沒有帳戶時是空的。 */
+  thesisTodo: ThesisTodoRow[];
+}
+
+export interface ThesisTodoRow {
+  ticker: string;
+  /** 買進時的一句話（沒寫是 null）。 */
+  buyNote: { text: string; at: string } | null;
+}
+
+/**
+ * 「還沒有論點的自選」那張清單（T40）：帳戶狀態 thesisTodo 記的代號裡，還在自選、還是「只有預設」的。
+ * 每一檔都有論點（或已經不在自選）時是空的，入口也就不見；使用者關掉時 thesisTodo 是空陣列。
+ */
+export function thesisTodoOf(acct: Pick<Account, 'own' | 'thesisTodo'>): ThesisTodoRow[] {
+  return (acct.thesisTodo ?? [])
+    .filter((t) => acct.own[t] && acct.own[t].premises.every((p) => p.origin === 'SYSTEM_DEFAULT'))
+    .map((t) => ({ ticker: t, buyNote: acct.own[t].buyNote ?? null }));
 }
 
 /**
@@ -914,7 +932,7 @@ export function decideRank(n: Notif): number {
 
 export function stateView(d: SiteData): StateView {
   const base = { mode: d.mode, demo: d.demo ?? null, today: d.today, priceDate: d.view?.date ?? null, rankDate: d.rankSession, warnings: d.warnings, undo: d.undoable ? { date: d.undoable.date, at: d.undoable.at, cashOther: d.undoable.cashOther, cashWarn: d.undoable.cashWarn } : null };
-  if (!d.acct || !d.view) return { ...base, hasAccount: !!d.acct, account: null, todo: [], recent: [], bubble: { todo: { k: '開始', say: [d.acct ? '帳戶在，但還沒有可用的價格資料。' : '還沒有帳戶。填一次券商裡現在的持股，我就從那裡開始記帳。'], mood: 'idle' }, account: null } };
+  if (!d.acct || !d.view) return { ...base, hasAccount: !!d.acct, account: null, todo: [], recent: [], thesisTodo: [], bubble: { todo: { k: '開始', say: [d.acct ? '帳戶在，但還沒有可用的價格資料。' : '還沒有帳戶。填一次券商裡現在的持股，我就從那裡開始記帳。'], mood: 'idle' }, account: null } };
   const r = d as Ready;
   const order = { ANSWER: 0, TRADE: 1, DECIDE: 2, INFO: 3 };
   const byId = new Map(r.acct.notifs.map((n) => [n.id, n]));
@@ -932,7 +950,7 @@ export function stateView(d: SiteData): StateView {
   const first = todo[0];
   const firstN = first?.type === 'DECIDE' ? r.acct.notifs.find((n) => n.id === first.id) : undefined;
   const plan = firstN ? notifView(r, firstN) : null;
-  return { ...base, hasAccount: true, account, todo, recent, bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
+  return { ...base, hasAccount: true, account, todo, recent, thesisTodo: thesisTodoOf(r.acct), bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
 }
 
 // ---------------------------------------------------------------- 紀錄
@@ -1115,6 +1133,8 @@ export interface HoldingDetail {
     thesis: { text: string; setAt: string; source: string; version: number; afterBreak: number } | null;
     /** 有論點／只有預設（系統預設前提）。 */
     kind: 'THESIS' | 'DEFAULT_ONLY';
+    /** 買進時的一句話（T40，own_thesis §1.8）：不是前提，「還沒有你的論點」下面顯示。沒寫是 null。 */
+    buyNote: { text: string; at: string } | null;
     /** 開檔時就是減半、還沒加回過（own_thesis §3.8）的那一句。 */
     openNote: string | null;
     /** 還沒回覆、建議這檔照 AI 調整的通知（編輯論點頁的「這是對通知 #N 的回應」）。 */
@@ -1267,6 +1287,7 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
             reviewSkip: reviewSkipOf(meta, view.date),
             thesis: meta.thesis?.text ? { text: meta.thesis.text, setAt: meta.thesis.setAt, source: meta.thesis.source === 'DISCUSSION' ? '討論後貼回' : '在網站手寫', version: meta.thesis.version, afterBreak: meta.thesis.afterBreak } : null,
             kind: meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT') ? 'THESIS' : 'DEFAULT_ONLY',
+            buyNote: meta.buyNote ?? null,
             openNote: openNoteOf(acct, ticker),
             pendingBreak: pendingBreakOf(acct, ticker),
             pendingBreakName: refNameOf(acct, pendingBreakOf(acct, ticker)?.notif),

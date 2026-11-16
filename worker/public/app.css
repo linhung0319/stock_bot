@@ -686,6 +686,24 @@ select option { background: #14162a; }
 /* 編輯論點頁（T27）：左邊現在的、右邊新的；手機上上下排 */
 .thesis-cmp { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 760px) { .thesis-cmp { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; } }
+/* T40：沿用編號、但字改了的前提（左舊右新）；這次沒出現的出場條件（繼續監測／撤下） */
+.edit-cmp { display: grid; gap: 10px; margin-top: 6px; }
+.edit-cmp > li { padding: 10px 0; border-top: 1px solid var(--line-2); }
+.edit-cmp > li:first-child { border-top: 0; }
+.edit-pair { display: grid; gap: 6px 14px; grid-template-columns: minmax(0, 1fr); margin-top: 6px; }
+@media (min-width: 640px) { .edit-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.edit-pair p { overflow-wrap: anywhere; }
+.edit-pair .was { color: var(--ink-3); text-decoration: line-through; text-decoration-color: rgba(255, 255, 255, 0.25); }
+.exit-pick { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px; }
+.exit-pick label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+/* T40：買進時的一句話（持股頁）、還沒有論點的自選（清單） */
+.buy-note { margin-top: 12px; padding: 10px 14px; border-left: 2px solid var(--line-hi); }
+.buy-note p + p { margin-top: 2px; }
+.todo-thesis { display: grid; }
+.todo-thesis > li { display: grid; gap: 8px 16px; grid-template-columns: minmax(0, 1fr); align-items: center; padding: 12px 0; border-top: 1px solid var(--line-2); }
+.todo-thesis > li:first-child { border-top: 0; }
+.todo-thesis .tt-main p { overflow-wrap: anywhere; }
+@media (min-width: 640px) { .todo-thesis > li { grid-template-columns: minmax(0, 1fr) auto; } }
 
 /* ------------------------------------------------ 持股頁（T34）：自選股以論點為主、慢規則為輔 */
 .panel-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 10px; }

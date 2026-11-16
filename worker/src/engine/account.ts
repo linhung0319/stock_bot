@@ -118,6 +118,11 @@ export interface OwnMeta {
   sizeFlag?: boolean;
   /** 設旗時的訊號日，與最近一次更新的占比、倍數（比例是小數）；旗收回時是 null。 */
   sizeInfo?: { at: string; weight: number; ratio: number } | null;
+  /**
+   * 買進時的一句話（T40，own_thesis §1.8）：快照新增自選、建立帳戶、轉入自選、認養、分類通知寫的那一句。
+   * 不是前提：這檔維持「只有預設」直到第一次存論點；討論包當開場，L2 的證據包不放。at：訊號日。沒有這個欄位 = 沒寫。
+   */
+  buyNote?: { text: string; at: string } | null;
 }
 
 /** 減半檢視的結果（own_thesis §3.3 的五種）：還沒有結果／建議不動／建議出清／同意減半／沒有可用的結論。 */
@@ -505,6 +510,11 @@ export interface Account {
   splitAsOf?: string;
   /** 套用過的拆股：`<代號>@<生效日>` → 生效日（engine/split.ts 的 applySplits）。沒有這個欄位 = 都還沒套用過。 */
   splits?: Record<string, string>;
+  /**
+   * 還沒有論點的新自選（T40，own_thesis §1.8「存完之後的引導」）：快照新加進自選、建立帳戶時寫入代號；
+   * 帳戶頁的入口列出其中還在自選、還是「只有預設」的，直到每一檔都有論點或使用者關掉（設成空陣列）。沒有這個欄位 = 沒有。
+   */
+  thesisTodo?: string[];
 }
 
 /**
@@ -737,7 +747,8 @@ export interface InitialAccount {
   bondTicker?: string;
   paper?: boolean;
   cash: number;
-  own?: Record<string, { shares: number; stdWeight: number; state?: 'STD' | 'HALF'; premises?: Premise[] }>;
+  /** buyNote：建立帳戶時寫的「持有的原因」（T40：存成買進時的一句話，不是前提）。 */
+  own?: Record<string, { shares: number; stdWeight: number; state?: 'STD' | 'HALF'; premises?: Premise[]; buyNote?: string }>;
   mom?: Record<string, number>;
   core?: Record<string, number>;
   /** 動能模型名單；預設 = mom 持有的代號。 */
@@ -779,6 +790,8 @@ export function createAccount(init: InitialAccount, view: MarketView): Account {
     const meta = newOwnMeta(view, t, 'INITIAL', o.premises ?? clone(SYSTEM_DEFAULT_PREMISES));
     meta.slow = warmSlowState(view, t, state);
     meta.opened = { startState: state, drawdownAtOpen: meta.opened?.drawdownAtOpen ?? null };
+    const note = o.buyNote?.trim();
+    if (note) meta.buyNote = { text: note.slice(0, 300), at: view.date };
     acct.own[t] = meta;
   }
   rule.heldMom = init.momModel ?? Object.keys(init.mom ?? {});

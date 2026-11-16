@@ -174,7 +174,7 @@ describe('分桶快照：變動放哪一桶由使用者決定，不再問分類'
     expect(part.acct.own.MU).toBeDefined();
   });
 
-  it('自選加新代號：建立這檔（推薦標準比重、為什麼買成為前提），不用新增自選頁', () => {
+  it('自選加新代號：建立這檔（推薦標準比重、為什麼買存成買進時的一句話，T40），不用新增自選頁', () => {
     const sim = calm();
     expect(sim.acct.own.AAPL).toBeUndefined();
     const s = applySnapshot(sim.acct, sim.pre, bucketSnap(sim.acct, sim.pre, { own: { AAPL: 10 } }, { why: { AAPL: '服務收入穩定成長' } }));
@@ -183,7 +183,9 @@ describe('分桶快照：變動放哪一桶由使用者決定，不再問分類'
     expect(s.acct.lots.own.AAPL).toBe(10);
     expect(s.acct.own.AAPL).toMatchObject({ origin: 'MANUAL' });
     // T25：前提多記加入的訊號日（own_thesis §1.2）
-    expect(s.acct.own.AAPL.premises).toEqual([{ id: 'P1', text: '服務收入穩定成長', origin: 'USER', addedAt: sim.pre.date }]);
+    // T40（own_thesis §1.8）：那一句是買進時的一句話，不是前提
+    expect(s.acct.own.AAPL.buyNote).toEqual({ text: '服務收入穩定成長', at: sim.pre.date });
+    expect(s.acct.own.AAPL.premises.every((p) => p.origin === 'SYSTEM_DEFAULT')).toBe(true);
     expect(Number.isFinite(s.acct.rule.own.AAPL.stdWeight) && s.acct.rule.own.AAPL.stdWeight > 0).toBe(true);
     // 沒寫為什麼買 → 系統預設前提
     const s2 = applySnapshot(sim.acct, sim.pre, bucketSnap(sim.acct, sim.pre, { own: { AAPL: 10 } }));

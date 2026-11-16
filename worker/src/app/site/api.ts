@@ -43,7 +43,7 @@ import {
   notifName,
 } from '../../engine';
 import { VOL_HIST_SEED } from '../../engine/volSeed';
-import { DISCUSSION_MODES, THESIS_LIMITS, parseThesisBlock } from '../../ai/discussion';
+import { DISCUSSION_MODES, LIVE_CONDITION_CODES, THESIS_LIMITS, matchExits, parseThesisBlock, type LiveCondition } from '../../ai/discussion';
 import type { ExitLine } from '../../ai/ownCheck';
 import { demoDiscussion } from '../discussion';
 import type { ThesisLogInput } from '../ledgerStore';
@@ -196,7 +196,8 @@ function decided(acct: Account, view: MarketView, n: Notif): Account {
 async function createFromSnapshot(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
   if (backend.mode !== 'real') throw new SiteError(400, '示範模式不用建立帳戶');
   const rows = (v: unknown) => (Array.isArray(v) ? (v as Record<string, unknown>[]) : []).filter((r) => String(r?.ticker ?? '').trim() !== '').slice(0, 40);
-  const own = rows(b.own).map((r) => ({ ticker: ticker(r.ticker), shares: num(r.shares, '股數', 0, 1e7), stdWeight: r.stdWeight === undefined || r.stdWeight === '' || r.stdWeight === null ? null : stdWeightOf(r.stdWeight), premises: premisesOf(r.premises) }));
+  // 「持有的原因」（T40）：存成買進時的一句話，不是前提（舊的寫法 premises: [{ text }] 也收，取第一條的文字）
+  const own = rows(b.own).map((r) => ({ ticker: ticker(r.ticker), shares: num(r.shares, '股數', 0, 1e7), stdWeight: r.stdWeight === undefined || r.stdWeight === '' || r.stdWeight === null ? null : stdWeightOf(r.stdWeight), buyNote: text(r.why, '持有的原因', 300, false) || premisesOf(r.premises)[0]?.text || '' }));
   const mom = rows(b.mom).map((r) => ({ ticker: ticker(r.ticker), shares: num(r.shares, '股數', 0, 1e7) }));
   const cash = num(b.cash ?? 0, '現金', 0, 1e10);
   const coreShares = num(b.coreShares ?? 0, '核心 ETF 股數', 0, 1e7);
@@ -232,44 +233,71 @@ async function createFromSnapshot(backend: SiteBackend, b: Record<string, unknow
           stdWeight: x.stdWeight ?? rec[x.ticker],
           // 和新增自選相同：現在已經比 52 週高點低 20% 以上，一開始就記成減半，不會第一天就收到減半通知
           state: drawdownFromHigh(view.close[x.ticker], view.i, SLOW.highDays) <= SLOW.drawdown ? ('HALF' as const) : ('STD' as const),
-          premises: x.premises.length ? x.premises : clone(SYSTEM_DEFAULT_PREMISES),
+          premises: clone(SYSTEM_DEFAULT_PREMISES),
+          ...(x.buyNote ? { buyNote: x.buyNote } : {}),
         },
       ]),
     ),
   };
   const acct = engine(() => createAccount(init, view));
   if (totalValue(acct, view) <= 0) throw new SiteError(422, '帳戶是空的：至少要有現金或一檔持股');
+  // 存完之後的引導（T40，own_thesis §1.8）：每一檔自選都還沒有論點，建立完先到「還沒有論點的自選」那張清單
+  const todo = Object.keys(acct.own);
+  if (todo.length) acct.thesisTodo = todo;
   await backend.save(acct, '建立帳戶');
   const shares: Record<string, number> = {};
   for (const lots of [acct.lots.own, acct.lots.mom, acct.lots.core]) for (const [t, q] of Object.entries(lots)) shares[t] = (shares[t] ?? 0) + q;
   await backend.recordSnapshot(view.date, { shares, cash });
-  return json({ ok: true });
+  return json({ ok: true, thesisTodo: todo });
+}
+
+/**
+ * 這次新加進自選、還沒有論點的（T40，own_thesis §1.8「存完之後的引導」）：存檔後的自選裡，論點檔編號和存檔前不同（新開的）、
+ * 而且還是「只有預設」的代號。
+ */
+export function newOwnWithoutThesis(before: Account, after: Account): string[] {
+  return Object.keys(after.own).filter((t) => before.own[t]?.fileId !== after.own[t].fileId || !before.own[t]).filter((t) => after.own[t].premises.every((p) => p.origin === 'SYSTEM_DEFAULT'));
+}
+
+/** 加進「還沒有論點的自選」清單（已經在裡面的不重複）。 */
+function addThesisTodo(acct: Account, tickers: string[]): Account {
+  if (!tickers.length) return acct;
+  return { ...acct, thesisTodo: [...new Set([...(acct.thesisTodo ?? []), ...tickers])] };
 }
 
 // ---------------------------------------------------------------- 編輯論點（T27，own_thesis §1.8）
 
 const COND_ACTION_SET: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
 
-/** 出場條件：[{ text, action }]，最多 6 條，每條 300 字；動作不認得的當成重新審查。 */
-function exitsOf(v: unknown): ExitLine[] {
+/** 出場條件：[{ text, action, ref? }]，最多 6 條，每條 300 字；動作不認得的當成重新審查。ref：沿用的條件編號（貼回的 [C12]，T40）。 */
+function exitsOf(v: unknown): (ExitLine & { ref: number | null })[] {
   if (!Array.isArray(v)) return [];
   if (v.length > THESIS_LIMITS.exits) throw new SiteError(422, `出場條件最多 ${THESIS_LIMITS.exits} 條`);
-  const out: ExitLine[] = [];
+  const out: (ExitLine & { ref: number | null })[] = [];
   for (const x of v) {
     const o = (x ?? {}) as Record<string, unknown>;
     const t = text(o.text, '出場條件', THESIS_LIMITS.exit, false);
     if (!t) continue;
-    out.push({ text: t, action: COND_ACTION_SET.includes(o.action as CondAction) ? (o.action as CondAction) : 'REVIEW' });
+    const ref = typeof o.ref === 'number' && Number.isInteger(o.ref) && o.ref > 0 ? o.ref : null;
+    out.push({ text: t, action: COND_ACTION_SET.includes(o.action as CondAction) ? (o.action as CondAction) : 'REVIEW', ref });
   }
   return out;
 }
 
+/** 這檔目前監測中的你定的條件（T40 的對照用；示範模式沒有條件）。 */
+async function liveConditions(backend: SiteBackend, tk: string): Promise<LiveCondition[]> {
+  if (!backend.ai) return [];
+  const rows = await backend.ai.monitor(tk);
+  return rows.filter((r) => r.id > 0 && r.owned && (LIVE_CONDITION_CODES as readonly string[]).includes(r.code)).map((r) => ({ id: r.id, text: r.text, action: r.action, status: r.status }));
+}
+
 /**
- * POST /api/ops/own-thesis：{ ticker, thesis, premises: [{ id?, text }], exitConditions: [{ text, action }], source, replyTo?, dry? }
- *   1. 論點與前提立刻存進帳戶狀態（version 加 1），log 寫 THESIS（含出場條件的原文，免得改寫失敗時不見）
- *   2. 出場條件送去改寫（一票）；送出失敗或 AI 層沒設定 → 回 rewrite.status = FAILED，頁面顯示「還沒送去改寫」與「重送」
+ * POST /api/ops/own-thesis：{ ticker, thesis, premises: [{ id?, text }], exitConditions: [{ text, action, ref? }], retire?: [條件編號], source, replyTo?, dry? }
+ *   1. 論點與前提立刻存進帳戶狀態（version 加 1），log 寫 THESIS（含新的出場條件的原文，免得改寫失敗時不見）
+ *   2. 出場條件和目前監測中的對照（T40，own_thesis §1.8）：沿用的不再送去改寫（動作改了就改動作）；retire 裡的（這次沒出現、選了撤下的）寫 RETIRED；
+ *      新的送去改寫（一票）；送出失敗或 AI 層沒設定 → 回 rewrite.status = FAILED，頁面顯示「還沒送去改寫」與「重送」
  *   3. 出場條件不存成前提
- * dry：只算前提的對應（沿用、新的、會撤下），不存。
+ * dry：只算前提的對應（沿用、沿用但字改了、新的、會撤下）與出場條件的對照（沿用、新的、這次沒出現的），不存。
  * replyTo：這是對乙類通知 #N 的回應（修正論點，own_thesis §1.10）：那一項結案、afterBreak 加 1、log 寫 RESPONSE（REVISE）；
  *   新的前提還留著被判不成立的那一條 → 當成不同意（DISAGREE，進靜默期）。通知已經回覆過、或不是這檔的乙類 → 409。
  */
@@ -284,10 +312,17 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
       return { id: typeof o.id === 'string' && /^P\d{1,4}$/.test(o.id) ? o.id : null, text: text(o.text, '前提', THESIS_LIMITS.premise, false) };
     })
     .filter((p) => p.text);
-  const exits = exitsOf(b.exitConditions);
+  const exitsIn = exitsOf(b.exitConditions);
   const source = b.source === 'DISCUSSION' ? 'DISCUSSION' : 'TYPED';
   const replyTo = b.replyTo === undefined || b.replyTo === null || b.replyTo === '' ? null : Number(b.replyTo);
   const dry = b.dry === true;
+  // 出場條件的對照（T40）：沿用的、新的、目前監測中這次沒出現的
+  const live = await liveConditions(backend, tk);
+  const plan = matchExits(exitsIn, live);
+  const exits: ExitLine[] = plan.fresh.map((k) => ({ text: exitsIn[k].text, action: exitsIn[k].action }));
+  const retire = (Array.isArray(b.retire) ? b.retire : []).filter((x): x is number => typeof x === 'number' && Number.isInteger(x));
+  const notMissing = retire.find((id) => !plan.missing.some((c) => c.id === id));
+  if (notMissing !== undefined) throw new SiteError(422, plan.kept.some((k) => k.id === notMissing) ? '要撤下的條件這次的出場條件裡還有，不能同時沿用又撤下。' : '要撤下的條件不是這檔目前監測中的條件（可能已經撤下或成立了），請重新整理。');
   const r = await mutate(backend, `${tk} 編輯論點`, [], (d) => {
     if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
     // 對乙類通知的回應（修正論點，own_thesis §1.10）：那則通知要還沒回覆、而且有這檔的乙類項目
@@ -313,8 +348,15 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
         kept: out.mapping.premises.filter((p) => out.mapping.kept.includes(p.id)).map((p) => ({ id: p.id, text: p.text })),
         added: out.mapping.premises.filter((p) => out.mapping.added.includes(p.id)).map((p) => ({ id: p.id, text: p.text })),
         retired: out.mapping.retired.map((p) => ({ id: p.id, text: p.text, origin: p.origin })),
+        // 沿用編號、但字改了（T40）：左右對照，也算論點變動
+        edited: out.mapping.edited,
         changed: out.changed,
         version: meta.thesis!.version,
+        exits: {
+          kept: plan.kept.map((k) => ({ index: k.index, id: k.id, text: k.text, actionChanged: k.actionChanged, was: k.was })),
+          fresh: plan.fresh,
+          missing: plan.missing,
+        },
       },
     };
     const log: ThesisLogInput[] = meta.fileId
@@ -332,8 +374,11 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
               retired: out.mapping.retired.map((p) => p.id),
               afterBreak: !!rv?.ok || ruleExit,
               replyTo,
+              // 送去改寫的（新的）出場條件；沿用的與撤下的條件記編號（T40）
               exitLines: exits.map((e) => e.text),
               exitActions: exits.map((e) => e.action),
+              ...(plan.kept.length ? { exitKept: plan.kept.map((k) => k.id) } : {}),
+              ...(retire.length ? { exitRetired: retire } : {}),
             },
           },
           // 乙類的回應：修正論點（REVISE）；保留了那條前提 → 當成不同意（DISAGREE，理由固定）
@@ -344,6 +389,26 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     return { acct: out.acct, dry, result: { ...result, revised: rv?.ok ? { notif: replyTo, kept: rv.kept, premiseId: rv.premiseId } : null, revisedName: rv?.ok && rn ? notifName(rn) : null }, log };
   });
   if (dry) return json({ ok: true, ...r.result });
+  // 出場條件的對照（T40）：選了撤下的寫 RETIRED、沿用但動作改了的改動作（都在送去改寫之前，改寫的證據包看到的是改完的條件）
+  const conds: { retired: number[]; actionChanged: number[]; errors: string[] } = { retired: [], actionChanged: [], errors: [] };
+  if (backend.ai) {
+    for (const id of retire) {
+      try {
+        await backend.ai.condition(tk, id, 'retire');
+        conds.retired.push(id);
+      } catch (e) {
+        conds.errors.push(`撤下「${live.find((c) => c.id === id)?.text.slice(0, 40) ?? id}」沒有成功：${errText(e)}`);
+      }
+    }
+    for (const k of plan.kept.filter((x) => x.actionChanged)) {
+      try {
+        await backend.ai.condition(tk, k.id, 'action', k.action);
+        conds.actionChanged.push(k.id);
+      } catch (e) {
+        conds.errors.push(`改「${k.text.slice(0, 40)}」成立時的動作沒有成功：${errText(e)}`);
+      }
+    }
+  }
   // 出場條件送去改寫：失敗要明白告訴使用者（N9），之後持股頁也會一直提示到重送為止
   let rewrite: { status: 'SENT' | 'FAILED' | 'NONE'; runId?: string; error?: string } = { status: 'NONE' };
   if (exits.length) {
@@ -355,7 +420,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
         rewrite = { status: 'FAILED', error: errText(e) };
       }
   }
-  return json({ ok: true, ...r.result, rewrite, exits });
+  return json({ ok: true, ...r.result, rewrite, exits, conds });
 }
 
 // ---------------------------------------------------------------- 路由
@@ -684,7 +749,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     }
     const why: Record<string, string> = {};
     for (const [k, v] of Object.entries((b.why ?? {}) as Record<string, unknown>).slice(0, 20)) {
-      const w = text(v, `${k} 為什麼買`, 300, false);
+      const w = text(v, `${k} 買進時的一句話`, 300, false);
       if (w) why[ticker(k)] = w;
     }
     // 現金可以是負的（融資帳戶，或示範裡買超過現金）；畫面上會提醒
@@ -709,10 +774,13 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
         acct = m.acct;
         monthlyId = m.notif?.id ?? null;
       }
+      // 存完之後的引導（T40）：這次新加進自選、還沒有論點的，列在結果頁，也記進帳戶頁入口的那張清單
+      const newOwn = newOwnWithoutThesis(d.acct, acct);
+      acct = addThesisTodo(acct, newOwn);
       return {
         acct,
         snapshot: snap,
-        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, monthlyId },
+        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, monthlyId, newOwn },
       };
     });
     // 送出前的帳戶留下來，填錯了可以復原（只留最後一份；之後帳戶有變動就不能復原）
@@ -723,6 +791,12 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const out = await backend.undoSnapshot();
     if (!out.ok) throw new SiteError(409, out.reason);
     return json({ ok: true, date: out.date });
+  }
+
+  // ---- 還沒有論點的自選（T40）：關掉帳戶頁的那個入口
+  if (rest === 'ops/thesis-todo/dismiss' && post) {
+    await mutate(backend, '關掉「還沒有論點的自選」', [], (d) => ({ acct: { ...d.acct, thesisTodo: [] } }));
+    return json({ ok: true });
   }
 
   // ---- 持股頁：改標準比重（2026-11-15 起取代新增自選頁的這一項；前提改在「編輯論點」頁，T27）

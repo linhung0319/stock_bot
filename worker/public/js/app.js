@@ -6,7 +6,7 @@ import { menuList, page } from './layout.js';
 import { accountPage, authPage, depositPage, doPage, ratioPage, setupPage, undoPage, withdrawPage } from './pages-more.js';
 import { holdingPage } from './pages-holding.js';
 import { aiRunPage } from './pages-ai.js';
-import { thesisEditPage } from './pages-thesis.js';
+import { thesisEditPage, thesisTodoPage } from './pages-thesis.js';
 import { homePage, notifPage, snapshotPage } from './pages-notif.js';
 import { attach } from './slime.js';
 
@@ -47,6 +47,8 @@ const ROUTES = [
   [/^#\/h\/([A-Za-z0-9.%-]+)$/, 'account', (m) => holdingPage(ctx, decodeURIComponent(m[1]))],
   // 編輯論點（T27）；從通知的「拿去討論」回來時帶通知編號：#/h/MU/thesis/12
   [/^#\/h\/([A-Za-z0-9.%-]+)\/thesis(?:\/(\d+))?$/, 'account', (m) => thesisEditPage(ctx, decodeURIComponent(m[1]), m[2] ? Number(m[2]) : null)],
+  // 還沒有論點的自選（T40）：建立帳戶完成後先到這裡；帳戶頁有入口
+  [/^#\/thesis-todo$/, 'account', () => thesisTodoPage(ctx)],
   [/^#\/do$/, '', () => doPage(ctx)],
   [/^#\/do\/deposit$/, '', () => depositPage(ctx)],
   [/^#\/do\/withdraw$/, '', () => withdrawPage(ctx)],
@@ -55,7 +57,7 @@ const ROUTES = [
   [/^#\/setup$/, '', () => setupPage(ctx)],
 ];
 // 這些頁面要有帳戶才看得到
-const NEED_ACCOUNT = /^#\/(n\/|ai\/|snapshot|h\/|history|do\/)/;
+const NEED_ACCOUNT = /^#\/(n\/|ai\/|snapshot|h\/|history|do\/|thesis-todo)/;
 
 async function loadState() {
   ctx.state = await api.get('/state');

@@ -217,6 +217,8 @@ export interface ThesisFile {
   kind: FileKind;
   status: 'OPEN';
   thesis: Thesis | null;
+  /** 買進時的一句話（T40，own_thesis §1.8）：只給討論包與持股頁，L2 的證據包不放。舊的呼叫端沒給 = undefined。 */
+  buyNote?: { text: string; at: string } | null;
   premises: ThesisPremise[];
   conditions: FileCondition[];
   events: ThesisEvent[];
@@ -393,6 +395,7 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     kind: fileKind(meta),
     status: 'OPEN',
     thesis: meta.thesis ?? null,
+    buyNote: meta.buyNote ?? null,
     premises,
     conditions,
     events,
@@ -423,6 +426,7 @@ export function metaFile(acct: Pick<Account, 'own'>, ticker: string, asOf: strin
     kind: fileKind(meta),
     status: 'OPEN',
     thesis: meta.thesis ?? null,
+    buyNote: meta.buyNote ?? null,
     premises: meta.premises.map((p) => ({ id: p.id, text: p.text, origin: p.origin, addedAt: p.addedAt ?? null, ...(p.breaksIf ? { breaksIf: p.breaksIf } : {}), lastCheck: null, splitAfter: false })),
     conditions: [],
     events: [],

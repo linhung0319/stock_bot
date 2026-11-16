@@ -485,7 +485,20 @@ function rewriteBlock(ctx, d) {
         h(
           'div',
           { class: 'cond' },
-          h('label', { class: 'check-row', style: 'margin:0' }, r.box, h('span', null, h('b', { style: 'font-weight:500' }, r.x.text), r.x.from ? h('span', { class: 'small faint', style: 'display:block' }, `你寫的：${r.x.from}`) : null, h('span', { class: 'small dim', style: 'display:block' }, r.x.then))),
+          h(
+            'label',
+            { class: 'check-row', style: 'margin:0' },
+            r.box,
+            h(
+              'span',
+              null,
+              h('b', { style: 'font-weight:500' }, r.x.text),
+              r.x.from ? h('span', { class: 'small faint', style: 'display:block' }, `你寫的：${r.x.from}`) : null,
+              h('span', { class: 'small dim', style: 'display:block' }, r.x.then),
+              // 改寫標了 supersedes（T40）：勾選前先講清楚會取代哪一條
+              c.replaces?.[r.x.condId] ? h('span', { class: 'small', style: 'display:block;color:var(--warn)' }, `會取代：${c.replaces[r.x.condId]}（勾選後舊的那條撤下）`) : null,
+            ),
+          ),
           r.sel ? h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, '成立時'), r.sel) : null,
         ),
       ),

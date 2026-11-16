@@ -431,7 +431,7 @@ T31、T29 拆開後的編號和設計文件的對照：設計文件寫「T29」�
 - 畫面：帳本那一行與持股頁，截桌機與手機各一張，存 `records/stage8/screens/T39c/`。
 - 完成條件：拆股與合股各一個情境測試（拆股前有還沒填快照的清單、拆股後才填快照）；價格基準跟著調的測試；重放驗收數字不變。
 
-##### [ ] T40 自選的初始論點與更新論點（2026-11-16 使用者同意）
+##### [x] T40 自選的初始論點與更新論點（2026-11-16 使用者同意）
 - 起因：使用者問「新買一檔、填快照時會不會要我寫論點」與「更新論點時相同的前提會怎樣」。讀程式找到四個缺口：(1) 快照與建立帳戶的「為什麼買／為什麼持有」一句話直接存成 `USER` 前提，繞過討論與改寫，還讓這檔變成「有論點」（討論包從 `NEW` 變 `ROUTINE`、減半檢視可以選 `HOLD`）；(2) 存完快照或建立帳戶沒有任何引導去寫論點，只有月報「要看的事」的 `NO_THESIS`；(3) 貼回時前提只靠文字完全相同對應，claude.ai 改幾個字就變成新編號、舊的撤下（檢查結果、靜默期跟著斷，還多開一次論點變動後的審查）；(4) 出場條件貼回是累加：改門檻後新舊兩條都監測，這次沒抄到的舊條件也默默繼續監測。
 - 讀：`own_thesis_design` §1.2、§1.7、§1.8、§1.12、§3.3、§3.6.5、§3.6.6；`worker/src/engine/ops.ts` 的 `applyBucketSnapshot`、`ensureOwnMeta`、`mapPremises`、`setThesis`；`worker/src/app/site/api.ts` 的建立帳戶與 `saveThesis`；`worker/src/ai/discussion.ts`（`DISCUSSION_V1`、`parseThesisBlock`、`premiseSection`）；`public/js/pages-notif.js`（快照）、`pages-more.js`（建立帳戶）、`pages-thesis.js`（編輯論點）、`pages-holding.js`；`ai/prompts/own_check_v2.md`、`own_review_v2.md`（`supersedes`）；`worker/src/app/ownConds.ts`。
 - 做：先改設計（`own_thesis_design` §1.7、§1.8，各寫明「2026-11-16 使用者同意改，T40」），再照設計實作：

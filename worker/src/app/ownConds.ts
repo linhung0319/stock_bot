@@ -26,6 +26,16 @@ export function checkCap(conds: FileCondition[], add: number, except: number[] =
 const logStmt = (db: D1Database, ticker: string, fileId: string | undefined, session: string, at: string, id: number, change: 'ACCEPTED' | 'RETIRED' | 'ACTION_CHANGED', action: CondAction | null) =>
   fileId ? [thesisLogStmt(db, { ticker, fileId, session, kind: 'CONDITION', ref: String(id), body: { id, change, action, by: 'USER' } }, null, at)] : [];
 
+/** 可以被取代的條件狀態（監測中、只在審查時檢查、只記錄、建議中）。 */
+export const SUPERSEDABLE: readonly string[] = ['ACTIVE', 'REVIEW_ONLY', 'MANUAL', 'PROPOSED'];
+
+/**
+ * 被你勾選的新條件取代（own_thesis §1.5 第 3 點；T40 起出場條件改寫帶 supersedes 的也走這裡）：舊的那條 RETIRED、寫明被哪一條取代，log 寫 CONDITION。
+ */
+export function supersedeStmts(db: D1Database, ticker: string, fileId: string | undefined, session: string, at: string, old: Pick<FileCondition, 'id' | 'action'>, byText: string): D1PreparedStatement[] {
+  return [db.prepare("UPDATE own_conditions SET status = 'RETIRED', note = ? WHERE id = ?").bind(`被你在 ${at.slice(0, 10)} 勾選的「${byText.slice(0, 60)}」取代`, old.id), ...logStmt(db, ticker, fileId, session, at, old.id, 'RETIRED', old.action)];
+}
+
 /**
  * 持股頁的條件操作。acct：現在的帳戶（只讀 fileId）；session：訊號日（log 用）。
  * 回傳這一條之後的狀態。不能做時丟 CondError（訊息直接給使用者看）。
@@ -44,14 +54,11 @@ export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'>, ti
     if (c.status !== 'PROPOSED') throw new CondError(c.status === 'EXPIRED' ? '這條建議已經過期（之後的審查寫了新的建議）。' : '這條不是建議中的條件，不用再勾。');
     const act: CondAction = isAction(action) ? action : defaultAction(c);
     const status = acceptStatus(c);
-    const sup = c.supersedes ? conds.find((x) => x.id === c.supersedes && ['ACTIVE', 'REVIEW_ONLY', 'MANUAL', 'PROPOSED'].includes(x.status)) : undefined;
+    const sup = c.supersedes ? conds.find((x) => x.id === c.supersedes && SUPERSEDABLE.includes(x.status)) : undefined;
     if (OWNED_LIVE.includes(status)) checkCap(conds, 1, sup ? [sup.id] : []);
     stmts.push(db.prepare("UPDATE own_conditions SET status = ?, accepted_at = ?, action = ? WHERE id = ? AND status = 'PROPOSED'").bind(status, at, act, c.id));
     stmts.push(...logStmt(db, ticker, meta.fileId, session, at, c.id, 'ACCEPTED', act));
-    if (sup) {
-      stmts.push(db.prepare("UPDATE own_conditions SET status = 'RETIRED', note = ? WHERE id = ?").bind(`被你在 ${at.slice(0, 10)} 勾選的「${c.text.slice(0, 60)}」取代`, sup.id));
-      stmts.push(...logStmt(db, ticker, meta.fileId, session, at, sup.id, 'RETIRED', sup.action));
-    }
+    if (sup) stmts.push(...supersedeStmts(db, ticker, meta.fileId, session, at, sup, c.text));
     await db.batch(stmts);
     return { id: c.id, status, action: act, ...(sup ? { retired: sup.id } : {}) };
   }

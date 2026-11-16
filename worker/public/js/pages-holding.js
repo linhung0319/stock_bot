@@ -89,6 +89,10 @@ function thesisPanel(d) {
     th
       ? [h('p', { class: 'th-text' }, th.text), h('p', { class: 'small faint', style: 'margin-top:6px' }, `${day(th.setAt, true)} 定，${th.source}，第 ${th.version} 版${th.afterBreak ? `；失效後修改第 ${th.afterBreak} 次` : ''}`)]
       : h('p', { class: 'dim' }, def ? '還沒有你的論點。AI 審查時用下面三條系統預設前提做一般健康檢查，它們不是你持有的理由。' : '還沒有論點本文（為什麼持有它的那一段話），只有下面你寫的前提；AI 審查照這些前提檢查。'),
+    // 買進時的一句話（T40，own_thesis §1.8）：不是前提，只當討論的開場
+    def && o.buyNote
+      ? h('div', { class: 'buy-note' }, h('p', { class: 'small faint' }, `買進時的一句話（${day(o.buyNote.at, true)} 寫的）`), h('p', null, `「${o.buyNote.text}」`), h('p', { class: 'small faint' }, '只當討論論點時的開場，不是前提；AI 審查不看這句話。'))
+      : null,
     o.openNote ? h('p', { class: 'notice', style: 'margin-top:12px' }, o.openNote) : null,
     h('h5', { style: 'margin-top:18px' }, def ? '前提（系統預設）' : `前提（${o.premises.length} 條，你為什麼持有它）`),
     premiseList(o, t, premiseChecks(d)),
@@ -99,7 +103,7 @@ function thesisPanel(d) {
       { class: 'btn-row', style: 'margin-top:18px' },
       def ? [copyPackButton(d.ticker, null, '複製討論包', 'primary'), h('a', { class: 'btn', href: edit }, '編輯論點')] : [h('a', { class: 'btn primary', href: edit }, '編輯論點'), copyPackButton(d.ticker)],
     ),
-    h('p', { class: 'small faint', style: 'margin-top:8px' }, def ? '按「複製討論包」貼到 claude.ai 的新對話，它會先問你為什麼買；討論完說「收尾」，把結果貼回「編輯論點」。' : '「複製討論包」把論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論；說「收尾」後把結果貼回「編輯論點」。'),
+    h('p', { class: 'small faint', style: 'margin-top:8px' }, def ? `按「複製討論包」貼到 claude.ai 的新對話，它會${o.buyNote ? '從你買進時寫的那一句問起' : '先問你為什麼買'}；討論完說「收尾」，把結果貼回「編輯論點」。` : '「複製討論包」把論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論；說「收尾」後把結果貼回「編輯論點」。'),
   );
 }
 

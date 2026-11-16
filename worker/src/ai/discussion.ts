@@ -1,17 +1,17 @@
 // T27：討論包與貼回的解析（own_thesis §1.7、§1.8）。論點在 claude.ai 討論（方案 B），stock bot 只做頭和尾：
-//   頭：discussionPack 組一段 markdown（固定指示 DISCUSSION_V1 ＋ 論點檔 ＋ 數字），使用者複製貼到 claude.ai
+//   頭：discussionPack 組一段 markdown（固定指示 DISCUSSION_V2 ＋ 論點檔 ＋ 數字），使用者複製貼到 claude.ai
 //   尾：parseThesisBlock 解析 claude.ai 收尾時輸出的固定格式區塊，給「編輯論點」頁預覽
 // 純函式：不讀資料庫、網路、時鐘。固定指示和解析器要同一個版本，所以指示放在這裡（Worker 讀不到 repo 的 md）。
 // 討論包只放比重，不放金額與股數。
-import { SLOW, TIER_NAME, bucketValue, rollingMax, sma, totalValue, trailingReturn, type Account, type MarketView, type Tier } from '../engine';
+import { SLOW, TIER_NAME, bucketValue, premiseKey, rollingMax, sma, totalValue, trailingReturn, type Account, type MarketView, type Tier } from '../engine';
 import { sizeOf } from '../app/concentration';
 import { normalizeTicker } from '../data/sources';
 import { outcomeText, type CondAction, type ThesisFile } from '../app/thesis';
 import { eventDetail, eventLabel } from '../app/eventText';
 
-export const DISCUSSION_VERSION = 'discussion_v1';
+export const DISCUSSION_VERSION = 'discussion_v2';
 
-/** 固定指示（own_thesis §1.7，照抄）。`<代號>` 在組討論包時換成這一檔的代號。 */
+/** 舊版固定指示（不再使用，2026-11-16 T40 改用 DISCUSSION_V2）。留著對照；它輸出的 v1 區塊解析器照收。 */
 export const DISCUSSION_V1 = `你是我的反方審查員，不是我的啦啦隊。我們要討論的是我持有這檔股票的理由還成不成立。
 
 1. 站在反方。不要順著我說；我講得越肯定，你越要問證據在哪裡。
@@ -34,6 +34,40 @@ export const DISCUSSION_V1 = `你是我的反方審查員，不是我的啦啦�
 出場條件：
 1. （查得到的事） → 出清
 2. （查得到的事） → 減半
+3. （查得到的事） → 重新審查
+這次的結論：維持｜修正論點｜減半｜出清
+理由：（一句）
+===END===`;
+
+/**
+ * 固定指示（own_thesis §1.7，照抄；2026-11-16 使用者同意改，T40）：和 v1 的差別是第 8 點（前提與出場條件帶編號來回）
+ * 與輸出格式裡的 `[P2]`、`[C12]`、區塊標記 v2。`<代號>` 在組討論包時換成這一檔的代號。
+ */
+export const DISCUSSION_V2 = `你是我的反方審查員，不是我的啦啦隊。我們要討論的是我持有這檔股票的理由還成不成立。
+
+1. 站在反方。不要順著我說；我講得越肯定，你越要問證據在哪裡。
+2. 把「論點壞了」和「價格跌了」分開。價格下跌本身不是論點壞了的證據，價格上漲也不是論點成立的證據。
+3. 討論中一定要問我，並且自己也回答：「如果我現在沒有這檔股票，今天會不會用現在的價格買進？」
+4. 你可以上網查資料。每一件事都要給來源與日期，並分清楚「公司申報或財報裡寫的」和「報導或分析師說的」。
+   查不到來源的事，就說查不到。下面這份資料是 stock bot 整理的，數字由程式算好，可以直接用。
+5. 不要給目標價，不要建議買賣幾股。部位大小由 stock bot 的規則決定。
+6. 如果「這次為什麼討論」寫的是前提被判不成立：先講這個判斷站不站得住，再談要不要改論點。
+   在前提不成立之後才改論點，很容易只是替「繼續持有」找新理由；發現我在這樣做的時候請直接指出來。
+7. 出場條件要寫成之後查得到的事：財報數字的門檻（例如毛利率連兩季低於 70%），
+   或公司申報裡會寫的事（例如公司在 8-K 下修全年財測）。「基本面轉差」這種不算。
+8. 下面「前提」和「出場條件」兩節的每一條都有編號（P2、C12）。收尾時，沒改的前提照抄原文並保留編號，例如 \`1. [P2] …\`；
+   意思改了就不要寫編號，寫成新的一條。沒改的出場條件也照抄原文並保留編號，例如 \`1. [C12] … → 出清\`。
+9. 我說「收尾」的時候，只輸出下面這個區塊，格式一字不改，裡面用我們討論出來的內容：
+
+===STOCKBOT 論點 v2 <代號>===
+論點：
+（一段，300 字以內：我為什麼持有它）
+前提：
+1. [P2] （沒改的前提：照抄原文，保留編號）
+2. （新的、或意思改了的前提：不寫編號。一條一行，合計最多 5 條）
+出場條件：
+1. [C12] （沒改的出場條件：照抄原文，保留編號） → 出清
+2. （新的、或改了的：查得到的事） → 減半
 3. （查得到的事） → 重新審查
 這次的結論：維持｜修正論點｜減半｜出清
 理由：（一句）
@@ -141,7 +175,10 @@ const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(i
 
 function whySection(file: ThesisFile, n: DiscussionNumbers, mode: DiscussionMode, brk: BreakInfo | null): string[] {
   if (mode === 'NEW') {
-    const L = ['我持有這檔，但還沒有寫下論點。請先問我 3 個問題（為什麼買、哪幾件事要繼續成立、什麼情況下我會承認看錯），', '我回答之後再和我討論，不要直接替我寫。'];
+    // 有買進時的一句話（T40）：從那句話問起，不再要 claude.ai 先問為什麼買
+    const L = file.buyNote?.text
+      ? ['我持有這檔，但還沒有寫下論點。下面「我買進時的想法」是我買的時候隨手寫的一句話。', '請從那句話問起：它背後的理由是什麼、哪幾件事要繼續成立、什麼情況下我會承認看錯。', '我回答之後再和我討論，不要直接替我寫。']
+      : ['我持有這檔，但還沒有寫下論點。請先問我 3 個問題（為什麼買、哪幾件事要繼續成立、什麼情況下我會承認看錯），', '我回答之後再和我討論，不要直接替我寫。'];
     if (n.openedHalf !== null) L.push(`這檔是在大跌之後買的（加入時比 52 週高點低 ${pc(-n.openedHalf, 0)}）。`, '請先問我：它為什麼跌、為什麼我認為市場錯了。');
     return L;
   }
@@ -158,6 +195,13 @@ function whySection(file: ThesisFile, n: DiscussionNumbers, mode: DiscussionMode
   return L;
 }
 
+/** 買進時的一句話（T40，own_thesis §1.7）：不一定對、不是論點，只當開場。沒有就不放這一節。 */
+function buyNoteSection(file: ThesisFile): string[] {
+  const b = file.buyNote;
+  if (!b?.text) return [];
+  return ['## 我買進時的想法', '這是我買的時候隨手寫的一句話，不一定對，也不是論點；請拿來當開場，不要當成已經成立的前提。', `「${b.text}」（${b.at} 寫的）`, ''];
+}
+
 function thesisSection(file: ThesisFile): string[] {
   const t = file.thesis;
   if (!t?.text) return ['還沒有'];
@@ -170,23 +214,34 @@ function premiseSection(file: ThesisFile): string[] {
   const L = file.premises.map((p) => {
     const chk = p.lastCheck ? `${PREM_TEXT[p.lastCheck.status] ?? p.lastCheck.status}（${p.lastCheck.date} 審查）` : '還沒有檢查過';
     const def = p.origin === 'SYSTEM_DEFAULT' ? '（系統預設）' : '';
-    return `${p.id} ${p.text}${def}${SP}— ${chk}${p.splitAfter ? '；之後的審查沒有一致結論' : ''}`;
+    // 編號後面加「.」（T40）：收尾時沒改的前提照抄、保留這個編號（[P2]）
+    return `${p.id}. ${p.text}${def}${SP}— ${chk}${p.splitAfter ? '；之後的審查沒有一致結論' : ''}`;
   });
   if (file.kind === 'DEFAULT_ONLY') L.push('（這些是系統預設的一般健康檢查，不是我的論點。）');
   return L;
 }
 
+/** 條件在討論包與貼回之間的編號（T40）：`C` 加 own_conditions 的列編號，發出去就不重用。 */
+export const condRef = (id: number) => `C${id}`;
+
 function conditionSection(file: ThesisFile): string[] {
-  const owned = file.conditions.filter((c) => (!!c.acceptedAt || c.origin === 'USER') && c.status in COND_STATE);
+  const isMine = (c: ThesisFile['conditions'][number]) => !!c.acceptedAt || c.origin === 'USER';
+  const owned = file.conditions.filter((c) => isMine(c) && c.status in COND_STATE && c.status !== 'MET');
+  const met = file.conditions.filter((c) => isMine(c) && c.status === 'MET');
   const proposed = file.conditions.filter((c) => c.status === 'PROPOSED');
-  if (!owned.length && !proposed.length) return ['還沒有'];
+  if (!owned.length && !met.length && !proposed.length) return ['還沒有'];
   const L: string[] = [];
   if (owned.length) {
-    L.push('你定的：');
-    owned.forEach((c, k) => {
+    // 帶編號（T40）：收尾時沒改的照抄、保留編號（[C12]），stock bot 就知道是同一條、不用再改寫
+    L.push('你定的（編號是 stock bot 的條件編號）：');
+    owned.forEach((c) => {
       const act = c.action ? ACTION_TEXT[c.action] : '重新審查';
-      L.push(`C${k + 1} ${c.text} → ${act}（${md(c.acceptedAt ?? c.createdAt)} 定；${c.status === 'MET' ? `已成立 ${c.metAt?.slice(0, 10) ?? ''}` : COND_STATE[c.status]}）`);
+      L.push(`${condRef(c.id)}. ${c.text} → ${act}（${md(c.acceptedAt ?? c.createdAt)} 定；${COND_STATE[c.status]}）`);
     });
+  }
+  if (met.length) {
+    L.push('已成立（一次性，不再監測；要再監測就寫成新的一條）：');
+    met.forEach((c) => L.push(`${c.text}（${c.metAt?.slice(0, 10) ?? ''} 成立）`));
   }
   if (proposed.length) {
     L.push('AI 建議、還沒勾選的：');
@@ -243,9 +298,9 @@ function numberSection(n: DiscussionNumbers, xbrl: string | null): string[] {
  * 長度目標 12,000 字以內：事件最多 10 件、審查最多 3 次；還是太長時先縮財報表，最後截斷。
  */
 export function discussionPack(file: ThesisFile, n: DiscussionNumbers, mode: DiscussionMode, brk: BreakInfo | null = null): string {
-  const cut = DISCUSSION_V1.indexOf('\n8. ');
-  const ask = DISCUSSION_V1.slice(0, cut).trim();
-  const out = DISCUSSION_V1.slice(cut + 1).replace('<代號>', file.ticker);
+  const cut = DISCUSSION_V2.indexOf('\n9. ');
+  const ask = DISCUSSION_V2.slice(0, cut).trim();
+  const out = DISCUSSION_V2.slice(cut + 1).replace('<代號>', file.ticker);
   const build = (xbrl: string | null) =>
     [
       `# ${file.ticker} 論點討論包（stock bot，${n.date}，${DISCUSSION_VERSION}）`,
@@ -256,6 +311,7 @@ export function discussionPack(file: ThesisFile, n: DiscussionNumbers, mode: Dis
       '## 這次為什麼討論',
       ...whySection(file, n, mode, brk),
       '',
+      ...buyNoteSection(file),
       '## 我的論點',
       ...thesisSection(file),
       '',
@@ -301,6 +357,8 @@ export interface ParsedExit {
   action: CondAction;
   /** 動作沒寫或不認得，當成「重新審查」（預覽要標出來）。 */
   guessed: boolean;
+  /** 行首的 `[C12]`（T40）：沿用的條件編號（own_conditions 的列編號）；沒有是 null。 */
+  ref: number | null;
 }
 
 export interface ParsedThesis {
@@ -310,6 +368,8 @@ export interface ParsedThesis {
   error: string | null;
   thesis: string;
   premises: string[];
+  /** 每一條前提行首的 `[P2]`（T40，和 premises 一一對應）：沿用的前提編號；沒寫是 null。 */
+  premiseIds: (string | null)[];
   exits: ParsedExit[];
   /** 「這次的結論」（只顯示，不會自動做任何事）。 */
   conclusion: string | null;
@@ -324,21 +384,25 @@ export const THESIS_LIMITS = { thesis: 600, premises: 5, premise: 200, exits: 6,
 const ACTIONS: Record<string, CondAction> = { 出清: 'EXIT', 減半: 'HALF', 重新審查: 'REVIEW' };
 const TAG = /^\s*(論點|前提|出場條件|這次的結論|理由)\s*[：:]\s*(.*)$/;
 const ITEM = /^\s*(\d+)\s*[.、)）．]\s*(.*)$/;
+/** 行首的編號標記（T40）：`[P2]`、`[C12]`（全形括號也收）。 */
+const PREM_TAG = /^[[［]\s*(P\d{1,4})\s*[\]］]\s*/i;
+const COND_TAG = /^[[［]\s*C(\d{1,9})\s*[\]］]\s*/i;
 
 /**
  * 解析 claude.ai 收尾時輸出的區塊（own_thesis §1.8）：
- *   先去掉 markdown 的程式碼圍欄；找 `===STOCKBOT 論點 v1 <代號>===` 到 `===END===`（有好幾個時取最後一個）；代號要和這一頁相同。
+ *   先去掉 markdown 的程式碼圍欄；找 `===STOCKBOT 論點 v2 <代號>===`（舊的 v1 照收）到 `===END===`（有好幾個時取最後一個）；代號要和這一頁相同。
+ *   前提行首的 `[P2]`、出場條件行首的 `[C12]`（T40）讀成沿用的編號，文字去掉標記。
  *   區塊內照行首的標籤切（全形或半形冒號）；前提、出場條件只算行首是「數字 + . 、 )」的行；
  *   出場條件用最後一個 → 或 -> 切成條件與動作，動作只收出清、減半、重新審查，其他當成重新審查並標出來；
  *   超過上限的截掉並標出來；找不到標記時整段放進論點欄。
  */
 export function parseThesisBlock(text: string, ticker: string): ParsedThesis {
-  const empty: ParsedThesis = { found: false, error: null, thesis: '', premises: [], exits: [], conclusion: null, reason: null, notes: [] };
+  const empty: ParsedThesis = { found: false, error: null, thesis: '', premises: [], premiseIds: [], exits: [], conclusion: null, reason: null, notes: [] };
   const lines = String(text ?? '')
     .replace(/\r\n?/g, '\n')
     .split('\n')
     .filter((l) => !/^\s*(```|~~~)/.test(l));
-  const starts = lines.map((l, i) => ({ i, m: /^\s*===\s*STOCKBOT\s+論點\s+v1\s+([A-Za-z0-9.-]+)\s*===\s*$/.exec(l) })).filter((x) => x.m);
+  const starts = lines.map((l, i) => ({ i, m: /^\s*===\s*STOCKBOT\s+論點\s+v[12]\s+([A-Za-z0-9.-]+)\s*===\s*$/.exec(l) })).filter((x) => x.m);
   const start = starts.at(-1);
   const end = start ? lines.findIndex((l, i) => i > start.i && /^\s*===\s*END\s*===\s*$/.test(l)) : -1;
   if (!start || end < 0) {
@@ -379,10 +443,19 @@ export function parseThesisBlock(text: string, ticker: string): ParsedThesis {
     notes.push(`論點超過 ${THESIS_LIMITS.thesis} 字，後面截掉了`);
     thesis = thesis.slice(0, THESIS_LIMITS.thesis);
   }
-  let premises = items(sec.前提, '前提');
+  // 行首的 [P2]（T40）：讀成沿用的編號，文字去掉標記
+  const premRows = items(sec.前提, '前提')
+    .map((p) => {
+      const m = PREM_TAG.exec(p);
+      return m ? { id: m[1].toUpperCase(), text: p.slice(m[0].length).trim() } : { id: null, text: p };
+    })
+    .filter((p) => p.text);
+  let premises = premRows.map((p) => p.text);
+  let premiseIds = premRows.map((p) => p.id);
   if (premises.length > THESIS_LIMITS.premises) {
     notes.push(`前提超過 ${THESIS_LIMITS.premises} 條，只留前 ${THESIS_LIMITS.premises} 條`);
     premises = premises.slice(0, THESIS_LIMITS.premises);
+    premiseIds = premiseIds.slice(0, THESIS_LIMITS.premises);
   }
   premises = premises.map((p, k) => {
     if (p.length <= THESIS_LIMITS.premise) return p;
@@ -394,7 +467,11 @@ export function parseThesisBlock(text: string, ticker: string): ParsedThesis {
     notes.push(`出場條件超過 ${THESIS_LIMITS.exits} 條，只留前 ${THESIS_LIMITS.exits} 條`);
     exitRows = exitRows.slice(0, THESIS_LIMITS.exits);
   }
-  const exits: ParsedExit[] = exitRows.map((row, k) => {
+  const exits: ParsedExit[] = exitRows.map((row0, k) => {
+    // 行首的 [C12]（T40）：沿用的條件編號
+    const tag = COND_TAG.exec(row0);
+    const ref = tag ? Number(tag[1]) : null;
+    const row = tag ? row0.slice(tag[0].length) : row0;
     const a = row.lastIndexOf('→');
     const b = row.lastIndexOf('->');
     const [at, len] = a >= b ? [a, 1] : [b, 2];
@@ -406,8 +483,50 @@ export function parseThesisBlock(text: string, ticker: string): ParsedThesis {
       notes.push(`出場條件第 ${k + 1} 條超過 ${THESIS_LIMITS.exit} 字，後面截掉了`);
       cond = cond.slice(0, THESIS_LIMITS.exit);
     }
-    return { text: cond, action: action ?? 'REVIEW', guessed: !action };
+    return { text: cond, action: action ?? 'REVIEW', guessed: !action, ref };
   });
   const one = (rows: string[]) => rows.map((l) => l.trim()).filter(Boolean).join(' ') || null;
-  return { found: true, error: null, thesis, premises, exits, conclusion: one(sec.這次的結論), reason: one(sec.理由), notes };
+  return { found: true, error: null, thesis, premises, premiseIds, exits, conclusion: one(sec.這次的結論), reason: one(sec.理由), notes };
+}
+
+// ---------------------------------------------------------------- 出場條件的對照（T40，own_thesis §1.8）
+
+/** 這檔目前監測中的你定的條件（ACTIVE、REVIEW_ONLY、MANUAL）。 */
+export interface LiveCondition {
+  id: number;
+  text: string;
+  action: CondAction | null;
+  /** 狀態的白話（監測中、只在定期審查時檢查、只記錄）。 */
+  status: string;
+}
+
+export interface ExitPlan {
+  /** 沿用的：這一條（index）就是條件 id；動作和現在的不同時，確認時改成新的動作。 */
+  kept: { index: number; id: number; text: string; action: CondAction; was: CondAction | null; actionChanged: boolean }[];
+  /** 新的（index）：確認後送去改寫。 */
+  fresh: number[];
+  /** 目前監測中、這次沒有出現的：每一條選繼續監測（預設）或撤下。 */
+  missing: LiveCondition[];
+}
+
+/** 狀態代號 → 算不算「監測中」（會出現在對照裡的）。 */
+export const LIVE_CONDITION_CODES = ['ACTIVE', 'REVIEW_ONLY', 'MANUAL'] as const;
+
+/**
+ * 編輯論點的出場條件和目前監測中的條件對照（純函式）：
+ *   帶 ref（貼回的 [C12]）、而且是監測中的一條 → 沿用；沒帶 ref、但文字和監測中的一條相同（去掉空白與標點後比）→ 沿用；
+ *   其他 → 新的；監測中、沒有被沿用的 → missing。一條條件只能被沿用一次。
+ */
+export function matchExits(exits: { text: string; action: CondAction; ref?: number | null }[], live: LiveCondition[]): ExitPlan {
+  const used = new Set<number>();
+  const kept: ExitPlan['kept'] = [];
+  const fresh: number[] = [];
+  exits.forEach((x, index) => {
+    const pool = live.filter((c) => !used.has(c.id));
+    const hit = (x.ref ? pool.find((c) => c.id === x.ref) : undefined) ?? pool.find((c) => premiseKey(c.text) === premiseKey(x.text));
+    if (!hit) return fresh.push(index);
+    used.add(hit.id);
+    kept.push({ index, id: hit.id, text: hit.text, action: x.action, was: hit.action, actionChanged: !!hit.action && hit.action !== x.action });
+  });
+  return { kept, fresh, missing: live.filter((c) => !used.has(c.id)) };
 }

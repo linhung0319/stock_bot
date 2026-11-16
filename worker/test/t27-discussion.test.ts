@@ -13,7 +13,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { DISCUSSION_V1, MAX_PACK_CHARS, discussionPack, parseThesisBlock, pickMode, type DiscussionNumbers } from '../src/ai/discussion';
+import { DISCUSSION_V2, MAX_PACK_CHARS, discussionPack, parseThesisBlock, pickMode, type DiscussionNumbers } from '../src/ai/discussion';
 import { OWN_CHECK, ownCheckPack } from '../src/ai/ownCheck';
 import type { ApplyCtx } from '../src/app/aiCtx';
 import { finalizeRun, getRun, listRuns } from '../src/app/aiRuns';
@@ -178,7 +178,7 @@ describe('T27：貼回 → 改寫 → 勾選 → 監測 → 新財報成立時�
       // 改寫的證據包：v2、帶論點、前提與使用者選的動作
       const run = (await getRun(c.db, saved.body.rewrite.runId))!;
       expect(run.fn).toBe(OWN_CHECK);
-      expect(run.pack.prompt_version).toBe('own_check_v2');
+      expect(run.pack.prompt_version).toBe('own_check_v3'); // T40：改寫多一個 supersedes
       expect(run.pack.facts.filter((f) => f.id.startsWith('U')).map((f) => [f.label, f.value])).toEqual([
         ['使用者寫的出場條件（成立時：出清）', '毛利率連兩季低於 58%'],
         ['使用者寫的出場條件（成立時：減半）', '公司在 8-K 下修全年財測'],
@@ -253,9 +253,9 @@ describe('T27：parseThesisBlock 的每條規則（§1.8）', () => {
   it('動作不認得或沒寫 → 當成重新審查並標出來；用最後一個箭頭切', () => {
     const p = parseThesisBlock(block('NVDA', '出場條件：\n1. 營收 → 年增轉負 → 賣掉\n2. 毛利率低於 60%\n3. 執行長離職 → 重新審查。'), 'NVDA');
     expect(p.exits).toEqual([
-      { text: '營收 → 年增轉負', action: 'REVIEW', guessed: true },
-      { text: '毛利率低於 60%', action: 'REVIEW', guessed: true },
-      { text: '執行長離職', action: 'REVIEW', guessed: false },
+      { text: '營收 → 年增轉負', action: 'REVIEW', guessed: true, ref: null },
+      { text: '毛利率低於 60%', action: 'REVIEW', guessed: true, ref: null },
+      { text: '執行長離職', action: 'REVIEW', guessed: false, ref: null },
     ]);
     expect(p.notes).toEqual(['出場條件第 1 條的動作「賣掉」不認得，先當成「重新審查」', '出場條件第 2 條的動作沒寫，先當成「重新審查」']);
   });
@@ -355,11 +355,12 @@ describe('T27：討論包（§1.7）', () => {
       expect(t).not.toContain(String(shares));
       expect(t).not.toContain(shares.toLocaleString('en-US'));
       expect(t).toMatch(/比重：占總資產 \d+\.\d%，標準比重 15\.0%；自選桶合計 \d+%（預算 20%）/);
-      expect(t).toContain('# NVDA 論點討論包（stock bot，2026-11-19，discussion_v1）');
-      expect(t).toContain(DISCUSSION_V1.slice(0, DISCUSSION_V1.indexOf('\n8. ')).trim());
-      expect(t).toContain('===STOCKBOT 論點 v1 NVDA===');
+      // T40：固定指示升成 discussion_v2（第 8 點是編號來回，第 9 點是收尾格式）、區塊標記 v2、前提帶「P1.」
+      expect(t).toContain('# NVDA 論點討論包（stock bot，2026-11-19，discussion_v2）');
+      expect(t).toContain(DISCUSSION_V2.slice(0, DISCUSSION_V2.indexOf('\n9. ')).trim());
+      expect(t).toContain('===STOCKBOT 論點 v2 NVDA===');
       expect(t).not.toContain('<代號>');
-      expect(t).toContain('P1 資料中心需求延續到 2027');
+      expect(t).toContain('P1. 資料中心需求延續到 2027');
       expect(t).toContain('例行檢視。請先挑出論點裡最弱的一條前提');
       expect(t).toContain('2026-09-30'); // 財報表：沒有審查時當場抓一次 XBRL
       // 情境：mode 參數、不認得的回 422
@@ -385,7 +386,7 @@ describe('T27：討論包（§1.7）', () => {
     const huge = { ...NUMS, xbrl: Array.from({ length: 200 }, (_, k) => `2026-0${(k % 9) + 1}-30 (10-Q filed x): revenue ${k}M, gross margin 70.0%, operating margin 40.0%`).join('\n') };
     const t = discussionPack(file, huge, 'ROUTINE');
     expect(t.length).toBeLessThanOrEqual(MAX_PACK_CHARS);
-    expect(t).toContain('===STOCKBOT 論點 v1 NVDA===');
+    expect(t).toContain('===STOCKBOT 論點 v2 NVDA==='); // T40：區塊標記 v2
     expect(t.match(/MGMT|高層異動/g)!.length).toBe(10);
     expect(t.match(/月審：/g)!.length).toBe(3);
     expect(t).toContain('失效後修改第 1 次');

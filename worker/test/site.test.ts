@@ -311,7 +311,7 @@ describe('情境 ① 平常的月報：用網站走完', () => {
     expect((await demoAcct()).acct.mom.excluded).toEqual({});
   });
 
-  it('ORCL 按「我想留著」：不用下單，改歸自選，理由成為前提', async () => {
+  it('ORCL 按「我想留著」：不用下單，改歸自選，理由存成買進時的一句話（T40）', async () => {
     const { sim, n } = simStart();
     const v = await web.notif(n.id);
     const r = itemAction(sim.acct, sim.pre, n.id, n.items.find((i) => i.f === 'F2')!.key, { action: 'TRANSFER', reason: '雲端訂單還在成長' });
@@ -324,7 +324,10 @@ describe('情境 ① 平常的月報：用網站走完', () => {
     const h = (await web.state()).account!.holdings.find((x) => x.ticker === 'ORCL')!;
     expect(h).toMatchObject({ bucket: 'own', shares: 28 });
     const detail = await web.get<HoldingDetail>('/holding/ORCL');
-    expect(detail.own!.premises[0]).toEqual({ id: 'P1', text: '雲端訂單還在成長', origin: '你寫的', system: false, silenced: null }); // T27：持股頁的前提帶編號；T30：靜默中的那一句
+    // T40：理由是買進時的一句話（持股頁「還沒有你的論點」下面顯示），前提仍是系統預設
+    expect(detail.own!.buyNote).toMatchObject({ text: '雲端訂單還在成長' });
+    expect(detail.own!.kind).toBe('DEFAULT_ONLY');
+    expect(detail.own!.premises[0]).toMatchObject({ id: 'P1', system: true, silenced: null }); // T27：持股頁的前提帶編號；T30：靜默中的那一句
   });
 
   it('策略類「這次不做」：下一份月報把差額再列一次，理由寫明是上次沒做', async () => {
@@ -582,7 +585,7 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect(w).toMatchObject({ monthlyUnblocked: true, notifId: again.id });
     const { acct } = await demoAcct();
     expect(acct.lots.own.AAPL).toBe(10);
-    expect(acct.own.AAPL.premises[0].text).toBe('想長期持有');
+    expect(acct.own.AAPL.buyNote?.text).toBe('想長期持有'); // T40：買進時的一句話，不是前提
     expect(acct.monthlyBlocked).toBe(false);
     expect((await web.notif(w.notifId)).title).not.toContain('暫停');
   });
@@ -800,7 +803,9 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     // 沒填標準比重的照波動度反比推薦，三檔合計不超過自選預算
     const loaded = (await loadAccount(db))!;
     expect(loaded.acct.rule.own.MU.stdWeight + loaded.acct.rule.own.NVDA.stdWeight).toBeLessThan(0.2);
-    expect(loaded.acct.own.MU.premises[0]).toMatchObject({ text: 'HBM 長約有價格保護', origin: 'USER' });
+    // T40：建立帳戶的「持有的原因」存成買進時的一句話，前提仍是系統預設
+    expect(loaded.acct.own.MU.buyNote).toEqual({ text: 'HBM 長約有價格保護', at: loaded.acct.snapshotDate });
+    expect(loaded.acct.own.MU.premises.every((p) => p.origin === 'SYSTEM_DEFAULT')).toBe(true);
     expect(loaded.acct.own.NVDA.premises.every((p) => p.origin === 'SYSTEM_DEFAULT')).toBe(true);
     expect(loaded.acct.rule.heldMom).toEqual(['PLTR', 'AVGO']);
     // 依波動度減碼的起始歷史接上回測重放（不用等 24 個月）；比例由第一份月報決定
@@ -913,7 +918,9 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     expect(acct.lots.own.ORCL).toBe(2);
     expect(acct.lots.own.MU).toBe(lots.own.MU - 1);
     // T25：前提多記加入的訊號日（own_thesis §1.2）
-    expect(acct.own.ORCL.premises).toEqual([{ id: 'P1', text: '雲端資料庫訂單成長', origin: 'USER', addedAt: '2026-12-09' }]);
+    // T40：買進時的一句話（不是前提）；前提是系統預設
+    expect(acct.own.ORCL.buyNote).toEqual({ text: '雲端資料庫訂單成長', at: '2026-12-09' });
+    expect(acct.own.ORCL.premises.every((p) => p.origin === 'SYSTEM_DEFAULT' && p.addedAt === '2026-12-09')).toBe(true);
     expect((await web.state()).todo).toEqual([]);
     const hist = await web.get<HistoryView>('/history');
     expect(hist.events.some((e) => e.text === '成交：自選 ORCL +2 股（自選的手動交易：換股）')).toBe(true);

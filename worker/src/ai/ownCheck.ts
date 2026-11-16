@@ -11,7 +11,7 @@ import { buildPack } from './pack';
 import type { CondAction } from '../app/thesis';
 
 export const OWN_CHECK = 'OWN_CHECK';
-export const OWN_CHECK_PROMPT = 'own_check_v2';
+export const OWN_CHECK_PROMPT = 'own_check_v3';
 
 /** 使用者寫的一條出場條件與選的成立時動作。 */
 export interface ExitLine {
@@ -39,6 +39,8 @@ export interface OwnCheckInput {
   dataQuality: EvidencePack['data_quality'];
   /** 論點的版本（記在 rule.detail）。 */
   thesisVersion: number | null;
+  /** 證據包的條件編號（C1、W1…）→ own_conditions 的列編號（T40：改寫寫了 supersedes 時換成列編號；記在 rule.detail）。 */
+  condMap?: Record<string, number>;
   now: Date;
 }
 
@@ -55,9 +57,10 @@ export function ownCheckPack(inp: OwnCheckInput) {
     question:
       `${who}，寫了 ${exits.length} 條出場條件（facts 的 U 開頭，每條附使用者選的成立時動作）。` +
       '請把每一條改寫成可追蹤的格式（payload.conditions，格式和定期審查相同），每一條寫 line（對應的 U 編號）；數字門檻要對應證據包裡的數字；改寫不了的在 report 說明。' +
-      '現行的論點、前提（premises）與既有的條件（facts 的 C、W 開頭）是背景：不用逐條檢查前提，已經有的條件不要重複改寫。不要評論該不該買。',
+      '現行的論點、前提（premises）與既有的條件（facts 的 C、W 開頭）是背景：不用逐條檢查前提，已經有的條件不要重複改寫。' +
+      '某一條 U 是在更新一條既有的條件（例如門檻改了）時，那一條寫 supersedes（被更新的 C 或 W 編號）；使用者勾選新的那一條時，舊的會撤下。不要評論該不該買。',
     policy: { level: 'A1', verdicts: ['DONE', 'INSUFFICIENT'], abstain: 'INSUFFICIENT', min_evidence: 0, samples: 1 },
-    rule: { action: '只提供資訊（不給買或不買的結論）', detail: { mode: 'REWRITE', lines: exits.map((e) => e.text), exits, thesisVersion: inp.thesisVersion } },
+    rule: { action: '只提供資訊（不給買或不買的結論）', detail: { mode: 'REWRITE', lines: exits.map((e) => e.text), exits, thesisVersion: inp.thesisVersion, ...(inp.condMap && Object.keys(inp.condMap).length ? { condMap: inp.condMap } : {}) } },
     facts: [
       ...inp.facts,
       ...exits.map((e, k) => ({ id: `U${k + 1}`, label: `使用者寫的出場條件（成立時：${ACTION_TEXT[e.action]}）`, value: e.text })),
@@ -79,8 +82,11 @@ export function checkOwnCheckPayload(s: CheckedSample, pack: EvidencePack, metri
 }
 
 export interface OwnCheckResult {
-  /** 改寫好的條件；action 是勾選時預設的動作（對到使用者寫的那一條就用使用者選的，否則帶 AI 寫的檔位）。 */
-  conditions: (ConditionDraft & { then: string; action: CondAction; from: string | null })[];
+  /**
+   * 改寫好的條件；action 是勾選時預設的動作（對到使用者寫的那一條就用使用者選的，否則帶 AI 寫的檔位）。
+   * supersedes：AI 認為這條是在更新哪一條既有條件（own_conditions 的列編號，T40）；沒有或對不到是 null。
+   */
+  conditions: (ConditionDraft & { then: string; action: CondAction; from: string | null; supersedes: number | null })[];
   summary: string | null;
 }
 
@@ -90,8 +96,11 @@ const confirmOf = (kind: string, check: Record<string, unknown>): string => {
   return by.length && by.every((x) => x === 'earnings_call' || x === 'major_news') ? '只在定期審查時檢查' : '新申報出來時由 AI 確認';
 };
 
-/** 改寫的結果（網站顯示，讓使用者勾選）。exits：送去改寫的那幾條（證據包的 rule.detail.exits）。 */
-export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: ExitLine[] = []): OwnCheckResult {
+/**
+ * 改寫的結果（網站顯示，讓使用者勾選）。exits：送去改寫的那幾條（證據包的 rule.detail.exits）；
+ * condMap：證據包的條件編號 → 列編號（rule.detail.condMap，T40），把 supersedes 換成列編號。
+ */
+export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: ExitLine[] = [], condMap: Record<string, number> = {}): OwnCheckResult {
   const s = outcome?.samples.find((x) => x.valid && x.verdict === 'DONE');
   if (!s) return { conditions: [], summary: outcome?.reason ?? null };
   const conditions = s.conditions
@@ -105,6 +114,7 @@ export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: E
       const line = /^U(\d+)$/.exec(String(c.raw.line ?? ''));
       const src = line ? exits[Number(line[1]) - 1] : undefined;
       const action: CondAction = src?.action ?? (direction === 'DOWN' && (tier === 'EXIT' || tier === 'HALF') ? tier : 'REVIEW');
+      const sup = typeof c.raw.supersedes === 'string' ? c.raw.supersedes.trim().toUpperCase() : '';
       return {
         ticker,
         runId: '',
@@ -117,6 +127,7 @@ export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: E
         manual: !c.auto,
         action,
         from: src?.text ?? null,
+        supersedes: sup && condMap[sup] ? condMap[sup] : null,
         then: c.auto ? confirmOf(kind, check) : `只記錄：${c.why ?? ''}`,
       };
     });

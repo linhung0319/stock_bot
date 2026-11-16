@@ -540,7 +540,7 @@ const BUCKETS3 = ['own', 'mom', 'core'] as const;
  * 變動放哪一桶由使用者決定，不再跳分類通知。
  *   清單上有的（桶＋代號）→ 照清單；差超過 1 股 → 問補做或就這樣（同 §2.3.1）
  *   清單外的：核心只能是核心 ETF／短債；動能的買進要在當月名單上、那一格還沒買足（2026-11-11 的規則照舊）；
- *     自選的新代號建立這檔（推薦標準比重、跌深就從減半開始、why 成為前提）；自選賣到 0 股 → 自動移出自選
+ *     自選的新代號建立這檔（推薦標準比重、跌深就從減半開始、why 存成買進時的一句話，T40）；自選賣到 0 股 → 自動移出自選
  *   現金 → 不問，差額記成其他現金變動
  */
 function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, fill?: (ticker: string) => number): SnapshotResult {
@@ -1039,13 +1039,15 @@ export interface PremiseMapping {
   added: string[];
   /** 現行有、新的沒有 → 撤下（原本只有系統預設、寫了自己的前提時，系統預設也在這裡）。 */
   retired: Premise[];
+  /** 沿用編號、但字改了（去掉空白與標點後不同；T40，own_thesis §1.8）：也算論點變動。 */
+  edited: { id: string; before: string; after: string }[];
   /** 下一條前提的編號。 */
   premiseSeq: number;
 }
 
 /**
  * 編輯論點時，新的前提怎麼對應現行的（own_thesis §1.8，純函式）：
- *   帶 id、而且是現行的一條 → 沿用（使用者在預覽裡改了字也算同一條）；
+ *   帶 id、而且是現行的一條 → 沿用（使用者在預覽裡改了字、或貼回的 [P2] 字改了，也算同一條；記在 edited，T40）；
  *   文字和現行的一條相同（去掉空白與標點後比）→ 沿用那條的 id；
  *   其他 → 新的，從 premiseSeq 接著編號（編號不重用、不重排）；
  *   現行有、新的沒對到 → 撤下。
@@ -1060,13 +1062,14 @@ export function mapPremises(meta: Pick<OwnMeta, 'premises' | 'premiseSeq'>, next
   const rows = all.filter((r) => !isDefaultEcho(r));
   let seq = nextPremiseSeq(meta);
   if (!rows.length) {
-    if (onlyDefault) return { premises: clone(cur), kept: cur.map((p) => p.id), added: [], retired: [], premiseSeq: seq };
+    if (onlyDefault) return { premises: clone(cur), kept: cur.map((p) => p.id), added: [], retired: [], edited: [], premiseSeq: seq };
     throw new Error('至少要留一條前提');
   }
   const used = new Set<string>();
   const premises: Premise[] = [];
   const kept: string[] = [];
   const added: string[] = [];
+  const edited: PremiseMapping['edited'] = [];
   for (const r of rows) {
     // 系統預設前提不能被「沿用」成你的前提：寫了自己的前提就整組換掉（照舊）
     const pool = cur.filter((p) => p.origin !== 'SYSTEM_DEFAULT' && !used.has(p.id));
@@ -1074,6 +1077,7 @@ export function mapPremises(meta: Pick<OwnMeta, 'premises' | 'premiseSeq'>, next
     if (hit) {
       used.add(hit.id);
       kept.push(hit.id);
+      if (premiseKey(hit.text) !== premiseKey(r.text)) edited.push({ id: hit.id, before: hit.text, after: r.text });
       premises.push({ ...hit, text: r.text });
     } else {
       const id = `P${seq++}`;
@@ -1081,7 +1085,7 @@ export function mapPremises(meta: Pick<OwnMeta, 'premises' | 'premiseSeq'>, next
       premises.push({ id, text: r.text, origin: 'USER', addedAt: date });
     }
   }
-  return { premises, kept, added, retired: cur.filter((p) => !used.has(p.id)), premiseSeq: seq };
+  return { premises, kept, added, retired: cur.filter((p) => !used.has(p.id)), edited, premiseSeq: seq };
 }
 
 export interface ThesisInput {
@@ -1096,7 +1100,8 @@ export interface ThesisInput {
 
 /**
  * 存論點與前提（持股頁的「編輯論點」，own_thesis §1.8 確認的第 1 點；§3.6.5）：論點本文與前提立刻存進帳戶狀態，version 加 1。
- * 前提有新增或撤下 → thesisReviewDue 記今天（下一次每日第一次流程開論點變動後的審查）；只改論點本文或前提的字不算。
+ * 前提有新增或撤下、或沿用編號但字改了（T40）→ thesisReviewDue 記今天（下一次每日第一次流程開論點變動後的審查）；
+ * 只改論點本文、只改前提的標點或空白不算。
  * inp.afterBreak（對乙類通知的回應）→ thesis.afterBreak 加 1、lastAfterBreakAt 記今天（§1.10 的 REVISE）。
  */
 export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { acct: Account; mapping: PremiseMapping; before: { text: string; premises: Premise[] }; changed: boolean } {
@@ -1111,7 +1116,7 @@ export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { a
   meta.thesis = { text: inp.text.trim(), setAt: inp.date, source: inp.source, version: (prev?.version ?? 0) + 1, afterBreak, lastAfterBreakAt };
   meta.premises = mapping.premises;
   meta.premiseSeq = mapping.premiseSeq;
-  const changed = mapping.added.length > 0 || mapping.retired.length > 0;
+  const changed = mapping.added.length > 0 || mapping.retired.length > 0 || mapping.edited.length > 0;
   if (changed) meta.thesisReviewDue = inp.date;
   return { acct, mapping, before, changed };
 }
@@ -1179,13 +1184,20 @@ export function setStdWeight(acct0: Account, ticker: string, stdWeight: number):
   return acct;
 }
 
+/**
+ * 清單外買進、轉入、認養時建立這檔自選（已經在自選就不重建）。
+ * reason：使用者寫的那一句 → 買進時的一句話（T40，own_thesis §1.8）：不是前提，這檔維持「只有預設」直到第一次存論點；
+ * 已經有這句話的不覆蓋。
+ */
 function ensureOwnMeta(acct: Account, view: MarketView, ticker: string, origin: 'TRANSFER' | 'ADOPT' | 'MANUAL', reason?: string): void {
+  const note = reason?.trim() ? { text: reason.trim().slice(0, 300), at: view.date } : null;
   if (acct.own[ticker]) {
-    if (reason) acct.own[ticker] = addPremises(acct, ticker, [{ text: reason, origin: 'USER' }], view.date).own[ticker];
+    if (note && !acct.own[ticker].buyNote) acct.own[ticker].buyNote = note;
     return;
   }
   const rec = recommendStdWeights(view, [...Object.keys(acct.rule.own), ticker], acct.cfg.ratio.own);
-  const meta = newOwnMeta(view, ticker, origin, reason ? [{ id: 'P1', text: reason, origin: 'USER' }] : clone(SYSTEM_DEFAULT_PREMISES), acct.ownClosed?.[ticker]?.fileId);
+  const meta = newOwnMeta(view, ticker, origin, clone(SYSTEM_DEFAULT_PREMISES), acct.ownClosed?.[ticker]?.fileId);
+  if (note) meta.buyNote = note;
   acct.own[ticker] = meta;
   acct.rule.own[ticker] = { applied: meta.slow.state, stdWeight: rec[ticker] };
 }
@@ -1204,7 +1216,7 @@ function moveBetweenBuckets(acct: Account, view: MarketView, from: 'own' | 'mom'
 
 export interface ItemActionInput {
   action: 'TRANSFER' | 'EXCLUDE' | 'ADOPT';
-  /** 要寫一句理由（轉入自選、認養時成為這檔的前提）。 */
+  /** 要寫一句理由（轉入自選、認養時存成這檔買進時的一句話，T40；不是前提）。 */
   reason: string;
   /** 排除後重算月報時，本月被任務 A 否決的代號（遞補者也要過任務 A）。 */
   vetoed?: string[];
@@ -1266,7 +1278,7 @@ export function unexclude(acct0: Account, ticker: string): Account {
 
 export interface ClassifyInput {
   bucket: 'own' | 'mom';
-  /** 買進歸自選時的一句理由（成為前提，沒寫用系統預設前提）；賣出時是為什麼賣（記在事件與影子上）。 */
+  /** 買進歸自選時的一句理由（存成買進時的一句話，T40；前提照樣是系統預設）；賣出時是為什麼賣（記在事件與影子上）。 */
   reason?: string;
   /** 自選賣到 0 股時，同時移出自選（同移除自選，不用下單；設計 §10 第 37 點）。 */
   removeOwn?: boolean;

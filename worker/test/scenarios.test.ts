@@ -110,14 +110,16 @@ describe('情境 ① 平常的月報', () => {
     expect(sim.acct.lots.mom.GE).toBeUndefined();
   });
 
-  it('ORCL 按「轉入自選」：不用下單，改歸自選桶，理由成為前提；影子記「如果照賣」', () => {
+  it('ORCL 按「轉入自選」：不用下單，改歸自選桶，理由存成買進時的一句話（T40：不是前提）；影子記「如果照賣」', () => {
     const sim = start();
     const n = sim.preOpen()!;
     const r = itemAction(sim.acct, sim.pre, n.id, item(n, 'F2', 'ORCL').key, { action: 'TRANSFER', reason: '雲端訂單還在成長' });
     sim.acct = r.acct;
     expect(sim.acct.lots.mom.ORCL).toBeUndefined();
     expect(sim.acct.lots.own.ORCL).toBe(28);
-    expect(sim.acct.own.ORCL.premises[0]).toMatchObject({ text: '雲端訂單還在成長', origin: 'USER' });
+    // T40（own_thesis §1.8）：理由是買進時的一句話，前提仍是系統預設（這檔還是「只有預設」）
+    expect(sim.acct.own.ORCL.buyNote).toEqual({ text: '雲端訂單還在成長', at: sim.pre.date });
+    expect(sim.acct.own.ORCL.premises.every((p) => p.origin === 'SYSTEM_DEFAULT')).toBe(true);
     expect(listOf(r.notif!).some((x) => x.includes('ORCL'))).toBe(false);
     expect(sim.acct.shadow.find((s) => s.choice === 'TRANSFER')).toMatchObject({ ticker: 'ORCL', rule: -28, actual: 0 });
     // 之後由自選規則管：月報不再叫你賣
@@ -474,7 +476,8 @@ describe('情境 ⑤ 你自己的操作', () => {
     expect(ok.monthlyUnblocked).toBe(true);
     expect(sim.acct.lots.own.AAPL).toBe(10);
     expect(sim.acct.own.AAPL).toMatchObject({ origin: 'MANUAL' });
-    expect(sim.acct.own.AAPL.premises[0].text).toBe('想長期持有');
+    expect(sim.acct.own.AAPL.buyNote?.text).toBe('想長期持有'); // T40：買進時的一句話，不是前提
+    expect(sim.acct.own.AAPL.premises.every((p) => p.origin === 'SYSTEM_DEFAULT')).toBe(true);
     // 分類後重算月報
     const again = sim.preOpen()!;
     expect(again.title).not.toContain('暫停');

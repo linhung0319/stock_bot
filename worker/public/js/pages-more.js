@@ -65,6 +65,10 @@ export function accountPage(ctx) {
   const pane = [
     legend(a),
     a.monthlyBlocked ? h('p', { class: 'notice', style: 'margin:0 0 14px' }, '有還沒分類的持股變動，月報暫停中。到「待辦與紀錄」回答那筆變動屬於哪一桶。') : null,
+    // 還沒有論點的自選（T40）：直到每一檔都有論點或你關掉
+    st.thesisTodo?.length
+      ? h('a', { class: 'notice rowlink-notice', style: 'margin:0 0 14px;display:block', href: '#/thesis-todo' }, h('b', null, `${st.thesisTodo.map((x) => x.ticker).join('、')} 還沒有你的論點`), h('span', { class: 'small', style: 'margin-left:8px' }, '去寫論點 →'))
+      : null,
     a.unclassified.length ? glass('pad', h('b', null, '還沒分類：'), a.unclassified.map((u) => `${u.ticker} ${u.shares > 0 ? '+' : '−'}${qty(u.shares)} 股`).join('、')) : null,
     groups,
     a.excluded.length
@@ -301,10 +305,10 @@ export function setupPage(ctx) {
     put(summary, h('li', null, h('span', null, '核心'), h('span', { class: 'num' }, `VOO ${val(core) || 0} 股${val(bond) ? `、SGOV ${val(bond)} 股` : ''}`)), h('li', null, h('span', null, '現金'), h('span', { class: 'num' }, money(val(cash) || 0))), h('li', null, h('span', null, '自選'), h('span', null, `${n('own')} 檔`)), h('li', null, h('span', null, '動能'), h('span', null, `${n('mom')} 檔`)), h('li', null, h('span', null, '紙上交易'), h('span', null, paper.checked ? '是' : '否')));
   };
   const addRow = (kind) => {
-    const r = { ticker: h('input', { type: 'text', placeholder: '代號', style: 'text-transform:uppercase;width:6.5em' }), shares: h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '股數', style: 'width:6em' }), std: kind === 'own' ? h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '建議值', style: 'width:5.5em' }) : null, why: kind === 'own' ? h('input', { type: 'text', placeholder: '為什麼持有（選填）', style: 'min-width:13em' }) : null };
+    const r = { ticker: h('input', { type: 'text', placeholder: '代號', style: 'text-transform:uppercase;width:6.5em' }), shares: h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '股數', style: 'width:6em' }), std: kind === 'own' ? h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '建議值', style: 'width:5.5em' }) : null, why: kind === 'own' ? h('input', { type: 'text', maxlength: 300, placeholder: '持有的原因（選填）', 'aria-label': '持有的原因（選填，討論時當參考）', style: 'min-width:13em' }) : null };
     rows[kind].push(r);
     r.ticker.addEventListener('input', recount);
-    // 自選的「標準比重」「為什麼持有」手機上也要填得到（T39a）：窄螢幕時「為什麼持有」換到下一行
+    // 自選的「標準比重」「持有的原因」手機上也要填得到（T39a）：窄螢幕時「持有的原因」換到下一行
     lists[kind].append(h('tr', null, h('td', null, r.ticker), h('td', { class: 'r' }, r.shares), kind === 'own' ? [h('td', { class: 'r std-c' }, h('div', { style: 'display:flex;gap:6px;align-items:center;justify-content:flex-end' }, r.std, '%')), h('td', { class: 'why-c' }, r.why)] : null));
   };
   for (let k = 0; k < 4; k++) addRow('own');
@@ -313,12 +317,13 @@ export function setupPage(ctx) {
   recount();
   const msg = h('div');
   const create = async () => {
-    const pick = (kind) => rows[kind].filter((r) => r.ticker.value.trim()).map((r) => ({ ticker: r.ticker.value.trim().toUpperCase(), shares: val(r.shares), ...(r.std && r.std.value.trim() ? { stdWeight: val(r.std) / 100 } : {}), ...(r.why && r.why.value.trim() ? { premises: [{ text: r.why.value.trim() }] } : {}) }));
+    const pick = (kind) => rows[kind].filter((r) => r.ticker.value.trim()).map((r) => ({ ticker: r.ticker.value.trim().toUpperCase(), shares: val(r.shares), ...(r.std && r.std.value.trim() ? { stdWeight: val(r.std) / 100 } : {}), ...(r.why && r.why.value.trim() ? { why: r.why.value.trim() } : {}) }));
     try {
-      await api.post('/account', { paper: paper.checked, cash: val(cash), coreShares: val(core), bondShares: val(bond), own: pick('own'), mom: pick('mom') });
+      const r = await api.post('/account', { paper: paper.checked, cash: val(cash), coreShares: val(core), bondShares: val(bond), own: pick('own'), mom: pick('mom') });
       toast('帳戶建立好了');
       await ctx.refresh(false);
-      ctx.go('#/account');
+      // 有自選：先到「還沒有論點的自選」（T40；可以跳過），不再直接跳帳戶頁
+      ctx.go(r.thesisTodo?.length ? '#/thesis-todo' : '#/account');
     } catch (e) {
       msg.replaceChildren(errBox(e));
       msg.scrollIntoView({ block: 'center' });
@@ -333,8 +338,8 @@ export function setupPage(ctx) {
       sec('core', '核心'),
       glass('pad narrow-sm', h('label', { class: 'field' }, h('span', null, 'VOO 股數'), h('div', { style: 'max-width:10em' }, core)), h('label', { class: 'field' }, h('span', null, 'SGOV（短債）股數'), h('div', { style: 'max-width:10em' }, bond), h('small', null, '沒有就留空。')), h('label', { class: 'field', style: 'margin:0' }, h('span', null, '現金（美元）'), h('div', { style: 'max-width:10em' }, cash))),
       sec('own', '自選'),
-      h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '你自己選的股票。標準比重留空就用建議值（自選預算 20% 內，波動越大比重越小）。現在已經比 52 週高點低 20% 以上的，一開始記成「減半」狀態。'),
-      glass('', table('own', ['代號', '股數', '標準比重', '為什麼持有']), h('div', { class: 'pad' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow('own') }, '再加一檔'))),
+      h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '你自己選的股票。標準比重留空就用建議值（自選預算 20% 內，波動越大比重越小）。現在已經比 52 週高點低 20% 以上的，一開始記成「減半」狀態。持有的原因只是之後討論論點時的開場，不是前提；建立完會列出還沒有論點的自選，可以接著寫，也可以跳過。'),
+      glass('', table('own', ['代號', '股數', '標準比重', '持有的原因（選填，討論時當參考）']), h('div', { class: 'pad' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow('own') }, '再加一檔'))),
       sec('mom', '動能'),
       h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '照動能名單買的股票。還沒開始照動能買的話，全部留空：下一份月報會給你進場的清單。'),
       glass('', table('mom', ['代號', '股數']), h('div', { class: 'pad' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow('mom') }, '再加一檔'))),

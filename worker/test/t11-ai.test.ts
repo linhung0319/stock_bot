@@ -859,7 +859,7 @@ describe('F14：新增自選健檢 → 確認出場條件 → 之後的 F24 不�
       // T27：出場條件每條帶使用者選的動作（own_check_v2）
       const r = await startOwnCheck(env, fetcher, loaded.acct, view, axis, 'NVDA', [{ text: '公司下修營收財測就賣', action: 'EXIT' }, { text: '收盤跌破 100 就賣', action: 'EXIT' }], now);
       expect(r.pack.rule.detail).toMatchObject({ mode: 'REWRITE', lines: ['公司下修營收財測就賣', '收盤跌破 100 就賣'] });
-      expect(r.pack.prompt_version).toBe('own_check_v2');
+      expect(r.pack.prompt_version).toBe('own_check_v3'); // T40：改寫多一個 supersedes
       const price = r.pack.documents.find((d) => d.source_id === 'price:NVDA')!;
       const quote = price.text.split('\n').at(-1)!;
       await postResult(

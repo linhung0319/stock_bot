@@ -87,7 +87,7 @@ export function fileChanges(before: Record<string, string | undefined>, acct: Ac
       fileId: m.fileId,
       session: m.fileId.slice(t.length + 1, t.length + 11),
       kind: 'OPEN',
-      body: { origin: m.origin, premises: m.premises, startState: m.opened?.startState ?? m.slow.state, drawdownAtOpen: m.opened?.drawdownAtOpen ?? null },
+      body: { origin: m.origin, premises: m.premises, startState: m.opened?.startState ?? m.slow.state, drawdownAtOpen: m.opened?.drawdownAtOpen ?? null, ...(m.buyNote ? { buyNote: m.buyNote } : {}) },
     });
   }
   return out;
