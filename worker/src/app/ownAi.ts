@@ -15,7 +15,7 @@
 import type { CheckedSample, PackDoc } from '../ai/check';
 import { OWN_CONDITION, OWN_REVIEW, confirmMode, conditionDecision, conditionPack, ownReviewPack, reviewDecision, type ConditionDraft, type ProposedDraft } from '../ai/ownReview';
 import { newRunId } from '../ai/pack';
-import { TIER_NAME, clone, condMetNotice, routeReview, type Account, type CondNotice, type MarketView, type OwnMeta, type ReviewTrigger } from '../engine';
+import { TIER_NAME, clone, condMetNotice, ownHeld, routeReview, type Account, type CondNotice, type MarketView, type OwnMeta, type ReviewTrigger } from '../engine';
 import { ConflictError, loadAccount, saveAccount, thesisLogStmt } from './ledgerStore';
 import { isLastTradingDayOfMonth, nextTradingDay, type CalendarOverrides } from '../data/calendar';
 import { attribution } from '../ai/detect';
@@ -411,7 +411,8 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
   const tickers = Object.keys(acct.own);
   const review = new Map<string, 'EARNINGS' | 'MONTHLY' | 'THESIS'>();
   for (const c of sc.checks) {
-    if (!acct.own[c.ticker]) continue;
+    // 0 股的自選（例如自選比例改成 0%）不送條件監測與審查，持有後恢復（T39b）
+    if (!acct.own[c.ticker] || !ownHeld(acct, c.ticker)) continue;
     // F25 的條件由論點檔取（只有現在這份論點檔的）
     const events = ((await thesisFile(env.DB, acct, c.ticker, session))?.conditions ?? []).filter((x) => x.kind === 'EVENT' && x.status === 'ACTIVE');
     const confirm = new Set(events.flatMap((x) => ((x.check.confirm_by as string[] | undefined) ?? []).map((s) => (s === 'SEC' ? '8-K' : s))));
@@ -442,6 +443,10 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
   if (checkpoint) {
     for (const t of tickers) {
       if (review.has(t)) continue;
+      if (!ownHeld(acct, t)) {
+        res.log.push(`${t}：現在 0 股，月底檢查點不審查（持有後恢復）`);
+        continue;
+      }
       const tf = await thesisFile(env.DB, acct, t, session);
       const all = sc.checks.find((c) => c.ticker === t)?.all ?? null;
       const reasons: EvidenceReason[] = tf ? newEvidence(tf, all, session) : ['NEVER'];
@@ -460,6 +465,7 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
   for (const t of tickers) {
     const m = acct.own[t];
     if (!m.thesisReviewDue) continue;
+    if (!ownHeld(acct, t)) continue; // 0 股：論點變動後的審查留著，持有後再開（T39b）
     const sameDay = review.has(t) || !!(await env.DB.prepare("SELECT 1 AS x FROM ai_runs WHERE fn = 'OWN_REVIEW' AND ticker = ? AND as_of = ? LIMIT 1").bind(t, session).first());
     const recent = !!m.thesisReviewAt && daysApart(m.thesisReviewAt, session) < THESIS_REVIEW_GAP;
     if (sameDay || recent) {
@@ -506,6 +512,7 @@ export async function startCondReviews(sc: StartCtx): Promise<void> {
   const patch: Record<string, Partial<OwnMeta>> = {};
   for (const [t, m] of Object.entries(acct.own)) {
     if (!m.condReviewDue) continue;
+    if (!ownHeld(acct, t)) continue; // 0 股：留著，持有後再開（T39b）
     const same = await env.DB.prepare("SELECT 1 AS x FROM ai_runs WHERE fn = 'OWN_REVIEW' AND ticker = ? AND as_of = ? LIMIT 1").bind(t, session).first();
     if (same) {
       patch[t] = { condReviewDue: null };
@@ -595,6 +602,7 @@ export async function startEarlyReviews(sc: StartCtx, opt: { fetchChecks?: boole
   for (const e of cands) {
     if (daysApart(e.event_date, session) > EARLY_WINDOW_DAYS) mark(EARLY_NOTE.expired, e);
     else if (!acct.own[e.ticker]) mark(EARLY_NOTE.notOwn, e);
+    else if (!ownHeld(acct, e.ticker)) mark(EARLY_NOTE.notHeld, e); // 0 股時不送提前審查（T39b）
     else if (!isPriceEvent(e) && accOf(e.accession).kind !== 'FILING') mark(EARLY_NOTE.news, e);
     else byTicker.set(e.ticker, [...(byTicker.get(e.ticker) ?? []), e]);
   }

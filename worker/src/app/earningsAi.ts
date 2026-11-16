@@ -11,6 +11,7 @@ import { OWN_EARNINGS, earningsDecision, earningsPack, pressCheckable, pressRow,
 import { newRunId } from '../ai/pack';
 import { XBRL_METRICS, fetchCompanyFacts, fetchPressRelease, quarterTable, xbrlConditionMet } from '../data/edgar';
 import { errText } from '../data/util';
+import { ownHeld } from '../engine';
 import type { ApplyCtx, StartCtx } from './aiCtx';
 import { startRun, type AiRun } from './aiRuns';
 import { docOf, metStmt, notifyOwnCondition, xbrlDoc } from './ownAi';
@@ -31,7 +32,7 @@ export async function startOwnEarnings(sc: StartCtx): Promise<void> {
   const { env, fetcher, acct, session, now, res } = sc;
   const ua = env.EDGAR_USER_AGENT ?? '';
   for (const c of sc.checks) {
-    if (!acct.own[c.ticker]) continue;
+    if (!acct.own[c.ticker] || !ownHeld(acct, c.ticker)) continue; // 0 股的自選不送條件監測（T39b）
     const pr = latestPress(c.fresh);
     if (!pr) continue;
     const conds = (await fileConditions(env.DB, acct, c.ticker)).filter((x) => x.kind === 'XBRL' && x.status === 'ACTIVE' && isOwned(x));

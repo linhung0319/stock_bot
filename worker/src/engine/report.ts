@@ -1,6 +1,7 @@
 // 每日檢查與月報：把規則的結果變成「通知＋清單」，每一項附選項（照規則／照 AI／這次不做）。
 // 設計：§2.0 觸發總表、§2.2 自選、§2.3 操作方式、§2.5 觸發與通知。
 import {
+  CORE_OWE_UNANSWERED_REASON,
   TIER_NAME,
   bucketValue,
   cellValues,
@@ -32,7 +33,7 @@ import { drawdownFromHigh, excessVol } from './indicators';
 import { composeWithCore, crashCoreLines, mergeByTicker, planToLines, type Composed, type CoreContext, type OrderLine } from './orders';
 import { crashDecision, validBars } from './risk';
 import { SLOW, halveShares, slowDayInput, stepSlowRule } from './slowRule';
-import type { OwnAction, OwnState } from './types';
+import { cellKey, type OwnAction, type OwnState } from './types';
 
 // ---------------------------------------------------------------- 共用
 
@@ -438,6 +439,16 @@ function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values
   if (volLines.length) {
     items.push(makeItem({ f: 'F4', kind: 'STRATEGY', title: '動能部位調整（依波動度減碼）', choices: [{ id: 'DO', label: '照做', lines: volLines }], why: plan.vol?.ratio != null ? `σ̃/σ = ${plan.vol.ratio.toFixed(2)}` : undefined }));
   }
+  // 策略項目每一行的目標占總資產的比例（晚回覆時用回覆當天的價格重算，T39b）；核心那兩檔不在 plan 的格子裡，另外重算
+  const total = plan.total;
+  if (total > 0) {
+    for (const it of items) {
+      if (it.kind !== 'STRATEGY') continue;
+      const tw: Record<string, number> = {};
+      for (const l of it.choices[0]?.lines ?? []) if (l.bucket !== 'core') tw[cellKey(l.bucket, l.ticker)] = (plan.targets[cellKey(l.bucket, l.ticker)] ?? 0) / total;
+      if (Object.keys(tw).length) it.targetW = tw;
+    }
+  }
   return items;
 }
 
@@ -511,7 +522,7 @@ function relistItem(acct: Account, owe: CoreOwe, ctx: CoreContext): Item | null 
     ticker: acct.cfg.coreTicker,
     title: on ? `崩盤規則啟動中：上次（${month}）沒做，核心的一半換短債再列一次` : `崩盤規則已解除：上次（${month}）沒做，短債換回核心 ETF 再列一次`,
     choices: [{ id: 'DO', label: '照做', lines }],
-    why: `上次的理由：${owe.reason || '（沒有寫）'}`,
+    why: owe.reason === CORE_OWE_UNANSWERED_REASON ? `${month} 月報一直沒有回覆，以這份為準` : `上次的理由：${owe.reason || '（沒有寫）'}`,
     relist: true,
     reasonRequired: true,
   });
@@ -740,6 +751,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
     return { acct, notif, plan: null };
   }
   acct.monthlyBlocked = false;
+  owePendingMonthly(acct);
   const before = savedState(acct);
   // 入金遇到月報日：合成一份（規則引擎先把入金加進總資產，再跑月報規則）
   if (flow?.kind === '入金' && flowCashAlreadyIn) acct.cash -= flow.amount;
@@ -796,9 +808,11 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   }
   if (flow) {
     // 入金合併在月報裡：入金補的格子併成一項
-    const flowLines = items.filter((i) => i.f === 'SYS').flatMap((i) => i.choices[0].lines);
+    const sys = items.filter((i) => i.f === 'SYS');
+    const flowLines = sys.flatMap((i) => i.choices[0].lines);
+    const flowW = Object.assign({}, ...sys.map((i) => i.targetW ?? {})) as Record<string, number>;
     items = items.filter((i) => i.f !== 'SYS');
-    items.push(makeItem({ f: 'F11', kind: 'CASHFLOW', title: `入金 ${usd(flow.amount)}：只買不賣（和月報合成一份）`, choices: [{ id: 'DO', label: '照做', lines: flowLines }], noSkip: true }));
+    items.push(makeItem({ f: 'F11', kind: 'CASHFLOW', title: `入金 ${usd(flow.amount)}：只買不賣（和月報合成一份）`, choices: [{ id: 'DO', label: '照做', lines: flowLines }], noSkip: true, ...(Object.keys(flowW).length ? { targetW: flowW } : {}) }));
   }
   // 月審確認成立的你定的條件（甲類，own_thesis §1.10）：進月報，項目和當天通知相同
   for (const [tk, m] of Object.entries(acct.own)) {
@@ -860,11 +874,12 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   // 上一份月報一直沒回覆（T38 走一遍的缺口）：這份月報用同樣的帳本又把動能、上限的單列了一次，舊的那幾項還在「等你決定」，
   // 兩份都照做就重複下單。策略類「下一份月報把差額再列一次」（§2.3.1）→ 舊月報的策略項目以這份為準、取消；
   // 併在舊月報裡的入金（F11）也一樣：入金的錢已經在帳上，這份月報會用它。
-  // 自選的項目（慢規則、AI 建議、條件成立）是一次性的、這份不會再列，照舊留著。崩盤項目不動（切換只列在切換那一份）。
+  // 自選的項目（慢規則、AI 建議、條件成立）是一次性的、這份不會再列，照舊留著。
+  // 崩盤切換的項目也取消（T39b）；策略項目與切換在產生這份之前已經照「這次不做」記成欠單（owePendingMonthly），這份照實際持股重列。
   for (const old of acct.notifs) {
     if (old.status !== 'PENDING' || old.kind !== 'MONTHLY') continue;
     for (const it of old.items) {
-      if (it.cancelled || (it.kind !== 'STRATEGY' && it.f !== 'F11') || it.f === 'F5' || it.f === 'F6') continue;
+      if (it.cancelled || (it.kind !== 'STRATEGY' && it.f !== 'F11')) continue;
       it.cancelled = true;
       it.note = `上一份月報沒有回覆，這一項以 ${input.month} 月報為準`;
     }
@@ -895,6 +910,26 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   syncRunIds(notif, (input.vetoed ?? []).map((t) => input.runIds?.entry?.[t]));
   notif.preview = composeNotif(acct, view, notif);
   return { acct, notif, plan };
+}
+
+/**
+ * 上一份月報一直沒回覆（T39b 第 4 項）：新的月報只從實際持股算動能每一格與核心吸收的差額，但只在「這個月有理由」時才把一格拉回目標——
+ * 新進場、比例格子變了、欠單；其他只靠 ±50% 的回調（而且要搭便車，當天沒有別的單就撤回）。舊月報的進場（F1）、依波動度減碼（F4）、
+ * 崩盤切換（F5／F6，含重列的）在下個月都不是「這個月的理由」，所以新月報不會自己涵蓋（探測測試：T39b ④ 延伸）。
+ * 做法和那一項選「這次不做」相同（§2.3.1、core_ai §3.6）：策略項目動能那幾檔記進 mom.owe；崩盤切換核心的單記成 coreOwe（理由 CORE_OWE_UNANSWERED_REASON）。
+ * 接下來的規則照實際持股重列（策略單補做 F17、重列的 F5／F6）；舊的那幾項在 monthlyReport 後面以新月報為準取消。
+ * 在 savedState 之前做：入金併進月報、排除重算時還原的狀態裡有這些欠單，重算時照樣重列。
+ */
+function owePendingMonthly(acct: Account): void {
+  for (const old of acct.notifs) {
+    if (old.status !== 'PENDING' || old.kind !== 'MONTHLY') continue;
+    for (const it of old.items) {
+      if (it.cancelled || it.kind !== 'STRATEGY') continue;
+      const lines = it.choices.find((c) => c.id === it.ruleChoice)?.lines ?? [];
+      for (const l of lines) if (l.bucket === 'mom' && l.shares) acct.mom.owe[l.ticker] = { since: old.date, notif: old.id };
+      if ((it.f === 'F5' || it.f === 'F6') && lines.some((l) => l.bucket === 'core' && l.shares)) acct.coreOwe = { direction: it.f === 'F5' ? 'ON' : 'OFF', since: old.date, notif: old.id, reason: CORE_OWE_UNANSWERED_REASON };
+    }
+  }
 }
 
 /** 因為未分類的變動而暫停的月報（還沒處理的那一則）。 */

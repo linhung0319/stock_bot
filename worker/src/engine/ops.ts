@@ -32,10 +32,10 @@ import {
   notifDay,
 } from './account';
 import { momSlotTarget, planDay } from './allocator';
-import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
-import { KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, afterOpenLists, composeNotif, crashReviewOf, monthlyReport, monthlyWait, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
+import { BUY_CASH_FRACTION, capBuys, crashCoreLines, planToLines, type OrderLine } from './orders';
+import { KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, afterOpenLists, composeNotif, coreContext, crashReviewOf, monthlyReport, monthlyWait, owedCoreLines, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
-import type { Bucket } from './types';
+import { cellKey, type Bucket } from './types';
 
 const sumFor = (lines: OrderLine[], ticker: string) => lines.filter((l) => l.ticker === ticker).reduce((a, l) => a + l.shares, 0);
 
@@ -141,9 +141,46 @@ function cancelOwnItems(acct: Account, ticker: string, reason: CloseReason, date
   }
 }
 
-/** 晚回覆（提醒過才回）：規則狀態已反轉的自選項目取消，其餘自選規則單用今天的價格重算（設計 §2.3.1「忘了」）。 */
+/**
+ * 策略項目的一行用回覆當天的總資產與價格重算（T39b；和 planToLines 同一套換算）：目標 = 訊號日的目標比例 × 今天的總資產，
+ * 和今天帳本上的市值比——目標 0 → 全部賣出；要賣 → 四捨五入、不超過持有；要買 → 無條件捨去。
+ * 方向和原本那一行相反時（價格動了、已經不用做）當成 0，和自選加回「不買負的」相同。
+ */
+function lateLine(acct: Account, view: MarketView, l: OrderLine, w: number, total: number): OrderLine {
+  const have = acct.lots[l.bucket][l.ticker] ?? 0;
+  const px = priceOf(view, l.ticker);
+  const cur = have * px;
+  const tgt = w * total;
+  const sh = tgt <= 1e-9 ? -have : tgt < cur ? -Math.min(have, Math.round((cur - tgt) / px)) : Math.floor((tgt - cur) / px + 1e-9);
+  return { ...l, shares: Math.sign(sh) === Math.sign(l.shares) ? sh : 0 };
+}
+
+/**
+ * 晚回覆的策略項目（動能、回調、上限、閒置現金、併進月報的入金；T39b 第 3 項）：照 §2.3.1「忘了」用回覆當天的價格重算股數，
+ * 和自選慢規則項目同一套。有目標比例（targetW）的行照 lateLine；崩盤切換核心那兩檔照現在的持股重算（切換：crashCoreLines；重列：owedCoreLines）；
+ * 閒置現金（核心吸收）本來就在回覆時用當天的現金與價格合成，不用另外算。沒有 targetW 的舊通知照原本的股數。
+ */
+function recomputeLateStrategy(acct: Account, view: MarketView, it: Item): void {
+  const c = it.choices[0];
+  if (!c || (it.kind !== 'STRATEGY' && it.f !== 'F11')) return;
+  const crash = isCrashItem(it);
+  if (!it.targetW && !crash) return;
+  const total = totalValue(acct, view);
+  const core = crash ? (it.relist ? owedCoreLines(coreContext(acct, view), it.f === 'F5' ? 'ON' : 'OFF') : crashCoreLines(coreContext(acct, view), it.f === 'F5')) : [];
+  const lines = c.lines.flatMap((l) => {
+    if (l.bucket === 'core') return crash ? [] : [l];
+    const w = it.targetW?.[cellKey(l.bucket, l.ticker)];
+    return w === undefined ? [l] : [lateLine(acct, view, l, w, total)];
+  });
+  c.lines = [...core.filter((l) => l.shares !== 0), ...lines.filter((l) => l.shares !== 0)];
+  const note = `晚回覆：用 ${view.date} 收盤價重算`;
+  it.note = it.note && !it.note.includes('晚回覆') ? `${it.note}；${note}` : note;
+}
+
+/** 晚回覆（提醒過才回）：規則狀態已反轉的自選項目取消，其餘自選規則單與策略項目用今天的價格重算（設計 §2.3.1「忘了」）。 */
 function recomputeLate(acct: Account, view: MarketView, n: Notif): void {
   for (const it of n.items) {
+    if (!it.cancelled && it.kind !== 'OWN_RULE') recomputeLateStrategy(acct, view, it);
     if (it.kind !== 'OWN_RULE' || !it.ticker || it.cancelled) continue;
     const tk = it.ticker;
     const meta = acct.own[tk];
@@ -825,6 +862,11 @@ export function cancelCashflow(acct0: Account, view: MarketView, id: number): { 
   } else if (kind === '改比例' && n.ratioBefore) {
     acct.cfg = { ...acct.cfg, ratio: { ...n.ratioBefore.ratio } };
     for (const [t, w] of Object.entries(n.ratioBefore.std)) if (acct.rule.own[t]) acct.rule.own[t].stdWeight = w;
+    // 改成 0% 時記下的標準比重（T39b）也回到改之前：取消「改成 0%」→ 拿掉；取消「從 0% 改回」→ 記錄回來。沒有這個欄位的舊清單不動
+    if (n.ratioBefore.ownZero !== undefined) {
+      if (n.ratioBefore.ownZero) acct.ownZero = clone(n.ratioBefore.ownZero);
+      else delete acct.ownZero;
+    }
     acct.shadow.push({ date: view.date, f: 'REOPEN', ticker: null, title: '取消改比例：先前的紀錄作廢', rule: 0, ai: null, actual: 0, price: 0, choice: 'REOPEN', notif: id });
   }
   for (const [tk, o] of Object.entries(acct.mom.owe)) if (o.notif === id) delete acct.mom.owe[tk];
@@ -847,14 +889,31 @@ export const RATIO_SHADOW_TITLE = '改比例（影子組合繼續追蹤「如果
 export function changeRatio(acct0: Account, view: MarketView, ratio: { own: number; strat: number; core: number }): { acct: Account; notif: Notif } {
   const acct = clone(acct0);
   const old = acct.cfg.ratio;
-  const ratioBefore = { ratio: { ...old }, std: Object.fromEntries(Object.entries(acct.rule.own).map(([t, o]) => [t, o.stdWeight])) };
+  const ratioBefore = { ratio: { ...old }, std: Object.fromEntries(Object.entries(acct.rule.own).map(([t, o]) => [t, o.stdWeight])), ownZero: acct.ownZero ? clone(acct.ownZero) : null };
   // 同入金（T38）：還沒填快照的清單先當成做完了，股數從那之後算
   const base = afterOpenLists(acct, view, { pending: true });
   const total = totalValue(base, view);
   const lines: OrderLine[] = [];
-  // 自選：每檔股數與標準比重都乘上「新比例 ÷ 舊比例」（原型假設 7）
-  if (Math.abs(ratio.own - old.own) > 1e-9) {
-    const f = old.own > 0 ? ratio.own / old.own : 1;
+  const zero = (x: number) => x <= 1e-9;
+  if (zero(old.own) && !zero(ratio.own)) {
+    // 從 0% 改回（T39b，design_v2 §10 第 47 點）：標準比重用改成 0% 時記下的（照新舊比例縮放），沒有記錄的用新增自選時的推薦比重；
+    // 0 股的照新的標準比重買回（減半中的買一半，同新增自選）
+    const rec = acct.ownZero;
+    const recommended = recommendStdWeights(view, Object.keys(acct.rule.own), ratio.own);
+    for (const tk of Object.keys(acct.rule.own)) {
+      const r = acct.rule.own[tk];
+      const kept = rec && rec.from > 0 ? rec.std[tk] : undefined;
+      r.stdWeight = kept !== undefined ? (kept * ratio.own) / rec!.from : recommended[tk];
+      if (!base.rule.own[tk]) continue; // 還沒填快照的清單要把它移出自選：不買回
+      const cur = base.lots.own[tk] ?? 0;
+      const want = Math.floor((r.stdWeight * total * (r.applied === 'HALF' ? 0.5 : 1)) / priceOf(view, tk));
+      if (want > cur) lines.push({ ticker: tk, bucket: 'own', shares: want - cur, reason: '改比例' });
+    }
+    delete acct.ownZero;
+  } else if (Math.abs(ratio.own - old.own) > 1e-9) {
+    // 自選：每檔股數與標準比重都乘上「新比例 ÷ 舊比例」（原型假設 7）；改成 0% 時先把每檔原本的標準比重記下來（T39b）
+    if (zero(ratio.own)) acct.ownZero = { from: old.own, std: { ...ratioBefore.std }, date: view.date };
+    const f = ratio.own / old.own;
     for (const tk of Object.keys(acct.rule.own)) {
       acct.rule.own[tk].stdWeight *= f;
       const cur = base.lots.own[tk] ?? 0;

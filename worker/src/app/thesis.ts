@@ -488,6 +488,7 @@ export const EARLY_NOTE = {
   started: (runId: string) => `提前審查 ${runId}`,
   expired: '過期：事件日超過 10 天沒有處理',
   notOwn: '已經不是自選股，不提前審查',
+  notHeld: '這檔自選現在 0 股，不提前審查（持有後恢復）',
   news: '新聞標題標到的，只記進論點檔',
 } as const;
 

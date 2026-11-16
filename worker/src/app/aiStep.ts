@@ -38,7 +38,7 @@ import type { AiNote } from './site/types';
 import { STRATEGY_REVIEW } from '../ai/strategy';
 import { applyStrategyReview, loadStrategyState, startStrategyRun, strategyHistory, withHistory } from './strategyAi';
 import { breakLogs, ruleBreakLogs, withRuleKeys } from './thesis';
-import { endDisputes } from '../engine';
+import { endDisputes, ownHeld } from '../engine';
 
 export type { StepResult as AiStepResult } from './aiCtx';
 
@@ -85,7 +85,8 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
     await guard(res, '看新申報', async () => {
       checks = await fetchFilingChecks(env, fetcher, targets.map((t) => t.ticker), session, res.log);
       classified = await classifyFresh(env, fetcher, checks, targets, res.log);
-      facts = await ownFacts(env, fetcher, checks, new Set(Object.keys(first.acct.own)), session, res.log);
+      // 0 股的自選不比對財報條件（T39b）
+      facts = await ownFacts(env, fetcher, checks, new Set(Object.keys(first.acct.own).filter((t) => ownHeld(first.acct, t))), session, res.log);
     });
   }
 

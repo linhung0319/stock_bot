@@ -6,6 +6,7 @@ import { glass, page } from './layout.js';
 import { unsentBox } from './pages-ai.js';
 import { actionButton, errBox } from './pages-notif.js';
 import { say } from './slime.js';
+import { replyOption } from './thesis-reply.js';
 
 const ACTIONS = [
   ['EXIT', '出清'],
@@ -57,7 +58,9 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   const own = d.own;
   const notif = notifParam ?? own.pendingBreak?.notif ?? null;
   // 「這是對通知 #N 的回應」只給還沒回覆的乙類（own_thesis §1.10）；慢規則通知不能用修正論點結案（§3.4）
-  const replyNotif = own.pendingBreak && (!notifParam || Number(notifParam) === own.pendingBreak.notif) ? own.pendingBreak.notif : null;
+  // 只有從那則通知進來才預設勾著；從持股頁直接進來顯示但不勾（own_thesis §1.8，T39b）
+  const replyOpt = replyOption(notifParam, own.pendingBreak?.notif ?? null);
+  const replyNotif = replyOpt?.notif ?? null;
   const owned = (d.monitor ?? []).filter((c) => c.owned && c.code !== 'RETIRED');
   let source = 'TYPED';
 
@@ -171,7 +174,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   }
   thesisIn.addEventListener('input', changed);
 
-  const reply = replyNotif ? h('input', { type: 'checkbox', checked: true, onchange: () => changed() }) : null;
+  const reply = replyOpt ? h('input', { type: 'checkbox', checked: replyOpt.checked, onchange: () => changed() }) : null;
   // 勾著回應、新的前提還留著被判不成立的那一條 → 存檔後當成不同意（own_thesis §1.10），先講清楚
   function keptWarn(p) {
     const pid = own.pendingBreak?.premiseId;
@@ -250,7 +253,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       'pad',
       diff,
       reply ? h('label', { class: 'check-row', style: 'margin-top:12px' }, reply, h('span', null, `這是對${own.pendingBreakName ?? '那則通知'}的回應：修正論點，部位不動`)) : null,
-      reply ? h('p', { class: 'small faint', style: 'margin:4px 0 0 1.8em' }, '勾著存檔：那則通知結案，論點記一次「失效後修改」。新的前提如果還留著被判不成立的那一條，當成不同意：那條前提到下一季財報出來之前不再通知你。') : null,
+      reply ? h('p', { class: 'small faint', style: 'margin:4px 0 0 1.8em' }, `${replyOpt.checked ? '' : '不是從那則通知進來，所以預設不勾：只是平常改論點就不用勾。'}勾著存檔：那則通知結案，論點記一次「失效後修改」。新的前提如果還留著被判不成立的那一條，當成不同意：那條前提到下一季財報出來之前不再通知你。`) : null,
       h('div', { class: 'btn-row', style: 'margin-top:14px' }, save, h('a', { class: 'linkbtn', href: back.href }, '算了')),
       msg,
     ),

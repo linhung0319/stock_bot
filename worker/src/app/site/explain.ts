@@ -402,11 +402,15 @@ function crash(ctx: ExplainContext, n: Notif, it: Item): Explain {
     // 上次選了「這次不做」、規則還在同一個狀態 → 核心的單再列一次（core_ai §3.6）
     const month = /上次（(\d{4}-\d{2})）/.exec(it.title)?.[1];
     const last = month ? `上次（${month} 月報）` : '上次';
+    // 上一份月報一直沒回覆（T39b）：不是「你選了這次不做」
+    const unanswered = /一直沒有回覆/.test(it.why ?? '');
+    const did = unanswered ? '一直沒有回覆' : '你選了這次不做';
+    const tail = unanswered ? '' : (it.why ?? '');
     return {
       short: on ? `上次沒做，核心的一半換短債再列一次` : `上次沒做，短債換回 ${core} 再列一次`,
       why: on
-        ? `崩盤規則還在啟動中：${core} ${when} ${fmtPx(px)}，仍低於 200 日均線 ${fmtPx(ma)}（${fmtSigned(rel, 1)}）。${last}你選了這次不做，核心還沒有換成短債。這次用現在的市值重算，把核心的一半換成短債（${acct.bondTicker}）再列一次。${it.why ?? ''}`
-        : `崩盤規則已經解除：${core} ${when} ${fmtPx(px)}，仍在 200 日均線 ${fmtPx(ma)} 之上（${fmtSigned(rel, 1)}）。${last}你選了這次不做，短債還沒有換回來。這次用現在的市值重算，把短債全部換回 ${core} 再列一次。${it.why ?? ''}`,
+        ? `崩盤規則還在啟動中：${core} ${when} ${fmtPx(px)}，仍低於 200 日均線 ${fmtPx(ma)}（${fmtSigned(rel, 1)}）。${last}${did}，核心還沒有換成短債。這次用現在的市值重算，把核心的一半換成短債（${acct.bondTicker}）再列一次。${tail}`
+        : `崩盤規則已經解除：${core} ${when} ${fmtPx(px)}，仍在 200 日均線 ${fmtPx(ma)} 之上（${fmtSigned(rel, 1)}）。${last}${did}，短債還沒有換回來。這次用現在的市值重算，把短債全部換回 ${core} 再列一次。${tail}`,
       gauge: maGauge(rel, `${core} 收盤相對 200 日均線`, on),
       rule: `${RULE.crash} 崩盤項目選「這次不做」等於延後一個月：下個月規則還在同一個狀態就再列一次，已經翻回去就不用做。`,
       facts: [{ label: '上次沒做', value: month ?? '—', note: it.why ?? '' }],
@@ -744,9 +748,18 @@ function cashflow(ctx: ExplainContext, n: Notif, it: Item): Explain {
     const m = /(\d+% \/ (\d+)% \/ \d+%) → (\d+% \/ (\d+)% \/ \d+%)/.exec(it.title);
     // Strategy 的比例有變才放「動能相對大盤」（這次相對回撤的狀態）
     const rel = m && m[2] !== m[4] ? momRelFact(ctx.strategy) : null;
+    // 自選改成 0%、或從 0% 改回（T39b，設計 §10 第 47 點）
+    const ownOld = m ? parseInt(m[1], 10) : NaN;
+    const ownNew = m ? parseInt(m[3], 10) : NaN;
+    const ownWhy =
+      ownOld > 0 && ownNew === 0
+        ? '自選改成 0%：每一檔全部賣掉，原本的標準比重先記下來，之後改回來時照它（照新舊比例縮放）買回；0 股期間不跑 AI 審查與條件監測。'
+        : ownOld === 0 && ownNew > 0
+          ? '自選從 0% 改回：每一檔的標準比重用改成 0% 時記下的（照新舊比例縮放），沒有記錄的用推薦的標準比重，照它買回。'
+          : '自選每一檔的股數和標準比重照新舊比例縮放，';
     return {
       short: m ? `比例 ${m[1]} → ${m[3]}` : '改比例',
-      why: `你把自選／動能／核心的比例${m ? `從 ${m[1]} 改成 ${m[3]}` : '改了'}。自選每一檔的股數和標準比重照新舊比例縮放，動能每檔的目標照新的比例重算，差額由核心吸收。原本的比例會繼續記在紀錄裡，之後可以回頭看這次調整是加分還是扣分。`,
+      why: `你把自選／動能／核心的比例${m ? `從 ${m[1]} 改成 ${m[3]}` : '改了'}。${ownWhy}動能每檔的目標照新的比例重算，差額由核心吸收。原本的比例會繼續記在紀錄裡，之後可以回頭看這次調整是加分還是扣分。`,
       rule: RULE.ratio,
       facts: [...head, ...(rel ? [rel] : []), ...lineFacts(ctx, lines), { label: '提醒', value: '', note: '在動能落後大盤的時候把它調成 0，等於在相對低點放棄它。系統不會擋，由你決定。' }],
     };

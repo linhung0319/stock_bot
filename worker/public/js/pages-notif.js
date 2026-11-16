@@ -374,7 +374,13 @@ function slip(it, v, ui) {
     syncReason(ui.choices[it.key]);
     // 乙類：拿去討論（複製 BREAK 討論包；通知留在「等你決定」）
     const discuss = it.discuss && it.ticker
-      ? h('div', { class: 'extra' }, h('div', { class: 'btn-row' }, copyPackButton(it.ticker, v.id, '拿去討論')), h('p', { class: 'small dim', style: 'margin-top:6px' }, rule ? '把討論包貼到 claude.ai 討論 AI 判不成立的那條前提。這則通知會留在「等你決定」；改完論點之後，仍然要回來這裡選一項。' : '把討論包貼到 claude.ai 討論。這則通知會留在「等你決定」；改了論點，回來在「編輯論點」頁貼回、勾「這是對這則通知的回應」。'))
+      ? h(
+          'div',
+          { class: 'extra' },
+          // 乙類（不是慢規則項目上的）：「編輯論點」帶這則通知的編號進去，「這是對這則通知的回應」預設勾著（own_thesis §1.8，T39b）
+          h('div', { class: 'btn-row' }, copyPackButton(it.ticker, v.id, '拿去討論'), rule ? null : h('a', { class: 'btn', href: `#/h/${encodeURIComponent(it.ticker)}/thesis/${v.id}` }, '編輯論點')),
+          h('p', { class: 'small dim', style: 'margin-top:6px' }, rule ? '把討論包貼到 claude.ai 討論 AI 判不成立的那條前提。這則通知會留在「等你決定」；改完論點之後，仍然要回來這裡選一項。' : '把討論包貼到 claude.ai 討論。這則通知會留在「等你決定」；改了論點，按這裡的「編輯論點」貼回，「這是對這則通知的回應」會預設勾著。'),
+        )
       : null;
     const formBox = h('div');
     const extra = it.actions.length

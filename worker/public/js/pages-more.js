@@ -243,7 +243,7 @@ export const ratioPage = (() => {
       core.value = String(Math.round(r.core * 100));
       upd();
       const row = (b, name, el, hint) => h('label', { class: 'field' }, h('span', null, bucketTag(b, name)), h('div', { style: 'display:flex;align-items:center;gap:8px' }, el, '%'), h('small', null, hint));
-      return h('div', null, row('own', '自選', own, '你自己選的股票。每一檔的股數與標準比重會照新舊比例縮放。'), row('mom', '動能', strat, '規則照排名選的 5 檔。調成 0 就是全部賣掉。'), row('core', '核心', core, 'VOO。其他兩桶的差額都由這裡吸收。'), h('p', null, sum), h('p', { class: 'small dim', style: 'margin-top:6px' }, '在動能落後大盤的時候把它調成 0，等於在相對低點放棄它。系統不會擋，但原本的比例會繼續記著，之後可以回頭比較。'));
+      return h('div', null, row('own', '自選', own, '你自己選的股票。每一檔的股數與標準比重會照新舊比例縮放；改成 0% 會全部賣掉、記下每檔的標準比重，改回來時照記下的買回。0 股期間不跑 AI 審查與條件監測。'), row('mom', '動能', strat, '規則照排名選的 5 檔。調成 0 就是全部賣掉。'), row('core', '核心', core, 'VOO。其他兩桶的差額都由這裡吸收。'), h('p', null, sum), h('p', { class: 'small dim', style: 'margin-top:6px' }, '在動能落後大盤的時候把它調成 0，等於在相對低點放棄它。系統不會擋，但原本的比例會繼續記著，之後可以回頭比較。'));
     },
     payload: () => {
       const v = [own, strat, core].map((e) => Number(e.value));

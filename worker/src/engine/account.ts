@@ -258,6 +258,12 @@ export interface Item {
    * push：還沒補推的那一則 LINE（補推之後拿掉）；沒有 = 不用推（已經填快照，或推過了）。
    */
   lateVeto?: { code: string; runId: string; date: string; push?: string };
+  /**
+   * 策略項目（動能、回調、上限、併進月報的入金）每一行的目標占總資產的比例（訊號日；cellKey → 比例，T39b 起）。
+   * 晚回覆（提醒過才回）時照 §2.3.1「忘了」用回覆當天的總資產與價格重算股數，和自選慢規則項目同一套（ops.ts 的 recomputeLate）。
+   * 沒有 = 舊通知或沒有目標的行（核心吸收的現金、崩盤項目核心那兩檔另外重算）。
+   */
+  targetW?: Record<string, number>;
 }
 
 export type NotifKind = 'MONTHLY' | 'MONTHLY_EMPTY' | 'URGENT' | 'CASHFLOW' | 'FIX' | 'INFO' | 'CLASSIFY' | 'CASH_DIFF';
@@ -296,7 +302,7 @@ export interface Notif {
   /** 決定了還沒填快照，已經提醒過。 */
   fillReminded?: boolean;
   /** 改比例：改之前的比例與每檔自選的標準比重（取消時改回去）。 */
-  ratioBefore?: { ratio: { own: number; strat: number; core: number }; std: Record<string, number> };
+  ratioBefore?: { ratio: { own: number; strat: number; core: number }; std: Record<string, number>; ownZero?: OwnZero | null };
   followUp?: FollowUp[];
   followUpOpen?: boolean;
   /** CLASSIFY：哪一檔、變動幾股。CASH_DIFF：金額。 */
@@ -389,6 +395,8 @@ export interface CoreOwe {
 
 /** 快照顯示崩盤項目核心的單沒做時，coreOwe 記的理由（§3.6）。 */
 export const CORE_OWE_SNAPSHOT_REASON = '快照顯示沒有做';
+/** 上一份月報一直沒回覆、新月報出來時，舊月報裡的崩盤切換記成 coreOwe 的理由（T39b）。 */
+export const CORE_OWE_UNANSWERED_REASON = '上一份月報沒有回覆';
 
 /**
  * 崩盤規則檢視在某個月份＋方向的狀態（core_ai §3.2）：
@@ -487,6 +495,23 @@ export interface Account {
    * 同一天結案又重新加入時，用它避免論點檔編號重複。
    */
   ownClosed?: Record<string, { fileId: string; reason: CloseReason; date: string }>;
+  /** 自選的比例改成 0% 時記下的每檔標準比重（T39b，design_v2 §10 第 47 點）；從 0% 改回時用它。沒有這個欄位 = 沒有記錄。 */
+  ownZero?: OwnZero;
+}
+
+/**
+ * 自選比例改成 0% 之前的樣子：from 是那時的自選比例、std 是每檔的標準比重、date 是改的那一天。
+ * 從 0% 改回 r 時，每檔的標準比重 = std × r ÷ from（照新舊比例縮放，原型假設 7）；沒有記錄的那一檔用新增自選時的推薦比重。
+ */
+export interface OwnZero {
+  from: number;
+  std: Record<string, number>;
+  date: string;
+}
+
+/** 這檔自選現在有沒有股數（T39b：0 股時不送定期審查、提前審查與條件監測，持有後再恢復）。 */
+export function ownHeld(acct: Pick<Account, 'lots'>, ticker: string): boolean {
+  return (acct.lots.own[ticker] ?? 0) > 0;
 }
 
 /** 市場資料：到訊號日為止的收盤（所有代號對齊同一組交易日）。i 是訊號日的位置。 */
