@@ -8,6 +8,7 @@ import {
   bucketValue,
   cellValues,
   clone,
+  defaultStdWeight,
   flowUnits,
   makeItem,
   newNotif,
@@ -31,7 +32,7 @@ import {
   usd,
   notifDay,
 } from './account';
-import { momSlotTarget, planDay } from './allocator';
+import { momSlotTarget, ownDepositFill, ownDepositScale, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, crashCoreLines, planToLines, type OrderLine } from './orders';
 import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, endDisputesFor, afterOpenLists, composeNotif, coreContext, crashReviewOf, monthlyReport, monthlyWait, owedCoreLines, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
@@ -357,6 +358,8 @@ export interface Snapshot {
   note?: string;
   /** 分桶快照：新加進自選的代號，為什麼買（成為這檔的前提）。 */
   why?: Record<string, string>;
+  /** 分桶快照：新加進自選的代號，使用者填的標準比重（小數）。沒填 = 現在占總資產的比重（不超過單檔上限；T43）。 */
+  std?: Record<string, number>;
   /** 出金（這次完成的與之前還沒轉出的）還沒從券商轉出：券商的現金還沒扣掉（設計 §10 第 40 點）。 */
   withdrawPending?: boolean;
   /** 送出那一刻的美東日期（拆股用，design_v2 §10 第 48 點）：券商的股數已經包含生效日在這一天以前的拆股。沒給 = 訊號日。 */
@@ -387,6 +390,8 @@ export interface SnapshotResult {
   cashWarn: boolean;
   /** 自己賣光、自動移出自選的代號。 */
   removedOwn: string[];
+  /** 自己減碼（清單外）之後低於標準比重、之後入金與加回會補回來的自選（T43）。 */
+  belowStd: BelowStd[];
   /** 分桶快照不允許時的原因（帳戶不變）。 */
   error?: string;
 }
@@ -530,7 +535,39 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
   const cashRes = settleCash(acct, view, snap.cash - (acct0.pendingWithdraw ?? 0), expectedCash, withdrawn, traded);
   acct.snapshotDate = view.date;
   acct.splitAsOf = splitAsOfAfter(acct0, view, snap);
-  return { acct, completed, followUps, created, ...cashRes, removedOwn: [] };
+  return { acct, completed, followUps, created, ...cashRes, removedOwn: [], belowStd: [] };
+}
+
+/**
+ * 自己減碼之後低於標準比重的一檔（T43）：weight 現在占總資產、std 標準比重（加回補到這裡）、half 減半中、
+ * fill 入金會補到的比重（減半的算一半；自選各檔合計超過自選比例時照比例縮小，ownDepositFill）。
+ */
+export interface BelowStd {
+  ticker: string;
+  weight: number;
+  std: number;
+  half: boolean;
+  fill: number;
+  /** 自選各檔合計超過自選比例，入金照比例少補（fill 是縮過的）。 */
+  scaled: boolean;
+}
+
+/**
+ * 快照裡自己賣（清單外）、還沒賣光的自選，賣完之後比標準比重低超過入金會補的最小缺口（orderMin）→ 列出來（T43）：
+ * 之後的加回（減半後）補到標準比重、入金補到 fill，會把它買回來，使用者要知道。
+ */
+function belowStdAfterSelfSell(acct: Account, view: MarketView, tickers: string[]): BelowStd[] {
+  const total = totalValue(acct, view);
+  if (!(total > 0)) return [];
+  const out: BelowStd[] = [];
+  const scaled = ownDepositScale(acct.rule, acct.cfg.ratio.own) < 1;
+  for (const t of tickers) {
+    const r = acct.rule.own[t];
+    if (!r || !(r.stdWeight > 0)) continue;
+    const weight = ((acct.lots.own[t] ?? 0) * priceOf(view, t)) / total;
+    if (r.stdWeight - weight > acct.cfg.orderMin) out.push({ ticker: t, weight, std: r.stdWeight, half: r.applied === 'HALF', fill: ownDepositFill(acct.rule, acct.cfg, t)!, scaled });
+  }
+  return out;
 }
 
 const BUCKETS3 = ['own', 'mom', 'core'] as const;
@@ -540,14 +577,15 @@ const BUCKETS3 = ['own', 'mom', 'core'] as const;
  * 變動放哪一桶由使用者決定，不再跳分類通知。
  *   清單上有的（桶＋代號）→ 照清單；差超過 1 股 → 問補做或就這樣（同 §2.3.1）
  *   清單外的：核心只能是核心 ETF／短債；動能的買進要在當月名單上、那一格還沒買足（2026-11-11 的規則照舊）；
- *     自選的新代號建立這檔（推薦標準比重、跌深就從減半開始、why 存成買進時的一句話，T40）；自選賣到 0 股 → 自動移出自選
+ *     自選的新代號建立這檔（標準比重沒填就用現在占總資產的比重 T43、跌深就從減半開始、why 存成買進時的一句話，T40）；自選賣到 0 股 → 自動移出自選
+ *     自己減碼之後低於標準比重的列在 belowStd（T43）
  *   現金 → 不問，差額記成其他現金變動
  */
 function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, fill?: (ticker: string) => number): SnapshotResult {
   const acct = clone(acct0);
   const lots = snap.lots!;
   const px = fill ?? ((t: string) => priceOf(view, t));
-  const fail = (error: string): SnapshotResult => ({ acct: acct0, completed: [], followUps: [], created: [], cashOther: 0, cashWarn: false, removedOwn: [], error });
+  const fail = (error: string): SnapshotResult => ({ acct: acct0, completed: [], followUps: [], created: [], cashOther: 0, cashWarn: false, removedOwn: [], belowStd: [], error });
   for (const t of Object.keys(lots.core)) if (lots.core[t] && t !== acct.cfg.coreTicker && t !== acct.bondTicker) return fail(`${t} 不是核心的標的：核心只放 ${acct.cfg.coreTicker} 和 ${acct.bondTicker}`);
   for (const t of Object.keys(lots.own)) if (lots.own[t] && (t === acct.cfg.coreTicker || t === acct.bondTicker)) return fail(`${t} 是核心的標的，請填在核心`);
   for (const t of Object.keys(lots.mom)) if (lots.mom[t] && (t === acct.cfg.coreTicker || t === acct.bondTicker)) return fail(`${t} 是核心的標的，請填在核心`);
@@ -726,9 +764,14 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
     assign('mom', t, q, note ? `動能的手動交易：${note}` : '動能的手動交易');
     acct.shadow.push({ date: view.date, f: 'F17', ticker: t, title: '手動交易（動能）', rule: 0, ai: null, actual: q, price: px(t), choice: 'MANUAL', ...(note ? { note } : {}) });
   }
+  /** 這次新加進自選、沒填標準比重的（T43：等現金也記好之後，標準比重用現在占總資產的比重）。 */
+  const fresh: string[] = [];
+  /** 自己賣（清單外）、還沒賣光的自選（T43：低於標準比重的要提醒，之後入金與加回會補回來）。 */
+  const selfSold: string[] = [];
   for (const [t, q] of Object.entries(d.own)) {
     const why = snap.why?.[t]?.trim();
-    if (q > 0) ensureOwnMeta(acct, view, t, 'MANUAL', why || undefined);
+    const std = snap.std?.[t];
+    if (q > 0 && ensureOwnMeta(acct, view, t, 'MANUAL', why || undefined, std ? { std } : {}) && !std) fresh.push(t);
     // 自己賣到 0 股：自動移出自選（之後不再追蹤，也不會被加回或入金買回）
     const soldOut = q < 0 && (acct.lots.own[t] ?? 0) + q === 0 && !!acct.own[t];
     const reason = [note ? `自選的手動交易：${note}` : '自選的手動交易', soldOut ? '賣光，移出自選' : ''].filter(Boolean).join('；');
@@ -736,7 +779,7 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
     if (soldOut) {
       removeOwnPick(acct, t, 'SOLD_OUT', view.date);
       removedOwn.push(t);
-    }
+    } else if (q < 0 && acct.own[t]) selfSold.push(t);
     acct.shadow.push({ date: view.date, f: 'F17', ticker: t, title: soldOut ? '手動交易：賣光並移出自選（如果繼續持有）' : '手動交易（自選）', rule: 0, ai: null, actual: q, price: px(t), choice: 'MANUAL', ...(note ? { note } : {}) });
   }
   // 已回覆的清單要買（或賣）這檔自選，你卻在同一份快照把它賣光、移出自選（T38 走一遍的缺口）：
@@ -761,9 +804,12 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
   const cashRes = settleCash(acct, view, snap.cash - pendingAfter, expectedCash, withdrawn, traded);
   if (pendingAfter) acct.pendingWithdraw = pendingAfter;
   else delete acct.pendingWithdraw;
+  // T43：新加進自選、沒填標準比重的 → 現在占總資產的比重（股數與現金都記好之後算）
+  for (const t of fresh) if (acct.rule.own[t]) acct.rule.own[t].stdWeight = defaultStdFor(acct, view, t, acct.lots.own[t] ?? 0);
+  const belowStd = belowStdAfterSelfSell(acct, view, selfSold);
   acct.snapshotDate = view.date;
   acct.splitAsOf = splitAsOfAfter(acct0, view, snap);
-  return { acct, completed, followUps, created: [], ...cashRes, removedOwn };
+  return { acct, completed, followUps, created: [], ...cashRes, removedOwn, belowStd };
 }
 
 /** 回答現金差額是什麼：入金／出金會調整單位數（不算報酬）；股利與其他算報酬。 */
@@ -1187,21 +1233,31 @@ export function setStdWeight(acct0: Account, ticker: string, stdWeight: number):
 }
 
 /**
- * 清單外買進、轉入、認養時建立這檔自選（已經在自選就不重建）。
+ * 清單外買進、轉入、認養時建立這檔自選（已經在自選就不重建；回傳有沒有新建）。
+ * 標準比重：opt.std（使用者填的）→ opt.shares 股占現在總資產的比重（T43，不超過單檔上限）→ 0 股用推薦值。
  * reason：使用者寫的那一句 → 買進時的一句話（T40，own_thesis §1.8）：不是前提，這檔維持「只有預設」直到第一次存論點；
  * 已經有這句話的不覆蓋。
  */
-function ensureOwnMeta(acct: Account, view: MarketView, ticker: string, origin: 'TRANSFER' | 'ADOPT' | 'MANUAL', reason?: string): void {
+function ensureOwnMeta(acct: Account, view: MarketView, ticker: string, origin: 'TRANSFER' | 'ADOPT' | 'MANUAL', reason?: string, opt: { shares?: number; std?: number } = {}): boolean {
   const note = reason?.trim() ? { text: reason.trim().slice(0, 300), at: view.date } : null;
   if (acct.own[ticker]) {
     if (note && !acct.own[ticker].buyNote) acct.own[ticker].buyNote = note;
-    return;
+    return false;
   }
-  const rec = recommendStdWeights(view, [...Object.keys(acct.rule.own), ticker], acct.cfg.ratio.own);
   const meta = newOwnMeta(view, ticker, origin, clone(SYSTEM_DEFAULT_PREMISES), acct.ownClosed?.[ticker]?.fileId);
   if (note) meta.buyNote = note;
   acct.own[ticker] = meta;
-  acct.rule.own[ticker] = { applied: meta.slow.state, stdWeight: rec[ticker] };
+  acct.rule.own[ticker] = { applied: meta.slow.state, stdWeight: opt.std ?? defaultStdFor(acct, view, ticker, opt.shares ?? 0) };
+  return true;
+}
+
+/**
+ * 標準比重沒填時的預設（T43，design_v2 §10 第 50 點）：shares 股（這檔之後在自選桶的股數）占現在總資產的比重，不超過單檔上限；
+ * 0 股時用推薦值（波動度反比，加入後的自選一起算）。
+ */
+function defaultStdFor(acct: Account, view: MarketView, ticker: string, shares: number): number {
+  const rec = recommendStdWeights(view, [...new Set([...Object.keys(acct.rule.own), ticker])], acct.cfg.ratio.own)[ticker];
+  return defaultStdWeight(shares * priceOf(view, ticker), totalValue(acct, view), acct.cfg.ownCapHi, rec);
 }
 
 /** 桶和桶之間搬股數（不用下單）時，單位數跟著搬。 */
@@ -1238,7 +1294,8 @@ export function itemAction(acct0: Account, view: MarketView, notifId: number, it
   const listed = sumFor(it.choices[0].lines, tk);
   if (input.action === 'TRANSFER') {
     const sh = acct.lots.mom[tk] ?? 0;
-    ensureOwnMeta(acct, view, tk, 'TRANSFER', input.reason);
+    // 標準比重預設 = 轉進來之後占總資產的比重（T43；搬桶不改總資產）
+    ensureOwnMeta(acct, view, tk, 'TRANSFER', input.reason, { shares: (acct.lots.own[tk] ?? 0) + sh });
     moveBetweenBuckets(acct, view, 'mom', 'own', tk, sh);
     it.cancelled = true;
     it.note = '已轉入自選（不用下單）';
@@ -1249,7 +1306,8 @@ export function itemAction(acct0: Account, view: MarketView, notifId: number, it
   if (input.action === 'ADOPT') {
     acct.mom.adopted[tk] = { reason: input.reason, date: view.date };
     acct.rule.heldMom = acct.rule.heldMom.filter((x) => x !== tk);
-    ensureOwnMeta(acct, view, tk, 'ADOPT', input.reason);
+    // 標準比重預設 = 照清單買進之後占總資產的比重（T43；買進是現金換股票，總資產不變）
+    ensureOwnMeta(acct, view, tk, 'ADOPT', input.reason, { shares: (acct.lots.own[tk] ?? 0) + Math.max(0, listed) });
     it.choices[0].lines = it.choices[0].lines.map((l) => ({ ...l, bucket: 'own' as const, reason: '新增自選' }));
     it.title += '（認養 → 自選）';
     it.actions = [];
@@ -1312,8 +1370,9 @@ export function classify(acct0: Account, view: MarketView, notifId: number, inpu
   if (removing && !(input.bucket === 'own' && q < 0 && acct.own[tk] && (acct.lots.own[tk] ?? 0) + q === 0)) return { acct: acct0, error: `只有把自選的 ${tk} 全部賣掉時，才能同時移出自選`, monthlyUnblocked: false };
   const vBefore = bucketValue(acct, view, input.bucket);
   const coreBefore = bucketValue(acct, view, 'core');
+  // 標準比重預設 = 歸進自選之後占總資產的比重（T43；未分類的股數本來就算在總資產裡，所以在拿出未分類之前算）
+  if (input.bucket === 'own' && q > 0) ensureOwnMeta(acct, view, tk, 'MANUAL', input.reason, { shares: (acct.lots.own[tk] ?? 0) + q });
   delete acct.lots.unc[tk];
-  if (input.bucket === 'own' && q > 0) ensureOwnMeta(acct, view, tk, 'MANUAL', input.reason);
   addLot(acct, input.bucket, tk, q);
   acct.units[input.bucket] = flowUnits(acct.units[input.bucket], vBefore, q * px);
   acct.units.core = flowUnits(acct.units.core, coreBefore + q * px, -q * px);

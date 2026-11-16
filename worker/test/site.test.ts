@@ -476,7 +476,8 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     const lineFacts = v.items[0].explain.facts!.filter((f) => f.label !== '做完之後');
     expect(v.items[0].explain.facts![0].label).toBe('做完之後');
     expect(lineFacts.length).toBe(v.items[0].choices[0].lines.length);
-    expect(lineFacts[0].note).toMatch(/目前 [\d.]+%，目標 [\d.]+%/);
+    // T43：入金補自選的那一行寫補到多少（這個情境的自選標準比重合計超過 20%，入金照比例少補，寫「入金補到」）；動能照舊寫目標
+    for (const [k, l] of v.items[0].choices[0].lines.entries()) expect(lineFacts[k].note).toMatch(l.bucket === 'own' ? /^目前 [\d.]+%，(補到標準比重|入金補到) [\d.]+%/ : /目前 [\d.]+%，目標 [\d.]+%/);
     sim.open();
     expect((await web.fill()).created).toEqual([]);
     await expectSame(sim);
@@ -800,9 +801,16 @@ describe('真實帳本：建立帳戶、操作、存進 D1', () => {
     expect(a.paper).toBe(true);
     expect(a.holdings.filter((h) => h.bucket === 'own').map((h) => h.ticker).sort()).toEqual(['MSFT', 'MU', 'NVDA']);
     expect(a.holdings.find((h) => h.ticker === 'MSFT')!.target).toBe('標準比重 5.0%');
-    // 沒填標準比重的照波動度反比推薦，三檔合計不超過自選預算
+    // 沒填標準比重的用現在占總資產的比重（T43，原本照波動度反比推薦）
     const loaded = (await loadAccount(db))!;
-    expect(loaded.acct.rule.own.MU.stdWeight + loaded.acct.rule.own.NVDA.stdWeight).toBeLessThan(0.2);
+    for (const t of ['MU', 'NVDA']) {
+      const hd = await web.get<HoldingDetail>(`/holding/${t}`);
+      expect(hd.own!.weight).toBeGreaterThan(0);
+      // 超過單檔上限 15% 的取上限（MU 在這個情境占 18%）
+      expect(loaded.acct.rule.own[t].stdWeight).toBeCloseTo(Math.min(0.15, hd.own!.weight), 12);
+    }
+    expect(loaded.acct.rule.own.MU.stdWeight).toBe(0.15);
+    expect(loaded.acct.rule.own.MSFT.stdWeight).toBe(0.05); // 有填的照填的
     // T40：建立帳戶的「持有的原因」存成買進時的一句話，前提仍是系統預設
     expect(loaded.acct.own.MU.buyNote).toEqual({ text: 'HBM 長約有價格保護', at: loaded.acct.snapshotDate });
     expect(loaded.acct.own.MU.premises.every((p) => p.origin === 'SYSTEM_DEFAULT')).toBe(true);

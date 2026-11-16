@@ -272,4 +272,17 @@ export function attentionList(list, opt = {}) {
   return [own.length ? [h('h5', { style: 'margin-top:10px' }, '自選股要看的事'), ul(own)] : null, mom.length ? [h('h5', { style: 'margin-top:14px' }, '動能持股要看的事'), ul(mom)] : null];
 }
 
+/**
+ * 自己減碼、或部位比標準比重低的時候，之後會補回多少（T43）：x = { weight, std, half, fill, scaled }。
+ * fill 是入金會補到的比重（減半的算一半；自選各檔合計超過自選比例時照比例縮小）；加回補到標準比重。
+ */
+export function refillText(x) {
+  const depositBuys = x.fill - x.weight > 0.0025;
+  // 入金和加回補到同一個比重（沒縮放、不是減半、沒碰到入金的單檔上限 10%）
+  if (!x.scaled && !x.half && Math.abs(x.fill - x.std) < 1e-9) return `之後入金與加回會補到 ${pct(x.std)}`;
+  const dep = depositBuys ? `入金會補到 ${pct(x.fill)}` : '入金不會再補';
+  const why = x.scaled ? '（自選合計超過預算，入金照比例少補）' : '';
+  return `${x.half ? '減半中，' : ''}${dep}${why}；加回會補到 ${pct(x.std)}`;
+}
+
 export { pct };

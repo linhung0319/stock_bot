@@ -619,6 +619,11 @@ select option { background: #14162a; }
 .check-row { display: flex; gap: 10px; align-items: baseline; margin: 18px 0 6px; }
 .check-row input { width: 18px; height: 18px; accent-color: #5b6bff; translate: 0 3px; }
 @media (max-width: 640px) { .snap .wide { display: none; } }
+/* 標準比重的提示（T43）：「現在占 X%（建議 Y%）」寫在標準比重欄下面 */
+.std-hint { margin-top: 4px; line-height: 1.35; }
+.std-hint .nw { white-space: nowrap; display: inline-block; }
+.snap .std-row td { padding-top: 0; }
+.snap .std-row .std-in { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 /* 建立帳戶的自選表（T39a）：手機上「為什麼持有」換到同一檔的下一行，四欄都填得到 */
 @media (max-width: 640px) {
   .snap.setup-own thead th.why-c { display: none; }

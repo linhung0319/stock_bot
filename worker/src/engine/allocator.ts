@@ -108,6 +108,24 @@ export function ownStateTarget(state: RuleState, ticker: string, total: number):
   return o.stdWeight * total * (o.applied === 'HALF' ? 0.5 : 1);
 }
 
+/**
+ * 入金時自選格子目標的縮放（T43，design_v2 §10 第 50 點）：自選各檔目標的合計（標準比重，減半的算一半）超過自選比例時
+ * = 自選比例 ÷ 合計，否則 1。只用在入金的分配，讓自選桶照 §2.2「自選桶合計」靠入金慢慢回到預算；
+ * 加回、月報、單檔上限、AI 檔位、改比例、部位大小都照舊用沒縮的標準比重。
+ */
+export function ownDepositScale(state: Pick<RuleState, 'own'>, ratioOwn: number): number {
+  let s = 0;
+  for (const o of Object.values(state.own)) s += o.stdWeight * (o.applied === 'HALF' ? 0.5 : 1);
+  return s > ratioOwn + 1e-9 ? ratioOwn / s : 1;
+}
+
+/** 入金會把這檔自選補到占總資產多少（縮放過、不超過 ownCapTo；不是自選回傳 null）。 */
+export function ownDepositFill(state: Pick<RuleState, 'own'>, cfg: Pick<EngineConfig, 'ratio' | 'ownCapTo'>, ticker: string): number | null {
+  const o = state.own[ticker];
+  if (!o) return null;
+  return Math.min(o.stdWeight * (o.applied === 'HALF' ? 0.5 : 1) * ownDepositScale(state, cfg.ratio.own), cfg.ownCapTo);
+}
+
 /** 動能每檔目標（設計 §2.1.1）：總資產 × Strategy 比例 × 有效比例 ÷ 檔數。 */
 export function momSlotTarget(cfg: EngineConfig, total: number, eff: number, ownValue?: number): number {
   if (cfg.momBase === 'system' && ownValue !== undefined) {
@@ -159,6 +177,10 @@ export function planDay(inp: PlanInput): PlanResult {
     }
     const cashFrac = st.crash ? 1 - cfg.crashCut : 0;
     if (kind === '入金') {
+      // 自選各檔目標合計超過自選比例 → 自選格子的入金目標照比例縮小（T43；沒超過時 scale = 1，完全不變）。
+      // 動能的跨桶上限照舊用沒縮的自選目標算（上面已經算好）
+      const scale = ownDepositScale(st, cfg.ratio.own);
+      if (scale < 1) for (const tk of ownTickers) cells[cellKey('own', tk)] = Math.min(ownStateTarget(st, tk, newTotal) * scale, cfg.ownCapTo * newTotal);
       // 只買不賣：依序補給低於目標最多的格子；缺口太小不補；剩下的進核心
       let left = amt;
       if (!inp.flow.naive) {

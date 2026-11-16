@@ -701,6 +701,16 @@ export function recommendStdWeights(view: MarketView, tickers: string[], ownBudg
   return out;
 }
 
+/**
+ * 標準比重沒填時的預設（T43，design_v2 §10 第 50 點，2026-11-16 使用者同意改）：
+ * 現在占總資產的比重（這檔在自選桶的市值 ÷ 總資產），不超過單檔上限 cap（ownCapHi）；
+ * 沒有持股（0 股、算不出來）時才用推薦值 rec（波動度反比，recommendStdWeights）。推薦值在畫面上只當提示。
+ */
+export function defaultStdWeight(value: number, total: number, cap: number, rec: number): number {
+  const w = total > 0 && Number.isFinite(value) ? value / total : 0;
+  return w > 0 ? Math.min(cap, w) : rec;
+}
+
 /** 前提 id 的數字部分（P3 → 3；不是 P 開頭的數字就是 0）。 */
 const premiseNo = (id: string) => (/^P(\d+)$/.test(id) ? Number(id.slice(1)) : 0);
 

@@ -4,7 +4,7 @@
 import { api } from './api.js';
 import { day, h, money, pct, qty, toast } from './dom.js';
 import { glass, meterEl, page, tiles } from './layout.js';
-import { aiBlock, attentionList, chart } from './parts.js';
+import { aiBlock, attentionList, chart, refillText } from './parts.js';
 import { actionButton, errBox } from './pages-notif.js';
 import { ownMonitor } from './pages-ai.js';
 import { copyPackButton } from './pages-thesis.js';
@@ -261,10 +261,20 @@ function stdWeightEdit(ctx, d) {
       fail(e);
     }
   });
+  const o = d.own;
+  // T43：標準比重是看得見的目標——寫出現在占多少，以及它在什麼時候起作用
+  const low = o.stdWeight - o.weight > 0.0025;
   return [
-    h('h5', { style: 'margin-top:20px' }, `標準比重（現在 ${pct(d.own.stdWeight)}）`),
+    h('h5', { style: 'margin-top:20px' }, `標準比重 ${pct(o.stdWeight)}`),
+    h('p', { class: 'small', style: 'margin:2px 0 8px' }, `現在占總資產 ${pct(o.weight)}。`, low ? `比標準比重低：${refillText({ weight: o.weight, std: o.stdWeight, half: o.half, fill: o.fill, scaled: o.scaled })}。` : ''),
     h('div', { class: 'btn-row', style: 'align-items:center' }, std, h('span', null, '%'), saveStd),
-    h('p', { class: 'small faint' }, '加回、入金補到這個比重；改了不會馬上下單。系統推薦值是依波動度在自選預算內分的。'),
+    h(
+      'p',
+      { class: 'small faint' },
+      o.scaled
+        ? '減半後加回補到這個比重。入金補自選時，自選各檔的目標合計超過自選比例，就照比例少補，自選桶慢慢回到預算。改了不會馬上下單；不想補回就把它改成現在的比重。'
+        : '減半後加回、入金補自選，都補到這個比重；改了不會馬上下單。不想補回就把它改成現在的比重。',
+    ),
     msg,
     h('p', { class: 'small faint', style: 'margin-top:14px' }, '不想再持有：到「填快照」把自選這一檔的股數改成 0，就會移出自選。'),
   ];

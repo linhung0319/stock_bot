@@ -1,9 +1,9 @@
 // 待辦與紀錄、通知頁（兩步驟：看建議與理由、做決定 → 照清單下單後填快照）、填快照。
 import { api, getMode } from './api.js';
 import { aiOverview, crashLogBlock, runRow, shadowLines } from './pages-ai.js';
-import { actionText, day, h, money, put, qty, toast } from './dom.js';
+import { actionText, day, h, money, pct, put, qty, toast } from './dom.js';
 import { consoleBox, glass, icon, longDay, menuList, page, tiles } from './layout.js';
-import { actParts, attentionList, bucketTag, chevron, headline, orderRows, whyBlock } from './parts.js';
+import { actParts, attentionList, bucketTag, chevron, headline, orderRows, refillText, whyBlock } from './parts.js';
 import { thesisTodoList } from './pages-thesis.js';
 import { copyPackButton } from './pages-thesis.js';
 import { say } from './slime.js';
@@ -792,11 +792,54 @@ export async function snapshotPage(ctx) {
     return b;
   };
   const tbodies = { own: h('tbody'), mom: h('tbody'), core: h('tbody') };
+  // 新加進自選那一列的標準比重提示（T43）：照填的股數與現金算「現在占 X%」，留空就用這個比重
+  let hintTimer = null;
+  let hintSeq = 0;
+  const lotsNow = () => {
+    const lots = { own: {}, mom: {}, core: {} };
+    for (const r of rows) {
+      const t = r.ticker();
+      const q = parse(r.input);
+      if (t && q > 0) lots[r.bucket][t] = (lots[r.bucket][t] ?? 0) + q;
+    }
+    return lots;
+  };
+  const refreshHints = async () => {
+    const fresh = rows.filter((r) => r.std && r.ticker());
+    if (!fresh.length) return;
+    const std = {};
+    for (const r of fresh) if (parse(r.std) > 0) std[r.ticker()] = parse(r.std) / 100;
+    const c = parse(cash);
+    const seq = ++hintSeq;
+    let res;
+    try {
+      res = await api.post('/std-hint', { holdings: lotsNow(), cash: Number.isFinite(c) ? c : f.cashExpected, tickers: fresh.map((r) => r.ticker()), std });
+    } catch {
+      return; // 提示拿不到不擋送出
+    }
+    if (seq !== hintSeq) return;
+    for (const r of fresh) {
+      const x = res.rows[r.ticker()];
+      if (!x) {
+        r.stdHint.textContent = res.missing.includes(r.ticker()) ? '抓不到價格' : '';
+        continue;
+      }
+      r.stdHint.textContent = `現在占 ${pct(x.now)}（建議 ${pct(x.rec)}）；留空就用 ${pct(x.std)}`;
+      r.std.placeholder = (x.std * 100).toFixed(1);
+    }
+  };
+  const hintSoon = () => {
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(refreshHints, 500);
+  };
   const addRow = (bucket, r, isNew = false) => {
     const input = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', value: String(r.expected), 'aria-label': `${NAMES[bucket]} ${r.ticker || '新代號'} 的股數` });
     const tkIn = isNew ? h('input', { type: 'text', placeholder: '代號', value: r.ticker || '', style: 'width:6.5em;text-transform:uppercase', 'aria-label': '股票代號' }) : null;
     // 買進時的一句話（T40）：不是前提，只當之後討論的開場
     const why = isNew && bucket === 'own' ? h('input', { type: 'text', maxlength: 300, placeholder: '買進時的一句話（選填，討論時當參考）', style: 'width:100%', 'aria-label': '買進時的一句話' }) : null;
+    // 標準比重（T43）：留空用現在占總資產的比重；旁邊即時寫「現在占 X%（建議 Y%）」
+    const std = isNew && bucket === 'own' ? h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '現在', style: 'width:5.5em', 'aria-label': '標準比重（%，留空用現在的比重）' }) : null;
+    const stdHint = std ? h('span', { class: 'small faint' }) : null;
     const delta = h('span', { class: 'delta' });
     const tr = h(
       'tr',
@@ -807,7 +850,7 @@ export async function snapshotPage(ctx) {
       h('td', { class: 'r' }, input),
       h('td', null, delta),
     );
-    const row = { bucket, ticker: () => (isNew ? tkIn.value.trim().toUpperCase() : r.ticker), input, expected: isNew ? 0 : r.expected, why };
+    const row = { bucket, ticker: () => (isNew ? tkIn.value.trim().toUpperCase() : r.ticker), input, expected: isNew ? 0 : r.expected, why, std, stdHint };
     const upd = () => {
       const v = parse(input);
       const d = v - row.expected;
@@ -818,9 +861,15 @@ export async function snapshotPage(ctx) {
     };
     input.addEventListener('input', upd);
     tkIn?.addEventListener('input', recount);
+    if (std) {
+      input.addEventListener('input', hintSoon);
+      tkIn.addEventListener('change', hintSoon);
+      std.addEventListener('input', hintSoon);
+    }
     rows.push(row);
     tbodies[bucket].append(tr);
-    // 新加進自選的「買進時的一句話」放在下一列，橫跨整張表（手機上代號那一欄太窄）
+    // 新加進自選的標準比重、「買進時的一句話」放在下面幾列，橫跨整張表（手機上代號那一欄太窄）
+    if (std) tbodies[bucket].append(h('tr', { class: 'std-row' }, h('td', { colspan: 5 }, h('label', { class: 'std-in small' }, h('span', null, '標準比重'), std, '%', stdHint))));
     if (why) tbodies[bucket].append(h('tr', { class: 'why-row' }, h('td', { colspan: 5, style: 'padding-top:0' }, why)));
     if (isNew && !r.ticker) tkIn.focus();
     if (isNew) upd();
@@ -845,6 +894,7 @@ export async function snapshotPage(ctx) {
   // 改版前留下的未分類持股：先放進自選那一桶，你可以改放動能
   for (const u of f.unc) addRow('own', { ticker: u.ticker, book: 0, listed: 0, expected: u.shares }, true);
   cash.addEventListener('input', recount);
+  cash.addEventListener('input', hintSoon);
 
   // 沒有等成交的清單時沒東西可填，不放這個按鈕（T39a）
   const fill = f.autofill && f.lists.length
@@ -922,6 +972,7 @@ export async function snapshotPage(ctx) {
   const send = actionButton('送出快照', 'primary block', async () => {
     const lots = { own: {}, mom: {}, core: {} };
     const why = {};
+    const std = {};
     for (const r of rows) {
       const t = r.ticker();
       const q = parse(r.input);
@@ -930,6 +981,11 @@ export async function snapshotPage(ctx) {
       if (!Number.isFinite(q) || q < 0) return msg.replaceChildren(errBox(new Error(`${NAMES[r.bucket]} ${t} 的股數要填 0 以上的數字`)));
       lots[r.bucket][t] = (lots[r.bucket][t] ?? 0) + q;
       if (r.why?.value.trim()) why[t] = r.why.value.trim();
+      if (r.std?.value.trim()) {
+        const w = parse(r.std);
+        if (!(w >= 0.1 && w <= 50)) return msg.replaceChildren(errBox(new Error(`${t} 的標準比重填百分比，0.1～50；例如 5 代表 5%。留空就用現在占總資產的比重。`)));
+        std[t] = w / 100;
+      }
     }
     const c = parse(cash);
     if (!Number.isFinite(c)) {
@@ -937,7 +993,7 @@ export async function snapshotPage(ctx) {
       return msg.replaceChildren(errBox(new Error('請填券商現在顯示的現金（可用資金）。')));
     }
     try {
-      const r = await api.post('/snapshot', { lots, cash: c, note: note.value, why, withdrawPending: !!wdPending?.checked });
+      const r = await api.post('/snapshot', { lots, cash: c, note: note.value, why, std, withdrawPending: !!wdPending?.checked });
       msg.replaceChildren();
       // 「買進時的一句話」不是前提（T40，own_thesis §1.8）：這次新加進自選、還沒有論點的列在結果頁，可以接著去寫論點
       await ctx.refresh(false);
@@ -956,6 +1012,18 @@ export async function snapshotPage(ctx) {
           r.completed.length ? h('p', null, `完成了 ${r.completed.length} 份清單，成交照你填的桶記帳。`) : h('p', null, '沒有等成交的清單；這份快照成為新的起點。'),
           r.followUps.length ? h('p', null, `有 ${r.followUps.length} 份清單和快照差超過 1 股，要你選補做還是就這樣。`) : null,
           r.removedOwn.length ? h('p', null, `${r.removedOwn.join('、')} 賣光了，已移出自選（之後不再追蹤，也不會被買回）。`) : null,
+          // 自己減碼之後低於標準比重（T43）：之後入金與加回會補回來，不想補回到持股頁改標準比重
+          (r.belowStd ?? []).map((x) =>
+            h(
+              'p',
+              { class: 'below-std' },
+              `${x.ticker} 現在占 ${pct(x.weight)}，標準比重 ${pct(x.std)}：`,
+              refillText(x),
+              '；不想補回請到',
+              h('a', { href: `#/h/${encodeURIComponent(x.ticker)}` }, '持股頁'),
+              '改標準比重。',
+            ),
+          ),
           r.cashOther ? h('p', { class: 'small dim' }, `現金和估計的成交金額差 ${r.cashOther > 0 ? '+' : '−'}${money(Math.abs(r.cashOther), 2)}，記成其他現金變動（成交價、手續費、股利）。`) : null,
           r.created.map((n) => h('p', null, n.title)),
           r.cashWarn ? null : h('p', { class: 'small faint' }, '填錯了可以到「我要…」→「復原上一份快照」，回到送出之前再重填。'),

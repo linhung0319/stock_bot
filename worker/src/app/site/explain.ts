@@ -10,6 +10,8 @@ import {
   drawdownFromHigh,
   hardToldDays,
   momSlotTarget,
+  ownDepositFill,
+  ownDepositScale,
   priceOf,
   rollingMax,
   sma,
@@ -637,8 +639,31 @@ function capTrim(ctx: ExplainContext, _n: Notif, it: Item): Explain {
   };
 }
 
-/** 每一行現在占多少、目標是多少（入金、出金、改比例的清單用）。 */
-function lineFacts(ctx: ExplainContext, lines: OrderLine[]): Fact[] {
+/**
+ * 入金補這檔自選補到多少（T43，design_v2 §10 第 50 點）：
+ *   沒縮放：「補到標準比重 5.0%」（減半中：「補到標準比重 5.0% 的一半 2.5%（減半中）」）
+ *   自選各檔合計超過自選比例：「入金補到 3.1%（自選合計超過預算，入金照比例少補）；加回補到標準比重 5.0%」
+ */
+export function depositFillText(acct: Account, ticker: string): string {
+  const r = acct.rule.own[ticker];
+  const fill = ownDepositFill(acct.rule, acct.cfg, ticker);
+  if (!r || fill === null) return '';
+  const half = r.applied === 'HALF';
+  const plain = r.stdWeight * (half ? 0.5 : 1);
+  if (Math.abs(fill - plain) < 1e-9) return `補到標準比重 ${fmtPct(r.stdWeight, 1)}${half ? ` 的一半 ${fmtPct(plain, 1)}（減半中）` : ''}`;
+  const why = ownDepositScale(acct.rule, acct.cfg.ratio.own) < 1 ? '自選合計超過預算，入金照比例少補' : `入金最多補到 ${fmtPct(acct.cfg.ownCapTo)}`;
+  return `入金補到 ${fmtPct(fill, 1)}（${why}）；${half ? '減半中，' : ''}加回補到標準比重 ${fmtPct(r.stdWeight, 1)}`;
+}
+
+/** 自選各檔標準比重合計超過自選比例時，入金清單多的那一句（T43）。 */
+function ownScaleNote(acct: Account): string {
+  const k = ownDepositScale(acct.rule, acct.cfg.ratio.own);
+  if (k >= 1) return '';
+  return `自選各檔的目標合計 ${fmtPct(acct.cfg.ratio.own / k, 1)}，超過自選比例 ${fmtPct(acct.cfg.ratio.own)}：入金照比例少補自選（只補到各檔目標的 ${fmtPct(k, 0)}），多的錢去動能與核心，自選桶慢慢回到預算。減半之後的加回仍補到各檔的標準比重。`;
+}
+
+/** 每一行現在占多少、目標是多少（入金、出金、改比例的清單用）。deposit：入金清單，補自選的那一行寫「補到標準比重 X%」（T43）。 */
+function lineFacts(ctx: ExplainContext, lines: OrderLine[], deposit = false): Fact[] {
   const { acct, view } = ctx;
   const total = totalValue(acct, view);
   const slot = momSlotTarget(acct.cfg, total, acct.rule.effPrev ?? 1);
@@ -647,9 +672,12 @@ function lineFacts(ctx: ExplainContext, lines: OrderLine[]): Fact[] {
     const px = c ? c[view.i] : NaN;
     const cur = ((acct.lots[l.bucket][l.ticker] ?? 0) * px) / total;
     let tgt: number | null = null;
-    if (l.bucket === 'own' && acct.rule.own[l.ticker]) tgt = acct.rule.own[l.ticker].stdWeight * (acct.rule.own[l.ticker].applied === 'HALF' ? 0.5 : 1);
+    const ownRule = l.bucket === 'own' ? acct.rule.own[l.ticker] : undefined;
+    if (ownRule) tgt = ownRule.stdWeight * (ownRule.applied === 'HALF' ? 0.5 : 1);
     if (l.bucket === 'mom' && acct.rule.heldMom.includes(l.ticker)) tgt = slot / total;
-    const why = l.reason === '單檔上限' ? '出金後會超過單檔上限 15%，先減回 10%' : l.reason === '跨桶上限' ? '自選＋動能合計超過上限' : tgt !== null ? `目前 ${fmtPct(cur, 1)}，目標 ${fmtPct(tgt, 1)}` : `目前 ${fmtPct(cur, 1)}`;
+    // 入金補自選（T43）：補的是標準比重（減半中只補到一半）；自選各檔合計超過自選比例時入金照比例少補，寫出實際補到多少
+    const ownFill = deposit && ownRule && l.shares > 0 ? `目前 ${fmtPct(cur, 1)}，${depositFillText(acct, l.ticker)}` : null;
+    const why = ownFill ? ownFill : l.reason === '單檔上限' ? '出金後會超過單檔上限 15%，先減回 10%' : l.reason === '跨桶上限' ? '自選＋動能合計超過上限' : tgt !== null ? `目前 ${fmtPct(cur, 1)}，目標 ${fmtPct(tgt, 1)}` : `目前 ${fmtPct(cur, 1)}`;
     return { label: `${BUCKET_NAME[l.bucket]} ${l.ticker}`, value: sharesText(l.shares), note: why };
   });
 }
@@ -729,9 +757,9 @@ function cashflow(ctx: ExplainContext, n: Notif, it: Item): Explain {
     const amt = n.deposit ?? 0;
     return {
       short: `入金 ${fmtMoney(amt)}：補低於目標最多的格子，其餘進核心`,
-      why: `你入金 ${fmtMoney(amt)}。入金只買不賣：先補「離目標最遠」的格子${lines.length ? `（${lines.map((l) => l.ticker).join('、')}）` : ''}，剩下的交給核心買 ${core}。已經高於目標的股票不會再買。`,
+      why: `你入金 ${fmtMoney(amt)}。入金只買不賣：先補「離目標最遠」的格子${lines.length ? `（${lines.map((l) => l.ticker).join('、')}）` : ''}，剩下的交給核心買 ${core}。已經高於目標的股票不會再買。${ownScaleNote(ctx.acct)}`,
       rule: RULE.deposit,
-      facts: [...head, ...lineFacts(ctx, lines)],
+      facts: [...head, ...lineFacts(ctx, lines, true)],
     };
   }
   if (it.f === 'F12') {

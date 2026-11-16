@@ -15,6 +15,8 @@ import {
   clone,
   composeNotif,
   createAccount,
+  DEFAULT_CONFIG,
+  defaultStdWeight,
   deposit,
   drawdownFromHigh,
   explainCash,
@@ -216,7 +218,10 @@ async function createFromSnapshot(backend: SiteBackend, b: Record<string, unknow
   const view = d.view;
   const missing = tickers.filter((t) => !view.close[t] || !Number.isFinite(view.close[t][view.i]));
   if (missing.length) throw new SiteError(422, `抓不到這些代號在 ${view.date} 的收盤價：${missing.join('、')}。請確認代號，或稍後再試。`);
-  const rec = own.length ? recommendStdWeights(view, own.map((x) => x.ticker), 0.2) : {};
+  const rec = own.length ? recommendStdWeights(view, own.map((x) => x.ticker), DEFAULT_CONFIG.ratio.own) : {};
+  // 標準比重留空 → 現在占總資產的比重（不超過單檔上限；0 股才用推薦值）。T43，design_v2 §10 第 50 點
+  const px = (t: string) => view.close[t][view.i];
+  const total0 = cash + coreShares * px(core) + bondShares * px(bond) + [...own, ...mom].reduce((a, x) => a + x.shares * px(x.ticker), 0);
   const init: InitialAccount = {
     paper: b.paper !== false,
     // 券商現在顯示的股數已經包含生效日在今天（美東）以前的拆股（design_v2 §10 第 48 點）
@@ -231,7 +236,7 @@ async function createFromSnapshot(backend: SiteBackend, b: Record<string, unknow
         x.ticker,
         {
           shares: x.shares,
-          stdWeight: x.stdWeight ?? rec[x.ticker],
+          stdWeight: x.stdWeight ?? defaultStdWeight(x.shares * px(x.ticker), total0, DEFAULT_CONFIG.ownCapHi, rec[x.ticker]),
           // 和新增自選相同：現在已經比 52 週高點低 20% 以上，一開始就記成減半，不會第一天就收到減半通知
           state: drawdownFromHigh(view.close[x.ticker], view.i, SLOW.highDays) <= SLOW.drawdown ? ('HALF' as const) : ('STD' as const),
           premises: clone(SYSTEM_DEFAULT_PREMISES),
@@ -250,6 +255,51 @@ async function createFromSnapshot(backend: SiteBackend, b: Record<string, unknow
   for (const lots of [acct.lots.own, acct.lots.mom, acct.lots.core]) for (const [t, q] of Object.entries(lots)) shares[t] = (shares[t] ?? 0) + q;
   await backend.recordSnapshot(view.date, { shares, cash });
   return json({ ok: true, thesisTodo: todo });
+}
+
+/**
+ * 標準比重的提示（T43）：建立帳戶與快照新加自選的那一列，標準比重欄旁邊即時顯示「現在占 X%（建議 Y%）」。
+ * body：holdings（三桶各代號的股數，照填的數字）、cash、tickers（要算的自選代號）、std（已經填了標準比重的，小數）。
+ * 回傳每一檔：now 現在占總資產（照填的股數與現金）、rec 推薦值、std 留空時會用的值；sumStd 自選標準比重合計（快照時含帳上其他自選）。
+ * 不存任何東西；抓不到價格的代號列在 missing。
+ */
+async function stdHint(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
+  const raw = (b.holdings ?? {}) as Record<string, unknown>;
+  const holdings: Record<'own' | 'mom' | 'core', Record<string, number>> = { own: {}, mom: {}, core: {} };
+  let n = 0;
+  for (const bk of ['own', 'mom', 'core'] as const) {
+    for (const [k, v] of Object.entries((raw[bk] ?? {}) as Record<string, unknown>)) {
+      if (++n > 120) throw new SiteError(422, '代號太多了');
+      const t = normalizeTicker(k);
+      const q = typeof v === 'number' ? v : Number(String(v ?? '').replace(/[,\s]/g, ''));
+      if (!TICKER.test(t) || !Number.isFinite(q) || q <= 0) continue;
+      holdings[bk][t] = (holdings[bk][t] ?? 0) + q;
+    }
+  }
+  const tickers = [...new Set((Array.isArray(b.tickers) ? b.tickers : []).map((x) => normalizeTicker(String(x ?? ''))).filter((t) => TICKER.test(t)))].slice(0, 40);
+  const given: Record<string, number> = {};
+  for (const [k, v] of Object.entries((b.std ?? {}) as Record<string, unknown>)) if (typeof v === 'number' && v > 0 && v <= 0.5) given[normalizeTicker(k)] = v;
+  const cash = typeof b.cash === 'number' && Number.isFinite(b.cash) ? b.cash : 0;
+  const all = [...new Set([...tickers, ...Object.values(holdings).flatMap((m) => Object.keys(m))])];
+  const d = await backend.load(all);
+  if (!d.view) throw new SiteError(409, '還沒有價格資料：每日抓取要先跑過一次。');
+  const view = d.view;
+  const has = (t: string) => !!view.close[t] && Number.isFinite(view.close[t][view.i]);
+  const missing = all.filter((t) => !has(t));
+  let total = cash;
+  for (const m of Object.values(holdings)) for (const [t, q] of Object.entries(m)) if (has(t)) total += q * view.close[t][view.i];
+  const cfg = d.acct?.cfg ?? DEFAULT_CONFIG;
+  // 快照：帳上已經有的自選照它們的標準比重；建立帳戶：只有這次填的
+  const kept = d.acct ? Object.keys(d.acct.rule.own).filter((t) => (holdings.own[t] ?? 0) > 0 && !tickers.includes(t)) : [];
+  const newOwn = tickers.filter(has);
+  const rec = newOwn.length ? recommendStdWeights(view, [...kept, ...newOwn], cfg.ratio.own) : {};
+  const rows: Record<string, { now: number; rec: number; std: number }> = {};
+  for (const t of newOwn) {
+    const value = (holdings.own[t] ?? 0) * view.close[t][view.i];
+    rows[t] = { now: total > 0 ? value / total : 0, rec: rec[t], std: given[t] ?? defaultStdWeight(value, total, cfg.ownCapHi, rec[t]) };
+  }
+  const sumStd = kept.reduce((a, t) => a + d.acct!.rule.own[t].stdWeight, 0) + Object.values(rows).reduce((a, r) => a + r.std, 0);
+  return json({ date: view.date, total, budget: cfg.ratio.own, cap: cfg.ownCapHi, rows, sumStd, missing });
 }
 
 /**
@@ -479,6 +529,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
   }
 
   if (rest === 'account' && post) return createFromSnapshot(backend, await body(req));
+  if (rest === 'std-hint' && post) return stdHint(backend, await body(req));
 
   const hold = /^holding\/([A-Za-z0-9.-]{1,10})$/.exec(rest);
   if (hold && get) {
@@ -770,9 +821,15 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       const w = text(v, `${k} 買進時的一句話`, 300, false);
       if (w) why[ticker(k)] = w;
     }
+    // 新加進自選的標準比重（T43；畫面上填百分比、送來是小數）：沒填就用現在占總資產的比重
+    const std: Record<string, number> = {};
+    for (const [k, v] of Object.entries((b.std ?? {}) as Record<string, unknown>).slice(0, 20)) {
+      if (v === undefined || v === null || v === '') continue;
+      std[ticker(k)] = stdWeightOf(v);
+    }
     // 現金可以是負的（融資帳戶，或示範裡買超過現金）；畫面上會提醒
     const note = text(b.note, '這次自己交易的原因', 300, false);
-    const snap: Snapshot = { shares, cash: num(b.cash, '現金', -1e10, 1e10), ...(lots ? { lots } : {}), ...(note ? { note } : {}), ...(Object.keys(why).length ? { why } : {}), ...(b.withdrawPending === true ? { withdrawPending: true } : {}) };
+    const snap: Snapshot = { shares, cash: num(b.cash, '現金', -1e10, 1e10), ...(lots ? { lots } : {}), ...(note ? { note } : {}), ...(Object.keys(why).length ? { why } : {}), ...(Object.keys(std).length ? { std } : {}), ...(b.withdrawPending === true ? { withdrawPending: true } : {}) };
     // 拆股生效、每日流程還沒跑就照券商填了 N 倍的股數：先向 Yahoo 查那幾檔，記到的拆股在載入帳戶時套用（design_v2 §10 第 48 點）
     if (backend.checkSplits) await backend.checkSplits(shares);
     let before: Account | null = null;
@@ -798,7 +855,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       return {
         acct,
         snapshot: snap,
-        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, monthlyId, newOwn },
+        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, belowStd: out.belowStd, monthlyId, newOwn },
       };
     });
     // 送出前的帳戶留下來，填錯了可以復原（只留最後一份；之後帳戶有變動就不能復原）

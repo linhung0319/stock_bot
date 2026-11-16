@@ -304,16 +304,64 @@ export function setupPage(ctx) {
     const n = (k) => rows[k].filter((r) => r.ticker.value.trim()).length;
     put(summary, h('li', null, h('span', null, '核心'), h('span', { class: 'num' }, `VOO ${val(core) || 0} 股${val(bond) ? `、SGOV ${val(bond)} 股` : ''}`)), h('li', null, h('span', null, '現金'), h('span', { class: 'num' }, money(val(cash) || 0))), h('li', null, h('span', null, '自選'), h('span', null, `${n('own')} 檔`)), h('li', null, h('span', null, '動能'), h('span', null, `${n('mom')} 檔`)), h('li', null, h('span', null, '紙上交易'), h('span', null, paper.checked ? '是' : '否')));
   };
+  // 標準比重的提示（T43）：每一列標準比重欄下面即時寫「現在占 X%（建議 Y%）」，留空就用現在的比重
+  const sumLine = h('p', { class: 'small', style: 'margin:10px 0 0' });
+  let hintTimer = null;
+  let hintSeq = 0;
+  const refreshHints = async () => {
+    const own = rows.own.filter((r) => r.ticker.value.trim());
+    if (!own.length) {
+      sumLine.replaceChildren();
+      return;
+    }
+    const holdings = { own: {}, mom: {}, core: { VOO: val(core), SGOV: val(bond) } };
+    for (const k of ['own', 'mom']) for (const r of rows[k]) if (r.ticker.value.trim()) holdings[k][r.ticker.value.trim().toUpperCase()] = val(r.shares);
+    const std = {};
+    for (const r of own) if (r.std.value.trim() && val(r.std) > 0) std[r.ticker.value.trim().toUpperCase()] = val(r.std) / 100;
+    const seq = ++hintSeq;
+    let res;
+    try {
+      res = await api.post('/std-hint', { holdings, cash: val(cash), tickers: own.map((r) => r.ticker.value.trim().toUpperCase()), std });
+    } catch {
+      return; // 提示拿不到不擋建立帳戶
+    }
+    if (seq !== hintSeq) return;
+    for (const r of rows.own) {
+      const x = res.rows[r.ticker.value.trim().toUpperCase()];
+      if (!r.ticker.value.trim()) r.hint.replaceChildren();
+      else if (!x) r.hint.replaceChildren(res.missing.includes(r.ticker.value.trim().toUpperCase()) ? '抓不到價格' : '');
+      else {
+        r.hint.replaceChildren(h('span', { class: 'nw' }, `現在占 ${pct(x.now)}`), h('span', { class: 'nw' }, `（建議 ${pct(x.rec)}）`)); // 手機上整段換行，不在字中間斷
+        // 留空時會用的值放在欄位裡當提示
+        r.std.placeholder = (x.std * 100).toFixed(1);
+      }
+    }
+    const over = res.sumStd > res.budget + 0.0005;
+    sumLine.replaceChildren(
+      ...(over
+        ? [h('b', null, `標準比重合計 ${pct(res.sumStd)}，超過自選比例 ${pct(res.budget, 0)}。`), '不會因此叫你賣；之後入金會先補動能與核心（自選照比例少補），自選桶慢慢回到 ', pct(res.budget, 0), '。減半之後加回仍補到各檔的標準比重。']
+        : [`標準比重合計 ${pct(res.sumStd)}（自選比例 ${pct(res.budget, 0)}）。`]),
+    );
+  };
+  const hintSoon = () => {
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(refreshHints, 500);
+  };
   const addRow = (kind) => {
-    const r = { ticker: h('input', { type: 'text', placeholder: '代號', style: 'text-transform:uppercase;width:6.5em' }), shares: h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '股數', style: 'width:6em' }), std: kind === 'own' ? h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '建議值', style: 'width:5.5em' }) : null, why: kind === 'own' ? h('input', { type: 'text', maxlength: 300, placeholder: '持有的原因（選填）', 'aria-label': '持有的原因（選填，討論時當參考）', style: 'min-width:13em' }) : null };
+    const r = { ticker: h('input', { type: 'text', placeholder: '代號', style: 'text-transform:uppercase;width:6.5em' }), shares: h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '股數', style: 'width:6em' }), std: kind === 'own' ? h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', placeholder: '現在', 'aria-label': '標準比重（%，留空用現在的比重）', style: 'width:5.5em' }) : null, hint: kind === 'own' ? h('div', { class: 'small faint std-hint' }) : null, why: kind === 'own' ? h('input', { type: 'text', maxlength: 300, placeholder: '持有的原因（選填）', 'aria-label': '持有的原因（選填，討論時當參考）', style: 'min-width:13em' }) : null };
     rows[kind].push(r);
     r.ticker.addEventListener('input', recount);
+    // 代號打完（離開欄位）、股數或標準比重改了才去算，不是每打一個字就抓一次價格
+    r.ticker.addEventListener('change', hintSoon);
+    r.shares.addEventListener('input', hintSoon);
+    r.std?.addEventListener('input', hintSoon);
     // 自選的「標準比重」「持有的原因」手機上也要填得到（T39a）：窄螢幕時「持有的原因」換到下一行
-    lists[kind].append(h('tr', null, h('td', null, r.ticker), h('td', { class: 'r' }, r.shares), kind === 'own' ? [h('td', { class: 'r std-c' }, h('div', { style: 'display:flex;gap:6px;align-items:center;justify-content:flex-end' }, r.std, '%')), h('td', { class: 'why-c' }, r.why)] : null));
+    lists[kind].append(h('tr', null, h('td', null, r.ticker), h('td', { class: 'r' }, r.shares), kind === 'own' ? [h('td', { class: 'r std-c' }, h('div', { style: 'display:flex;gap:6px;align-items:center;justify-content:flex-end' }, r.std, '%'), r.hint), h('td', { class: 'why-c' }, r.why)] : null));
   };
   for (let k = 0; k < 4; k++) addRow('own');
   for (let k = 0; k < 5; k++) addRow('mom');
   [cash, core, bond, paper].forEach((e) => e.addEventListener('input', recount));
+  [cash, core, bond].forEach((e) => e.addEventListener('input', hintSoon));
   recount();
   const msg = h('div');
   const create = async () => {
@@ -338,8 +386,8 @@ export function setupPage(ctx) {
       sec('core', '核心'),
       glass('pad narrow-sm', h('label', { class: 'field' }, h('span', null, 'VOO 股數'), h('div', { style: 'max-width:10em' }, core)), h('label', { class: 'field' }, h('span', null, 'SGOV（短債）股數'), h('div', { style: 'max-width:10em' }, bond), h('small', null, '沒有就留空。')), h('label', { class: 'field', style: 'margin:0' }, h('span', null, '現金（美元）'), h('div', { style: 'max-width:10em' }, cash))),
       sec('own', '自選'),
-      h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '你自己選的股票。標準比重留空就用建議值（自選預算 20% 內，波動越大比重越小）。現在已經比 52 週高點低 20% 以上的，一開始記成「減半」狀態。持有的原因只是之後討論論點時的開場，不是前提；建立完會列出還沒有論點的自選，可以接著寫，也可以跳過。'),
-      glass('', table('own', ['代號', '股數', '標準比重', '持有的原因（選填，討論時當參考）']), h('div', { class: 'pad' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow('own') }, '再加一檔'))),
+      h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '你自己選的股票。標準比重是這檔的目標：慢規則減半之後加回、入金補自選，都補到這個比重。留空就用現在占總資產的比重（最多 15%）；括號裡的建議值是依波動度在自選預算 20% 內分的，只當參考。現在已經比 52 週高點低 20% 以上的，一開始記成「減半」狀態。持有的原因只是之後討論論點時的開場，不是前提；建立完會列出還沒有論點的自選，可以接著寫，也可以跳過。'),
+      glass('', table('own', ['代號', '股數', '標準比重', '持有的原因（選填，討論時當參考）']), h('div', { class: 'pad' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow('own') }, '再加一檔'), sumLine)),
       sec('mom', '動能'),
       h('p', { class: 'small dim', style: 'margin-bottom:10px' }, '照動能名單買的股票。還沒開始照動能買的話，全部留空：下一份月報會給你進場的清單。'),
       glass('', table('mom', ['代號', '股數']), h('div', { class: 'pad' }, h('button', { class: 'btn', type: 'button', onclick: () => addRow('mom') }, '再加一檔'))),

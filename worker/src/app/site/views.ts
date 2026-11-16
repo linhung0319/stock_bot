@@ -13,6 +13,8 @@ import {
   crashReviewOf,
   coreOweMonth,
   owedCoreLines,
+  ownDepositFill,
+  ownDepositScale,
   drawdownFromHigh,
   liveShadow,
   momSlotTarget,
@@ -1123,6 +1125,14 @@ export interface HoldingDetail {
   own: {
     state: string;
     stdWeight: number;
+    /** 自選桶這一檔現在占總資產（T43：標準比重那一行寫「現在占 X%」）。 */
+    weight: number;
+    /** 減半中：入金只補到標準比重的一半（T43）。 */
+    half: boolean;
+    /** 入金會補到占總資產多少（減半的算一半；自選各檔合計超過自選比例時照比例縮小，T43）。 */
+    fill: number;
+    /** 自選各檔目標合計超過自選比例：入金照比例少補。 */
+    scaled: boolean;
     /** id：前提的編號；system：系統預設前提。 */
     /** silenced：這條前提在靜默期內的那一句（own_thesis §1.10；不在是 null）。 */
     premises: { id: string; text: string; origin: string; system: boolean; silenced: string | null }[];
@@ -1282,6 +1292,10 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
         ? {
             state: rule.applied === 'HALF' ? '減半中' : '正常',
             stdWeight: rule.stdWeight,
+            weight: positions.find((p) => p.bucket === 'own')?.pct ?? 0,
+            half: rule.applied === 'HALF',
+            fill: ownDepositFill(acct.rule, acct.cfg, ticker) ?? 0,
+            scaled: ownDepositScale(acct.rule, acct.cfg.ratio.own) < 1,
             premises: meta.premises.map((p) => ({ id: p.id, text: p.text + (p.breaksIf ? `（不成立的訊號：${p.breaksIf}）` : ''), origin: ORIGIN[p.origin] ?? p.origin, system: p.origin === 'SYSTEM_DEFAULT', silenced: silencedText(meta, p.id, view.date) })),
             lastReview: meta.aiTier ? `${meta.aiTier.date}：${TIER_NAME[meta.aiTier.tier]}` : null,
             reviewSkip: reviewSkipOf(meta, view.date),
