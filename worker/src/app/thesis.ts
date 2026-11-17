@@ -1028,6 +1028,26 @@ export const OWN_ATTN: AttnKind[] = [
     },
   },
   {
+    // 你的前提最近一次檢查是 3 票一致的「證據不足」（§3.6.6，T47）：公司的申報與財報查不到，審查監測不了這一條。
+    // 同一組前提每 6 個月列一次（鍵帶編號；哪幾條變了就是新的一件）。系統預設前提不列（程式先算好的，資料不足是暫時的）
+    kind: 'PREMISE_NO_DATA',
+    detect({ file }) {
+      const ps = file.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT' && p.lastCheck?.status === 'INSUFFICIENT');
+      if (!ps.length) return [];
+      const short = (s: string) => (s.length > 30 ? `${s.slice(0, 30)}…` : s);
+      const since = ps.map((p) => p.lastCheck!.date).sort().at(-1)!;
+      const which = ps.length === 1 ? '這一條' : `這 ${ps.length} 條`;
+      return [
+        {
+          key: `PREMISE_NO_DATA:${ps.map((p) => p.id).join(',')}`,
+          every: 6,
+          since,
+          text: `${file.ticker} 的前提 ${ps.map((p) => `${p.id}「${short(p.text)}」`).join('、')}最近一次審查 3 票都是證據不足：公司的申報與財報裡查不到，stock bot 監測不了${which}。可以改寫成財報查得到的事，或複製討論包到 claude.ai 討論`,
+        },
+      ];
+    },
+  },
+  {
     // 你定的條件成立、但換算出來不用賣（§1.10 甲類）：沒有發通知（log 沒有這條的 BREAK_NOTICE）、也不是等著進月報的。
     // 成立後的第一份月報列一次；持股頁列到那份月報產生為止（之後有成立日之後的月報就不再算）
     kind: 'COND_MET_NO_SELL',

@@ -284,8 +284,18 @@ function thesisSection(file: ThesisFile): string[] {
   return [t.text, meta];
 }
 
+/**
+ * 前提那一節最後的說明（T47，own_thesis §1.7）：stock bot 的審查讀得到什麼。放在討論包的內容裡，不是固定指示，
+ * 所以不升版本。目的：收尾時前提盡量寫成審查查得到的事；寫不成的先講明要靠使用者自己留意。
+ */
+export const PREMISE_DATA_NOTE = [
+  '',
+  '（stock bot 的審查只讀這家公司自己的資料：最近 8 季的財報數字、最近一份 10-Q／10-K、之後的 8-K。同業、客戶、市占調查、產業報價它查不到。',
+  '標「證據不足」的前提就是它查不到的。收尾時請盡量把前提寫成公司申報或財報裡查得到的事；寫不成的，先告訴我這一條 stock bot 監測不了、要靠我自己留意。）',
+];
+
 function premiseSection(file: ThesisFile): string[] {
-  if (!file.premises.length) return ['還沒有'];
+  if (!file.premises.length) return ['還沒有', ...PREMISE_DATA_NOTE];
   const L = file.premises.map((p) => {
     const chk = p.lastCheck ? `${PREM_TEXT[p.lastCheck.status] ?? p.lastCheck.status}（${p.lastCheck.date} 審查）` : '還沒有檢查過';
     const def = p.origin === 'SYSTEM_DEFAULT' ? '（系統預設）' : '';
@@ -293,7 +303,7 @@ function premiseSection(file: ThesisFile): string[] {
     return `${p.id}. ${p.text}${def}${SP}— ${chk}${p.splitAfter ? '；之後的審查沒有一致結論' : ''}`;
   });
   if (file.kind === 'DEFAULT_ONLY') L.push('（這些是系統預設的一般健康檢查，不是我的論點。）');
-  return L;
+  return [...L, ...PREMISE_DATA_NOTE];
 }
 
 function conditionSection(file: ThesisFile): string[] {
