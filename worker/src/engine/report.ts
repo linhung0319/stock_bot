@@ -996,7 +996,7 @@ export const DISPUTE_MAX_DAYS = 100;
 export const DISPUTE_MIN_DAYS = 45;
 /** 月報裡的乙類項目沒動它（沒按照 AI、沒寫理由）→ 記成 SKIPPED，和不同意一樣進靜默期（§1.10）。 */
 export const SKIPPED_REASON = '月報裡沒有動它（AI 的建議是一次性的）';
-/** 修正論點、但新的論點還留著被判不成立的那條前提 → 當成不同意（§1.10）。 */
+/** 修正論點、但新的論點原封不動留著被判不成立的那條前提（同一個 id、字沒改）→ 當成不同意（§1.10；字改了的不算，T46）。 */
 export const KEPT_REASON = '修正論點但保留這條前提';
 const plusDays = (d: string, n: number) => new Date(Date.parse(d) + n * 86400_000).toISOString().slice(0, 10);
 

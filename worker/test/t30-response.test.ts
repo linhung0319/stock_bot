@@ -315,19 +315,57 @@ describe('T30：乙類的三種回應', () => {
     });
   });
 
-  it('修正論點但保留那條前提（同一個 id）→ 當成不同意：通知結案、那條前提進靜默期、log 記 DISAGREE「修正論點但保留這條前提」，afterBreak 照樣加 1', async () => {
+  // T46（2026-11-17 使用者同意改）：原本這一個測試用的是「同一個 id、字改了」（加「（看全年）」），那時也當成不同意；
+  // 現在只有原封不動留著（只改標點或空白算沒改）才當成不同意，字改了的在下一個測試。
+  it('修正論點但原封不動保留那條前提（同一個 id、字沒改，只多了標點與空白）→ 當成不同意：通知結案、那條前提進靜默期、log 記 DISAGREE「修正論點但保留這條前提」，afterBreak 照樣加 1', async () => {
     await withWorld(async (c) => {
       const n = await seedBreak(c, 'HALF');
-      const r = await c.api<{ revised: unknown }>('POST', 'ops/own-thesis', { ticker: 'NVDA', thesis: '論點補充', premises: [{ id: 'P1', text: '資料中心需求延續到 2027' }, { id: 'P2', text: '毛利率維持在 65% 以上（看全年）' }], exitConditions: [], replyTo: n.id });
+      const r = await c.api<{ revised: unknown; preview: { edited: unknown[] } }>('POST', 'ops/own-thesis', { ticker: 'NVDA', thesis: '論點補充', premises: [{ id: 'P1', text: '資料中心需求延續到 2027' }, { id: 'P2', text: '毛利率 維持在 65% 以上。' }], exitConditions: [], replyTo: n.id });
+      expect(r.body.preview.edited).toEqual([]);
       expect(r.body.revised).toEqual({ notif: n.id, kept: true, premiseId: 'P2' });
       const a = await acctNow(c.db);
       expect(notifOf(a, n.id).status).toBe('DONE');
+      expect(notifOf(a, n.id).items[0].note).toContain('新的論點還留著前提 P2，當成不同意：這條前提進靜默期');
       expect(a.own.NVDA.thesis!.afterBreak).toBe(1);
       expect(a.own.NVDA.disputes).toMatchObject([{ premiseId: 'P2', reason: KEPT_REASON, notif: n.id }]);
       expect((await logRows(c.db, 'RESPONSE')).map((l) => l.body)).toEqual([{ notif: n.id, type: 'B', outcome: 'DISAGREE', reason: KEPT_REASON, premiseId: 'P2' }]);
       // 靜默期內：同一條前提再被判不成立 → 只放網站
       const { view } = await c.viewAt('2026-11-19');
       expect(routeReview(a, view, 'NVDA', { tier: 'HALF', suggest: true, consensus: true, premiseId: 'P2', trigger: 'EARNINGS', date: '2026-12-10' }).route).toBe('SILENT');
+    });
+  });
+
+  it('T46 修正論點、被判不成立的那條前提沿用編號但字改了 → 照修正論點（REVISE）：通知結案、不進靜默期、隔天審新的字；新的字再被判不成立時照常給（不是只放網站）', async () => {
+    await withWorld(async (c) => {
+      const n = await seedBreak(c, 'HALF');
+      const body = { ticker: 'NVDA', thesis: '論點補充', premises: [{ id: 'P1', text: '資料中心需求延續到 2027' }, { id: 'P2', text: '毛利率維持在 65% 以上（看全年）' }], exitConditions: [], replyTo: n.id };
+      // 預覽：P2 是「沿用，但字改了」
+      const dry = await c.api<{ preview: { edited: { id: string }[]; kept: { id: string }[] } }>('POST', 'ops/own-thesis', { ...body, dry: true });
+      expect(dry.body.preview.edited.map((e) => e.id)).toEqual(['P2']);
+      expect(dry.body.preview.kept.map((e) => e.id)).toEqual(['P1', 'P2']);
+      const r = await c.api<{ revised: unknown; preview: { edited: { id: string }[] } }>('POST', 'ops/own-thesis', body);
+      expect(r.status).toBe(200);
+      expect(r.body.revised).toEqual({ notif: n.id, kept: false, premiseId: 'P2' });
+      expect(r.body.preview.edited.map((e) => e.id)).toEqual(['P2']);
+      const a = await acctNow(c.db);
+      const nn = notifOf(a, n.id);
+      expect(nn.status).toBe('DONE');
+      expect(nn.items[0]).toMatchObject({ cancelled: true });
+      expect(nn.items[0].note).toContain('修正了論點（失效後修改第 1 次），部位不動。前提 P2 的字改了：不進靜默期');
+      expect(nn.items[0].note).not.toContain('當成不同意');
+      // 編號沿用、字是新的；沒有靜默期；隔天開論點變動後的審查
+      expect(a.own.NVDA.premises.find((p) => p.id === 'P2')!.text).toBe('毛利率維持在 65% 以上（看全年）');
+      expect(a.own.NVDA.thesis!.afterBreak).toBe(1);
+      expect(a.own.NVDA.disputes ?? []).toEqual([]);
+      expect(a.own.NVDA.thesisReviewDue).toBe(a.own.NVDA.thesis!.setAt);
+      expect((await logRows(c.db, 'RESPONSE')).map((l) => l.body)).toEqual([{ notif: n.id, type: 'B', outcome: 'REVISE', reason: null, premiseId: 'P2' }]);
+      const shadow = (await c.db.prepare("SELECT body FROM shadow_records WHERE f = 'F24'").all<{ body: string }>()).results.map((x) => JSON.parse(x.body) as { choice: string; note: string; notif: number });
+      expect(shadow).toMatchObject([{ choice: 'SKIP', note: '修正論點', notif: n.id }]);
+      // 新的字再被 3 票判不成立：不是 SILENT（30 天內發過 AI 的當天通知 → 進月報；超過 30 天 → 當天通知）
+      const { view } = await c.viewAt('2026-11-19');
+      const again = { tier: 'HALF' as const, suggest: true, consensus: true, premiseId: 'P2' };
+      expect(routeReview(a, view, 'NVDA', { ...again, trigger: 'THESIS', date: '2026-11-20' }).route).not.toBe('SILENT');
+      expect(routeReview(a, view, 'NVDA', { ...again, trigger: 'EARNINGS', date: '2027-01-15' }).route).toBe('SAME_DAY');
     });
   });
 

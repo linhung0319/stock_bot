@@ -1187,21 +1187,24 @@ export function revisableBreak(acct: Pick<Account, 'notifs'>, id: number, ticker
  * 乙類的「修正論點」（own_thesis §1.10 的 REVISE）：論點已經用 setThesis 存好（afterBreak 加過 1），這裡讓通知結案。
  *   那一項取消（部位不動、不用下單），記下修正的日子；沒照 AI 的那筆照樣進「沒照規則做的」紀錄。
  *   通知只剩取消的項目 → 結案（DONE）；月報裡還有別的項目 → 通知留著等你回覆其他項。
- *   新的前提還留著被判不成立的那一條（同一個 id）→ 當成不同意：那條前提進靜默期（理由「修正論點但保留這條前提」）。
+ *   新的前提原封不動留著被判不成立的那一條（同一個 id、字沒改）→ 當成不同意：那條前提進靜默期（理由「修正論點但保留這條前提」）。
+ *   同一個 id 但字改了（edited：這次存檔 mapPremises 判定「沿用編號、但字改了」的編號）→ 照修正論點，不進靜默期（T46）：
+ *   不同意針對的是原本的字，新的字還沒被檢查過，不能先靜默。
  * 找不到可以結案的項目（已經回覆過、不是這檔的乙類）→ ok = false，帳戶不變。
  */
-export function reviseBreak(acct0: Account, view: MarketView, id: number, ticker: string): { acct: Account; ok: boolean; premiseId: string | null; kept: boolean } {
+export function reviseBreak(acct0: Account, view: MarketView, id: number, ticker: string, edited: string[] = []): { acct: Account; ok: boolean; premiseId: string | null; kept: boolean } {
   const acct = clone(acct0);
   const hit = revisableBreak(acct, id, ticker);
   const meta = acct.own[ticker];
   if (!hit || !meta || hit.it.brk?.type !== 'B') return { acct: acct0, ok: false, premiseId: null, kept: false };
   const { n, it } = hit;
   const pid = hit.it.brk.premiseId;
-  const kept = meta.premises.some((p) => p.id === pid);
+  const reworded = edited.includes(pid);
+  const kept = !reworded && meta.premises.some((p) => p.id === pid);
   const md = `${Number(view.date.slice(5, 7))}/${Number(view.date.slice(8, 10))}`;
   it.cancelled = true;
   it.revised = view.date;
-  it.note = `你在 ${md} 修正了論點（失效後修改第 ${meta.thesis?.afterBreak ?? 1} 次），部位不動${kept ? `。新的論點還留著前提 ${pid}，當成不同意：這條前提進靜默期` : ''}`;
+  it.note = `你在 ${md} 修正了論點（失效後修改第 ${meta.thesis?.afterBreak ?? 1} 次），部位不動${kept ? `。新的論點還留著前提 ${pid}，當成不同意：這條前提進靜默期` : reworded ? `。前提 ${pid} 的字改了：不進靜默期，之後的審查看新的字` : ''}`;
   const ai = it.choices.find((c) => c.id === 'AI');
   acct.shadow.push({
     date: view.date,

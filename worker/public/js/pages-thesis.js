@@ -250,12 +250,17 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   thesisIn.addEventListener('input', changed);
 
   const reply = replyOpt ? h('input', { type: 'checkbox', checked: replyOpt.checked, onchange: () => changed() }) : null;
-  // 勾著回應、新的前提還留著被判不成立的那一條 → 存檔後當成不同意（own_thesis §1.10），先講清楚
+  // 勾著回應、新的前提原封不動留著被判不成立的那一條 → 存檔後當成不同意（own_thesis §1.10），先講清楚；
+  // 同一個編號但字改了 → 照修正論點，不進靜默期（T46）
   function keptWarn(p) {
     const pid = own.pendingBreak?.premiseId;
     if (!reply || !reply.checked || !pid || !p.kept.some((x) => x.id === pid)) return null;
-    return h('div', { style: 'margin-top:6px;color:var(--hot)' }, `新的前提還留著被判不成立的 ${pid}：存檔後當成「不同意」，${pid} 進靜默期（到下一季財報出來、最長 100 天，不再因為它通知你）。想換掉它，就在右邊拿掉或寫成新的一條。`);
+    if ((p.edited ?? []).some((e) => e.id === pid))
+      return h('div', { class: 'reply-reworded', style: 'margin-top:6px;color:var(--warn)' }, `被判不成立的 ${pid} 字改了：這次算修正論點，${pid} 不進靜默期；AI 判斷新的字也不成立時，會再告訴你。只是不同意、不想改前提的話，把 ${pid} 的字改回原本的，或回那則通知按「不同意，不動」。`);
+    return h('div', { class: 'reply-kept', style: 'margin-top:6px;color:var(--hot)' }, `新的前提原封不動留著被判不成立的 ${pid}：存檔後當成「不同意」，${pid} 進靜默期（到下一季財報出來、最長 100 天，不再因為它通知你）。想換掉它，就在右邊改字、拿掉或寫成新的一條。`);
   }
+  /** 存檔結果裡那則通知的那一句（T46）：原封不動留著 → 進靜默期；字改了 → 不進靜默期。 */
+  const revisedTail = (r, keptText, rewordedText) => (r.revised.kept ? keptText : (r.preview.edited ?? []).some((e) => e.id === r.revised.premiseId) ? rewordedText : '');
   const msg = h('div');
   const formBox = h('div', { class: 'stackv' });
   const save = actionButton('確認，存論點', 'primary', async () => {
@@ -273,7 +278,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
             h('h2', { class: 'panel-h' }, `論點與前提已經存好（第 ${r.preview.version} 版）`),
             r.preview.changed ? h('p', { class: 'small dim', style: 'margin-top:6px' }, r.preview.reviewHeld ? `前提有增減：${reviewHeldText(r.preview.reviewHeld)}` : '前提有增減：隔天的每日流程會開一次審查。') : null,
             r.preview.defaultOnly ? h('p', { class: 'small', style: 'margin-top:6px;color:var(--warn)' }, DEFAULT_ONLY_TEXT) : null,
-            r.revised ? h('p', { class: 'small dim', style: 'margin-top:6px' }, `${r.revisedName ?? '那則通知'}已結案（修正論點，部位不動）${r.revised.kept ? `；新的論點還留著前提 ${r.revised.premiseId}，當成不同意，這條前提進靜默期` : ''}。`) : null,
+            r.revised ? h('p', { class: 'small dim', style: 'margin-top:6px' }, `${r.revisedName ?? '那則通知'}已結案（修正論點，部位不動）${revisedTail(r, `；新的論點還留著前提 ${r.revised.premiseId}，當成不同意，這條前提進靜默期`, `；前提 ${r.revised.premiseId} 的字改了，不進靜默期`)}。`) : null,
             unsentBox(d.ticker, r.exits, `原因：${r.rewrite.error}`, () => ctx.go(back.href), r.preview.version),
             h('p', { class: 'small faint', style: 'margin-top:10px' }, '持股頁也會一直提示，直到重送成功。'),
             h('div', { class: 'btn-row', style: 'margin-top:12px' }, h('a', { class: 'btn', href: back.href }, '回持股頁')),
@@ -288,7 +293,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
         window.scrollTo({ top: 0 });
         return;
       }
-      const rv = r.revised ? `；${r.revisedName ?? '那則通知'}結案（修正論點${r.revised.kept ? `，保留的前提 ${r.revised.premiseId} 進靜默期` : ''}）` : '';
+      const rv = r.revised ? `；${r.revisedName ?? '那則通知'}結案（修正論點${revisedTail(r, `，保留的前提 ${r.revised.premiseId} 進靜默期`, `，${r.revised.premiseId} 的字改了、不進靜默期`)}）` : '';
       const cd = r.conds?.actionChanged?.length ? `；${r.conds.actionChanged.length} 條出場條件改了成立時的動作` : '';
       const ex = r.rewrite.status === 'SENT' ? '論點已存；出場條件送去 AI 對照與改寫，回來後在持股頁確認（確認之前舊的照舊監測）' : r.preview.exits?.changed ? '論點已存；出場條件全部拿掉，到持股頁確認才撤下' : '論點已存';
       toast([ex + rv + cd, ...(r.preview.defaultOnly ? [DEFAULT_ONLY_TEXT.replace(/。$/, '')] : []), ...(r.conds?.errors ?? [])].join('；'));
@@ -374,7 +379,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       diff,
       exitDiff,
       reply ? h('label', { class: 'check-row', style: 'margin-top:12px' }, reply, h('span', null, `這是對${own.pendingBreakName ?? '那則通知'}的回應：修正論點，部位不動`)) : null,
-      reply ? h('p', { class: 'small faint', style: 'margin:4px 0 0 1.8em' }, `${replyOpt.checked ? '' : '不是從那則通知進來，所以預設不勾：只是平常改論點就不用勾。'}勾著存檔：那則通知結案，論點記一次「失效後修改」。新的前提如果還留著被判不成立的那一條，當成不同意：那條前提到下一季財報出來之前不再通知你。`) : null,
+      reply ? h('p', { class: 'small faint', style: 'margin:4px 0 0 1.8em' }, `${replyOpt.checked ? '' : '不是從那則通知進來，所以預設不勾：只是平常改論點就不用勾。'}勾著存檔：那則通知結案，論點記一次「失效後修改」。新的前提如果原封不動留著被判不成立的那一條，當成不同意：那條前提到下一季財報出來之前不再通知你；那一條的字改了就算修正論點，照常審查、照常通知。`) : null,
       h('div', { class: 'btn-row', style: 'margin-top:14px' }, save, h('a', { class: 'linkbtn', href: back.href }, '算了')),
       msg,
     ),

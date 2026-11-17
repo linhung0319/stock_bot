@@ -361,7 +361,8 @@ async function liveConditions(backend: SiteBackend, tk: string): Promise<LiveCon
  *   3. 出場條件不存成前提；沿用編號但字改了的前提，靜默期結束（T42，setThesis）
  * dry：只算前提的對應（沿用、沿用但字改了、新的、會撤下）與出場條件有沒有改動，不存。
  * replyTo：這是對乙類通知 #N 的回應（修正論點，own_thesis §1.10）：那一項結案、afterBreak 加 1、log 寫 RESPONSE（REVISE）；
- *   新的前提還留著被判不成立的那一條 → 當成不同意（DISAGREE，進靜默期）。通知已經回覆過、或不是這檔的乙類 → 409。
+ *   新的前提原封不動留著被判不成立的那一條 → 當成不同意（DISAGREE，進靜默期）；同一個編號但字改了 → REVISE，不進靜默期（T46）。
+ *   通知已經回覆過、或不是這檔的乙類 → 409。
  */
 async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
   const tk = ticker(b.ticker);
@@ -401,8 +402,8 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     } catch (e) {
       throw new SiteError(422, errText(e));
     }
-    // 通知結案；新的前提還留著那一條 → 當成不同意（靜默期）
-    const rv = replyTo !== null && !dry ? reviseBreak(out.acct, d.view, replyTo, tk) : null;
+    // 通知結案；新的前提原封不動留著那一條 → 當成不同意（靜默期）；同一個編號但字改了 → 照修正論點，不進靜默期（T46）
+    const rv = replyTo !== null && !dry ? reviseBreak(out.acct, d.view, replyTo, tk, out.mapping.edited.map((e) => e.id)) : null;
     if (rv?.ok) out = { ...out, acct: rv.acct };
     const meta = out.acct.own[tk];
     const brief = (ps: Premise[]) => ps.map((p) => ({ id: p.id, text: p.text, origin: p.origin }));
@@ -455,7 +456,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
               ...(out.silenceEnded.length ? { silenceEnded: out.silenceEnded } : {}),
             },
           },
-          // 乙類的回應：修正論點（REVISE）；保留了那條前提 → 當成不同意（DISAGREE，理由固定）
+          // 乙類的回應：修正論點（REVISE）；原封不動保留了那條前提 → 當成不同意（DISAGREE，理由固定）
           ...(rv?.ok ? [{ ticker: tk, fileId: meta.fileId, session: d.view.date, kind: 'RESPONSE' as const, ref: String(replyTo), body: { notif: replyTo, type: 'B', outcome: rv.kept ? 'DISAGREE' : 'REVISE', reason: rv.kept ? KEPT_REASON : null, premiseId: rv.premiseId } }] : []),
         ]
       : [];
