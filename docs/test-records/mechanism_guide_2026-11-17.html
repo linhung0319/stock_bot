@@ -1,0 +1,827 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="darkreader-lock">
+<title>stock bot 機制說明（使用者操作角度）</title>
+<style>
+  :root {
+    --bg: #0b0c12;
+    --card: #13141d;
+    --card-2: #181a25;
+    --ink: #ededf5;
+    --ink-2: #c6c7d6;
+    --ink-3: #9799ae;
+    --line: rgba(255, 255, 255, 0.11);
+    --line-2: rgba(255, 255, 255, 0.06);
+    --own: #ff5aa8;
+    --mom: #4aa3ff;
+    --core: #2fd486;
+    --warn: #ffc021;
+    --hot: #ff7a66;
+    --all: #b9a4ff;
+    --font: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei UI", "Microsoft JhengHei", system-ui, sans-serif;
+    --mono: "Cascadia Mono", "Consolas", "SFMono-Regular", monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 16px; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 16px;
+    line-height: 1.8;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap {
+    display: grid;
+    grid-template-columns: 230px minmax(0, 860px);
+    gap: 48px;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 40px 24px 96px;
+  }
+  nav.toc {
+    position: sticky;
+    top: 24px;
+    align-self: start;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+    font-size: 14px;
+    line-height: 1.5;
+    padding-right: 8px;
+  }
+  nav.toc .ttl { color: var(--ink-3); font-size: 12px; letter-spacing: 0.08em; margin-bottom: 10px; }
+  nav.toc a { display: block; color: var(--ink-2); text-decoration: none; padding: 5px 0 5px 12px; border-left: 2px solid var(--line); }
+  nav.toc a:hover { color: var(--ink); border-left-color: var(--ink-3); }
+  nav.toc a.s-own { border-left-color: var(--own); }
+  nav.toc a.s-mom { border-left-color: var(--mom); }
+  nav.toc a.s-core { border-left-color: var(--core); }
+  nav.toc a.s-all { border-left-color: var(--all); }
+  nav.toc a.sub { padding-left: 24px; font-size: 13px; color: var(--ink-3); }
+
+  header.top { margin-bottom: 36px; }
+  h1 { font-size: 30px; line-height: 1.35; margin: 0 0 10px; letter-spacing: 0.01em; }
+  header.top p { color: var(--ink-3); font-size: 14px; margin: 0; line-height: 1.7; }
+
+  section { margin-top: 64px; }
+  section:first-of-type { margin-top: 0; }
+  h2 {
+    font-size: 24px; line-height: 1.4; margin: 0 0 6px;
+    padding-left: 14px; border-left: 5px solid var(--ink-3);
+  }
+  section.own h2 { border-left-color: var(--own); }
+  section.mom h2 { border-left-color: var(--mom); }
+  section.core h2 { border-left-color: var(--core); }
+  section.all h2 { border-left-color: var(--all); }
+  .lead { color: var(--ink-2); font-size: 17px; margin: 10px 0 0; }
+  h3 { font-size: 18px; margin: 40px 0 8px; line-height: 1.5; }
+  h3 .no { color: var(--ink-3); font-weight: 500; margin-right: 8px; font-family: var(--mono); font-size: 15px; }
+  h4 { font-size: 15px; margin: 22px 0 6px; color: var(--ink-2); }
+  p { margin: 10px 0; }
+  ul, ol { margin: 10px 0; padding-left: 24px; }
+  li { margin: 5px 0; }
+  li > ul { margin: 4px 0; }
+  strong { color: #fff; font-weight: 650; }
+  a { color: var(--mom); }
+  code { font-family: var(--mono); font-size: 0.86em; background: rgba(255,255,255,0.07); padding: 1px 6px; border-radius: 5px; word-break: break-all; }
+
+  /* 畫面上的文字 */
+  .ui {
+    display: inline-block; font-size: 0.9em; line-height: 1.5;
+    padding: 0 8px; border-radius: 6px;
+    border: 1px solid var(--line); background: rgba(255,255,255,0.05);
+    color: #fff; white-space: nowrap;
+  }
+  .q { color: #fff; background: rgba(255,255,255,0.05); border-left: 3px solid var(--line); padding: 2px 10px; display: block; margin: 6px 0; font-size: 0.94em; border-radius: 0 6px 6px 0; }
+
+  .tag { display: inline-block; font-size: 12.5px; line-height: 1.6; padding: 0 8px; border-radius: 999px; font-weight: 600; border: 1px solid currentColor; white-space: nowrap; }
+  .tag.own { color: var(--own); } .tag.mom { color: var(--mom); } .tag.core { color: var(--core); }
+
+  /* 表格 */
+  .tbl { overflow-x: auto; margin: 14px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; line-height: 1.65; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line-2); }
+  th { color: var(--ink-3); font-weight: 600; font-size: 13px; background: rgba(255,255,255,0.03); white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.k { color: #fff; font-weight: 600; white-space: nowrap; }
+  td.num { font-family: var(--mono); white-space: nowrap; }
+
+  /* 例子 */
+  .eg { margin: 16px 0; padding: 14px 18px 14px 18px; background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--ink-3); border-radius: 12px; }
+  .eg > .cap { font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--ink-3); margin-bottom: 4px; }
+  .eg p:last-child, .eg ul:last-child, .eg ol:last-child { margin-bottom: 0; }
+  section.own .eg { border-left-color: var(--own); }
+  section.mom .eg { border-left-color: var(--mom); }
+  section.core .eg { border-left-color: var(--core); }
+  section.all .eg { border-left-color: var(--all); }
+  .eg .calc { font-family: var(--mono); font-size: 13.5px; color: var(--ink-2); background: rgba(0,0,0,0.25); border-radius: 8px; padding: 8px 12px; margin: 8px 0; line-height: 1.7; overflow-x: auto; white-space: pre; }
+
+  .note { margin: 16px 0; padding: 12px 16px; border-radius: 12px; background: rgba(255,192,33,0.07); border: 1px solid rgba(255,192,33,0.28); font-size: 15px; }
+  .note b { color: var(--warn); }
+  .src { color: var(--ink-3); font-size: 13px; }
+
+  /* 三桶圖 */
+  .buckets { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; margin: 18px 0 8px; }
+  .bk { border-radius: 14px; padding: 14px 16px; background: var(--card); border: 1px solid var(--line); border-top: 4px solid var(--ink-3); }
+  .bk .nm { font-size: 18px; font-weight: 700; }
+  .bk .pct { font-family: var(--mono); font-size: 13px; color: var(--ink-3); margin-left: 8px; }
+  .bk p { margin: 4px 0 0; font-size: 14px; line-height: 1.65; color: var(--ink-2); }
+  .bk.own { border-top-color: var(--own); } .bk.own .nm { color: var(--own); }
+  .bk.mom { border-top-color: var(--mom); } .bk.mom .nm { color: var(--mom); }
+  .bk.core { border-top-color: var(--core); grid-column: 1 / -1; } .bk.core .nm { color: var(--core); }
+  .pipe { text-align: center; font-size: 13.5px; color: var(--ink-3); padding: 8px 0; line-height: 1.5; }
+  .pipe b { color: var(--ink-2); font-weight: 600; }
+  .pipe .ar { font-size: 18px; color: var(--ink-2); display: block; letter-spacing: 14px; padding-left: 14px; }
+  .inner { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+  .inner div { background: var(--card-2); border: 1px solid var(--line-2); border-radius: 10px; padding: 8px 12px; font-size: 13.5px; line-height: 1.55; color: var(--ink-2); }
+  .inner b { display: block; color: #fff; font-size: 14.5px; }
+
+  .steps { counter-reset: st; list-style: none; padding: 0; margin: 14px 0; }
+  .steps > li { counter-increment: st; position: relative; padding: 0 0 12px 44px; margin: 0; }
+  .steps > li::before { content: counter(st); position: absolute; left: 0; top: 2px; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line); background: var(--card); color: #fff; font-family: var(--mono); font-size: 14px; display: grid; place-items: center; }
+
+  footer { margin-top: 72px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 13px; }
+
+  @media (max-width: 980px) {
+    .wrap { grid-template-columns: minmax(0, 1fr); gap: 24px; padding: 24px 16px 72px; }
+    nav.toc { position: static; max-height: none; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: var(--card); }
+    nav.toc a.sub { display: none; }
+    h1 { font-size: 25px; }
+    h2 { font-size: 21px; }
+    .buckets { grid-template-columns: 1fr; }
+    .bk.core { grid-column: auto; }
+    .pipe.second { display: none; }
+    .inner { grid-template-columns: 1fr; }
+    table { min-width: 600px; }
+    .ui { white-space: normal; }
+  }
+  @media print {
+    :root { --bg: #fff; --card: #fff; --card-2: #f6f6f6; --ink: #111; --ink-2: #333; --ink-3: #666; --line: #ccc; --line-2: #e2e2e2; --own: #c2186b; --mom: #1668d6; --core: #0b8a4c; --all: #5b3fc4; --warn: #8a6100; }
+    strong, td.k, .ui, .q, .inner b { color: #000; }
+    .wrap { display: block; }
+    nav.toc { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav class="toc" aria-label="目錄">
+  <div class="ttl">目錄</div>
+  <a href="#s0">0　先看這一段</a>
+  <a href="#s1">1　每天的操作循環</a>
+  <a class="sub" href="#s1-1">時間表</a>
+  <a class="sub" href="#s1-3">網站的兩步</a>
+  <a class="sub" href="#s1-4">填快照</a>
+  <a class="sub" href="#s1-5">沒照做會怎樣</a>
+  <a class="s-own" href="#s2">2　自選</a>
+  <a class="sub" href="#s2-3">慢規則：減半、加回</a>
+  <a class="sub" href="#s2-4">論點檔與討論包</a>
+  <a class="sub" href="#s2-6">AI 審查</a>
+  <a class="s-mom" href="#s3">3　動能</a>
+  <a class="sub" href="#s3-1">每月選股</a>
+  <a class="sub" href="#s3-3">依波動度減碼</a>
+  <a class="sub" href="#s3-4">AI 能做什麼</a>
+  <a class="sub" href="#s3-5">排除、認養、轉入自選</a>
+  <a class="s-core" href="#s4">4　核心</a>
+  <a class="sub" href="#s4-2">崩盤規則</a>
+  <a class="s-all" href="#s5">5　三桶互相影響</a>
+  <a class="sub" href="#s5-1">錢怎麼流</a>
+  <a class="sub" href="#s5-3">同一檔在兩桶</a>
+  <a class="sub" href="#s5-5">搭便車</a>
+  <a class="sub" href="#s5-7">入金、出金、改比例</a>
+  <a href="#s6">6　盤點時看到的不一致</a>
+</nav>
+
+<main>
+
+<header class="top">
+  <h1>stock bot 機制說明<br>從使用者操作的角度</h1>
+  <p>2026-11-17 整理，依 main 分支 <code>32e91a2</code> 的程式。數字、門檻與畫面文字都以 <code>worker/src</code> 為準；設計文件和程式不同的地方照程式寫，差異列在第 6 節。例子裡標「示意」的數字是照規則手算的，其他取自測試。</p>
+</header>
+
+<!-- ================================================================ 0 -->
+<section id="s0">
+  <h2>0　先看這一段</h2>
+  <p class="lead">stock bot 不會替你下單。它每個交易日收盤後算一次，有事才發 LINE；你到網站做決定，到券商下單，回來填快照。</p>
+
+  <p>帳戶在帳本上分成三桶。券商那邊只有一個帳戶，分桶是 stock bot 自己記的。</p>
+
+  <div class="buckets">
+    <div class="bk own">
+      <span class="nm">自選</span><span class="pct">預算 20%</span>
+      <p>你自己選的股票。規則只當保險（跌深了減半、站穩了加回），AI 檢查你買它的理由還成不成立。</p>
+    </div>
+    <div class="bk mom">
+      <span class="nm">動能</span><span class="pct">預算 30%</span>
+      <p>規則每月從大型股裡選過去一年漲最多的 5 檔。買哪些、買多少、什麼時候賣，都由規則決定。</p>
+    </div>
+    <div class="pipe"><span class="ar">↓↑</span><b>減下來的錢交給核心</b>，要加回的錢從核心拿</div>
+    <div class="pipe second"><span class="ar">↓↑</span><b>減下來的錢交給核心</b>，要買的錢從核心拿</div>
+    <div class="bk core">
+      <span class="nm">核心</span><span class="pct">預算 50%</span>
+      <p>其他兩桶以外的錢都在這裡，所以它是三桶之間的「清算中心」。崩盤規則每月決定這一桶要拿 VOO 還是一半換成短債。</p>
+      <div class="inner">
+        <div><b>VOO</b>平時核心的錢都在這裡</div>
+        <div><b>SGOV（短債 ETF）</b>崩盤規則啟動時，核心的一半放這裡</div>
+        <div><b>券商帳上的現金</b>清單做完留下的零頭、股利</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tbl"><table>
+    <tr><th></th><th>誰選股票</th><th>誰決定買賣多少</th><th>多久檢查一次</th><th>AI 的權限</th></tr>
+    <tr><td class="k"><span class="tag own">自選</span></td><td>你</td><td>慢規則，加上你設的標準比重</td><td>每個交易日</td><td>並列建議，你選；預設照規則</td></tr>
+    <tr><td class="k"><span class="tag mom">動能</span></td><td>規則（排名）</td><td>規則（每檔等額，依波動度減碼）</td><td>每月一次；硬事件每天看</td><td>可以否決新股進場；硬事件建議提早出場，你確認</td></tr>
+    <tr><td class="k"><span class="tag core">核心</span></td><td>固定 VOO／SGOV</td><td>崩盤規則</td><td>每月一次</td><td>只說明，不能否決或延後</td></tr>
+  </table></div>
+
+  <h4>三句話，後面都是這三句的展開</h4>
+  <ol>
+    <li><strong>清單由規則算，AI 的意見並列在旁邊。</strong>要不要照 AI 由你選，你沒選就是照規則。唯一的例外是動能新股進場：AI 三票一致可以否決，由下一名遞補。</li>
+    <li><strong>任何一桶減下來的錢都交給核心，要加回的錢也從核心拿。</strong>所以每份清單最後幾乎都有一行 VOO。</li>
+    <li><strong>20 / 30 / 50 是風險預算，不是要維持的比例。</strong>系統不會只為了把比例拉回來叫你下單。</li>
+  </ol>
+</section>
+
+<!-- ================================================================ 1 -->
+<section id="s1">
+  <h2>1　每天的操作循環</h2>
+  <p class="lead">三桶共用同一套流程：系統算 → LINE 通知 → 你在網站做決定 → 到券商下單 → 回來填快照。</p>
+
+  <h3 id="s1-1"><span class="no">1.1</span>時間表（台灣時間）</h3>
+  <div class="tbl"><table>
+    <tr><th>時間</th><th>系統做什麼</th></tr>
+    <tr><td class="k">週二～週六 07:30</td><td>美股收盤後抓價格與申報，跑每日檢查。當天是月底最後一個交易日的話，同一次流程出下個月的月報。有新通知就推 LINE。<br>例外：通知上有 AI 結果還在等（自選減半的論點檢查、補開的崩盤檢視），這則先留著不推。</td></tr>
+    <tr><td class="k">09:30</td><td>07:30 沒跑完就重跑。把留著的通知推出去，不管 AI 回來了沒。還是沒跑完就推【告警】。</td></tr>
+    <tr><td class="k">11:30</td><td>只套用晚回來的 AI 結論，補推一行「結果回來了」。不抓資料、不產生新通知。</td></tr>
+  </table></div>
+  <ul>
+    <li>價格不是最新的那一天不產生訊號，會推告警。漏掉的交易日下一次流程照順序補做，最多補 10 天。</li>
+    <li>LINE 上寫的 <span class="ui">今晚美股開盤下單（市價、整股）</span> 就是下單方式：收到通知當晚，開盤市價單、整股。</li>
+  </ul>
+
+  <h3 id="s1-2"><span class="no">1.2</span>你會收到哪幾種 LINE</h3>
+  <div class="tbl"><table>
+    <tr><th>開頭</th><th>什麼時候</th><th>有沒有清單</th></tr>
+    <tr><td class="k">【月報】</td><td>每月一次。標題像 <span class="ui">2026-12 月報</span>，沒有單的月份是 <span class="ui">2026-12 月報：本月不用動</span>。</td><td>有（或「本月不用下單。」）</td></tr>
+    <tr><td class="k">【當天】</td><td>不能等月報的事：自選慢規則單筆變動 ≥ 總資產 5%、硬事件、你定的出場條件成立、AI 審查認為你的前提不成立。</td><td>有</td></tr>
+    <tr><td class="k">【提醒】</td><td>通知發出 2 個交易日沒回覆；決定了 2 個交易日沒填快照。各提醒一次。另外還有動能的策略檢討提醒。</td><td>沒有</td></tr>
+    <tr><td class="k">【告警】</td><td>系統自己的狀況：資料不是最新、流程沒跑完、AI 審查連續沒有結論、VOO 價格可疑等。</td><td>沒有</td></tr>
+  </table></div>
+  <p>每則有清單的通知長這樣：第一行標題、一行狀態（例如 <span class="ui">崩盤規則：未啟動；動能比例 2/3</span>）、每一檔一行（<span class="ui">賣 VOO 36 股 · 原因</span>，同一檔已經按代號合成淨股數）、<span class="ui">做完現金約 $X</span>，最後是網站連結。清單裡只放預設會做的單；預設不做的 AI 建議只有一行「另有 N 項 AI 建議（預設不做），到網站決定。」你自己在網站做的事（入金、出金、改比例）不會推 LINE，清單直接出現在網站。</p>
+  <p>在 LINE 傳關鍵字給官方帳號可以查：<span class="ui">狀態</span> <span class="ui">待辦</span> <span class="ui">月報</span> <span class="ui">告警</span> <span class="ui">網址</span> <span class="ui">說明</span>。這些只讀資料，不會改帳戶。</p>
+
+  <h3 id="s1-3"><span class="no">1.3</span>網站的兩步</h3>
+  <p>網站有兩個分頁（<span class="ui">待辦與紀錄</span>、<span class="ui">帳戶</span>）和一個 <span class="ui">我要…</span> 選單。每則通知走兩步：</p>
+  <ol class="steps">
+    <li><strong>看建議、做決定。</strong>每個觸發是一張建議單：左邊寫做什麼，右邊寫為什麼，展開有股數算法與規則原文。每張單選一個選項，預設的那個標著 <span class="ui">沒選就是這個</span>。常見的三組選項：
+      <ul>
+        <li><span class="ui">照做</span>／<span class="ui">這次不做</span>（動能、核心、上限）</li>
+        <li><span class="ui">照規則</span>／<span class="ui">照 AI：…</span>／<span class="ui">這次不做</span>（自選慢規則，有 AI 意見時）</li>
+        <li><span class="ui">照 AI</span>／<span class="ui">不同意，不動</span>（AI 發起的自選建議）</li>
+      </ul>
+      改一個選項，史萊姆會講這個選項的後果，例如「ORCL 這次不賣。右邊少了 2 張單（VOO 也不用買了），做完現金約 −$1,057（會是負的），要先補錢或改別張。」<br>
+      最後按 <span class="ui">決定好了，去下單、填快照</span>，或 <span class="ui">整則這次不做</span>。按下去只是記下決定，系統不會下單。</li>
+    <li><strong>下單後填快照。</strong>這一頁最上面是 <span class="ui">先到券商下這 N 張單</span>（可以複製清單）。下完單，照券商畫面把每一檔的股數和現金填回來，按 <span class="ui">送出快照</span>。</li>
+  </ol>
+  <p>送出快照之前都可以按 <span class="ui">上一步：改決定</span>。送出之後只能用 <span class="ui">我要… → 復原上一份快照</span>，而且只限最後一份。</p>
+
+  <h3 id="s1-4"><span class="no">1.4</span>填快照：帳本只認快照</h3>
+  <ul>
+    <li><strong>填什麼：</strong>自選、動能、核心三桶分開，每一檔的股數，再加上現金。不用填成交價。股數已經先帶好「帳本＋這份清單」的數字，照做的話只要對一下、填現金。</li>
+    <li><strong>快照就是新的起點。</strong>成交價和建議時不同、少買一股、某張單沒做，都直接反映在快照裡，下一次從快照算起。</li>
+    <li><strong>和清單差超過 1 股：</strong>通知變成「快照和清單不同」，你選 <span class="ui">補做差額</span>（系統給一份補做清單）或 <span class="ui">就這樣</span>。</li>
+    <li><strong>沒按決定就先下單了：</strong>快照顯示已經照做，就當成你選了預設選項。</li>
+    <li><strong>清單以外的變動，放哪一桶由你在快照上決定：</strong>
+      <ul>
+        <li>自選那一桶填新代號，就是新增自選；把股數改成 0，就是移出自選。</li>
+        <li>動能那一桶只能放「這個月動能名單上、那一格還沒買足」的股票，其他會被擋下，請你放自選。</li>
+        <li>核心只能放 VOO 和 SGOV。</li>
+      </ul></li>
+    <li><strong>現金不追問。</strong>對不上的差額記成「其他現金變動」；差太多會提示可能填錯。入金、出金要用 <span class="ui">我要…</span> 登記。</li>
+    <li><strong>拆股</strong>系統自己處理，股數和未成交的清單會乘上比例。</li>
+  </ul>
+  <div class="note"><b>要注意：</b>有清單「決定了還沒填快照」時，下一份月報會暫停，等你填完再用月底那天的資料重算。決定之後盡快下單、填快照。</div>
+
+  <h3 id="s1-5"><span class="no">1.5</span>沒照做會怎樣</h3>
+  <p>原則：<strong>動能和核心的單是策略的一部分，沒做會一直再列；自選的規則訊號和 AI 建議是一次性的，你的決定就是最終決定。</strong></p>
+  <div class="tbl"><table>
+    <tr><th>哪一種單</th><th>選「這次不做」之後</th><th>要寫理由嗎</th></tr>
+    <tr><td class="k"><span class="tag own">自選</span> 慢規則減半</td><td>規則照樣記成「已減半」，不再提醒。之後加回時以你實際的股數為準。</td><td>要（1～200 字）</td></tr>
+    <tr><td class="k"><span class="tag own">自選</span> 慢規則加回</td><td>不再提醒。</td><td>不用</td></tr>
+    <tr><td class="k"><span class="tag own">自選</span> AI 建議</td><td>一次性。同一條前提進入靜默期（見 2.6）。</td><td>當天通知要；月報裡的不用</td></tr>
+    <tr><td class="k"><span class="tag mom">動能</span> 進場、出場、調整</td><td>記成欠單，下個月月報再列（「上次的策略單沒照做，差額再列一次」）。</td><td>不用</td></tr>
+    <tr><td class="k"><span class="tag core">核心</span> 崩盤規則</td><td>下個月規則還在同一個狀態就重列；帳戶頁照實寫「啟動中（核心還沒換：你 … 選了這次不做）」。</td><td>要</td></tr>
+  </table></div>
+  <ul>
+    <li><strong>忘了回覆：</strong>2 個交易日後提醒一次。提醒過才回覆的話，股數用回覆當天的價格重算；自選的規則如果這段時間已經反轉，那一項直接取消。</li>
+    <li><strong>整份月報一個月都沒回覆：</strong>新月報出來時，舊月報的動能與核心項目取消、記成欠單，以新月報為準；自選的項目不重列。</li>
+  </ul>
+
+  <h3 id="s1-6"><span class="no">1.6</span>影子紀錄：事後看誰對</h3>
+  <p>只要你做的和規則不同，或規則和 AI 不同，系統就記一筆，每筆有三個股數：照規則、照 AI、你實際。在 <span class="ui">待辦與紀錄 → 紀錄 → 沒照規則做的</span> 可以看 1、3、6 個月之後「照規則會多賺或少賺多少」「照 AI 會多賺或少賺多少」。它是逐筆的股數差乘上那一檔之後的價差，不是另一個完整的組合。</p>
+</section>
+
+<!-- ================================================================ 2 -->
+<section id="s2" class="own">
+  <h2>2　自選</h2>
+  <p class="lead">你選股票、你決定買不買。系統做兩件事：用慢規則當底線保險，用 AI 定期檢查「你買它的理由還成不成立」。</p>
+
+  <h3 id="s2-1"><span class="no">2.1</span>加入、移出</h3>
+  <ul>
+    <li><strong>加入：</strong>自己到券商買，然後在快照的自選那一桶填上代號與股數。沒有另外的「新增自選」頁。也可以從動能的月報把股票接過來（轉入自選、認養，見 3.5）。</li>
+    <li><strong>移出：</strong>賣掉後在快照把股數改成 0。這檔的論點檔結案，不再追蹤。</li>
+    <li><strong>買進時可以寫一句話</strong>（最多 300 字）。它只是之後討論論點的開場，AI 審查不看它。真正的論點、前提、出場條件之後到持股頁 <span class="ui">編輯論點</span> 寫（2.4）。沒寫也不擋任何事，系統先用三條預設前提：
+      <ul>
+        <li>P1　財報可信、沒有硬事件</li>
+        <li>P2　營收年增率沒有連兩季是負的</li>
+        <li>P3　稀釋每股盈餘沒有連兩季低於去年同季</li>
+      </ul></li>
+    <li><strong>加入時已經比 52 週高點低 20% 以上：</strong>一開始就記成「減半」狀態。系統不會叫你賣，但這檔再跌慢規則也不會有動作，要等站回 200 日均線連續 10 天才回到標準狀態。要有底線請自己寫出場條件。</li>
+    <li><strong>賣光之後又買回：</strong>開一份新的論點檔，持股頁會顯示「上一次持有時」的論點，編輯時可以按 <span class="ui">帶入上次的論點</span>。舊的出場條件不會自動恢復監測。</li>
+  </ul>
+
+  <h3 id="s2-2"><span class="no">2.2</span>標準比重</h3>
+  <p>每一檔自選有一個「標準比重」（占總資產的百分比）。它只在兩個地方起作用：<strong>減半之後加回時，買回到多少</strong>；以及<strong>入金時這一檔要補到多少</strong>。平常持股高於或低於標準比重，系統都不會叫你動。</p>
+  <ul>
+    <li>留空就是「現在占總資產的比重」，最高 15%。欄位旁邊會顯示「現在占 X%（建議 Y%）」，建議值是在自選預算 20% 裡依波動度反比分配（波動大的比重小）。</li>
+    <li>之後可以在持股頁按 <span class="ui">改標準比重</span>，改它不會產生任何下單。</li>
+  </ul>
+
+  <h3 id="s2-3"><span class="no">2.3</span>慢規則：減半、加回</h3>
+  <p>每個交易日收盤後檢查。每一檔只有兩個狀態：標準、減半。</p>
+  <div class="tbl"><table>
+    <tr><th></th><th>條件</th><th>動作</th><th>錢</th></tr>
+    <tr><td class="k">減半</td><td>收盤比 52 週高點低 20% 以上</td><td>賣掉當時股數的一半（四捨五入）</td><td>交給核心</td></tr>
+    <tr><td class="k">加回</td><td>收盤連續 10 天站上 200 日均線，距上次切換至少 15 個交易日，而且當天不在 −20% 以下</td><td>買回到標準比重</td><td>從核心拿</td></tr>
+  </table></div>
+  <ul>
+    <li><strong>當天通知還是併入月報，看金額：</strong>這一筆變動 ≥ 總資產 5% 就當天通知；不到 5% 併進下一份月報，標題會註明「這一筆不到總資產的 5%，所以併入月報」。減半是賣一半，所以一檔大約要占總資產 10% 以上才會當天通知。</li>
+    <li><strong>狀態在通知產生的那一刻就切換</strong>，不等你回覆。所以帳戶頁可能在你還沒賣之前就顯示「減半中」。</li>
+    <li>還沒下單的減半和加回會互相抵銷，月報不會兩個都列。</li>
+  </ul>
+
+  <div class="eg">
+    <div class="cap">例子（示意）：MU 當天減半，之後加回</div>
+    <p>帳戶 $100,000。MU 120 股、股價 $100，占 12%，標準比重 10%。52 週高點 $128。</p>
+    <ol>
+      <li>今天收盤 $100，比高點低 21.9%，慢規則減半：賣 60 股 = $6,000，是總資產的 6%，所以<strong>當天通知</strong>。</li>
+      <li>清單上同時有一行買 VOO：賣得 $6,000 的 98% 交給核心，VOO $500 的話買 11 股。</li>
+      <li>幾個月後 MU 站回 200 日均線連續 10 天。這時總資產 $104,000、MU $110：<br>加回的股數 = 10% × 104,000 ÷ 110 取整 − 現有 60 股 = 94 − 60 = <strong>買 34 股</strong>（約 $3,740，占 3.6%）。不到 5%，<strong>併入月報</strong>，錢從核心拿（賣 VOO）。</li>
+    </ol>
+    <p>如果一開始 MU 只有 80 股（占 8%），減半是賣 40 股 = 4%，就不會當天通知，等月報。</p>
+  </div>
+
+  <h4>減半通知上的選項</h4>
+  <p>標題像 <span class="ui">MU：比 52 週高點低 22.4% → 慢規則減半</span>。每次新觸發減半，系統會同時開一次「減半檢視」（AI 三票看這次下跌），所以選項可能有三個：</p>
+  <div class="tbl"><table>
+    <tr><th>選項</th><th>什麼時候出現</th><th>選了之後</th></tr>
+    <tr><td class="k">照規則（預設）</td><td>一定有</td><td>賣一半，狀態減半</td></tr>
+    <tr><td class="k">照 AI：不動</td><td>三票都認為這次下跌是大盤或產業帶下來的、沒有前提被判不成立，而且程式核對過個股自身的跌幅不到整段的一半。<br>只有預設前提（你沒寫論點）的股票不提供這個選項。</td><td>不賣，但規則仍記成已減半</td></tr>
+    <tr><td class="k">照 AI：出清，賣 N 股</td><td>三票都判同一條前提不成立，而且引用了申報原文</td><td>全賣，移出自選</td></tr>
+    <tr><td class="k">這次不做</td><td>一定有</td><td>不賣，要寫理由；規則仍記成已減半</td></tr>
+  </table></div>
+  <p>AI 同意減半或三票不一致時，通知上只多一行說明，沒有多的選項。減半檢視還沒回來時，這則通知的 LINE 會從 07:30 延到 09:30 才推（網站上那一行寫「AI 論點檢查進行中，台灣 09:30 前更新」），11:30 才回來的話補推一行。LINE 上對應的一行是 <span class="ui">AI 論點檢查：同意減半</span>、<span class="ui">AI 論點檢查：建議不動（預設仍是照規則），到網站決定</span> 這一類。</p>
+
+  <h3 id="s2-4"><span class="no">2.4</span>論點檔與討論包</h3>
+  <p>每一檔自選有一份論點檔，在持股頁。裡面是：</p>
+  <ul>
+    <li><strong>論點本文</strong>（600 字內）：你為什麼持有它。</li>
+    <li><strong>前提</strong>（最多 5 條）：論點成立靠哪幾件事。AI 審查就是逐條檢查這些。</li>
+    <li><strong>出場條件</strong>（最多 6 條）：發生什麼事你就要出清、減半，或重新審查。</li>
+  </ul>
+  <p>論點不在 stock bot 裡聊，而是到 claude.ai 討論，stock bot 負責頭和尾：</p>
+  <ol class="steps">
+    <li>持股頁按 <span class="ui">複製討論包</span>，貼到 claude.ai 的新對話。討論包裡只有比重，沒有金額和股數。</li>
+    <li>它會站在反方問你問題。你可以貼新聞、請它查資料，來回幾輪。</li>
+    <li>說「收尾」，它會輸出一整塊固定格式的文字。把那一塊貼回 stock bot，按 <span class="ui">解析</span>。</li>
+    <li>畫面左右對照現在的和新的，可以手改，按 <span class="ui">確認，存論點</span>。</li>
+  </ol>
+  <p>存檔之後：</p>
+  <ul>
+    <li>論點和前提立刻生效。前提有增減或改字，隔天 AI 會審一次（每檔 30 天最多 1 次，超過的留到月底）。</li>
+    <li>出場條件會先送去「改寫」：一票的 AI 只把你的句子改成查得到的格式，不評論買賣。改寫回來後你在持股頁一次勾選確認，<strong>勾了才開始監測</strong>。</li>
+    <li>出場條件是<strong>整組取代</strong>：你存檔時右邊那一組就是「之後要的全部」。沒被提到的舊條件會撤下，但要等你確認新的那一組之後才撤，確認之前舊的照舊監測。</li>
+  </ul>
+
+  <h3 id="s2-5"><span class="no">2.5</span>出場條件怎麼被監測</h3>
+  <div class="tbl"><table>
+    <tr><th>條件的類型</th><th>例子</th><th>誰確認</th></tr>
+    <tr><td class="k">財報門檻</td><td>毛利率低於 40%</td><td>程式：新財報出來時直接比對數字</td></tr>
+    <tr><td class="k">申報事件</td><td>公司公告終止某個主要合約</td><td>AI 三票讀申報原文</td></tr>
+    <tr><td class="k">只能從法說會或新聞確認的</td><td>管理層口頭下修展望</td><td>不每天看，只在定期審查時檢查</td></tr>
+    <tr><td class="k">價格類</td><td>跌破 $80</td><td>只記錄，不通知（價格面交給慢規則）</td></tr>
+  </table></div>
+  <p><strong>你定的條件成立時</strong>，當天收到通知，標題是 <span class="ui">MU：你定的出場條件成立</span>。選項是 <span class="ui">照當時的決定：出清，賣 N 股</span>（預設）和 <span class="ui">這次不做</span>（要寫理由）。這類通知沒有次數上限，因為是你自己定的。</p>
+  <p>AI 審查時也可能建議新的條件（一次最多 3 條）。它們先是「建議中」，你勾選了才會監測。</p>
+
+  <h3 id="s2-6"><span class="no">2.6</span>AI 審查：什麼時候跑、結果去哪裡</h3>
+  <p>審查是三票制：三票結論相同才算數，否則當成沒有結論、照規則。</p>
+  <div class="tbl"><table>
+    <tr><th>什麼時候審</th><th>說明</th></tr>
+    <tr><td class="k">月底檢查點</td><td>月報前一天。上次審查之後有新證據才審（新申報、新事件、論點改過、滿 100 天）；沒有就沿用上次的結論。</td></tr>
+    <tr><td class="k">財報後</td><td>新的季報、年報、財報新聞稿申報之後。</td></tr>
+    <tr><td class="k">論點改過</td><td>存論點的隔天。</td></tr>
+    <tr><td class="k">提前審查</td><td>出現重大申報事件（執行長或財務長離任、下修或撤回財測、重大減損、重組、合約終止、資安事件等），或「個股自身大跌」：21 個交易日自己跌 10% 以上，而且比產業 ETF 多跌 10 個百分點以上。每檔 30 天最多 1 次。</td></tr>
+    <tr><td class="k">你定的條件要求</td><td>條件成立、而你當時定的動作是「重新審查」。</td></tr>
+  </table></div>
+  <p>審查會選一個檔位：出清／減半／不動／回到標準／提高到 125%。程式再把檔位換成股數。</p>
+  <p><strong>AI 的建議要通過門檻才會變成你可以選的選項：</strong>三票同一個檔位、和目前狀態不同、資料沒有缺，而且有一條前提三票都判「不成立」、每一票都引用了申報或財報表。只靠新聞或價格當證據的不算。沒過門檻的審查只放在網站的持股頁，不通知。</p>
+  <div class="tbl"><table>
+    <tr><th>通過門檻之後</th><th>怎麼給你</th></tr>
+    <tr><td class="k">當天通知</td><td>財報後、提前審查、條件觸發、論點改過這幾種審查，檔位是出清或減半，而且這一檔 30 天內沒發過 AI 當天通知。<br>標題 <span class="ui">MU：AI 審查認為你的前提不成立</span>，選項 <span class="ui">照 AI（減半，賣 N 股）</span>／<span class="ui">不同意，不動</span>（預設），另有 <span class="ui">拿去討論</span> 和 <span class="ui">編輯論點</span>。</td></tr>
+    <tr><td class="k">進月報</td><td>月底檢查點的建議；或 30 天內已經發過當天通知。</td></tr>
+    <tr><td class="k">併進現有通知</td><td>這檔剛好有還沒回覆的慢規則通知：不另發，更新那一則上 AI 的那一行。</td></tr>
+  </table></div>
+  <p><strong>你選了「不同意」之後的靜默期：</strong>只因為那一條前提的建議暫時不再通知，直到滿 45 天之後的第一份財報出來（最長 100 天）。兩個例外：AI 的檔位變得更重（減半變出清）照樣通知；你把那條前提的字改了，靜默期就結束。</p>
+
+  <h4>照 AI 檔位做了之後</h4>
+  <div class="tbl"><table>
+    <tr><th>檔位</th><th>股數</th><th>之後</th></tr>
+    <tr><td class="k">出清</td><td>全賣</td><td>移出自選，論點檔結案</td></tr>
+    <tr><td class="k">減半</td><td>標準狀態時賣一半；已經在減半狀態就是 0 股</td><td>慢規則記成減半，之後照加回條件</td></tr>
+    <tr><td class="k">回到標準</td><td>買到標準比重</td><td>慢規則記成標準</td></tr>
+    <tr><td class="k">提高到 125%</td><td>買到標準比重 × 1.25</td><td>標準比重永久乘 1.25</td></tr>
+  </table></div>
+  <p>AI 的「減半」和規則的「減半」是同一個動作，全系統只有一種減半。</p>
+  <p><strong>提高到 125%</strong> 的條件很嚴：連續 126 個交易日站在 200 日均線之上、不在減半狀態、沒有硬事件、距上次提高滿一年、三票都認為前提全部成立。只會出現在月報（<span class="ui">MU 提高標準比重的建議</span>），預設是不做。</p>
+
+  <h3 id="s2-7"><span class="no">2.7</span>「要看的事」：不用下單的提醒</h3>
+  <p>不需要下單、但值得你看一眼的事集中在持股頁的「要看的事」，月報的 LINE 只有一行「持股有 N 件事要看（不用下單），在持股頁。」例如：</p>
+  <ul>
+    <li>AI 建議了新條件，等你勾選；改寫好的出場條件還沒確認。</li>
+    <li>財報條件差一季就成立；條件成立了但換算下來不用賣。</li>
+    <li>還沒寫論點（每 6 個月提一次）；論點滿一年沒更新；減半中而且沒有出場條件。</li>
+    <li>個股自身大跌，但沒有新申報可以審。</li>
+    <li>部位已經是標準比重的 2 倍；幾檔走勢很像的股票合計太大（見 5.9）。</li>
+  </ul>
+
+  <h3 id="s2-8"><span class="no">2.8</span>單檔上限</h3>
+  <p>自選的一檔超過總資產 15%，月報會列 <span class="ui">MU 自選單檔超過 15% → 減回 10%</span>。這是風險控制，月報可以只為了它下單。只在月報和出金時檢查，月中漲過 15% 不會通知。自選桶合計沒有上限。</p>
+</section>
+
+<!-- ================================================================ 3 -->
+<section id="s3" class="mom">
+  <h2>3　動能</h2>
+  <p class="lead">完全由規則操作的一桶：每月選過去一年漲最多的 5 檔大型股，等額持有。你要做的只有照月報下單。</p>
+
+  <h3 id="s3-1"><span class="no">3.1</span>每月選股</h3>
+  <ol class="steps">
+    <li><strong>股票池：</strong>S&amp;P 500 成分股 → 股價高於 5 美元 → 成交金額前 100 → 市值前 50。</li>
+    <li><strong>排名：</strong>這 50 檔照過去 252 個交易日（約一年）的報酬由高到低排。</li>
+    <li><strong>進場：</strong>買前 5 名裡還沒持有的。</li>
+    <li><strong>出場：</strong>持股掉出前 15 名（或掉出股票池）才賣，而且是全部賣。空出來的格子照排名往下補。</li>
+  </ol>
+  <ul>
+    <li>排名用<strong>當月最後一個交易日</strong>的收盤。月報在台灣隔天早上出來，當晚（下個月第一個交易日）開盤下單。</li>
+    <li>「買前 5、掉出前 15 才賣」中間的緩衝，是為了不要每個月換來換去。第 5 名掉到第 9 名不會賣。</li>
+    <li>同一家公司的兩類股（例如 GOOGL 和 GOOG）只取排名較前的一類。</li>
+    <li><strong>暫停換股：</strong>成分股名單兩個來源對不上、或大型股有缺價格時，那個月不排名，動能名單不變，月報照出並另推告警。</li>
+  </ul>
+
+  <h3 id="s3-2"><span class="no">3.2</span>每一檔買多少</h3>
+  <div class="eg">
+    <div class="cap">算法</div>
+    <div class="calc">每檔目標 = 總資產 × 30% × 動能比例 ×（崩盤規則啟動時再 × 0.5）÷ 5</div>
+    <p>帳戶 $100,000（示意）：</p>
+    <div class="tbl"><table>
+      <tr><th>情況</th><th>每檔目標</th><th>動能桶合計</th></tr>
+      <tr><td>動能比例全額</td><td class="num">$6,000</td><td class="num">$30,000</td></tr>
+      <tr><td>動能比例 2/3</td><td class="num">$4,000</td><td class="num">$20,000</td></tr>
+      <tr><td>動能比例 2/3，崩盤規則啟動中</td><td class="num">$2,000</td><td class="num">$10,000</td></tr>
+    </table></div>
+    <p>股數用前一日收盤價換算，買進無條件捨去到整股。目標 $4,000、股價 $187.5，就是買 21 股。</p>
+  </div>
+  <p><strong>只做必要的交易。</strong>留在名單上的股票，只有這四種情況會被調整：</p>
+  <ul>
+    <li>新進場。</li>
+    <li>動能比例或崩盤規則變了（這個月 5 檔一起拉到新的每檔目標）。</li>
+    <li>上次的單沒照做，補做。</li>
+    <li>偏離目標超過 ±50%（例如目標 $6,000，漲到 $9,000 以上），而且這個月本來就有其他單。這叫搭便車，見 5.5。</li>
+  </ul>
+  <p>所以一檔動能股從 $6,000 漲到 $8,000，系統不會叫你賣一點。</p>
+
+  <h3 id="s3-3"><span class="no">3.3</span>依波動度減碼（動能比例）</h3>
+  <p>動能策略在自己波動變大的時候容易出事，所以每個月看一次：這 5 檔合起來，最近半年相對 VOO 多出來的波動，和歷史上的平常水準比。比平常大，就少拿一點。</p>
+  <ul>
+    <li>動能比例只有四格：<strong>全額、2/3、1/3、0</strong>。</li>
+    <li>比值 = 歷史中位數 ÷ 現在的波動。比值 1 以上是全額，0.67～1 是 2/3，0.33～0.67 是 1/3，再低是 0。</li>
+    <li><strong>換格要多過 0.10 的緩衝</strong>，避免在邊界來回跳。</li>
+    <li>減下來的錢交給核心；之後比例回升，再從核心拿錢買回。</li>
+  </ul>
+  <div class="eg">
+    <div class="cap">例子：緩衝怎麼作用</div>
+    <p>上個月是全額。</p>
+    <ul>
+      <li>這個月比值 0.95：照格子該降到 2/3，但 0.95 + 0.10 = 1.05 還在全額那一格，<strong>維持全額</strong>。</li>
+      <li>這個月比值 0.80：0.80 + 0.10 = 0.90 仍在 2/3 那一格，<strong>降到 2/3</strong>。5 檔各從 6% 降到 4%，減下來的 10% 進 VOO。</li>
+      <li>之後要從 2/3 回到全額，比值要到 1.10 以上。</li>
+    </ul>
+  </div>
+  <p>月報的狀態文字會寫目前的比例（<span class="ui">動能比例 2/3</span>），有調整時是一張建議單 <span class="ui">動能部位調整（依波動度減碼）</span>，5 檔併在一起。帳戶頁也看得到。</p>
+
+  <h3 id="s3-4"><span class="no">3.4</span>AI 在動能上能做什麼</h3>
+  <div class="tbl"><table>
+    <tr><th>功能</th><th>什麼時候</th><th>AI 的權限</th></tr>
+    <tr><td class="k">進場審查</td><td>每月，對要進場的新股</td><td><strong>可以否決</strong>這個月進場，由下一名遞補</td></tr>
+    <tr><td class="k">硬事件</td><td>每天掃持股的新申報</td><td>建議提早出場，<strong>你確認才做</strong></td></tr>
+    <tr><td class="k">單月大跌</td><td>持股 21 個交易日跌 20% 以上</td><td>沒有。程式寫一行說明，列在「要看的事」</td></tr>
+    <tr><td class="k">策略檢討</td><td>動能相對 VOO 從高點落後超過 20%（之後 30／40／50% 各一次），以及每滿一年</td><td>沒有。只列出正反證據，不建議停用或繼續</td></tr>
+  </table></div>
+  <p>出場、比例回調、依波動度減碼都沒有 AI 參與。</p>
+
+  <h4>進場審查</h4>
+  <ul>
+    <li>先由程式查：這檔是不是正要被收購、有沒有延遲申報財報、最近的大漲是不是集中在一兩天、有沒有財報不可信賴或會計師辭任的申報。</li>
+    <li>被收購方、延遲申報財報：<strong>規則直接否決</strong>，不用 AI。</li>
+    <li>有其他可疑的地方才開「法庭」（AI 三票）。<strong>三票一致、同一個理由、有申報或數字當證據才否決</strong>；票數不一致或逾時，一律照規則准許。</li>
+    <li>被否決的股票不會出現在清單上。遞補的那一檔會寫「排在它前面的 X 這個月被 AI 否決，所以由它遞補」。遞補者也要過審查；再被否決，那一格的錢這個月留在核心。</li>
+    <li>審查在月報前一天先做。月報出來後才回來的否決不會改清單，只補推一行 LINE，預設仍是買進；你想照否決的話自己按 <span class="ui">排除</span>。</li>
+  </ul>
+
+  <h4>硬事件</h4>
+  <ul>
+    <li><strong>規則直接提出：</strong>動能持股是被收購方、或延遲申報財報。當天通知，預設是 <span class="ui">確認出場</span>。</li>
+    <li><strong>AI 法庭：</strong>財報不可信賴（8-K 4.02）、會計師辭任、每日掃描標到的會計或監管問題。三票一致才當天通知 <span class="ui">AI 建議提早出場（動能）</span>，預設是 <span class="ui">不做</span>，選 <span class="ui">照 AI（出場）</span> 才賣。</li>
+    <li>同一類事件 180 天內只通知一次。</li>
+  </ul>
+
+  <h3 id="s3-5"><span class="no">3.5</span>你可以做的三件事</h3>
+  <p>動能的單預設就是照做。月報上有三個按鈕讓你表達不同意見，都要寫一句理由：</p>
+  <div class="tbl"><table>
+    <tr><th>按鈕</th><th>出現在</th><th>效果</th></tr>
+    <tr><td class="k">排除這一檔</td><td>新進場的項目</td><td>這檔不買，月報重算，由下一名遞補。排除一直有效，到帳戶頁「你排除的動能股票」按 <span class="ui">取消排除</span> 才解除。</td></tr>
+    <tr><td class="k">我也看好，認養到自選</td><td>新進場的項目</td><td>照常買進，但記在自選桶，之後照自選規則管，動能就算把它排出名單也不會叫你賣。動能那一格下個月照排名補下一名。</td></tr>
+    <tr><td class="k">我想留著，轉入自選</td><td>出場的項目</td><td>不用下單，動能桶的股數直接搬到自選桶。之後照自選規則管。</td></tr>
+  </table></div>
+
+  <h3 id="s3-6"><span class="no">3.6</span>一個月的例子</h3>
+  <div class="eg">
+    <div class="cap">例子（取自示範情境，假的市場資料）</div>
+    <p>月底排名前 5：PLTR、APP、AVGO、GE、NFLX。你原本持有的 ORCL 掉出前 15 名。</p>
+    <ol>
+      <li><strong>ORCL 出場：</strong>賣出全部 28 股。</li>
+      <li><strong>空出一格：</strong>照排名輪到第 2 名 APP，但進場審查三票否決。由下一個還沒持有的第 4 名 GE 遞補，股數 = 總資產 × 6% ÷ 前一日收盤，取整。</li>
+      <li><strong>PLTR 留任：</strong>它漲太多，比目標高出 50% 以上。這個月本來就有單，順便賣回目標（搭便車）。</li>
+      <li><strong>VOO：</strong>賣的比買的多，多的錢買 VOO。</li>
+    </ol>
+    <p>如果你對 GE 按「排除」（理由：不想碰航太）：月報重算，第 5、6 名你已經持有，改買第 7 名 GS。</p>
+    <p>如果 ORCL 和 GE 你都選「這次不做」：下個月月報會再列 ORCL 賣 28 股，以及 GE「上次的策略單沒照做，差額再列一次」。</p>
+  </div>
+</section>
+
+<!-- ================================================================ 4 -->
+<section id="s4" class="core">
+  <h2>4　核心</h2>
+  <p class="lead">核心沒有自己的目標金額。它就是「總資產扣掉自選和動能之後剩下的錢」，平時全部放 VOO。</p>
+
+  <h3 id="s4-1"><span class="no">4.1</span>清算中心</h3>
+  <ul>
+    <li>核心只放三樣：VOO、SGOV（短債 ETF）、券商帳上的現金。</li>
+    <li>每份清單合成時，系統先算自選和動能要買賣什麼，<strong>多出來的錢買 VOO，不夠的錢賣 VOO</strong>。畫面上寫「剩下的現金交給核心：買 VOO」「不夠的錢從核心拿：賣 VOO」。</li>
+    <li>買單合計最多用到「現金＋賣單金額」的 98%，留 2% 給隔天開盤的價差。所以每次做完帳上會留一點現金。</li>
+    <li>差額不到總資產 0.25% 就不動，避免為了幾十塊錢多一張單。</li>
+    <li>月報沒有其他單、但帳上有閒置現金（例如股利）時，會列一項「帳上的現金交給核心」。</li>
+    <li>50% 只是預算，顯示在帳戶頁，不拿來算任何目標。</li>
+  </ul>
+
+  <h3 id="s4-2"><span class="no">4.2</span>崩盤規則</h3>
+  <p>全系統只有這條規則會把股票換成短債。每月只判斷一次，和月報同一天。</p>
+  <div class="tbl"><table>
+    <tr><th></th><th>條件</th><th>核心</th><th>動能</th><th>自選</th></tr>
+    <tr><td class="k">啟動</td><td>月底那天 VOO 收盤低於 200 日均線</td><td>一半換成 SGOV</td><td>每檔目標減半</td><td>不受影響</td></tr>
+    <tr><td class="k">解除</td><td>月底那天 VOO 收盤回到 200 日均線以上</td><td>SGOV 全部換回 VOO</td><td>回到原目標</td><td>不受影響</td></tr>
+  </table></div>
+  <ul>
+    <li>沒有緩衝、沒有連續幾天的確認，平日也不看。月中 VOO 跌破均線不會有任何通知。</li>
+    <li>月報最上面是一張建議單 <span class="ui">崩盤規則啟動：核心一半換短債、動能部位減半</span>，核心和動能的單併在同一項，選項 <span class="ui">照做</span>／<span class="ui">這次不做</span>。</li>
+    <li>啟動期間，其他桶減下來的錢<strong>全部放 SGOV</strong>（不買 VOO）；要用錢時先賣 SGOV，再賣 VOO。</li>
+  </ul>
+  <div class="eg">
+    <div class="cap">例子（示意）：崩盤規則啟動的那一份月報</div>
+    <p>帳戶 $100,000：VOO 100 股（$500，共 $50,000）、動能 5 檔各 $6,000、自選 $20,000、現金 0。SGOV 假設 $100。</p>
+    <ol>
+      <li><strong>核心自己：</strong>一半換短債，賣 VOO 50 股、買 SGOV 250 股。</li>
+      <li><strong>動能：</strong>每檔目標從 $6,000 變 $3,000，5 檔共賣約 $15,000。</li>
+      <li><strong>動能賣出的錢回到核心：</strong>留 2% 緩衝後約 $14,200，一半買 VOO（14 股）、一半買 SGOV（71 股）。</li>
+      <li><strong>你看到的清單（已按代號合併）：</strong>賣 VOO 36 股、買 SGOV 321 股、動能 5 檔各賣一半。</li>
+    </ol>
+    <p>做完：VOO 約 $32,000、SGOV 約 $32,100、現金約 $900、動能 $15,000、自選 $20,000 沒動。</p>
+  </div>
+
+  <h3 id="s4-3"><span class="no">4.3</span>AI 檢視：只說明</h3>
+  <ul>
+    <li>預估月底會切換時，前一個交易日先開 AI 檢視（三票，看 10 個總經指標的儀表板）。</li>
+    <li>三票一致時，LINE 多一行 <span class="ui">AI 檢視：照做</span> 或 <span class="ui">AI 檢視：延後</span>。網站上寫得更細，例如「沒有意見（照做 2、延後 1）」。</li>
+    <li><strong>AI 的意見不能否決或延後這條規則</strong>，預設永遠是照做。它的用途是讓你事後在 AI 紀錄裡看「照規則」和「照 AI 延後」哪個比較好。</li>
+    <li>不會切換的月份不開 AI。</li>
+  </ul>
+
+  <h3 id="s4-4"><span class="no">4.4</span>選「這次不做」</h3>
+  <ul>
+    <li>可以，但要寫理由。AI 三票說延後時，理由欄會先幫你填「照 AI 檢視：延後」。</li>
+    <li>規則的狀態照樣是「啟動中」。帳戶頁寫「啟動中（核心還沒換：你 2027-01 選了這次不做）」。</li>
+    <li>下個月規則還在啟動中：重列一次「上次沒做，核心的一半換短債再列一次」，用當時的市值重算。動能那幾檔以「上次的策略單沒照做」重列。</li>
+    <li>下個月規則已經解除：不重列，解除那一項會註明「上次啟動你沒有做，這次沒有短債要換回」。</li>
+  </ul>
+</section>
+
+<!-- ================================================================ 5 -->
+<section id="s5" class="all">
+  <h2>5　三桶互相影響</h2>
+  <p class="lead">三桶各有各的規則，彼此只透過幾條固定的管道相連：錢經過核心、同一檔股票的合計上限、崩盤規則、同一份清單合併下單。</p>
+
+  <h3 id="s5-1"><span class="no">5.1</span>錢怎麼流</h3>
+  <div class="tbl"><table>
+    <tr><th>發生的事</th><th>崩盤規則沒啟動</th><th>崩盤規則啟動中</th></tr>
+    <tr><td class="k">自選減半、出清；動能出場、減碼</td><td>賣得的錢買 VOO</td><td>賣得的錢買 SGOV</td></tr>
+    <tr><td class="k">自選加回、提高；動能進場、加碼</td><td>賣 VOO 來付</td><td>先賣 SGOV，不夠再賣 VOO</td></tr>
+    <tr><td class="k">入金剩下的錢</td><td>買 VOO</td><td>一半 VOO、一半 SGOV</td></tr>
+    <tr><td class="k">崩盤規則切換的那一份</td><td colspan="2">多出來的錢一半 VOO、一半 SGOV（見 4.2 的例子）</td></tr>
+  </table></div>
+  <p>核心賣光了還不夠付的時候，買單會從清單最後一行往回減，畫面會寫「核心的錢不夠付這份清單的買單，已經從最後一張買單往回減：X 少買 N 股。」</p>
+  <div class="eg">
+    <div class="cap">例子（取自測試，$100 的 MU、$500 的 VOO）</div>
+    <p>MU 50 股減半，賣 25 股得 $2,500。</p>
+    <ul>
+      <li><strong>沒啟動：</strong>$2,500 × 98% = $2,450，買 VOO 4 股（$2,000），帳上留 $500。</li>
+      <li><strong>啟動中：</strong>同一筆錢全部買 SGOV，VOO 不動。</li>
+    </ul>
+  </div>
+  <p>為什麼自選減下來的錢不放現金而是放 VOO：回測裡多頭時每年多約 1.5～4 個百分點；整體市場的空頭交給崩盤規則處理。</p>
+
+  <h3 id="s5-2"><span class="no">5.2</span>20 / 30 / 50 是預算，不是目標</h3>
+  <p>沒有任何規則會因為「某一桶占比跑掉了」而下單。自選漲到占 30%，系統不會叫你賣。帳戶頁寫的是：「三桶的比例是風險預算，不是要維持的目標：系統不會只為了把比例拉回來叫你下單。」</p>
+  <p>比例實際用到的地方只有這些：</p>
+  <ul>
+    <li><strong>動能 30%：</strong>算每一檔的目標（3.2）。基準是<strong>總資產</strong>，所以自選變大不會讓動能變小，被擠的是核心。</li>
+    <li><strong>自選 20%：</strong>算標準比重的建議值；入金時各檔自選目標合計超過 20% 的話，等比例少補。</li>
+    <li><strong>核心 50%：</strong>只顯示，不進任何計算。</li>
+    <li><strong>改比例：</strong>你主動改的時候才照新比例調整（5.7）。</li>
+  </ul>
+  <p>單檔上限 15%、跨桶上限 10% 是固定對總資產的百分比，和三桶比例無關。</p>
+
+  <h3 id="s5-3"><span class="no">5.3</span>同一檔股票在兩桶</h3>
+  <p>同一檔可以同時在自選和動能。帳本各記各的股數（例如 NVDA 自選 30 股、動能 12 股），券商看到的是合計 42 股。帳戶頁各列一行；快照也是兩桶分開填。</p>
+  <p><strong>各管各的：</strong>自選那 30 股照慢規則和你的論點，動能那 12 股照排名。動能把 NVDA 排出名單時只賣動能的 12 股。</p>
+  <p><strong>但合計有上限（跨桶上限）：</strong></p>
+  <ul>
+    <li><strong>買的時候：</strong>動能買進或調整時，同一檔自選＋動能合計最多到總資產 <strong>10%</strong>。被擋下的錢留在核心。自選已經占 10% 以上的話，動能那一格買 0 股。</li>
+    <li><strong>漲上去之後：</strong>合計超過 <strong>15%</strong>，月報列 <span class="ui">X 自選＋動能合計超過 15% → 減回 10%（先減動能）</span>。先賣動能的部分，不夠才賣自選。這和自選的單檔上限一樣，是風險控制，月報可以只為了它下單。</li>
+  </ul>
+  <div class="eg">
+    <div class="cap">例子（取自測試，數字是占總資產的百分比）</div>
+    <ul>
+      <li>你自選持有 MU 7%。這個月 MU 排第 1 名要進動能：動能每檔本來買 6%，但合計最多 10%，所以<strong>動能只買 3%</strong>，剩下 3% 留在核心。</li>
+      <li>之後 MU 大漲，自選 9 ＋ 動能 8，合計約 16.7%：月報把<strong>動能那部分減到約 1.2%</strong>，自選不動。</li>
+      <li>如果是自選 14.5 ＋ 動能 2：動能歸 0 還不夠，<strong>自選也減到 10%</strong>。</li>
+    </ul>
+  </div>
+  <p><strong>同一個月兩桶方向相反：</strong>沒有誰蓋過誰，兩桶各做各的，你在券商下的是淨額。例如自選 MU 減半賣 2 股、同月 MU 進動能買 6 股，清單上是「買 MU 4 股」，下面分行寫「自選 −2：自選訊號」「動能 +6：動能換股」。兩桶剛好抵成 0 股時，清單寫「搬」「不用下單」，帳本自己把股數從一桶記到另一桶。</p>
+
+  <h3 id="s5-4"><span class="no">5.4</span>崩盤規則對三桶的影響</h3>
+  <div class="tbl"><table>
+    <tr><th>桶</th><th>啟動時</th><th>啟動期間</th></tr>
+    <tr><td class="k"><span class="tag core">核心</span></td><td>一半換 SGOV</td><td>收到的錢放 SGOV；付錢先用 SGOV</td></tr>
+    <tr><td class="k"><span class="tag mom">動能</span></td><td>每檔拉到「原目標的一半」（不是把現有股數砍半）</td><td>新進場的股票也只買半格；依波動度減碼照常算，兩個折扣相乘</td></tr>
+    <tr><td class="k"><span class="tag own">自選</span></td><td>不動</td><td>慢規則照常。唯一的差別是減下來的錢進 SGOV 而不是 VOO</td></tr>
+  </table></div>
+  <p>自選在空頭時的保護來自它自己的慢規則，不靠崩盤規則。</p>
+
+  <h3 id="s5-5"><span class="no">5.5</span>搭便車：別桶的單會帶出動能的回調</h3>
+  <p>動能留任股偏離目標超過 ±50% 時，系統想把它拉回目標，但不會只為了這件事叫你登入券商。它要等「這個月的月報本來就有其他單」才一起做，否則整個撤回。</p>
+  <ul>
+    <li><strong>算數的其他單：</strong>動能換股、依波動度減碼、崩盤規則切換、補做欠單、單檔或跨桶上限、併進月報的入金，以及<strong>併進月報的自選減半或加回</strong>。也就是說，自選的訊號會讓動能的回調跟著出現在同一份月報。</li>
+    <li><strong>不算數的：</strong>AI 建議、你定的條件成立、另一則當天通知裡的事。</li>
+  </ul>
+  <div class="eg">
+    <div class="cap">例子</div>
+    <p>動能的 R1 從 6% 漲到 12%，偏離目標 100%。</p>
+    <ul>
+      <li>這個月動能沒換股、自選沒訊號、比例沒變：月報寫「本月不用動」，R1 繼續放著。</li>
+      <li>這個月剛好有另一檔動能股出場：月報除了換股，多一項 <span class="ui">R1 動能比例回調（偏離目標超過 ±50%，搭本月其他單）</span>，把 R1 賣回目標。</li>
+    </ul>
+  </div>
+
+  <h3 id="s5-6"><span class="no">5.6</span>在桶之間搬股票</h3>
+  <div class="tbl"><table>
+    <tr><th>動作</th><th>自選桶</th><th>動能桶</th><th>核心</th></tr>
+    <tr><td class="k">轉入自選<br><span class="src">動能要賣，你想留</span></td><td>多一檔。標準比重預設是轉入後的占比（最高 15%）。之後照慢規則管，超過 15% 下個月減回 10%。</td><td>少一檔，出場的賣單取消。遞補的新股照買。</td><td>原本賣舊股的錢沒了，遞補新股的錢由核心付（賣 VOO）。</td></tr>
+    <tr><td class="k">認養<br><span class="src">動能要買，你也看好</span></td><td>多一檔，照常買進但記在這裡。</td><td>這個月少一檔，下個月照排名補下一名。這檔之後不會再被選進動能。</td><td>照常付買進的錢；下個月再付遞補那一檔的錢。</td></tr>
+    <tr><td class="k">排除<br><span class="src">動能要買，你不要</span></td><td>不影響。</td><td>這檔不買，下一名遞補。</td><td>付的是遞補那一檔的錢。</td></tr>
+  </table></div>
+  <p>反方向（把自選的股票劃一部分給動能）沒有專用的操作。動能要買一檔你自選已經有的股票時，是另外買新的股數，受 5.3 的 10% 上限限制。</p>
+
+  <h3 id="s5-7"><span class="no">5.7</span>入金、出金、改比例</h3>
+  <p>這三件事都在 <span class="ui">我要…</span> 裡，都先試算、確定才成立，確定後直接進「等你下單、填快照」。它們是三桶一起算的。</p>
+
+  <h4>入金：只買不賣</h4>
+  <ol>
+    <li>用入金後的總資產，算每一格現在該有多少：自選每檔是標準比重（減半中的算一半，最高 10%）；動能每檔是 3.2 的目標。</li>
+    <li>照「離目標差最多」的順序補；缺口不到總資產 0.25% 的不補。</li>
+    <li>補完還有剩的進核心。</li>
+  </ol>
+  <div class="eg">
+    <div class="cap">例子（取自測試）：入金 $10,000 到 $100,000 的帳戶</div>
+    <p>入金前：自選 MU $6,000、NVDA $10,000（標準比重各 10%）；動能 R1 $4,000、R2～R5 各 $6,000；VOO $56,000。</p>
+    <p>入金後總資產 $110,000，所以目標變成自選每檔 $11,000、動能每檔 $6,600。</p>
+    <div class="tbl"><table>
+      <tr><th>順序</th><th>補給</th><th>缺口</th><th>補多少</th><th>還剩</th></tr>
+      <tr><td>1</td><td><span class="tag own">自選</span> MU</td><td class="num">5,000</td><td class="num">5,000</td><td class="num">5,000</td></tr>
+      <tr><td>2</td><td><span class="tag mom">動能</span> R1</td><td class="num">2,600</td><td class="num">2,600</td><td class="num">2,400</td></tr>
+      <tr><td>3</td><td><span class="tag own">自選</span> NVDA</td><td class="num">1,000</td><td class="num">1,000</td><td class="num">1,400</td></tr>
+      <tr><td>4～6</td><td><span class="tag mom">動能</span> 另外三檔</td><td class="num">各 600</td><td class="num">600、600、200</td><td class="num">0</td></tr>
+    </table></div>
+    <p>錢用完了，VOO 這次沒買。反過來，如果每一格都在目標附近，入金就全部買 VOO。</p>
+  </div>
+  <p>效果：入金會自然把落後的格子補起來，自選不會因為入金被稀釋，也不需要另外為了比例下單。月報那天月報還沒回覆就登記入金，會和月報合成一份清單。</p>
+
+  <h4>出金：只賣不買</h4>
+  <ol>
+    <li>先檢查：出金後會超過總資產 15% 的自選股，同一份清單減回 10%，賣得的錢抵出金。</li>
+    <li>還不夠的，照這個順序賣：核心的現金與短債 → 動能高於目標的部分 → VOO → 動能按比例 → 最後才是自選按比例。</li>
+  </ol>
+  <p>所以一般的出金幾乎都是賣 VOO，自選最後才動。</p>
+
+  <h4>改比例</h4>
+  <ul>
+    <li>自選：每一檔的股數和標準比重照「新比例 ÷ 舊比例」縮放。</li>
+    <li>動能：每一檔拉到新的目標。</li>
+    <li>差額由核心吸收。例如動能從 30% 改成 0%，清單就是賣掉動能持股、買 VOO。</li>
+    <li>每次改比例都記影子，之後可以看「如果沒改」的結果。</li>
+  </ul>
+
+  <h3 id="s5-8"><span class="no">5.8</span>同一天好幾件事</h3>
+  <ul>
+    <li><strong>每則通知各自一份清單。</strong>月底那天，自選有一筆 ≥ 5% 的減半，同時要出月報：你會收到兩則，一則【當天】、一則【月報】。不到 5% 的自選訊號則直接併在月報裡。</li>
+    <li><strong>到券商只下一次。</strong>填快照頁最上面會把所有已決定的清單、跨桶按代號合成淨額。</li>
+    <li><strong>同一檔兩桶都持有、又出硬事件：</strong>一則通知、兩個項目（自選的、動能的），各自選。</li>
+    <li><strong>通知的頻率上限各算各的：</strong>自選 AI 的當天通知每檔 30 天 1 則；動能硬事件同一類 180 天 1 次。沒有跨桶共用的上限。</li>
+    <li><strong>未完成的清單會擋月報：</strong>不管是哪一桶的清單，決定了還沒填快照，月報就暫停（1.4）。</li>
+  </ul>
+
+  <h3 id="s5-9"><span class="no">5.9</span>集中度提醒</h3>
+  <p>規則是一檔一檔看的，但你的自選和動能可能其實是同一個題材。系統每天算持股之間近一年的走勢相關性：相關係數 0.7 以上的連成一組，組裡至少有一檔自選，合計占總資產 15% 以上，就列進「要看的事」：</p>
+  <span class="q">NVDA、MU 走勢很像（近一年日報酬的相關係數 0.9x），合計占總資產 16.0%（NVDA 9.0%、MU 7.0%）。同一個題材出問題時會一起跌，要不要調整由你決定</span>
+  <p>動能持股也算進去（標「含動能」），核心不算。這只是提醒，不改清單、不推通知，同一組每 3 個月再提一次。</p>
+
+  <h3 id="s5-10"><span class="no">5.10</span>現金與股利算在核心</h3>
+  <p>券商帳上的現金算核心的一部分。所以自選或動能持股配的股利、成交價和建議價的差、手續費，在帳上都落在核心，不會算進自選或動能那一桶的金額裡。</p>
+</section>
+
+<!-- ================================================================ 6 -->
+<section id="s6">
+  <h2>6　盤點時看到的不一致</h2>
+  <p class="lead">寫這份說明時對照了程式，下面是「畫面文字、設計文件、實際行為」三者對不上的地方。都只是讀程式看到的，沒有實際跑流程驗證，也沒有修改任何程式。</p>
+
+  <h3><span class="no">6.1</span>行為可能不是你要的</h3>
+  <div class="tbl"><table>
+    <tr><th>現象</th><th>位置</th></tr>
+    <tr><td><strong>動能進場項目選過「這次不做」之後，沒辦法再排除。</strong>排除、認養只出現在新進場項目；下個月它變成「補做」項目，上面沒有這些按鈕，只能每個月繼續選不做。補做項目的說明卻寫「直到你選排除或轉入自選」。</td><td><code>engine/report.ts:386,395</code><br><code>app/site/explain.ts:959</code></td></tr>
+    <tr><td><strong>認養不能取消。</strong>認養過的股票，就算之後從自選賣光，也永遠不會再被動能選進去。</td><td><code>engine/report.ts:773</code></td></tr>
+    <tr><td><strong>排除之後的遞補者沒有過 AI 進場審查</strong>（除非它剛好先被預審過）。設計寫的是遞補者也要審。</td><td><code>app/site/api.ts:752-765</code></td></tr>
+    <tr><td><strong>AI「回到標準」的建議實際上幾乎不會出現。</strong>除了提高到 125% 之外，建議都要求「有一條前提被判不成立」才算數，而回到標準通常是前提都成立的時候。</td><td><code>ai/ownReview.ts:262-269</code></td></tr>
+    <tr><td>回應「AI 審查認為你的前提不成立」時，沿用編號但改了前提的字，仍會開新的靜默期（T42 的規則是改字就結束靜默期）。進度紀錄已有記載。</td><td><code>engine/ops.ts:1193-1230</code></td></tr>
+    <tr><td><strong>建立帳戶時沒有起步清單。</strong>只做分類，第一份月報才開始買動能。崩盤規則一律從「未啟動」開始。這是還沒做的 T17。</td><td><code>engine/account.ts:828</code></td></tr>
+    <tr><td>月底是週五時，月報在台灣週六早上到，LINE 仍寫「今晚美股開盤下單」，實際要等週一晚上。</td><td><code>app/line.ts:77</code></td></tr>
+    <tr><td>不確定：自選的當天減半通知還沒回覆時出月報，月報的單檔上限檢查用的是還沒減半的股數，可能多列一張之後用不到的上限單。</td><td>沒有測試涵蓋</td></tr>
+    <tr><td>不確定：自己在快照把動能持股減掉（不是照清單），不會記成欠單，之後只能靠 ±50% 回調買回。</td><td>沒有測試涵蓋</td></tr>
+    <tr><td>每桶的單位淨值有算、有存，但網站和 LINE 都沒有顯示。</td><td><code>engine/account.ts:677-685</code></td></tr>
+  </table></div>
+
+  <h3><span class="no">6.2</span>畫面文字和實際行為不同</h3>
+  <div class="tbl"><table>
+    <tr><th>畫面寫的</th><th>實際</th><th>位置</th></tr>
+    <tr><td>崩盤規則啟動中，核心的每一行都說明成「一半買 VOO、一半放短債」</td><td>只有切換那一份和入金是一半一半；其他清單全部放短債</td><td><code>app/site/explain.ts:1018</code></td></tr>
+    <tr><td>動能「每月第一個交易日看排名」</td><td>用前一個月最後一個交易日的收盤排名</td><td><code>app/site/explain.ts:86</code></td></tr>
+    <tr><td>帳戶頁「依波動度減碼需要 24 個月的紀錄，累積夠之前維持全額」</td><td>新帳戶帶了 320 個月的起始歷史，第一份月報就會算</td><td><code>app/site/views.ts:846</code></td></tr>
+    <tr><td>轉入自選「動能桶下個月用核心的錢補」</td><td>遞補已經在同一份月報裡，是當月由核心付（從合成清單的邏輯推出來的）</td><td><code>app/site/views.ts:270</code></td></tr>
+    <tr><td>動能進場的算式「每檔目標 ÷ 收盤 = N 股」</td><td>被跨桶上限限買時，N 是限買後的股數，算式對不上</td><td><code>app/site/explain.ts:228-231</code></td></tr>
+    <tr><td>晚到的否決「下次月報再列 X 時按排除」</td><td>買進之後那一檔的項目不會有排除按鈕</td><td><code>app/momNotes.ts:89</code></td></tr>
+  </table></div>
+
+  <h3><span class="no">6.3</span>設計文件（design_v2）還沒跟上程式的地方</h3>
+  <ul>
+    <li>網站流程：文件多處仍寫三步、四個入口；程式是兩步、兩個分頁加「我要…」。</li>
+    <li>§2.2 自選：仍寫每月審查、2～5 條條件、每檔每月最多 1 則、四條預設前提、AI 草擬前提、出清後要重寫前提；程式是月底檢查點（有新證據才審）、最多 3 條建議且勾選才監測、你定的條件不設上限、三條預設前提、沒有 AI 草擬、買回會帶出上一份論點。</li>
+    <li>§2.3：仍列「劃撥」和「部分完成」選項；程式都沒有。</li>
+    <li>§2.3.1：「填快照時問忘了還是不做」；程式是提醒一次，晚回覆用當天價格重算。</li>
+    <li>§2.4：「每月最多審 3 檔新股」；程式沒有這個上限。</li>
+    <li>§2.1、§4.4：崩盤時「換現金」；程式是買 SGOV。</li>
+    <li>§2.1 第 5 點：搭便車只列 4 種原因；程式是任何非回調的單都算（含上限、補做、併進月報的入金）。</li>
+    <li>策略檢討與依波動度減碼的基準：文件寫 SPY，上線程式用 VOO。</li>
+  </ul>
+</section>
+
+<footer>
+  <p>來源：<code>worker/src/engine/</code>（slowRule、momentum、risk、allocator、orders、report、ops、account）、<code>worker/src/app/</code>（flow、schedule、line、thesis、ownAi、momAi、crashAi、events、concentration、site/explain、site/views）、<code>worker/public/js/</code>，以及 <code>worker/test/</code> 的 engine-allocator、scenarios、t33a、t35 等測試。這份文件沒有跑測試，例子的數字不是標「示意」就是引自測試的斷言。</p>
+</footer>
+
+</main>
+</div>
+</body>
+</html>

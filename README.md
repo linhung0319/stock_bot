@@ -47,6 +47,7 @@ Python 一律用 `uv run`（`pyproject.toml`）。
 | `backtest_B9_2026-11-08.md` | B-9 AI 層規則偵測段（SEC 硬事件）回測 |
 | `data_sources_2026-11-08.md` | 上線前資料源驗證 |
 | `usage_walkthrough_2026-11-07.md` | 使用情境演練（散戶用 Firstrade 跟著操作） |
+| `mechanism_guide_2026-11-17.html` | 目前機制的白話說明（使用者操作角度）：共用流程、自選、動能、核心、三桶互相影響；第 6 節列出盤點時看到的文字、文件與程式不一致 |
 
 ### `docs/history/` 早期構想與討論（已被現行設計取代，留作紀錄）
 
