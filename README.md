@@ -8,6 +8,8 @@
 |---|---|
 | `worker/` | 正式系統：規則引擎、資料抓取、排程、網站、LINE、AI 任務端點（TypeScript）。指令見 `worker/README.md`，部署步驟見 `worker/SETUP.md` |
 | `ai/prompts/` | 雲端排程讀的 AI prompt（`run.md` 是共用外殼，其餘一個功能一份） |
+| `scripts/` | 本機用的腳本：`export_records.py` 把 Worker 的紀錄拉到 `records/`（說明在 `docs/analysis/records_guide.md`）；`thesis.py` 取自選股的討論包、預覽、回填論點 |
+| `.claude/commands/` | Claude Code 的指令：`/thesis <代號>｜all` 在這個 repo 裡討論自選股的論點（設計 `own_thesis_design` §1.14） |
 | `docs/` | 設計、計畫、測試紀錄、早期討論（見下表） |
 | `backtest/` | 回測腳本與輸出（`results/`）。**凍結，不修改**；說明與結論在 `docs/test-records/backtest_B*.md` |
 | `research/data_sources/` | 上線前資料源驗證的腳本；結論在 `docs/test-records/data_sources_2026-11-08.md` |

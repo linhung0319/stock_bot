@@ -588,3 +588,91 @@ describe('T27：草擬模式的入口不存在（§1.12）', () => {
     expect(readFileSync(join(HERE, '..', '..', 'ai', 'prompts', 'own_check_v1.md'), 'utf8').split('\n')[0]).toContain('不再使用');
   });
 });
+
+// ---------------------------------------------------------------- T48：管理金鑰的論點路徑（在 repo 用 Claude Code 討論）
+
+describe('T48：/admin/own/*（取討論包、解析、預覽、存檔；Bearer ADMIN_TOKEN）', () => {
+  const admin = async <T = Record<string, unknown>>(c: Ctx, method: 'GET' | 'POST', path: string, body?: unknown, token: string | null = 't') => {
+    const r = await handle(new Request(`https://bot.example/admin/own/${path}`, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), c.env, c.fetcher, new Date('2026-11-20T02:00:00Z'));
+    return { status: r.status, body: (await r.json()) as T };
+  };
+
+  it('沒有金鑰或金鑰不對 → 401；清單列出每一檔自選與有沒有論點', async () => {
+    await withWorld(async (c) => {
+      expect((await admin(c, 'GET', 'list', undefined, null)).status).toBe(401);
+      expect((await admin(c, 'GET', 'list', undefined, 'wrong')).status).toBe(401);
+      const r = await admin<{ date: string; own: unknown[] }>(c, 'GET', 'list');
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual({ date: '2026-11-19', own: [{ ticker: 'NVDA', kind: 'THESIS', thesisVersion: null, thesisSetAt: null, pendingBreak: null }] });
+    });
+    await withWorld(
+      async (c) => {
+        const r = await admin<{ own: { kind: string }[] }>(c, 'GET', 'list');
+        expect(r.body.own[0].kind).toBe('DEFAULT_ONLY');
+      },
+      { premises: null },
+    );
+  });
+
+  it('討論包和網站的相同；不是自選、沒有代號 → 422', async () => {
+    await withWorld(async (c) => {
+      const site = await c.api<{ text: string; mode: string }>('GET', 'own/NVDA/discussion');
+      const r = await admin<{ text: string; mode: string }>(c, 'GET', 'discussion?ticker=nvda');
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual(site.body);
+      expect(r.body.text).toContain('# NVDA 論點討論包');
+      expect((await admin(c, 'GET', 'discussion?ticker=TSLA')).status).toBe(422);
+      expect((await admin(c, 'GET', 'discussion')).status).toBe(422);
+      expect((await admin(c, 'POST', 'discussion', {})).status).toBe(405);
+    });
+  });
+
+  it('解析 → 預覽不存 → 存檔：論點與前提生效、來源記成討論後貼回、出場條件送改寫；replyTo 擋下', async () => {
+    await withWorld(async (c) => {
+      const p = await admin<{ found: boolean; thesis: string; premises: string[]; premiseIds: (string | null)[]; exits: { text: string; action: string }[] }>(c, 'POST', 'thesis/parse', { ticker: 'NVDA', text: BLOCK });
+      expect(p.status).toBe(200);
+      expect(p.body.found).toBe(true);
+      const payload = { ticker: 'NVDA', thesis: p.body.thesis, premises: p.body.premises.map((text, i) => ({ id: p.body.premiseIds[i], text })), exitConditions: p.body.exits.map((e) => ({ text: e.text, action: e.action })) };
+      // 預覽：P1 文字相同沿用、P2 沒有編號又改了字 → 新的一條、舊的 P2 撤下；不存
+      const dry = await admin<{ preview: { kept: { id: string }[]; added: { id: string }[]; retired: { id: string }[]; exits: { changed: boolean } } }>(c, 'POST', 'thesis', { ...payload, dry: true });
+      expect(dry.status).toBe(200);
+      expect(dry.body.preview.kept.map((x) => x.id)).toEqual(['P1']);
+      expect(dry.body.preview.added.map((x) => x.id)).toEqual(['P3']);
+      expect(dry.body.preview.retired.map((x) => x.id)).toEqual(['P2']);
+      expect(dry.body.preview.exits.changed).toBe(true);
+      expect((await loadAccount(c.db))!.acct.own.NVDA.thesis ?? null).toBeNull();
+      // 回覆通知留在網站上做
+      const reply = await admin<{ error: string }>(c, 'POST', 'thesis', { ...payload, replyTo: 3 });
+      expect(reply.status).toBe(422);
+      expect(reply.body.error).toContain('請在網站的編輯論點頁做');
+      // 存檔（就算送來的 source 寫 TYPED，也記成討論後貼回）
+      const saved = await admin<{ ok: boolean; rewrite: { status: string } }>(c, 'POST', 'thesis', { ...payload, source: 'TYPED' });
+      expect(saved.status).toBe(200);
+      expect(saved.body.rewrite.status).toBe('SENT');
+      const meta = (await loadAccount(c.db))!.acct.own.NVDA;
+      expect(meta.thesis).toMatchObject({ source: 'DISCUSSION', version: 1 });
+      expect(meta.premises.map((x) => x.id)).toEqual(['P1', 'P3']);
+      const log = await thesisLog(c.db);
+      expect(log.at(-1)!.body).toMatchObject({ source: 'DISCUSSION', replyTo: null, exitsChanged: true });
+    });
+  });
+
+  it('這檔有還沒回覆的乙類通知：清單標出來、討論包是 BREAK、預覽照給、存檔擋下（要從網站的那則通知貼回）', async () => {
+    await withWorld(async (c) => {
+      const loaded = (await loadAccount(c.db))!;
+      const { view } = await c.viewAt('2026-11-19');
+      const n = breakNotice(loaded.acct, view, 'NVDA', { tier: 'HALF', premiseId: 'P1', basis: '8-K 2026-11-18' });
+      await saveAccount(c.db, n.acct, loaded, '測試', new Date('2026-11-19T13:00:00Z'));
+      const id = n.notif!.id;
+      expect((await admin<{ own: { pendingBreak: number | null }[] }>(c, 'GET', 'list')).body.own[0].pendingBreak).toBe(id);
+      expect((await admin<{ mode: string }>(c, 'GET', 'discussion?ticker=NVDA')).body.mode).toBe('BREAK');
+      const payload = { ticker: 'NVDA', thesis: 'x', premises: [{ id: 'P1', text: '資料中心的營收沒有連兩季季減' }, { id: 'P2', text: USER_PREMISES[1].text }], exitConditions: [] };
+      expect((await admin(c, 'POST', 'thesis', { ...payload, dry: true })).status).toBe(200);
+      const r = await admin<{ error: string }>(c, 'POST', 'thesis', payload);
+      expect(r.status).toBe(409);
+      expect(r.body.error).toContain(`通知 #${id}`);
+      expect((await loadAccount(c.db))!.acct.own.NVDA.thesis ?? null).toBeNull();
+      expect((await loadAccount(c.db))!.acct.notifs.find((x) => x.id === id)!.status).toBe('PENDING');
+    });
+  });
+});

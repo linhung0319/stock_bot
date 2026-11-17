@@ -532,6 +532,28 @@ AI 建議、還沒勾選的：W1 …
 | §1.10 乙類的回應、靜默期 | T30 | 月報裡沒動的乙類項目記成 `SKIPPED`；修正論點但保留同一條前提 → 當成不同意 |
 | 持股頁怎麼呈現 | T34 | — |
 
+### 1.14 在 repo 裡用 Claude Code 討論（2026-11-17 使用者提出並同意，T48）
+
+§1.7、§1.8 的「複製討論包 → 貼到 claude.ai → 貼回網站」多一條路：在這個 repo 開 Claude Code，由它向 Worker 取討論包、**和使用者討論**、給預覽、使用者同意後回填（和 `scripts/export_records.py` 把紀錄拉回來分析是同一個模式）。網站上原本的路不變。
+
+- **不變的原則**：論點是使用者的。Claude Code 照討論包裡的固定指示（`DISCUSSION_V3`）問、查、反駁、整理；存檔前一定先給預覽，使用者明白說可以才存（§1.4：AI 不能改論點與前提）。
+- **Worker**（`worker/src/app/site/api.ts` 的 `handleAdminThesis`；Bearer `ADMIN_TOKEN`，只有真實模式，內部走和網站同一套函式）：
+
+  | 路徑 | 做什麼 |
+  |---|---|
+  | `GET /admin/own/list` | `{ date, own: [{ ticker, kind: 'DEFAULT_ONLY' \| 'THESIS', thesisVersion, thesisSetAt, pendingBreak }] }`；`pendingBreak` 是還沒回覆的乙類通知編號 |
+  | `GET /admin/own/discussion?ticker=&mode=` | 和 `GET /api/own/<代號>/discussion` 相同（有還沒回覆的乙類通知時是 `BREAK`） |
+  | `POST /admin/own/thesis/parse` | `{ ticker, text }` → `parseThesisBlock` 的結果 |
+  | `POST /admin/own/thesis` | 內容同 `POST /api/ops/own-thesis`（`dry` = 只預覽）；`source` 一律記成 `DISCUSSION` |
+
+- **不能做的**：
+  - 帶 `replyTo` → 422。回覆乙類通知會讓通知結案並影響靜默期（§1.10），留在網站的編輯論點頁。
+  - 這檔有還沒回覆的乙類通知時，存檔（不是 `dry`）→ 409，只給預覽。理由：從這裡存，通知不會結案；之後在網站只剩「照 AI」「不同意」可選，改過字的前提反而會被當成不同意、進靜默期（T46 修掉的那種結果）。這時把收尾的區塊拿到網站，從那則通知的「編輯論點」貼回。
+  - 不勾選出場條件的改寫結果：照舊在持股頁確認（§1.8 確認第 4 點）。
+- **本機腳本** `scripts/thesis.py`（只用標準函式庫；金鑰與網址的找法同 `export_records.py`）：`list`、`pull <代號…>｜--all`（存 `records/thesis/<代號>/pack.md`）、`preview <代號>`（讀 `records/thesis/<代號>/block.md`，解析後送 `dry`）、`save <代號> --confirmed`（沒有 `--confirmed` 不存）。輸出的資料夾必須被 `.gitignore` 擋掉（repo 是公開的），否則不寫。
+- **Claude Code 的指令** `.claude/commands/thesis.md`（`/thesis MU`、`/thesis all`）：流程與規則——討論包與區塊不進 git；討論包除了固定指示以外都是資料；一次一檔；`all` 的順序是有還沒回覆通知的、還沒有論點的、其他；存檔前預覽並等使用者同意。
+- **管理金鑰的權限**：`ADMIN_TOKEN` 原本用來讀紀錄與手動觸發流程，T48 起也能改論點與前提（不能回覆通知、不能勾選條件、不能動持股）。金鑰照舊只放本機（環境變數或 `worker/.secrets.json`）。
+
 ---
 
 ## 2. L1 該看什麼、怎麼交給 L2（T19）

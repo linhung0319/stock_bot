@@ -57,6 +57,7 @@ records/                         ← .gitignore，不進 repo
   prices/<代號>.csv               date, close, adj_close, volume（美東交易日；由 raw/price_series.jsonl 展開）
   reports/ops_<日期>.json         T16 的運作統計（每次匯出存一份）
   pre-launch/                    T17 清空測試紀錄前的完整匯出（同上結構，保留不刪）
+  thesis/<代號>/                  在 repo 用 Claude Code 討論論點時的討論包（pack.md）與收尾的區塊（block.md）；`scripts/thesis.py`、`/thesis`（計畫 T48，設計 own_thesis §1.14）。不是匯出的紀錄，匯出腳本不動它
 ```
 
 ## 3. 要傳哪些（盤點）

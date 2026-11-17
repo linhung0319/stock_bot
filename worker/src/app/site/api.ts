@@ -1030,4 +1030,65 @@ export async function handleSite(req: Request, env: Env, fetcher: Fetcher, now: 
   }
 }
 
+/**
+ * 管理金鑰的論點路徑（T48，own_thesis §1.7、§1.8）：在 repo 裡用 Claude Code 取討論包、和使用者討論、預覽、回填。
+ * 驗證（Bearer ADMIN_TOKEN）在 index.ts 做過了；這裡只接真實模式，內部走和網站同一套函式。
+ *   GET  /admin/own/list                        自選清單：代號、有沒有論點、論點版本、有沒有還沒回覆的乙類通知
+ *   GET  /admin/own/discussion?ticker=&mode=    一檔的討論包（和持股頁「複製討論包」相同）
+ *   POST /admin/own/thesis/parse                { ticker, text } → 解析收尾的區塊
+ *   POST /admin/own/thesis                      和 /api/ops/own-thesis 相同的內容（dry = 只預覽）；來源一律記成討論後貼回
+ * 不收 replyTo：回覆乙類通知會讓通知結案並影響靜默期，留在網站上做；這檔有還沒回覆的乙類通知時只給預覽、不存（409）。
+ */
+export async function handleAdminThesis(req: Request, env: Env, fetcher: Fetcher, now: Date): Promise<Response | null> {
+  const url = new URL(req.url);
+  const m = /^\/admin\/own\/(list|discussion|thesis\/parse|thesis)$/.exec(url.pathname);
+  if (!m) return null;
+  const get = req.method === 'GET';
+  const post = req.method === 'POST';
+  const backend = realBackend(env, fetcher, now);
+  try {
+    let res: Response;
+    if (m[1] === 'list' && get) {
+      const d = ready(await backend.load());
+      res = json({
+        date: d.view.date,
+        own: Object.keys(d.acct.own)
+          .sort()
+          .map((tk) => {
+            const meta = d.acct.own[tk];
+            return {
+              ticker: tk,
+              kind: meta.premises.every((p) => p.origin === 'SYSTEM_DEFAULT') ? 'DEFAULT_ONLY' : 'THESIS',
+              thesisVersion: meta.thesis?.version ?? null,
+              thesisSetAt: meta.thesis?.setAt ?? null,
+              pendingBreak: pendingBreakOf(d.acct, tk)?.notif ?? null,
+            };
+          }),
+      });
+    } else if (m[1] === 'discussion' && get) {
+      res = await route(req, `own/${ticker(url.searchParams.get('ticker'))}/discussion`, url, backend);
+    } else if (m[1] === 'thesis/parse' && post) {
+      res = await route(req, 'ops/own-thesis/parse', url, backend);
+    } else if (m[1] === 'thesis' && post) {
+      const b = await body(req);
+      if (b.replyTo !== undefined && b.replyTo !== null && b.replyTo !== '') throw new SiteError(422, '這條路不能回覆通知：「這是對通知的回應」請在網站的編輯論點頁做。');
+      // 這檔有還沒回覆的乙類通知：從這裡存，通知不會結案，之後在網站只剩「照 AI」「不同意」可選——改過字的前提反而會被當成不同意、進靜默期。
+      // 預覽照給；存檔要從那則通知的「編輯論點」貼回，才算成對通知的回應（修正論點）
+      if (b.dry !== true) {
+        const tk = ticker(b.ticker);
+        const brk = pendingBreakOf(ready(await backend.load()).acct, tk);
+        if (brk) throw new SiteError(409, `${tk} 有還沒回覆的「AI 審查認為前提不成立」通知 #${brk.notif}：這次的論點請到網站，從那則通知的「編輯論點」貼上收尾的區塊再存，才會算成對通知的回應。這裡只能預覽。`);
+      }
+      res = await saveThesis(backend, { ...b, source: 'DISCUSSION', replyTo: null });
+    } else return json({ error: 'method_not_allowed' }, 405);
+    res.headers.set('Cache-Control', 'no-store');
+    return res;
+  } catch (e) {
+    if (e instanceof SiteError) return json({ error: e.message }, e.status);
+    if (e instanceof ConflictError) return json({ error: e.message, conflict: true }, 409);
+    console.error('管理用的論點 API 出錯', url.pathname, e);
+    return json({ error: '系統出錯了，這次操作沒有存檔。' }, 500);
+  }
+}
+
 export { accountView };

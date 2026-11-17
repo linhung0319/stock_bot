@@ -1,7 +1,8 @@
 // Worker 進入點：路由與排程。
 //   /health                      不需要驗證
 //   /ai/task/:id/evidence|result 雲端排程用，Bearer AI_TASK_SECRET
-//   /admin/*                     管理用，Bearer ADMIN_TOKEN（/admin/export：紀錄匯出到本機，src/app/export.ts；/admin/ops-report：運作統計，src/app/opsReport.ts）
+//   /admin/*                     管理用，Bearer ADMIN_TOKEN（/admin/export：紀錄匯出到本機，src/app/export.ts；/admin/ops-report：運作統計，src/app/opsReport.ts；
+//                                /admin/own/*：在 repo 用 Claude Code 討論論點，src/app/site/api.ts 的 handleAdminThesis）
 //   /auth/line/login|callback    網站的 LINE 登入（src/app/site/lineLogin.ts）
 //   /line/webhook                LINE 關鍵字回覆，驗 X-Line-Signature（src/app/lineWebhook.ts）
 //   /api/*、/demo/api/*          網站的 API（LINE 登入的 cookie；src/app/site/）
@@ -21,7 +22,7 @@ import { buildMarketView } from './data/marketView';
 import { lineConfigured } from './app/line';
 import { handleLineWebhook } from './app/lineWebhook';
 import { probeSummary, runProbe, saveProbe } from './app/probe';
-import { handleSite } from './app/site/api';
+import { handleAdminThesis, handleSite } from './app/site/api';
 import { handleLineLogin } from './app/site/lineLogin';
 import { APPLY_CRON, FINAL_CRON, INGEST_CRON, attemptOfCron } from './app/schedule';
 import { loadCalendarOverrides, loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
@@ -159,6 +160,9 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
       const t = await getTask(env.DB, task[1]);
       return t ? json(taskTimings(t)) : json({ error: 'not_found' }, 404);
     }
+    // T48：在 repo 用 Claude Code 討論論點（取討論包、預覽、回填）；/admin/own/*
+    const ownThesis = await handleAdminThesis(request, env, fetcher, now);
+    if (ownThesis) return ownThesis;
     return json({ error: 'not_found' }, 404);
   }
 
