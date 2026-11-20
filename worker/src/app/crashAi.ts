@@ -257,7 +257,7 @@ async function start(sc: StartCtx, snap: MacroSnapshot, direction: CrashDirectio
   const { env, fetcher, session, now, res } = sc;
   const news = await newsDoc(fetcher, 'SPY', session).catch(() => null);
   const facts = snap.rows.filter((r) => r.value !== null).map((r, k) => ({ id: `M${k + 1}`, label: r.label, value: `${r.value!.toFixed(2)}（${r.date}）`, note: [r.change6m === null ? null : `6 個月變化 ${r.change6m >= 0 ? '+' : ''}${r.change6m.toFixed(2)}`, r.derived].filter(Boolean).join('；') || undefined })).map((f) => (f.note === undefined ? { id: f.id, label: f.label, value: f.value } : f));
-  const { pack, notes } = crashPack({ runId: newRunId(session, CRASH_REVIEW), asOf: session, direction, dashboard: snapshotDoc(snap), news: news ? { ...news, title: '大盤相關的新聞標題（SPY，Nasdaq RSS，只有標題）' } : null, facts, dataQuality: { macro: macroQuality(snap.rows), news: 'partial' }, now, ...(preface ? { preface } : {}) });
+  const { pack, notes } = crashPack({ runId: newRunId(session, CRASH_REVIEW), asOf: session, direction, dashboard: snapshotDoc(snap), news: news ? { ...news, title: news.title.replace(/^SPY 最近的新聞標題（/, '大盤相關的新聞標題（SPY，') } : null, facts, dataQuality: { macro: macroQuality(snap.rows), news: 'partial' }, now, ...(preface ? { preface } : {}) });
   pack.rule.detail = { ...(pack.rule.detail as object), month, ...(detail ?? {}) };
   const stale = snap.rows.filter((r) => r.value !== null && r.stale).map((r) => r.id);
   const notesAll = [...notes, ...(snap.missing.length ? [`FRED 抓不到：${snap.missing.join('、')}`] : []), ...(stale.length ? [`FRED 過期：${stale.join('、')}`] : [])];

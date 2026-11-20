@@ -1,5 +1,6 @@
 // 每日流程看 EDGAR 新申報的共用部分（T10 自選、T11 每日事件掃描）：代號 → CIK、新申報、看過的最新一筆、產業 ETF、事件紀錄。
 import { sicToEtf } from '../ai/detect';
+import { isNewsSourceId } from '../data/edgar';
 import type { FilingHit } from '../data/secEvents';
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { loadConstituents } from '../data/store';
@@ -103,13 +104,13 @@ export interface SecEventRow {
 
 /**
  * 事件或命中的 accession → 原文在哪裡（momentum_ai §3.1，修 Q1）：
- * 規則分類存的是申報編號本身；每日掃描存 `edgar:<申報編號>`（去掉前綴再對申報清單）；`nasdaq-rss:` 開頭的是新聞標題；
+ * 規則分類存的是申報編號本身；每日掃描存 `edgar:<申報編號>`（去掉前綴再對申報清單）；`nasdaq-rss:`、`yahoo-rss:` 開頭的是新聞標題；
  * 其他（`price:`、執行編號）沒有原文。
  */
 export type AccRef = { kind: 'FILING'; acc: string } | { kind: 'NEWS' } | { kind: 'NONE' };
 export function accOf(accession: string | null | undefined): AccRef {
   if (!accession) return { kind: 'NONE' };
-  if (accession.startsWith('nasdaq-rss:')) return { kind: 'NEWS' };
+  if (isNewsSourceId(accession)) return { kind: 'NEWS' };
   const acc = accession.replace(/^edgar:/, '');
   return /^\d{10}-\d{2}-\d{6}$/.test(acc) ? { kind: 'FILING', acc } : { kind: 'NONE' };
 }

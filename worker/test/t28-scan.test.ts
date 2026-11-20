@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { listRuns, type AiRun } from '../src/app/aiRuns';
 import type { Env, Fetcher } from '../src/app/env';
-import { SCAN_FAILS, loadScanFails, newsCursorMs, pendingScanFilings, scanBase, scanFailText } from '../src/app/events';
-import { loadEvents } from '../src/app/filings';
+import { NEWS_HEALTH, SCAN_FAILS, loadScanFails, newsAlertDue, newsCursorMs, pendingScanFilings, scanBase, scanFailText } from '../src/app/events';
+import { accOf, loadEvents } from '../src/app/filings';
 import { getFlowState, runFlow } from '../src/app/flow';
 import { LINE_PUSH_URL } from '../src/app/line';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
@@ -22,6 +22,7 @@ import { SCAN_FAILED_TEXT, runRow } from '../src/app/site/aiViews';
 import { judge, type EvidencePack, type Outcome } from '../src/ai/check';
 import { EVENT_SCAN_PROMPT, SCAN_SUBS, scanEvents, scanQualified } from '../src/ai/events';
 import { PAYLOAD_HOOKS } from '../src/ai/hooks';
+import { fetchHeadlineFeed, isNewsSourceId } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { ADVANCE_DETAILS, classify502, eventHits, isAdvanceable, quickHits, SCAN_ITEMS } from '../src/data/secEvents';
 import type { Filing } from '../src/data/sources';
@@ -52,6 +53,10 @@ interface Net {
   news: Record<string, { at: string; title: string }[]>;
   fired: string[];
   line: string[];
+  /** Nasdaq RSS 回這個 HTTP 狀態（沒給就正常）。 */
+  nasdaqDown?: number;
+  /** Yahoo Finance RSS 有沒有在服務（沒給就 404）。 */
+  yahooUp?: boolean;
 }
 
 function fetcherOf(w: World, net: Net): Fetcher {
@@ -81,8 +86,11 @@ function fetcherOf(w: World, net: Net): Fetcher {
       if (doc[2] === 'index.json') return Response.json({ directory: { item: [{ name: f.primaryDocument }] } });
       return new Response(f.html);
     }
-    const rss = /nasdaq\.com\/feed\/rssoutbound\?symbol=([^&]+)/.exec(url);
+    const rss = /nasdaq\.com\/feed\/rssoutbound\?symbol=([^&]+)/.exec(url) ?? /feeds\.finance\.yahoo\.com\/rss\/2\.0\/headline\?s=([^&]+)/.exec(url);
     if (rss) {
+      const yahoo = url.includes('yahoo.com');
+      if (!yahoo && net.nasdaqDown) return new Response('<html>error</html>', { status: net.nasdaqDown });
+      if (yahoo && !net.yahooUp) return new Response('nf', { status: 404 });
       const items = (net.news[decodeURIComponent(rss[1])] ?? []).map((h) => `<item><title>${h.title}</title><link>https://n/${encodeURIComponent(h.title)}</link><pubDate>${new Date(h.at).toUTCString()}</pubDate></item>`);
       return new Response(`<rss><channel>${items.join('')}</channel></rss>`);
     }
@@ -578,5 +586,105 @@ describe('條件確認的文件上限', () => {
         },
       },
     );
+  });
+});
+
+// ---------------------------------------------------------------- 新聞來源（2026-11-20：正式環境從上線起一則標題都沒抓到，Nasdaq 從 Cloudflare 回 520）
+
+describe('新聞來源：Nasdaq 抓不到改用 Yahoo；全部抓不到要看得見', () => {
+  const lastAiLog = async (db: D1Database) => JSON.parse((await db.prepare('SELECT detail FROM flow_runs ORDER BY id DESC LIMIT 1').first<{ detail: string }>())!.detail).ai?.log as string[];
+  const health = async (db: D1Database) => JSON.parse((await getFlowState(db, NEWS_HEALTH)) ?? 'null') as { failDays: number; session: string; lastOk: string | null; error: string } | null;
+
+  it('照順序試：Nasdaq 回 520 → Yahoo；回 200 但不是 RSS 也算失敗；都失敗時錯誤寫出每個來源的原因', async () => {
+    const rss = '<rss><channel><item><title>A</title><link>l</link><pubDate>Mon, 23 Nov 2026 20:00:00 GMT</pubDate></item></channel></rss>';
+    const f = (nasdaq: Response, yahoo: Response): Fetcher => async (url) => (url.includes('nasdaq.com') ? nasdaq.clone() : yahoo.clone());
+    const yes = await fetchHeadlineFeed(f(new Response('x', { status: 520 }), new Response(rss)), 'MU');
+    expect(yes).toMatchObject({ source: 'yahoo-rss', label: 'Yahoo Finance RSS', failed: ['Nasdaq RSS HTTP 520'] });
+    expect(yes.items.map((h) => h.title)).toEqual(['A']);
+    expect((await fetchHeadlineFeed(f(new Response(rss), new Response('x', { status: 500 })), 'MU')).source).toBe('nasdaq-rss');
+    await expect(fetchHeadlineFeed(f(new Response('<html>consent</html>'), new Response('x', { status: 404 })), 'MU')).rejects.toThrow('MU 的新聞標題抓不到（Nasdaq RSS 回的不是 RSS；Yahoo Finance RSS HTTP 404）');
+    const boom: Fetcher = async () => {
+      throw new Error('network down');
+    };
+    await expect(fetchHeadlineFeed(boom, 'MU')).rejects.toThrow('Nasdaq RSS network down；Yahoo Finance RSS network down');
+    // 兩種前綴都認成新聞（不能當申報原文）
+    expect(accOf('yahoo-rss:NVDA:2026-11-23').kind).toBe('NEWS');
+    expect(accOf('nasdaq-rss:NVDA').kind).toBe('NEWS');
+    expect(isNewsSourceId('edgar:0001045810-26-000531')).toBe(false);
+  });
+
+  it('流程：Nasdaq 回 520、Yahoo 正常 → 掃描用 Yahoo 的標題（來源編號與標題寫 Yahoo），紀錄寫改用；有結論後 news 標記照樣往前', async () => {
+    await withWorld(async ({ db, env, net, run }) => {
+      await run('2026-11-20');
+      net.nasdaqDown = 520;
+      net.yahooUp = true;
+      net.news.NVDA = [{ at: '2026-11-23T20:00:00Z', title: 'NVIDIA faces probe' }];
+      await run('2026-11-23');
+      const [s1] = await scanRuns(db);
+      expect(sources(s1)).toEqual(['yahoo-rss:NVDA:2026-11-23']);
+      expect(s1.pack.documents[0].title).toBe('NVDA 最近的新聞標題（Yahoo Finance RSS，只有標題）');
+      expect(await lastAiLog(db)).toContain('NVDA 的新聞標題改用 Yahoo Finance RSS（Nasdaq RSS HTTP 520）');
+      expect(await health(db)).toEqual({ failDays: 0, session: '2026-11-23', lastOk: '2026-11-23', error: '' });
+      await postResult(env, s1, [nothing(s1)], new Date('2026-11-23T23:40:00Z'));
+      await run('2026-11-23', 'FINAL');
+      expect(await getFlowState(db, 'news:NVDA')).toBe('2026-11-23T20:00:00.000Z');
+    });
+  });
+
+  it('流程：全部抓不到 → 紀錄與證據包備註寫出來、證據包的新聞標成 missing；第 2 個交易日推 NEWS_FAILED（LINE 也到）；同一天重掃不重算；抓到就歸零', async () => {
+    await withWorld(async ({ db, net, cik, run }) => {
+      net.nasdaqDown = 520;
+      net.news.NVDA = [{ at: '2026-11-20T15:00:00Z', title: 'Never seen' }];
+      // 第 1 天：沒有 8-K，標題也抓不到 → 不開掃描，但紀錄寫明是抓不到（不是沒有新聞）
+      const d1 = await run('2026-11-20');
+      expect(d1.alerts).not.toContain('NEWS_FAILED');
+      expect(await lastAiLog(db)).toEqual(expect.arrayContaining(['新聞標題抓不到：NVDA（Nasdaq RSS HTTP 520；Yahoo Finance RSS HTTP 404）', '每日掃描：沒有新的 8-K，新聞標題全部抓不到，不開']));
+      expect(await health(db)).toMatchObject({ failDays: 1, session: '2026-11-20', lastOk: null });
+
+      // 第 2 天：有 8-K → 掃描照開（只看 8-K），備註寫哪幾檔抓不到；連續 2 天 → 告警
+      const a = eightK(561, '2026-11-23', '8.01', OTHER_801('The Company received a subpoena.'));
+      addFiling(net, cik('NVDA'), a);
+      net.line.length = 0;
+      const d2 = await run('2026-11-23');
+      expect(d2.alerts).toContain('NEWS_FAILED');
+      const [s1] = await scanRuns(db);
+      expect(sources(s1)).toEqual([`edgar:${a.accession}`]);
+      expect((s1.pack.rule.detail as { notes: string[] }).notes).toEqual(['新聞標題抓不到：NVDA（這幾檔這次只看 8-K）']);
+      expect(s1.pack.data_quality.news).toBe('missing');
+      const msg = '新聞標題連續 2 個交易日都抓不到（Nasdaq RSS HTTP 520；Yahoo Finance RSS HTTP 404）。每日掃描只看 8-K，審查的證據包也沒有新聞；規則與申報照常。';
+      expect((await db.prepare("SELECT message FROM alerts WHERE kind = 'NEWS_FAILED'").all<{ message: string }>()).results.map((r) => r.message)).toEqual([msg]);
+      expect(net.line.some((t) => t.includes(msg))).toBe(true);
+
+      // 01:30：掃描沒有送回 → 重掃同一天，抓不到不再多算一天、不再推
+      const fin = await run('2026-11-23', 'FINAL');
+      expect(fin.alerts).not.toContain('NEWS_FAILED');
+      expect((await scanRuns(db)).length).toBe(2);
+      expect(await health(db)).toMatchObject({ failDays: 2, session: '2026-11-23' });
+
+      // 第 3 天恢復：歸零、記下最後一次抓到的日子
+      net.nasdaqDown = undefined;
+      await run('2026-11-24');
+      expect(await health(db)).toEqual({ failDays: 0, session: '2026-11-24', lastOk: '2026-11-24', error: '' });
+      expect((await scanRuns(db)).at(-1)!.pack.documents.some((d) => d.source_id === 'nasdaq-rss:NVDA:2026-11-24')).toBe(true);
+    });
+  });
+
+  it('告警的節奏：第 2 天推，之後每 10 個交易日再推（12、22…）', () => {
+    expect([1, 2, 3, 11, 12, 13, 22].map(newsAlertDue)).toEqual([false, true, false, false, true, false, true]);
+  });
+
+  it('上次看過的標題已經不在來源裡（抓到的全部都比標記新）→ 備註寫「更早的可能沒抓到」', async () => {
+    await withWorld(async ({ db, net, run }) => {
+      await run('2026-11-20');
+      await db.prepare("INSERT INTO flow_state (key, value, updated_at) VALUES ('news:NVDA', '2026-11-21T12:00:00.000Z', 'x')").run();
+      net.news.NVDA = [
+        { at: '2026-11-23T19:00:00Z', title: 'one' },
+        { at: '2026-11-23T20:00:00Z', title: 'two' },
+      ];
+      await run('2026-11-23');
+      const [s1] = await scanRuns(db);
+      expect((s1.pack.rule.detail as { notes: string[] }).notes).toEqual(['NVDA：這次抓到的 2 則都比上次看過的新，更早的標題可能沒抓到（Nasdaq RSS 只給最近幾則）']);
+      expect(s1.pack.documents[0].text).toBe('2026-11-23 | two\n2026-11-23 | one\n（更早的標題可能沒抓到）');
+    });
   });
 });

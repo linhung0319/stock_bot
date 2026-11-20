@@ -22,12 +22,13 @@ import { buildMarketView } from './data/marketView';
 import { lineConfigured } from './app/line';
 import { handleLineWebhook } from './app/lineWebhook';
 import { probeSummary, runProbe, saveProbe } from './app/probe';
+import { NEWS_SOURCES, tryHeadlineSource } from './data/edgar';
 import { handleAdminThesis, handleSite } from './app/site/api';
 import { handleLineLogin } from './app/site/lineLogin';
 import { APPLY_CRON, FINAL_CRON, INGEST_CRON, attemptOfCron } from './app/schedule';
 import { loadCalendarOverrides, loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
-export const VERSION = '0.13.1';
+export const VERSION = '0.14.0';
 
 // 三次排程（UTC 23:30、01:30、03:30）各做什麼寫在 src/app/schedule.ts
 export { APPLY_CRON, FINAL_CRON, INGEST_CRON };
@@ -76,6 +77,17 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
       return json({ part, n: rows.length, ok: rows.filter((r) => r.ok).length, failed: rows.filter((r) => !r.ok) });
     }
     if (path === '/admin/probe/summary') return json(await probeSummary(env.DB));
+    // 從 Cloudflare 逐一試每個新聞來源（不寫資料庫）：?ticker=MU,SPY
+    if (path === '/admin/news/test') {
+      const tickers = (url.searchParams.get('ticker') ?? 'MU,SPY').split(',').map((t) => t.trim().toUpperCase()).filter(Boolean).slice(0, 5);
+      const out = [];
+      for (const t of tickers)
+        for (const src of NEWS_SOURCES) {
+          const r = await tryHeadlineSource(fetcher, src, t);
+          out.push(r.ok ? { ticker: t, source: src.key, ok: true, items: r.items.length, newest: r.items[0] ? `${r.items[0].at} ${r.items[0].title}` : null, oldest: r.items.at(-1)?.at ?? null } : { ticker: t, source: src.key, ok: false, error: r.error });
+        }
+      return json(out);
+    }
     if (path === '/admin/ingest' && request.method === 'POST') {
       const r = await ingest(env, fetcher, now, url.searchParams.get('rank') === '1');
       if ('error' in r) return json(r, 500);

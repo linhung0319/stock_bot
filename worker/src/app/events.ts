@@ -15,7 +15,7 @@ import { CANDIDATE_CODE, EVENT_SCAN, HARD_EVENT, eventScanPack, hardDecision, ha
 import type { EvidencePack, PackDoc } from '../ai/check';
 import { newRunId } from '../ai/pack';
 import { hardEvent, hardToldDays } from '../engine';
-import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlines, quarterTable } from '../data/edgar';
+import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlineFeed, quarterTable } from '../data/edgar';
 import { SCAN_ITEMS, classifyFilings, fetchPrimaryText, isAdvanceable, type FilingHit } from '../data/secEvents';
 import type { Filing } from '../data/sources';
 import type { Alert } from '../data/store';
@@ -515,6 +515,49 @@ export function pendingScanFilings(all: Filing[], base: string): Filing[] {
 
 const items = (f: Filing) => (f.items.length ? `（Item ${f.items.join('、')}）` : '');
 
+/** flow_state 的鍵：新聞標題抓不到的連續交易日數（每日掃描收集時更新）。 */
+export const NEWS_HEALTH = 'newsfeed:health';
+/** 連續幾個交易日全部抓不到開始推告警；之後每 NEWS_ALERT_EVERY 個交易日再推一次。 */
+export const NEWS_ALERT_AFTER = 2;
+export const NEWS_ALERT_EVERY = 10;
+
+export interface NewsHealth {
+  /** 連續幾個交易日「所有對象都抓不到」。 */
+  failDays: number;
+  /** 最近一次記錄的交易日（同一天重掃不重複算）。 */
+  session: string;
+  /** 最近一次至少抓到一檔的交易日。 */
+  lastOk: string | null;
+  error: string;
+}
+
+/** 連續 failDays 個交易日抓不到的這一天要不要推告警：第 2 天推，之後每 10 個交易日再推一次。 */
+export const newsAlertDue = (failDays: number) => failDays >= NEWS_ALERT_AFTER && (failDays - NEWS_ALERT_AFTER) % NEWS_ALERT_EVERY === 0;
+
+export function newsAlertText(h: NewsHealth): string {
+  return `新聞標題連續 ${h.failDays} 個交易日都抓不到${h.error ? `（${h.error}）` : ''}${h.lastOk ? `，最後一次抓到是 ${h.lastOk}` : ''}。每日掃描只看 8-K，審查的證據包也沒有新聞；規則與申報照常。`;
+}
+
+/** 記下這次收集新聞的結果；所有對象都抓不到、連續 NEWS_ALERT_AFTER 個交易日起推告警（NEWS_FAILED）。 */
+async function newsHealth(sc: StartCtx, total: number, failed: number, error: string): Promise<void> {
+  if (!total) return;
+  const { env, session, now, res } = sc;
+  let prev: NewsHealth = { failDays: 0, session: '', lastOk: null, error: '' };
+  try {
+    prev = { ...prev, ...(JSON.parse((await stateOf(env.DB, NEWS_HEALTH)) ?? '{}') as Partial<NewsHealth>) };
+  } catch {
+    /* 壞掉的值當成沒有 */
+  }
+  const allFailed = failed === total;
+  const sameDay = prev.session === session;
+  const next: NewsHealth = allFailed
+    ? { failDays: sameDay ? prev.failDays : prev.failDays + 1, session, lastOk: prev.lastOk, error }
+    : { failDays: 0, session, lastOk: session, error: '' };
+  if (JSON.stringify(next) === JSON.stringify(prev)) return;
+  await setStateStmt(env.DB, NEWS_HEALTH, JSON.stringify(next), now.toISOString()).run();
+  if (allFailed && !sameDay && newsAlertDue(next.failDays)) res.alerts.push({ kind: 'NEWS_FAILED', message: newsAlertText(next), detail: { session, failDays: next.failDays } });
+}
+
 /**
  * F18 掃描（own_thesis §2.6 的收集）：規則分不出輕重的 8-K、新的新聞標題 → 一份證據包（有東西才開）。
  *   8-K：每個對象 scan8k 之後、有 SCAN_ITEMS 項目的申報，由舊到新，一次最多 10 份原文（所有對象合計），裝不下的留到下一次
@@ -583,24 +626,40 @@ export async function startScan(sc: StartCtx, targets: ScanTarget[]): Promise<bo
   }
 
   // 新聞標題：比 news 標記新的，每檔最多最新 30 則
+  const newsFailed: string[] = [];
+  const newsErrors = new Set<string>();
   for (const t of targets) {
     try {
       const last = newsCursorMs(await stateOf(env.DB, `news:${t.ticker}`));
-      const hl = (await fetchHeadlines(fetcher, t.ticker)).filter((h) => h.date <= session && (last === null || msOf(h.at) > last)).sort((a, b) => msOf(b.at) - msOf(a.at));
+      const feed = await fetchHeadlineFeed(fetcher, t.ticker);
+      if (feed.failed.length) res.log.push(`${t.ticker} 的新聞標題改用 ${feed.label}（${feed.failed.join('；')}）`);
+      const upTo = feed.items.filter((h) => h.date <= session);
+      const hl = upTo.filter((h) => last === null || msOf(h.at) > last).sort((a, b) => msOf(b.at) - msOf(a.at));
       dq.news = 'partial';
       if (!hl.length) continue;
       const keep = hl.slice(0, SCAN_MAX_NEWS);
       const skipped = hl.length - keep.length;
       if (skipped) notes.push(`${t.ticker}：略過 ${skipped} 則較舊的標題（一次最多 ${SCAN_MAX_NEWS} 則）`);
-      docs.push({ id: `N-${t.ticker}-${session}`, source_id: `nasdaq-rss:${t.ticker}:${session}`, kind: 'news', date: keep[0].date, title: `${t.ticker} 最近的新聞標題（Nasdaq RSS，只有標題）`, text: keep.map((h) => `${h.date} | ${h.title}`).join('\n') + (skipped ? `\n（略過 ${skipped} 則較舊的標題）` : ''), ticker: t.ticker });
+      // 來源只給最近幾則：抓到的全部都比上次看過的新，表示中間可能還有沒抓到的
+      const gap = last !== null && hl.length === upTo.length;
+      if (gap) notes.push(`${t.ticker}：這次抓到的 ${upTo.length} 則都比上次看過的新，更早的標題可能沒抓到（${feed.label} 只給最近幾則）`);
+      docs.push({ id: `N-${t.ticker}-${session}`, source_id: `${feed.source}:${t.ticker}:${session}`, kind: 'news', date: keep[0].date, title: `${t.ticker} 最近的新聞標題（${feed.label}，只有標題）`, text: keep.map((h) => `${h.date} | ${h.title}`).join('\n') + (skipped ? `\n（略過 ${skipped} 則較舊的標題）` : '') + (gap ? '\n（更早的標題可能沒抓到）' : ''), ticker: t.ticker });
       batch.push({ ticker: t.ticker, kind: 'NEWS', label: `${t.ticker} 的 ${keep.length} 則新聞標題` });
       cursors[t.ticker] = { ...cursors[t.ticker], news: hl[0].at };
-    } catch {
-      dq.news = 'partial';
+    } catch (e) {
+      newsFailed.push(t.ticker);
+      newsErrors.add(errText(e).replace(/^\S+ 的新聞標題抓不到（([\s\S]*)）$/, '$1'));
     }
   }
+  if (newsFailed.length) {
+    const why = [...newsErrors][0] ?? '';
+    res.log.push(`新聞標題抓不到：${newsFailed.join('、')}${why ? `（${why}）` : ''}`);
+    notes.push(`新聞標題抓不到：${newsFailed.join('、')}（這幾檔這次只看 8-K）`);
+    if (newsFailed.length === targets.length) dq.news = 'missing';
+  }
+  await newsHealth(sc, targets.length, newsFailed.length, [...newsErrors][0] ?? '');
   if (!docs.length) {
-    res.log.push('每日掃描：沒有新的 8-K 或新聞標題，不開');
+    res.log.push(newsFailed.length === targets.length && targets.length ? '每日掃描：沒有新的 8-K，新聞標題全部抓不到，不開' : '每日掃描：沒有新的 8-K 或新聞標題，不開');
     return false;
   }
 

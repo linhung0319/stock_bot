@@ -3,7 +3,7 @@
 //   BREAK 情境的依據（通知 → 審查的執行 → 判不成立的前提與引用的原文）。
 import { discussionNumbers, discussionPack, pickMode, type BreakInfo, type DiscussionMode } from '../ai/discussion';
 import type { EvidencePack, Outcome } from '../ai/check';
-import { fetchCompanyFacts, quarterTable, quarterTableText } from '../data/edgar';
+import { fetchCompanyFacts, isNewsSourceId, quarterTable, quarterTableText } from '../data/edgar';
 import { errText } from '../data/util';
 import type { Account, MarketView, Tier } from '../engine';
 import { getRun } from './aiRuns';
@@ -60,7 +60,7 @@ export async function breakInfo(db: D1Database | null, acct: Account, file: Thes
     const o: Outcome | null = run?.outcome ?? null;
     for (const s of o?.samples.filter((x) => x.valid) ?? []) {
       const ids = s.premises.find((p) => p.premise_id === premiseId && p.status === 'BROKEN')?.evidence_ids ?? [];
-      const ev = s.evidence.find((e) => e.ok && ids.includes(e.id) && !e.source_id.startsWith('nasdaq-rss:') && !e.source_id.startsWith('price:'));
+      const ev = s.evidence.find((e) => e.ok && ids.includes(e.id) && !isNewsSourceId(e.source_id) && !e.source_id.startsWith('price:'));
       if (!ev) continue;
       quote = ev.quote;
       const doc = run!.pack.documents.find((d) => d.source_id === ev.source_id);

@@ -374,7 +374,7 @@ export async function fetchPressRelease(fetcher: Fetcher, cik: string | number, 
 /** 財報類申報：10-Q、10-K、8-K Item 2.02（F24 的「新財報」觸發）。 */
 export const isEarningsFiling = (f: { form: string; items: string[] }) => /^10-[QK]/.test(f.form) || (f.form.startsWith('8-K') && f.items.includes('2.02'));
 
-// ---------------------------------------------------------------- 新聞標題（Nasdaq RSS）
+// ---------------------------------------------------------------- 新聞標題（Nasdaq RSS，抓不到再試 Yahoo Finance RSS）
 
 export const nasdaqRssUrl = (ticker: string) => `https://www.nasdaq.com/feed/rssoutbound?symbol=${encodeURIComponent(ticker)}`;
 
@@ -401,9 +401,55 @@ export function parseRss(xml: string): Headline[] {
   return out;
 }
 
+/**
+ * 新聞標題的來源，照順序試：第一個回得出 RSS 的就用它（只有標題與短摘要，標題只能當初判）。
+ * Nasdaq 從 Cloudflare 曾經一直回 HTTP 520（2026-11-14 起正式環境一則都沒抓到），所以加 Yahoo 當第二個。
+ * source_id 的前綴就是 key（`nasdaq-rss:`、`yahoo-rss:`），filings.ts 的 accOf 靠它認出新聞。
+ */
+export const NEWS_SOURCES: readonly { key: string; label: string; url: (ticker: string) => string }[] = [
+  { key: 'nasdaq-rss', label: 'Nasdaq RSS', url: nasdaqRssUrl },
+  { key: 'yahoo-rss', label: 'Yahoo Finance RSS', url: (t) => `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${encodeURIComponent(t)}&region=US&lang=en-US` },
+];
+
+/** 這個來源編號是不是新聞標題（任何一個新聞來源）。 */
+export const isNewsSourceId = (id: string) => NEWS_SOURCES.some((s) => id.startsWith(`${s.key}:`));
+
+export interface HeadlineFeed {
+  /** 用到的來源（NEWS_SOURCES 的 key）。 */
+  source: string;
+  label: string;
+  items: Headline[];
+  /** 前面試過、失敗的來源與原因。 */
+  failed: string[];
+}
+
+const RSS_HEADERS = { 'User-Agent': 'Mozilla/5.0 (compatible; stock-bot/1.0)', Accept: 'application/rss+xml, application/xml' };
+
+/** 試一個來源：回 RSS 才算成功（同意頁、錯誤頁的 HTML 回 200 也算失敗）。 */
+export async function tryHeadlineSource(fetcher: Fetcher, src: (typeof NEWS_SOURCES)[number], ticker: string): Promise<{ ok: true; items: Headline[] } | { ok: false; error: string }> {
+  try {
+    // 不帶使用者的聯絡方式（那是給 SEC 的）
+    const res = await fetcher(src.url(ticker), { headers: RSS_HEADERS });
+    if (!res.ok) return { ok: false, error: `${src.label} HTTP ${res.status}` };
+    const xml = await res.text();
+    if (!/<rss[\s>]/i.test(xml)) return { ok: false, error: `${src.label} 回的不是 RSS` };
+    return { ok: true, items: parseRss(xml) };
+  } catch (e) {
+    return { ok: false, error: `${src.label} ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/** 照 NEWS_SOURCES 的順序試，都失敗就丟錯（訊息列出每個來源的原因）。 */
+export async function fetchHeadlineFeed(fetcher: Fetcher, ticker: string): Promise<HeadlineFeed> {
+  const failed: string[] = [];
+  for (const src of NEWS_SOURCES) {
+    const r = await tryHeadlineSource(fetcher, src, ticker);
+    if (r.ok) return { source: src.key, label: src.label, items: r.items, failed };
+    failed.push(r.error);
+  }
+  throw new Error(`${ticker} 的新聞標題抓不到（${failed.join('；')}）`);
+}
+
 export async function fetchHeadlines(fetcher: Fetcher, ticker: string): Promise<Headline[]> {
-  // 不帶使用者的聯絡方式（那是給 SEC 的）
-  const res = await fetcher(nasdaqRssUrl(ticker), { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; stock-bot/1.0)', Accept: 'application/rss+xml, application/xml' } });
-  if (!res.ok) throw new Error(`Nasdaq RSS ${ticker} HTTP ${res.status}`);
-  return parseRss(await res.text());
+  return (await fetchHeadlineFeed(fetcher, ticker)).items;
 }

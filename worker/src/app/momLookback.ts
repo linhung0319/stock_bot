@@ -11,7 +11,7 @@
 import type { PackDoc } from '../ai/check';
 import { CANDIDATE_CODE, EVENT_SCAN, eventScanPack, scanEvents, scanQualified, type ScanBatchItem } from '../ai/events';
 import { newRunId } from '../ai/pack';
-import { fetchFilingDoc, fetchHeadlines } from '../data/edgar';
+import { fetchFilingDoc, fetchHeadlineFeed } from '../data/edgar';
 import { SCAN_ITEMS, type FilingHit } from '../data/secEvents';
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { errText } from '../data/util';
@@ -126,14 +126,16 @@ export async function startLookback(sc: Pick<StartCtx, 'env' | 'fetcher' | 'sess
       }
     }
     try {
-      const hl = (await fetchHeadlines(fetcher, t)).filter((h) => h.date <= session).slice(0, 30);
+      const feed = await fetchHeadlineFeed(fetcher, t);
+      const hl = feed.items.filter((h) => h.date <= session).slice(0, 30);
       dq.news = 'partial';
       if (hl.length) {
-        docs.push({ id: `N-${t}-${session}-LB`, source_id: `nasdaq-rss:${t}:${session}:lookback`, kind: 'news', date: hl[0].date, title: `${t} 目前的新聞標題（Nasdaq RSS，只有標題）`, text: hl.map((h) => `${h.date} | ${h.title}`).join('\n'), ticker: t });
+        docs.push({ id: `N-${t}-${session}-LB`, source_id: `${feed.source}:${t}:${session}:lookback`, kind: 'news', date: hl[0].date, title: `${t} 目前的新聞標題（${feed.label}，只有標題）`, text: hl.map((h) => `${h.date} | ${h.title}`).join('\n'), ticker: t });
         batch.push({ ticker: t, kind: 'NEWS', label: `${t} 的 ${hl.length} 則新聞標題` });
       }
-    } catch {
+    } catch (e) {
       dq.news = 'partial';
+      notes.push(errText(e));
     }
   }
   if (omitted.length) notes.push(`回看略過 ${omitted.length} 份（每檔最多 ${LOOKBACK_PER_TICKER} 份、整份最多 ${LOOKBACK_MAX} 份）：${omitted.map((o) => `${o.ticker} 的 ${o.label}`).join('、')}`);

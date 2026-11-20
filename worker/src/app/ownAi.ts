@@ -21,7 +21,7 @@ import { isLastTradingDayOfMonth, nextTradingDay, type CalendarOverrides } from 
 import { attribution } from '../ai/detect';
 import { attrFacts } from '../ai/drops';
 import { isAdvanceable } from '../data/secEvents';
-import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlines, isEarningsFiling, quarterTable, quarterTableText, xbrlConditionMet, XBRL_METRICS, type QuarterRow } from '../data/edgar';
+import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlineFeed, isEarningsFiling, quarterTable, quarterTableText, xbrlConditionMet, XBRL_METRICS, type QuarterRow } from '../data/edgar';
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
@@ -102,8 +102,9 @@ export const xbrlDoc = (ticker: string, rows: QuarterRow[]): PackDoc | null => (
 
 /** 新聞標題的原文（只有標題，只能當初判）。 */
 export async function newsDoc(fetcher: Fetcher, ticker: string, asOf: string, since?: string): Promise<PackDoc | null> {
-  const hl = (await fetchHeadlines(fetcher, ticker)).filter((h) => h.date <= asOf && (!since || h.date > since)).slice(0, 15);
-  return hl.length ? { id: `N-${ticker}`, source_id: `nasdaq-rss:${ticker}`, kind: 'news', date: hl[0].date, title: `${ticker} 最近的新聞標題（Nasdaq RSS，只有標題）`, text: hl.map((h) => `${h.date} | ${h.title}`).join('\n') } : null;
+  const feed = await fetchHeadlineFeed(fetcher, ticker);
+  const hl = feed.items.filter((h) => h.date <= asOf && (!since || h.date > since)).slice(0, 15);
+  return hl.length ? { id: `N-${ticker}`, source_id: `${feed.source}:${ticker}`, kind: 'news', date: hl[0].date, title: `${ticker} 最近的新聞標題（${feed.label}，只有標題）`, text: hl.map((h) => `${h.date} | ${h.title}`).join('\n') } : null;
 }
 
 /**
