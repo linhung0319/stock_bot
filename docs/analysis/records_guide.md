@@ -97,6 +97,7 @@ records/                         ← .gitignore，不進 repo
 | `constituents` | 每天的成分股名單與兩份來源是否一致 | 只增加 | 資料品質、成分股變動 |
 | `calendar_overrides` | 手動修正的休市日 | 會改 | 交易日對齊 |
 | `splits` | Yahoo 日線回應裡的拆股與合股（代號、生效日、`numerator`／`denominator`：1 拆 10 是 10／1；T39c） | 只增加 | 對照帳本的拆股那一行；比較存下來的股價與當時的通知、快照股數時換算 |
+| `web_docs` | Worker 抓的網頁快照（T51，設計 `web_evidence_design` §1.4）：每一次要抓（含被拒絕的）一列；`id` = `web:<網址雜湊>` 是證據包的 `source_id`（同一個網址為兩檔各抓一次時各一列，`row_id` 才是唯一的）；`domain`／`tier`（`PRIMARY`／`NAMED`／`MEDIA`）、`via`（`MENU`／`SEARCH`／`MANUAL`）、`ref` 是哪一次執行要的；`published` 與 `published_from`（`meta`／`json-ld`／`time`／`text` 標題下面那一行／`rss`）、`date_conflict`；`status`（`OK`／`THIN`／`BLOCKED`／`UNSUPPORTED`／`NOT_LISTED`／`NO_DATE`／`TOO_OLD`／`ERROR`）與 `error`；`text` 只有 `OK` 存（最多 30,000 字，`truncated`）；`used_by` 是第一次放進證據包的執行。沒被用過的 180 天後在 D1 清掉 `text`，本機已拉的列不跟著清 | 只增加 | 分析師要了哪些來源、哪些網域常被擋或不在清單；審查引用的網頁原文 |
 
 ### 系統運作（T16 統計也用）
 

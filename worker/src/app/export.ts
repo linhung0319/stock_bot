@@ -41,6 +41,8 @@ export const EXPORT_TABLES: Record<string, ExportTable> = {
   constituents: { mode: 'append', json: ['only_spy', 'only_wiki', 'holdings'], key: 'session', pageRows: 50 },
   calendar_overrides: { mode: 'replace', json: [], pageRows: 1000 },
   splits: { mode: 'append', json: [], pageRows: 1000 },
+  // T51：網頁快照（text 最多 30,000 字，一頁少拉一點）。只增加；之後清掉的全文與 used_by 的更新不會回到本機已拉的列
+  web_docs: { mode: 'append', json: [], pageRows: 50 },
   // 系統運作
   data_runs: { mode: 'append', json: ['detail'], pageRows: 500 },
   flow_runs: { mode: 'append', json: ['detail'], pageRows: 500 },

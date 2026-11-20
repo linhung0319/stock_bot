@@ -2,6 +2,10 @@
 // 只量、不存資料、不進任何流程（設計 docs/design/web_evidence_design_2026-11-20.md；/admin/web/test）。
 import { htmlToText, parseRss } from './edgar';
 import type { Fetcher } from './sources';
+import { findPublished, findPublishedInText, safeWebUrl } from './webDoc';
+
+// safeWebUrl、findPublished 搬到 webDoc.ts（T51），這裡照舊匯出給既有的呼叫者。
+export { findPublished, safeWebUrl };
 
 export const WEB_PROBE_MAX_BYTES = 2_000_000;
 const HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36', Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9' };
@@ -27,42 +31,6 @@ export interface WebProbe {
   error?: string;
 }
 
-/** 只收 https、公開的主機名稱（不收 IP、localhost、內部網域）。 */
-export function safeWebUrl(raw: string): URL | null {
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return null;
-  const h = u.hostname.toLowerCase();
-  if (!h.includes('.') || /^[\d.]+$/.test(h) || h.includes(':') || /(^|\.)(localhost|local|internal|workers\.dev)$/.test(h)) return null;
-  return u;
-}
-
-const ISO = /\d{4}-\d{2}-\d{2}(?:T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?/;
-
-/** 從 HTML 找發布日期：meta（article:published_time 等）、JSON-LD 的 datePublished、<time datetime>。 */
-export function findPublished(html: string): { date: string; from: string } | null {
-  const tries: [string, RegExp][] = [
-    ['meta', /<meta[^>]+(?:property|name|itemprop)=["'](?:article:published_time|og:published_time|datePublished|publish[-_]?date|pubdate|date|dc\.date(?:\.issued)?|parsely-pub-date|sailthru\.date)["'][^>]*content=["']([^"']+)["']/i],
-    ['meta', /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name|itemprop)=["'](?:article:published_time|og:published_time|datePublished|publish[-_]?date|pubdate|parsely-pub-date)["']/i],
-    ['json-ld', /"datePublished"\s*:\s*"([^"]+)"/i],
-    ['time', /<time[^>]+datetime=["']([^"']+)["']/i],
-  ];
-  for (const [from, re] of tries) {
-    const m = re.exec(html);
-    const iso = m && ISO.exec(m[1]);
-    if (iso) return { date: iso[0].slice(0, 10), from };
-    if (m) {
-      const d = new Date(m[1]);
-      if (!Number.isNaN(d.getTime())) return { date: d.toISOString().slice(0, 10), from };
-    }
-  }
-  return null;
-}
-
 const BLOCK = /(enable javascript|javascript is (?:required|disabled)|are you a robot|captcha|access denied|unusual (?:traffic|activity)|verify you are (?:a )?human|just a moment|subscribe to (?:continue|read)|sign in to (?:continue|read)|before you continue|consent)/i;
 
 export async function probeWebPage(fetcher: Fetcher, raw: string): Promise<WebProbe> {
@@ -79,7 +47,8 @@ export async function probeWebPage(fetcher: Fetcher, raw: string): Promise<WebPr
     const html = new TextDecoder().decode(buf.slice(0, WEB_PROBE_MAX_BYTES));
     const text = htmlToText(html);
     const body = text.split('\n').filter((p) => p.trim().length > 200).join('\n');
-    const pub = findPublished(html);
+    const inText = findPublishedInText(text);
+    const pub = findPublished(html) ?? (inText ? { date: inText, from: 'text' } : null);
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];
     const hint = body.length < 1500 ? (BLOCK.exec(text)?.[0] ?? '內文太短') : null;
     return { ...base, ok: !hint, title: title ? htmlToText(title).slice(0, 160) : undefined, textChars: text.length, bodyChars: body.length, published: pub?.date ?? null, publishedFrom: pub?.from ?? null, blockedHint: hint, sample: body.slice(0, 240) };

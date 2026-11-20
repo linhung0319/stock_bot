@@ -74,7 +74,32 @@
 1. 產業報價這一類（TrendForce）抓得到，而且有日期——這正是「產業新聞類條件」最需要的來源。
 2. 大型通訊社與財經媒體一律被擋。它們擋的是機房的 IP 與沒有登入的讀者；雲端排程的沙盒也是機房 IP，會不會比較好**沒量過**。
 3. **抓得到不等於可信**：RSS 連結抓得到的多半是 fool.com、stocktwits 這種評論文。所以清單要分級，不能「抓得到就算證據」。
-4. 沒量的：公司投資人關係網站的文章頁、PDF（Worker 不解析 PDF）、同一個網站連續抓多篇會不會被擋、雲端排程在加了允許網域之後 WebFetch 讀不讀得到。
+4. 沒量的：公司投資人關係網站的文章頁、PDF（Worker 不解析 PDF）、同一個網站連續抓多篇會不會被擋、雲端排程在加了允許網域之後 WebFetch 讀不讀得到。（前兩項與第三項由下面的 M1、M2 補上；PDF 與 WebFetch 照舊沒量）
+
+**M1、M2（2026-11-20，T51，同一個 `/admin/web/test`，0.14.1）**：起始清單每個網域的**文章頁**與公司新聞室，共 32 個網址、4 次呼叫；每個網址一次、沒有重試。文章網址從各站的 RSS 或列表頁取（在本機取，沒有經過 Worker）。「抓得到」的定義同上。
+
+| 來源 | 文章頁 | 發布日 |
+|---|---|---|
+| trendforce.com（`/presscenter/news/` 2 篇、`/news/` 2 篇） | 4／4 抓得到（2,700～3,400 字） | 4／4 認得出（JSON-LD） |
+| dramexchange.com（`/WeeklyResearch/Post/` 5 篇） | 5／5（2,500～5,200 字）。「Market View」是 TrendForce 新聞稿的轉載 | meta、JSON-LD、`<time>` 都沒有；只寫在「Published」那一行文字（`Nov.19 2026,15:41 PM (GMT+8)`） |
+| techpowerup.com（5 篇） | 5／5；短新聞的內文剛好過門檻（1,517、1,576 字） | 5／5（`<time>`） |
+| nvidianews.nvidia.com（`/news/` 2 篇） | 2／2（11,800～17,400 字） | 結構化的日期都沒有；只寫在標題下面單獨一行（`November 17, 2026`） |
+| semiconductors.org（文章 2 篇） | 2／2（2,000～2,600 字） | 2／2（meta；§0.5 認錯成 2018 的是列表頁） |
+| datacenterdynamics.com（文章 2 篇） | **0／2：都是 403**（§0.5 當時抓得到，這次被擋） | — |
+| businesskorea.co.kr（文章 2 篇） | **0／2：內文太短**（英文短新聞 1,438 字；韓文文章 891 字——韓文一個字的資訊量比英文多，同一個門檻對韓文偏嚴） | meta 有 |
+| news.skhynix.com（6 篇，含一次 4 篇） | 5／6；沒抓到的那篇是法說會頁（只有影片與附件） | 結構化的日期都沒有；標題下面單獨一行 |
+| news.samsung.com（2 篇） | 財報新聞稿抓得到（8,560 字）；人事公告是名單、段落都短，內文太短 | 2／2（meta） |
+| www.micron.com（`/about/press/news/` 1 篇） | 抓得到；頁面有一段屬性裡的 HTML 被轉成文字（重複的內文夾雜標籤） | 結構化的日期都沒有；標題下面單獨一行 |
+| investors.micron.com（列表頁） | **403**（在本機也是 403；文章頁拿不到網址，沒試） | — |
+
+**M2（同一個網站一次抓 4 篇）**：trendforce.com、dramexchange.com、techpowerup.com、news.skhynix.com 各在同一次呼叫裡連抓 4 篇（每篇 0.07～1.9 秒），**都沒有被擋**。
+
+**讀法與照著改的地方**：
+
+1. 一手的新聞室（NVIDIA、SK 海力士、美光）多半**只把日期寫在標題下面的一行字**，meta、JSON-LD、`<time>` 都沒有；DRAMeXchange 寫在「Published」那一行。只認結構化日期的話，最重要的一手來源全部會變成「認不出發布日」。→ §1.4 的發布日多一個備案：**第一段內文之前 15 行內、單獨一行的日期**（`published_from = 'text'`）；內文之後的日期（旁邊的「其他文章」）、前一行是 Updated 的都不算。拿上面的頁面在本機試過，認出的日期都和頁面上寫的相同。
+2. datacenterdynamics.com 兩篇都 403、businesskorea.co.kr 兩篇都內文太短 → 從起始清單拿掉（§1.3）。
+3. investors.micron.com 擋機房 IP；美光的新聞稿改用 `www.micron.com/about/press/`（每檔自己的 `domains`，T52）。
+4. 內文門檻 1,500 字對韓文、中文偏嚴；起始清單都是英文來源，先不改，運作統計（T57）看 `THIN` 多不多再說。
 
 ---
 
@@ -106,14 +131,14 @@
 
 ### 1.3 網域清單與每檔的來源
 
-**共用的清單**：`worker/src/data/webSources.ts`，一個常數陣列 `{ domain, tier, label, note }`。`domain` 比對主機名稱的結尾（`trendforce.com` 涵蓋 `www.trendforce.com`）。repo 是公開的，這份清單沒有私人資料。
+**共用的清單**：`worker/src/data/webSources.ts`，一個常數陣列 `{ domain, tier, label, note, paths? }`（T51 多了 `paths`：只收這些路徑開頭，原本寫在 `note` 的路徑限制改成程式比對）。`domain` 比對主機名稱的結尾（`trendforce.com` 涵蓋 `www.trendforce.com`）。repo 是公開的，這份清單沒有私人資料。
 
-| 級別 | 是什麼 | 起始名單（依 §0.5 的實測；實作時每個再探一次文章頁） |
+| 級別 | 是什麼 | 起始名單（2026-11-20 依 §0.5 的 M1、M2 定） |
 |---|---|---|
-| `PRIMARY` 一手 | 發布者就是當事人或統計機關：公司與同業自己的新聞稿與投資人關係網站、交易所、政府統計 | 每檔自己列（下面「每檔的來源」）；共用的先放 `nvidianews.nvidia.com`、`semiconductors.org` |
-| `NAMED` 指名的產業來源 | 產業研究機構公開的新聞稿與報價摘要 | `trendforce.com`（只收 `/presscenter/` 與 `/news/`）、`dramexchange.com` |
-| `MEDIA` 媒體 | 有編輯、會寫明消息來源的產業媒體 | `techpowerup.com`、`datacenterdynamics.com`、`businesskorea.co.kr` |
-| （不列入） | 評論、預測、社群：`fool.com`、`stocktwits.com`、`247wallst.com`、`tikr.com`、`seekingalpha.com` 等 | 抓得到也不抓；標題照舊只當初判 |
+| `PRIMARY` 一手 | 發布者就是當事人或統計機關：公司與同業自己的新聞稿與投資人關係網站、交易所、政府統計 | 每檔自己列（下面「每檔的來源」）；共用的放 `nvidianews.nvidia.com`（只收 `/news/`）、`semiconductors.org`。實測抓得到的公司新聞室：`news.skhynix.com`、`news.samsung.com`、`www.micron.com`（`/about/press/`；`investors.micron.com` 403） |
+| `NAMED` 指名的產業來源 | 產業研究機構公開的新聞稿與報價摘要 | `trendforce.com`（只收 `/presscenter/` 與 `/news/`）、`dramexchange.com`（只收 `/WeeklyResearch/Post/`） |
+| `MEDIA` 媒體 | 有編輯、會寫明消息來源的產業媒體 | `techpowerup.com`。~~`datacenterdynamics.com`~~（M1 兩篇都 403）、~~`businesskorea.co.kr`~~（M1 兩篇都內文太短）拿掉 |
+| （不列入） | 評論、預測、社群：`fool.com`、`stocktwits.com`、`247wallst.com`、`tikr.com`、`seekingalpha.com` 等（程式裡的 `WEB_EXCLUDED`） | 抓得到也不抓，**每檔的 `domains` 也加不進來**；標題照舊只當初判 |
 
 - **誰維護**：使用者。改清單＝改這個檔案、commit、部署（和改規則一樣走 git，有紀錄）。
 - **加網域的流程**：取文件的端點每次把「不在清單而被拒絕的網址」記下來（`web_docs` 的 `status = 'NOT_LISTED'`，只存網址與標題）；運作統計列出最近 90 天被略過最多的網域與抓取失敗的網域。使用者看了決定要不要加；在 repo 開 Claude Code 說「把 X 加進清單」即可（先用 `/admin/web/test` 探一次文章頁，抓不到就不加）。
@@ -138,7 +163,9 @@
 - 逾時 15 秒；最多讀 2 MB；跟著轉址，但**轉址後的主機也要在清單內**，否則當成失敗。
 - 只收 HTML。PDF 與其他格式 → `status = 'UNSUPPORTED'`（不解析 PDF）。
 - 內文（超過 200 字的段落合計）少於 1,500 字 → `status = 'THIN'`（多半是付費牆、同意頁、要 JavaScript）。
-- **發布日**：`findPublished`（meta、JSON-LD 的 `datePublished`、`<time datetime>`）。RSS 來的另有 RSS 的發布時間：兩個都有而且差超過 3 天 → 用比較晚的那個，並標 `date_conflict`。都沒有 → `published = null`。
+- **發布日**：`findPublished`（meta、JSON-LD 的 `datePublished`、`<time datetime>`）；都沒有時（T51，M1：一手新聞室多半如此）用**第一段內文之前 15 行內、單獨一行的日期**（`findPublishedInText`，可以帶 Published／Posted／Date 與後面的時間；前一行是 Updated／Modified 的不算；`published_from = 'text'`）。RSS 來的另有 RSS 的發布時間：兩個都有而且差超過 3 天 → 用比較晚的那個，並標 `date_conflict`。都沒有 → `published = null`。量測端點 `/admin/web/test` 用同一套認法。
+- **快照從標題開始**（T51）：快照的文字從第一段內文之前、最靠近它的標題那一行開始（og:title、`<h1>`、`<title>` 以及它們用「 | 」「 - 」切開的每一段），去掉前面的選單；找不到就從頭。`title` 存的也是那一行（沒有網站名稱）。
+- 轉址一次一次跟（最多 5 次），**每一站**都要在清單內（含 `paths`）才繼續抓，所以不會去碰清單外的主機。
 - 同一個網站一次執行最多抓 4 篇；失敗不重試。
 - 快照存的文字最多 30,000 字（開頭起算）；給 AI 的長度另有上限（§1.5）。截掉的都標記（G23）。
 
@@ -157,11 +184,14 @@
 | `status` | `OK`／`THIN`／`BLOCKED`（HTTP 4xx、5xx）／`UNSUPPORTED`／`NOT_LISTED`／`NO_DATE`／`TOO_OLD`／`ERROR` |
 | `http_status`、`chars`、`truncated`、`text_sha256` | |
 | `text` | 純文字（只有 `OK` 的存） |
+| `row_id`、`error`、`used_by`（T51 加） | `row_id` 是每一列的編號（`id` 不唯一：同一個網址為兩檔各存一列、沒抓成的每次各一列）；`error` 是沒抓成的原因（`NOT_LISTED` 另外寫 `EXCLUDED` 不列入或 `PATH` 路徑不收）；`used_by` 是第一次把它放進證據包的執行（T52 的端點寫），下面「保留」用 |
 
-- **不重抓**：同一檔同一個網址已經有 `OK` 的列就用那一列（文章改版不追；被引用的就是當時抓到的那一版）。
+- **不重抓**：同一檔同一個網址已經有 `OK` 的列就用那一列（文章改版不追；被引用的就是當時抓到的那一版）。網址先整理（去掉 `#` 與 `utm_` 參數）再算 `id`。資料庫用部分唯一索引保證同一檔同一個 `id` 最多一列有全文的 `OK`。沒抓成的不算，下次照樣再試。
+- 同一個網站一次執行抓滿 4 篇之後，`fetchWebDoc` 回 `LIMIT`、不去抓、不寫 `web_docs`（由端點記在執行紀錄，§1.5）。
+- `fetchWebDoc` 可以帶決策日與 `notBefore`：發布日晚於決策日 → `ERROR`、早於 `notBefore` → `TOO_OLD`（§1.5 的規則；`notBefore` 由 T52 的端點照上次審查算）。
 - **repo 是公開的**：快照只在 D1。匯出（`EXPORT_TABLES` 加 `web_docs`）落在 `records/`，不進 git。
 - **網站怎麼顯示**：審查紀錄頁列出這次分析師取回的文件（標題、來源、級別、發布日、抓取日、連結）與被引用的片段；不提供整篇全文的頁面（著作權；要看全文點連結）。抓不到與不在清單的網址列在下面「沒有讀到的」，寫原因。
-- **保留**：被任何一次審查的證據包用過的永久留著（之後要能對引用）；沒被用過的 `OK` 文件 180 天後刪掉 `text`、留列。
+- **保留**：被任何一次審查的證據包用過的永久留著（之後要能對引用）；沒被用過的 `OK` 文件 180 天後刪掉 `text`、留列（`purgeUnusedWebText`；T51 只寫了函式，接進每日流程等 T52 開始寫 `used_by` 再接，否則會清掉被用過的）。清掉全文的列不再擋重抓。
 
 **怎麼進證據包**：不預先放。分析師要了才取（§1.5），取回的文件記在那次執行的 `added_docs`。`PackDoc` 的樣子：`kind: 'web'`（新的種類），`source_id` = `web_docs.id`，`date` = 發布日，`title` 寫「〔網頁｜<級別的白話>｜<label>〕<標題>（發布 <日期>，<抓取日> 抓）」，`url`、`fetched_at` 照填。**認不出發布日的取不到**（`check.ts` 要日期 ≤ 決策日；拿抓取日充當會讓三年前的舊文變成「新證據」）。
 
@@ -423,8 +453,8 @@
 
 | # | 測什麼 | 什麼時候 | 要不要使用者 |
 |---|---|---|---|
-| M1 | 起始清單每個網域的**文章頁**抓不抓得到、日期認不認得出；公司投資人關係網站的文章頁 | 第一個實作任務裡（`/admin/web/test` 已經有了） | 不用 |
-| M2 | 同一個網站一次抓 4 篇會不會被擋 | 同上 | 不用 |
+| M1 | 起始清單每個網域的**文章頁**抓不抓得到、日期認不認得出；公司投資人關係網站的文章頁 | **2026-11-20 T51 做完**（§0.5） | 不用 |
+| M2 | 同一個網站一次抓 4 篇會不會被擋 | **2026-11-20 T51 做完：4 個網站都沒被擋**（§0.5） | 不用 |
 | M3 | 帶找資料步驟的審查實際跑一次：多久、分析師問了什麼、搜尋幾次、想取幾份、取到幾份、子代理裡 WebSearch 能不能用（連線測試量的是主代理） | T53 做完、`run.md` 貼上去之後 | **要**：把新的 `run.md` 貼到 claude.ai 的排程 |
 | M4 | 一個月的整體額度變化 | 上線後 | **要**：看用量頁 |
 | M5 | 排程的 connector 清單現在是不是空的 | **2026-11-20 使用者確認：是空的** | 做完了 |
