@@ -691,6 +691,15 @@ select option { background: #14162a; }
 /* 編輯論點頁（T27）：左邊現在的、右邊新的；手機上上下排 */
 .thesis-cmp { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 760px) { .thesis-cmp { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; } }
+/* T52：網頁證據的來源（同業一列：名稱、EDGAR／Yahoo 代號、拿掉；網站一列：網域、拿掉） */
+.src-peer { display: grid; gap: 6px 8px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-2); }
+.src-peer:first-child { border-top: 0; padding-top: 0; }
+.src-peer .src-codes { grid-column: 1; display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.src-peer > .btn { grid-column: 2; grid-row: 1 / span 2; }
+.src-dom { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; margin-top: 8px; }
+.src-checks { display: grid; gap: 6px; margin-top: 6px; }
+.src-check { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.src-check .small { overflow-wrap: anywhere; }
 /* T40：沿用編號、但字改了的前提（左舊右新） */
 .edit-cmp { display: grid; gap: 10px; margin-top: 6px; }
 .edit-cmp > li { padding: 10px 0; border-top: 1px solid var(--line-2); }

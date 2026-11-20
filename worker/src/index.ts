@@ -1,6 +1,7 @@
 // Worker 進入點：路由與排程。
 //   /health                      不需要驗證
 //   /ai/task/:id/evidence|result 雲端排程用，Bearer AI_TASK_SECRET
+//   /ai/task/:id/docs            分析師取文件（T52，web_evidence_design §1.5；src/app/webEvidence.ts），同一把金鑰
 //   /admin/*                     管理用，Bearer ADMIN_TOKEN（/admin/export：紀錄匯出到本機，src/app/export.ts；/admin/ops-report：運作統計，src/app/opsReport.ts；
 //                                /admin/own/*：在 repo 用 Claude Code 討論論點，src/app/site/api.ts 的 handleAdminThesis）
 //   /auth/line/login|callback    網站的 LINE 登入（src/app/site/lineLogin.ts）
@@ -25,6 +26,7 @@ import { probeSummary, runProbe, saveProbe } from './app/probe';
 import { NEWS_SOURCES, tryHeadlineSource } from './data/edgar';
 import { probeRss, probeWebPage } from './data/webProbe';
 import { handleAdminThesis, handleSite } from './app/site/api';
+import { handleTaskDocs } from './app/webEvidence';
 import { handleLineLogin } from './app/site/lineLogin';
 import { APPLY_CRON, FINAL_CRON, INGEST_CRON, attemptOfCron } from './app/schedule';
 import { loadCalendarOverrides, loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
@@ -61,10 +63,11 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
   const login = await handleLineLogin(request, env, fetcher, now);
   if (login) return login;
 
-  const ai = /^\/ai\/task\/([0-9a-f]{32})\/(evidence|result)$/.exec(path);
+  const ai = /^\/ai\/task\/([0-9a-f]{32})\/(evidence|result|docs)$/.exec(path);
   if (ai) {
     if (!bearerOk(request, env.AI_TASK_SECRET)) return json({ error: 'unauthorized' }, 401);
     if (ai[2] === 'evidence' && request.method === 'GET') return readEvidence(env.DB, ai[1], now);
+    if (ai[2] === 'docs' && request.method === 'POST') return handleTaskDocs(env, fetcher, ai[1], await request.text(), now);
     if (ai[2] === 'result' && request.method === 'POST') return acceptResult(env.DB, ai[1], await request.text(), now, (task, result) => (task.kind === 'RUN' ? finalizeRun(env.DB, task, result, now) : Promise.resolve()));
     return json({ error: 'method_not_allowed' }, 405);
   }

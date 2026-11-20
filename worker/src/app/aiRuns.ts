@@ -1,5 +1,6 @@
 // AI 執行（T9）：存證據包 → 建任務、觸發雲端排程 → 收到結果後檢查每一票、表決 → 存結論。
 // 沒有結果（觸發失敗、逾時、結果被退回）也存一份「照規則」的結論，所以每一次執行最後都有結論可以看。
+import { parseAdded, withAdded, type AddedRecord, type DocCtx } from '../ai/added';
 import { judge, noResult, packHash, type EvidencePack, type Outcome } from '../ai/check';
 import { PAYLOAD_HOOKS } from '../ai/hooks';
 import { LATE_FETCH_ERROR, TASK_TIMEOUT_MS, createTask, fireRoutine, timeoutReason, type AiTaskRow } from './aiTasks';
@@ -28,6 +29,14 @@ export interface AiRun {
   completedAt: string | null;
   /** 雲端排程執行時 repo 的 commit（T13 起；舊紀錄、沒有回報、沒有結果的是 null）。 */
   repoCommit: string | null;
+  /** T52：組證據包時記下的「可以取什麼」（目錄、發布日下限、這檔的網域）；沒有是 null（不能取文件的功能、舊紀錄）。測試直接組的紀錄可以沒有。 */
+  docCtx?: DocCtx | null;
+  /**
+   * T52：分析師向取文件的端點要了什麼（取回的文件、被拒絕的、呼叫次數）。舊紀錄是空的。
+   * pack.documents 已經含取回的文件（withAdded：表決、套用、網站都看同一份）；packHash 仍是程式準備的那一份的雜湊。
+   */
+  added?: AddedRecord;
+  addedHash?: string | null;
 }
 
 interface Row {
@@ -46,25 +55,34 @@ interface Row {
   process: string | null;
   completed_at: string | null;
   repo_commit?: string | null;
+  doc_ctx?: string | null;
+  added_docs?: string | null;
+  added_hash?: string | null;
 }
 
-const toRun = (r: Row): AiRun => ({
-  runId: r.run_id,
-  fn: r.fn,
-  ticker: r.ticker,
-  asOf: r.as_of,
-  createdAt: r.created_at,
-  status: r.status,
-  taskId: r.task_id,
-  promptVersion: r.prompt_version,
-  packHash: r.pack_hash,
-  pack: JSON.parse(r.pack),
-  packNotes: r.pack_notes ? JSON.parse(r.pack_notes) : [],
-  outcome: r.outcome ? JSON.parse(r.outcome) : null,
-  process: r.process ? JSON.parse(r.process) : [],
-  completedAt: r.completed_at,
-  repoCommit: r.repo_commit ?? null,
-});
+const toRun = (r: Row): AiRun => {
+  const added = parseAdded(r.added_docs);
+  return {
+    runId: r.run_id,
+    fn: r.fn,
+    ticker: r.ticker,
+    asOf: r.as_of,
+    createdAt: r.created_at,
+    status: r.status,
+    taskId: r.task_id,
+    promptVersion: r.prompt_version,
+    packHash: r.pack_hash,
+    pack: withAdded(JSON.parse(r.pack) as EvidencePack, added.docs),
+    packNotes: r.pack_notes ? JSON.parse(r.pack_notes) : [],
+    outcome: r.outcome ? JSON.parse(r.outcome) : null,
+    process: r.process ? JSON.parse(r.process) : [],
+    completedAt: r.completed_at,
+    repoCommit: r.repo_commit ?? null,
+    docCtx: r.doc_ctx ? (JSON.parse(r.doc_ctx) as DocCtx) : null,
+    added,
+    addedHash: r.added_hash ?? null,
+  };
+};
 
 /** 送回的 repo_commit：像 git commit（7～64 個十六進位字元）才存，其他一律當成沒有。 */
 export function commitOf(v: unknown): string | null {
@@ -84,12 +102,12 @@ async function close(db: D1Database, runId: string, outcome: Outcome, now: Date,
  * 開始一次 AI 執行：存證據包、建任務（雲端排程只拿得到任務編號，用它來取證據包）、觸發。
  * 觸發失敗就直接存「照規則」的結論。
  */
-export async function startRun(env: Env, fetcher: Fetcher, pack: EvidencePack, now: Date, packNotes: string[] = []): Promise<AiRun> {
+export async function startRun(env: Env, fetcher: Fetcher, pack: EvidencePack, now: Date, packNotes: string[] = [], docCtx: DocCtx | null = null): Promise<AiRun> {
   const db = env.DB;
   const hash = await packHash(pack);
   await db
-    .prepare("INSERT INTO ai_runs (run_id, fn, ticker, as_of, created_at, status, prompt_version, pack_hash, pack, pack_notes) VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)")
-    .bind(pack.run_id, pack.function, pack.subject.ticker ?? null, pack.as_of, now.toISOString(), pack.prompt_version, hash, JSON.stringify(pack), JSON.stringify(packNotes))
+    .prepare("INSERT INTO ai_runs (run_id, fn, ticker, as_of, created_at, status, prompt_version, pack_hash, pack, pack_notes, doc_ctx) VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?)")
+    .bind(pack.run_id, pack.function, pack.subject.ticker ?? null, pack.as_of, now.toISOString(), pack.prompt_version, hash, JSON.stringify(pack), JSON.stringify(packNotes), docCtx ? JSON.stringify(docCtx) : null)
     .run();
   const taskId = await createTask(db, 'RUN', { run_id: pack.run_id, function: pack.function, prompt_version: pack.prompt_version, pack_hash: hash, samples: pack.policy.samples, pack }, now);
   await db.prepare('UPDATE ai_runs SET task_id = ? WHERE run_id = ?').bind(taskId, pack.run_id).run();
@@ -98,7 +116,10 @@ export async function startRun(env: Env, fetcher: Fetcher, pack: EvidencePack, n
   return (await getRun(db, pack.run_id, now))!;
 }
 
-/** 雲端排程送回的結果通過格式檢查之後（aiTasks.acceptResult）：逐票檢查、表決、存結論。 */
+/**
+ * 雲端排程送回的結果通過格式檢查之後（aiTasks.acceptResult）：逐票檢查、表決、存結論。
+ * 比對的原文＝證據包的文件＋分析師取回的文件（toRun 已經用 withAdded 合起來，T52）。
+ */
 export async function finalizeRun(db: D1Database, task: AiTaskRow, result: Record<string, unknown>, now: Date): Promise<Outcome | null> {
   const row = await db.prepare('SELECT * FROM ai_runs WHERE task_id = ?').bind(task.id).first<Row>();
   if (!row || row.status !== 'PENDING') return null;

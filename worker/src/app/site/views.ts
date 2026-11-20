@@ -29,6 +29,7 @@ import {
   type MarketView,
   type Notif,
   type OrderLine,
+  type OwnWebSources,
   type ShadowRecord,
   type Snapshot,
   cashflowKind,
@@ -1162,6 +1163,8 @@ export interface HoldingDetail {
     pendingBreak: { notif: number; tier: string | null; premiseId: string | null } | null;
     /** 那則通知的名字（日期與種類，不用內部編號；T39a）。 */
     pendingBreakName: string | null;
+    /** 網頁證據的來源（T52，web_evidence_design §1.3）：同業、這檔的一手網域、存檔時試抓的結果。沒有指定是 null。 */
+    webSources: OwnWebSources | null;
   } | null;
   ai: AiNote | null;
   history: { date: string; text: string; notif: number | null }[];
@@ -1317,6 +1320,7 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
             prev: prevFileOf(acct, ticker),
             pendingBreak: pendingBreakOf(acct, ticker),
             pendingBreakName: refNameOf(acct, pendingBreakOf(acct, ticker)?.notif),
+            webSources: meta.webSources ?? null,
           }
         : null,
     ai: note,

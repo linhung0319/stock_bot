@@ -2,7 +2,8 @@
 //   真實：帳本與價格都在 D1（T6 的資料層）。
 //   示範：假市場＋腳本（src/demo），整個狀態存在 D1 的 demo_state 一列；和真實帳本完全分開。
 // 網站的程式只認這個介面，所以兩種模式走同一套畫面與操作。
-import { bookShares, pendingSplits, type Account, type Attention, type LedgerEvent, type MarketView, type ShadowRecord, type Snapshot, type StrategyReviewState } from '../../engine';
+import { bookShares, pendingSplits, type Account, type Attention, type LedgerEvent, type MarketView, type OwnWebSources, type ShadowRecord, type Snapshot, type StrategyReviewState, type WebSourceCheck } from '../../engine';
+import { probeWebSources } from '../webEvidence';
 import { easternTime, lastCompletedSession } from '../../data/calendar';
 import { BENCHMARK } from '../../data/ingest';
 import { buildMarketView, rebaseNotifSeq } from '../../data/marketView';
@@ -87,6 +88,8 @@ export interface SiteBackend {
    * 有拆股就記進 splits、存好換算後的價格（之後載入帳戶就會套用）。回傳這次新記到拆股的代號。查不到不丟錯。
    */
   checkSplits?(shares: Record<string, number>): Promise<string[]>;
+  /** 試抓每檔的網頁證據來源（T52，web_evidence_design §1.3；只有真實模式會真的對外連線，示範模式沒有這個方法）。 */
+  probeSources?(ws: OwnWebSources): Promise<WebSourceCheck[]>;
   /** AI 層的網站操作（只有真實模式有）。 */
   ai?: SiteAi;
 }
@@ -216,6 +219,7 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       if (rev !== null) await saveSnapshotUndo(env.DB, rev, before, after, date, now, warn);
     },
     undoSnapshot: () => undoSnapshot(env.DB, now),
+    probeSources: (ws) => probeWebSources(env, fetcher, ws),
     async checkSplits(shares) {
       const acct = (await loadAccount(env.DB))?.acct;
       if (!acct) return [];

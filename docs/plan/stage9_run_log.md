@@ -18,11 +18,25 @@
 - `/admin/web/test` 也用新的日期備案；`VERSION` 沒升（這次不部署）。
 - 沒做完：`purgeUnusedWebText`（180 天清全文）還沒接進每日流程，要等 T52 寫 `used_by`。不放心：1,500 字門檻對韓文、中文偏嚴（韓文完整報導 891 字），等 T57 看 `THIN` 多不多；美光新聞頁的快照夾雜 HTML 片段，吃字數但不影響引用比對；實測樣本小（每網域 1～6 篇、一次）。
 
+### T52（每檔的來源、目錄、取文件的端點）
+
+- 取回的文件怎麼算進原文：`toRun` 讀執行紀錄時把 `added_docs` 併進 `pack.documents`（表決、套用、網站、匯出看同一份）；資料庫的 `pack`／`pack_hash` 仍是程式準備的那份；`added_docs` 存給 AI 的那份原文（截過就是截過）。同業申報 `kind = filing`，照 §1.2 和自己的申報同級（§1.6 第一列：同業申報可以判前提不成立）；網頁 `kind = web` 在 T53 之前不觸發任何通知。
+- `notBefore` = 上次有結論的審查決策日前 120 天，沒有上一次時 365 天；重用舊快照時清單與日期照這次規則再查一次。
+- `LIMIT` 等被拒絕的記在 `added_docs.refused`（最多 60 筆＋`refusedTotal`）；同網站計數在 `added_docs.sites`。
+- 沒有 `doc_ctx` 的執行（減半檢視 F7）照現在的帳戶取網域與論點檔，`notBefore` 365 天；減半檢視的目錄留給 T54。
+- 端點細節：還沒取證據包回 409；一次最多要 8 份、請求 16 KB；同一份再要一次原樣給、不算份數；`for` 是 P 開頭寫 `premise_id`，其他寫 `cond_id`；寫回 `added_docs` 比對舊值，同時寫後到的回 409。
+- 8-K 本文在 `edgar.ts` 就只留 15,000 字，所以剛好 15,000 字的也標截斷。
+- 來源和論點同一個存檔按鈕（`POST /api/ops/own-thesis` 多 `webSources`；沒送不改、`null` 拿掉）；只改來源也會讓論點版本加 1。
+- 試抓：網域抓首頁（HTTP < 400 算）、EDGAR 查得到 CIK、Yahoo RSS 有標題；示範模式一律「沒有試」。共用清單已有的網域與不列入的網站回 422；只有系統預設前提的股票也能存來源（寫了自己的前提後才用）。
+- 不放心：首頁抓得到不代表文章頁抓得到；一次審查多約 12 個同業請求；範圍外：`fetchFilingDoc` 截斷 8-K 本文時不標記（原本的證據包也一樣）。
+
 ## 要使用者親手做的事
 
-- 部署時套 `0016_web_docs.sql` 到遠端 D1、升 `VERSION`（T51）。
+- 部署時套 `0016_web_docs.sql`（T51）、`0017_ai_runs_docs.sql`（T52）到遠端 D1、升 `VERSION`。
 
 ## 畫面截圖
+
+- T52：`records/stage9/screens/T52/thesis-sources-desktop.png`、`thesis-sources-phone.png`（示範 MU 的編輯論點頁，存了來源、按過試抓；示範模式看不到「目前抓不到」的樣子）。
 
 ## 卡住的任務
 

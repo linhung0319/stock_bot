@@ -8,6 +8,7 @@ import { actionButton, errBox } from './pages-notif.js';
 import { say } from './slime.js';
 import { replyOption } from './thesis-reply.js';
 import { prevFill } from './thesis-prev.js';
+import { sourcesEditor, sourcesNow } from './thesis-sources.js';
 
 const ACTIONS = [
   ['EXIT', '出清'],
@@ -73,6 +74,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   // 目前監測中的你定的條件（T42）：右邊的出場條件預填這些；存檔時和它們比，有改動才整組送 AI 對照
   const live = owned.filter((c) => ['ACTIVE', 'REVIEW_ONLY', 'MANUAL'].includes(c.code));
   let source = 'TYPED';
+  // 網頁證據的來源（T52）：和論點同一個存檔按鈕；有改動才送
+  const srcEd = sourcesEditor(d.ticker, own.webSources ?? null, () => changed());
 
   // ---- 右邊：新的（三欄都可以手改）
   const thesisIn = h('textarea', { rows: 6, maxlength: LIMITS.thesis, placeholder: '我為什麼持有它（一段，300 字以內最好）' });
@@ -167,6 +170,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     exitConditions: exits.map((r) => ({ text: r.input.value.trim(), action: r.sel.value })).filter((x) => x.text),
     source,
     replyTo: reply && reply.checked ? replyNotif : null,
+    ...(srcEd.changed() ? { webSources: srcEd.value() } : {}),
   });
   /** 沿用編號、但字改了（T40）：左邊舊的、右邊新的；「當成新的一條」取消對應（這一條發新編號，舊的撤下）。 */
   const editedList = (xs, held) =>
@@ -240,6 +244,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
             : h('div', { class: p.reviewHeld ? null : 'faint', style: `margin-top:4px${p.reviewHeld ? ';color:var(--warn)' : ''}` }, p.changed ? reviewLine(p) : '前提沒有增減：不另外開審查。'),
           p.silenceEnded?.length ? h('div', { style: 'margin-top:4px;color:var(--warn)' }, `${p.silenceEnded.join('、')} 正在靜默期，字改了：存檔後靜默期結束，AI 判斷新的字不成立時會照常通知你。`) : null,
           keptWarn(p),
+          srcPreview(p.sources),
         );
         put(exitDiff, exitPreview(p.exits));
       } catch (e) {
@@ -248,6 +253,13 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     }, 350);
   }
   thesisIn.addEventListener('input', changed);
+  /** 來源有改動（T52）：存檔時先試抓；全部拿掉的另外說。 */
+  const srcPreview = (s) =>
+    s?.cleared
+      ? h('div', { class: 'src-preview', style: 'margin-top:10px' }, h('b', null, '網頁證據的來源'), h('p', { style: 'margin-top:4px' }, '全部拿掉：之後審查只看這檔自己新聞裡、共用清單內的網站。'))
+      : s?.changed
+        ? h('div', { class: 'src-preview', style: 'margin-top:10px' }, h('b', null, '網頁證據的來源'), h('p', { style: 'margin-top:4px' }, '有改動：存檔時會先試抓一次；抓不到的仍會存，標「目前抓不到」。'))
+        : null;
 
   const reply = replyOpt ? h('input', { type: 'checkbox', checked: replyOpt.checked, onchange: () => changed() }) : null;
   // 勾著回應、新的前提原封不動留著被判不成立的那一條 → 存檔後當成不同意（own_thesis §1.10），先講清楚；
@@ -295,8 +307,10 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       }
       const rv = r.revised ? `；${r.revisedName ?? '那則通知'}結案（修正論點${revisedTail(r, `，保留的前提 ${r.revised.premiseId} 進靜默期`, `，${r.revised.premiseId} 的字改了、不進靜默期`)}）` : '';
       const cd = r.conds?.actionChanged?.length ? `；${r.conds.actionChanged.length} 條出場條件改了成立時的動作` : '';
+      const srcBad = (r.preview.sources?.checked ?? []).filter((c) => c.ok === false).length;
+      const sc = r.preview.sources?.changed ? `；網頁證據的來源已存${srcBad ? `（${srcBad} 項目前抓不到）` : ''}` : '';
       const ex = r.rewrite.status === 'SENT' ? '論點已存；出場條件送去 AI 對照與改寫，回來後在持股頁確認（確認之前舊的照舊監測）' : r.preview.exits?.changed ? '論點已存；出場條件全部拿掉，到持股頁確認才撤下' : '論點已存';
-      toast([ex + rv + cd, ...(r.preview.defaultOnly ? [DEFAULT_ONLY_TEXT.replace(/。$/, '')] : []), ...(r.conds?.errors ?? [])].join('；'));
+      toast([ex + rv + cd + sc, ...(r.preview.defaultOnly ? [DEFAULT_ONLY_TEXT.replace(/。$/, '')] : []), ...(r.conds?.errors ?? [])].join('；'));
       ctx.go(back.href);
     } catch (e) {
       msg.replaceChildren(errBox(e));
@@ -312,6 +326,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     h('ul', { class: 'prem' }, own.premises.map((p) => h('li', null, h('span', { class: 'st' }, p.id), h('span', { class: 'small' }, p.text)))),
     h('h5', { style: 'margin-top:12px' }, '你定的條件'),
     owned.length ? h('ul', { class: 'small', style: 'margin:6px 0 0 1.2em' }, owned.map((c) => h('li', null, `${c.text} → ${c.actionText ?? '只記錄'}（${c.status}）`))) : h('p', { class: 'small faint', style: 'margin-top:4px' }, '還沒有'),
+    h('h5', { style: 'margin-top:12px' }, '網頁證據的來源'),
+    sourcesNow(own.webSources ?? null, own.kind === 'DEFAULT_ONLY'),
   );
   // 賣光之後又買回（T44）：把上一次持有時的論點本文與前提填進右邊；前提當成新的，出場條件不帶
   const pf = prevFill(own.prev);
@@ -361,6 +377,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       exitList,
       h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addExit(); changed(); } }, '再加一條出場條件')),
     ),
+    srcEd.el,
   );
 
   formBox.append(

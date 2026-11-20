@@ -40,6 +40,7 @@ import {
   type InitialAccount,
   type MarketView,
   type Notif,
+  type OwnWebSources,
   type Premise,
   type Snapshot,
   notifName,
@@ -52,6 +53,7 @@ import type { ThesisLogInput } from '../ledgerStore';
 import { ruleResponseLogs, type CondAction } from '../thesis';
 import { StaleExitsError } from '../ownCheckAi';
 import { thesisReviewHeld } from '../ownAi';
+import { demoProbe, parseWebSources, sameWebSources } from '../webEvidence';
 import { nextTradingDay } from '../../data/calendar';
 import { errText } from '../../data/util';
 import { normalizeTicker } from '../../data/sources';
@@ -344,6 +346,15 @@ function exitsOf(v: unknown): ExitLine[] {
   return out;
 }
 
+/** 網頁證據的來源（T52）：檢查不過的訊息直接給使用者看（422）。 */
+function sourcesOf(v: unknown, tk: string): OwnWebSources | null {
+  try {
+    return parseWebSources(v, tk);
+  } catch (e) {
+    throw new SiteError(422, errText(e));
+  }
+}
+
 /** 這檔目前監測中的你定的條件（T42 整組取代的範圍；示範模式沒有條件）。 */
 async function liveConditions(backend: SiteBackend, tk: string): Promise<LiveCondition[]> {
   if (!backend.ai) return [];
@@ -360,6 +371,8 @@ async function liveConditions(backend: SiteBackend, tk: string): Promise<LiveCon
  *      確認之前舊的照舊監測。送出失敗或 AI 層沒設定 → rewrite.status = FAILED，頁面顯示「還沒送去改寫」與「重送」
  *   3. 出場條件不存成前提；沿用編號但字改了的前提，靜默期結束（T42，setThesis）
  * dry：只算前提的對應（沿用、沿用但字改了、新的、會撤下）與出場條件有沒有改動，不存。
+ * webSources（T52，web_evidence_design §1.3）：這檔的同業與一手網域；沒送 = 不改，null 或全空 = 拿掉。真的存檔前先試抓一次
+ *   （抓不到的仍存，checked 記結果，網站寫「目前抓不到」）；log 的 THESIS 帶 webSources（有送才帶）。不合格的（不列入的網站等）→ 422。
  * replyTo：這是對乙類通知 #N 的回應（修正論點，own_thesis §1.10）：那一項結案、afterBreak 加 1、log 寫 RESPONSE（REVISE）；
  *   新的前提原封不動留著被判不成立的那一條 → 當成不同意（DISAGREE，進靜默期）；同一個編號但字改了 → REVISE，不進靜默期（T46）。
  *   通知已經回覆過、或不是這檔的乙類 → 409。
@@ -379,6 +392,9 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
   const source = b.source === 'DISCUSSION' ? 'DISCUSSION' : 'TYPED';
   const replyTo = b.replyTo === undefined || b.replyTo === null || b.replyTo === '' ? null : Number(b.replyTo);
   const dry = b.dry === true;
+  // 網頁證據的來源（T52）：有送才改；真的存檔前先試抓（示範模式不對外連線）
+  const wsIn = b.webSources === undefined ? undefined : sourcesOf(b.webSources, tk);
+  const wsChecked = wsIn && !dry ? { at: new Date().toISOString(), items: backend.probeSources ? await backend.probeSources(wsIn) : demoProbe(wsIn) } : null;
   // 出場條件整組取代（T42）：和監測中的比，有沒有改動
   const live = await liveConditions(backend, tk);
   const plan = planExits(exitsIn, live);
@@ -405,6 +421,9 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     // 通知結案；新的前提原封不動留著那一條 → 當成不同意（靜默期）；同一個編號但字改了 → 照修正論點，不進靜默期（T46）
     const rv = replyTo !== null && !dry ? reviseBreak(out.acct, d.view, replyTo, tk, out.mapping.edited.map((e) => e.id)) : null;
     if (rv?.ok) out = { ...out, acct: rv.acct };
+    const wsBefore = out.acct.own[tk].webSources ?? null;
+    const wsChanged = wsIn !== undefined && !sameWebSources(wsBefore, wsIn);
+    if (wsIn !== undefined) out.acct.own[tk].webSources = wsIn ? { ...wsIn, checked: wsChecked } : null;
     const meta = out.acct.own[tk];
     const brief = (ps: Premise[]) => ps.map((p) => ({ id: p.id, text: p.text, origin: p.origin }));
     const version = meta.thesis!.version;
@@ -430,6 +449,8 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
           actionChanged: plan.changed ? [] : plan.actionChanged.map((a) => ({ id: a.id, text: a.text, action: a.action, was: a.was })),
           pendingVersion: plan.changed ? pendingVersion : null,
         },
+        // 網頁證據的來源（T52）：有沒有改動；存檔時試抓的結果（預覽沒有試抓）
+        sources: { sent: wsIn !== undefined, changed: wsChanged, cleared: wsIn === null && !!wsBefore, checked: wsChecked?.items ?? null },
       },
     };
     const log: ThesisLogInput[] = meta.fileId
@@ -454,6 +475,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
               ...(plan.changed ? { exitsLive: live.map((c) => c.id), exitSame: Object.fromEntries(Object.entries(plan.sameByText).map(([k, id]) => [`U${Number(k) + 1}`, id])) } : {}),
               ...(!plan.changed && plan.actionChanged.length ? { exitActionChanged: plan.actionChanged.map((a) => a.id) } : {}),
               ...(out.silenceEnded.length ? { silenceEnded: out.silenceEnded } : {}),
+              ...(wsChanged ? { webSources: wsIn ? { peers: wsIn.peers, domains: wsIn.domains } : null } : {}),
             },
           },
           // 乙類的回應：修正論點（REVISE）；原封不動保留了那條前提 → 當成不同意（DISAGREE，理由固定）
@@ -584,6 +606,12 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     return json(parseThesisBlock(text(b.text, '貼上的內容', 30_000, false), tk));
   }
   if (rest === 'ops/own-thesis' && post) return saveThesis(backend, await body(req));
+  // 試抓這檔的網頁證據來源（T52；不存）：{ ticker, webSources } → { items }
+  if (rest === 'ops/own-sources/probe' && post) {
+    const b = await body(req);
+    const ws = sourcesOf(b.webSources ?? null, ticker(b.ticker));
+    return json({ items: ws ? (backend.probeSources ? await backend.probeSources(ws) : demoProbe(ws)) : [] });
+  }
 
   // ---- AI 層（F14 改寫、F1／F5／F18 的總覽）：只有真實模式
   if (rest === 'ai/overview' && get) {

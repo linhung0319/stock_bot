@@ -21,7 +21,8 @@ import { isLastTradingDayOfMonth, nextTradingDay, type CalendarOverrides } from 
 import { attribution } from '../ai/detect';
 import { attrFacts } from '../ai/drops';
 import { isAdvanceable } from '../data/secEvents';
-import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlineFeed, isEarningsFiling, quarterTable, quarterTableText, xbrlConditionMet, XBRL_METRICS, type QuarterRow } from '../data/edgar';
+import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlineFeed, isEarningsFiling, quarterTable, quarterTableText, xbrlConditionMet, XBRL_METRICS, type Headline, type HeadlineFeed, type QuarterRow } from '../data/edgar';
+import { buildDocMenu } from './webEvidence';
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
@@ -91,6 +92,8 @@ export interface OwnEvidence {
   xbrl: PackDoc | null;
   docs: PackDoc[];
   news: PackDoc | null;
+  /** 這檔的 RSS 標題（含連結；T52 的目錄挑清單內的連結用）。舊的呼叫端沒給 = undefined。 */
+  headlines?: Headline[];
   dataQuality: Record<string, 'ok' | 'partial' | 'missing'>;
   notes: string[];
 }
@@ -102,7 +105,11 @@ export const xbrlDoc = (ticker: string, rows: QuarterRow[]): PackDoc | null => (
 
 /** 新聞標題的原文（只有標題，只能當初判）。 */
 export async function newsDoc(fetcher: Fetcher, ticker: string, asOf: string, since?: string): Promise<PackDoc | null> {
-  const feed = await fetchHeadlineFeed(fetcher, ticker);
+  return newsDocOf(await fetchHeadlineFeed(fetcher, ticker), ticker, asOf, since);
+}
+
+/** 同上，從已經抓好的 RSS 組（F24 另外要用標題的連結組目錄，T52）。 */
+export function newsDocOf(feed: HeadlineFeed, ticker: string, asOf: string, since?: string): PackDoc | null {
   const hl = feed.items.filter((h) => h.date <= asOf && (!since || h.date > since)).slice(0, 15);
   return hl.length ? { id: `N-${ticker}`, source_id: `${feed.source}:${ticker}`, kind: 'news', date: hl[0].date, title: `${ticker} 最近的新聞標題（${feed.label}，只有標題）`, text: hl.map((h) => `${h.date} | ${h.title}`).join('\n') } : null;
 }
@@ -146,7 +153,9 @@ export async function gatherOwnEvidence(env: Env, fetcher: Fetcher, ticker: stri
     out.dataQuality.xbrl = 'missing';
   }
   try {
-    out.news = await newsDoc(fetcher, ticker, asOf);
+    const feed = await fetchHeadlineFeed(fetcher, ticker);
+    out.headlines = feed.items;
+    out.news = newsDocOf(feed, ticker, asOf);
     out.dataQuality.news = 'partial';
   } catch (e) {
     out.notes.push(`新聞標題：${errText(e)}`);
@@ -201,8 +210,10 @@ export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, 
   // 你定的條件 C、觀察項 W（T26；財報類觀察項用這次的 XBRL 比對）
   const conds = tf ? condFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null) : undefined;
   const extra = tf ? await reviewThesisEvidence(env, fetcher, tf, ev, view.date) : { facts: [], filings: [], docs: [], notes: [] };
-  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, dataQuality: ev.dataQuality, extraFacts: [...extra.facts, ...(early?.facts ?? [])], extraDocs: extra.docs, reasons, ...(early ? { early: { reason: early.reason, events: early.events } } : {}), now });
-  return startRun(env, fetcher, pack, now, [...ev.notes, ...extra.notes, ...notes]);
+  // 目錄（T52，web_evidence_design §1.2）：同業的申報、清單內的 RSS 連結，只有標題；只有預設前提的沒有目錄、不能取文件
+  const menu = tf && acct.own[ticker] ? await buildDocMenu(env, fetcher, { ticker, tf, meta: acct.own[ticker], asOf: view.date, headlines: ev.headlines ?? null }) : null;
+  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, dataQuality: ev.dataQuality, extraFacts: [...extra.facts, ...(early?.facts ?? []), ...(menu?.facts ?? [])], extraDocs: extra.docs, reasons, ...(early ? { early: { reason: early.reason, events: early.events } } : {}), now });
+  return startRun(env, fetcher, pack, now, [...ev.notes, ...extra.notes, ...(menu?.notes ?? []), ...notes], menu?.ctx ?? null);
 }
 
 // ---------------------------------------------------------------- 套用結論

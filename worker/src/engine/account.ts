@@ -142,6 +142,32 @@ export interface OwnMeta {
    * 不是前提：這檔維持「只有預設」直到第一次存論點；討論包當開場，L2 的證據包不放。at：訊號日。沒有這個欄位 = 沒寫。
    */
   buyNote?: { text: string; at: string } | null;
+  /**
+   * 這檔的網頁證據來源（T52，web_evidence_design §1.3）：同業（有 EDGAR 代號的列進目錄的同業申報、有 Yahoo 代號的看它的 RSS 連結）
+   * 與這檔專用的一手網域（一律 PRIMARY）。使用者在編輯論點頁填、存檔才生效；checked 是存檔前試抓的結果（抓不到的仍存，網站寫「目前抓不到」）。
+   * 沒有這個欄位或 null = 沒有指定（目錄只有這檔自己的 RSS 連結）。只有系統預設前提的股票不用網頁證據（存了也不用）。
+   */
+  webSources?: OwnWebSources | null;
+}
+
+/** 同業（web_evidence_design §1.3）：edgar 是 EDGAR 的代號（列同業的申報），yahoo 是 Yahoo 的代號（含 `000660.KS` 這類，看 RSS 連結）。 */
+export interface WebPeer {
+  name: string;
+  edgar?: string;
+  yahoo?: string;
+}
+
+/** 試抓一個來源的結果：key 是 `domain:<網域>`、`edgar:<代號>`、`yahoo:<代號>`；ok = null 是沒有試（示範模式、沒有設定 EDGAR）。 */
+export interface WebSourceCheck {
+  key: string;
+  ok: boolean | null;
+  why: string;
+}
+
+export interface OwnWebSources {
+  peers: WebPeer[];
+  domains: string[];
+  checked?: { at: string; items: WebSourceCheck[] } | null;
 }
 
 /** 減半檢視的結果（own_thesis §3.3 的五種）：還沒有結果／建議不動／建議出清／同意減半／沒有可用的結論。 */

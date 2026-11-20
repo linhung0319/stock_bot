@@ -28,6 +28,7 @@ import { STRATEGY_STATE_KEY, loadStrategyState } from './strategyAi';
 import { noteOfRun } from './site/aiViews';
 import type { AiNote } from './site/types';
 import { sweepTimeoutTasks, taskLabels, timeoutAlert } from './aiTasks';
+import { purgeUnusedWebText } from '../data/webDoc';
 import { breakLogs, monthOwnAttention } from './thesis';
 import { momHoldings, monthMomAttention } from './momNotes';
 import type { Env, Fetcher } from './env';
@@ -521,6 +522,12 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
     const timedOut = await sweepTimeoutTasks(db, opt.now);
     await closeStaleRuns(db, opt.now);
     if (timedOut.length) alerts.push({ kind: 'AI_TIMEOUT', message: timeoutAlert(timedOut, await taskLabels(db, timedOut.map((t) => t.id))) });
+    // 沒被任何一次執行用過、抓了超過 180 天的網頁快照：清掉全文、留列（web_evidence_design §1.4；取文件的端點寫 used_by，T52）
+    const purged = await purgeUnusedWebText(db, opt.now).catch((e) => {
+      aiLog?.log.push(`清網頁快照出錯：${errText(e)}`);
+      return 0;
+    });
+    if (purged) aiLog?.log.push(`清掉 ${purged} 份沒被用過、超過 180 天的網頁快照全文`);
   }
   await saveAlerts(db, at, session, alerts);
   res.alerts = alerts.map((a) => a.kind);

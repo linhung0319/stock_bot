@@ -68,7 +68,7 @@ records/                         ← .gitignore，不進 repo
 
 | 表 | 內容 | 拉法 | 分析用途 |
 |---|---|---|---|
-| `ai_runs` | 每次 AI 分析：`fn`（功能代號）、`ticker`、`as_of`（決策日）、`prompt_version`、`repo_commit`（雲端排程跑的 commit，T13 起）、證據包 `pack`、結論 `outcome`、過程 `process`、`applied_at` | 會改（PENDING → DONE） | 主角。判斷 vs 之後的價格；不同 prompt 版本比較；哪些證據讓結論翻轉 |
+| `ai_runs` | 每次 AI 分析：`fn`（功能代號）、`ticker`、`as_of`（決策日）、`prompt_version`、`repo_commit`（雲端排程跑的 commit，T13 起）、證據包 `pack`、結論 `outcome`、過程 `process`、`applied_at`；T52 起另有 `doc_ctx`（證據包的目錄 `menu`、網頁發布日下限 `notBefore`、這檔的一手網域；`off` 是不能取文件的原因）、`added_docs`（分析師向取文件端點要的：取回的文件 `docs`——給 AI 的原文，表決時和證據包一起比對引用——、被拒絕的 `refused` 與原因、呼叫次數 `calls`、合計字數 `chars`）、`added_hash`（取回的文件的雜湊；`pack_hash` 仍是程式準備的那一份）。`pack` 存的是程式準備的那一份，不含取回的文件 | 會改（PENDING → DONE） | 主角。判斷 vs 之後的價格；不同 prompt 版本比較；哪些證據讓結論翻轉 |
 | `ai_tasks` | 雲端任務的交換紀錄：狀態（DONE／REJECTED／TIMEOUT／FIRE_FAILED）、錯誤（前 500 字）、雲端 session 網址、各階段時間、通過外層檢查的原始輸出 `result`（每一票原文） | 會改 | AI 失敗率、耗時。`evidence` 欄和 `ai_runs.pack` 重複，不匯出 |
 | `ai_rejections` | 整份被退回（`REJECTED`）或逾時才送到（`LATE`）的原始輸出 `raw`（最多 256 KiB，超過的 `truncated = 1`、`raw_bytes` 記原本大小）、完整原因、回給雲端排程的 HTTP 狀態（T13 起） | 只增加 | 哪一種輸出常被檢查擋下、是 prompt 寫得不清楚還是格式出錯 |
 | `mom_reviews` | F1 否決法庭：每月每檔的 ALLOW／VETO／BLOCK、理由碼、由誰遞補；`data_missing = 1` 是申報抓不到、這次沒有檢查申報類失效模式（T32a） | 會改 | 被否決的股票事後表現 vs 遞補的股票 |
