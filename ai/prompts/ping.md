@@ -20,10 +20,16 @@ Header 用 `Authorization`、Prefix 用 `Bearer`、Value 填和 Worker 的 `AI_T
    記下 HTTP 狀態碼。**不是 200 就直接結束**（例如 410：任務已經關閉或過期；404：沒有這個任務）：
    不做下面的觀察、不送回任何東西，也不要重試；只用一句話回報狀態碼與回應內容。
    是 200 時回應是 JSON：`{ "task_id", "kind", "evidence": { "nonce", ... } }`。
-3. 做三項觀察，每一項失敗都不要重試超過一次：
+3. 做下面的觀察，每一項失敗都不要重試超過一次：
    - `blocked_host`：`curl -sS -o /dev/null -D - https://example.org/` 的 HTTP 狀態碼，以及有沒有 `x-deny-reason` header（記下它的值）。
    - `haiku_subagent`：用 Agent 工具開一個子代理，指定 model 為 haiku，請它只回答「它是哪個模型」。記下能不能指定、它回答什麼。
+   - `web_search`（T49 實測，這一項是**這次測試要你上網**，和平常的任務不同）：用內建的 WebSearch 工具搜尋 `Micron Technology HBM capacity expansion`。
+     記下：工具在不在你的工具清單裡（`web_search_available`）、有沒有拿到結果（`web_search`）、幾筆（`web_search_count`）、
+     第一筆的標題與網址（`web_search_first`，一個字串）、失敗或被拒絕時的完整錯誤訊息（`web_search_error`）。不要讀結果的網頁內容。
+   - `web_fetch`（T49 實測）：用內建的 WebFetch 工具讀 `https://www.sec.gov/news/pressreleases`（不是 Worker 的網址），請它只回答頁面標題。
+     記下：工具在不在清單裡（`web_fetch_available`）、有沒有讀到（`web_fetch`）、讀到的標題或完整錯誤訊息（`web_fetch_result`）。
    - `started_at`、`finished_at`：`date -u +%Y-%m-%dT%H:%M:%SZ` 在開始與結束時各取一次。
+   工具不在清單裡、或使用時被權限拒絕，都照實記下，不要改用 curl 或其他方式代替。
 4. 把結果送回 Worker。只能有下面這些欄位；`observations` 的欄位名稱只能用小寫英文與底線，值只能是布林、數字或 500 字以內的字串：
 
    ```json
@@ -38,6 +44,14 @@ Header 用 `Authorization`、Prefix 用 `Bearer`、Value 填和 Worker 的 `AI_T
        "blocked_host_deny_reason": "host_not_allowed",
        "haiku_subagent": true,
        "haiku_subagent_answer": "…",
+       "web_search_available": true,
+       "web_search": true,
+       "web_search_count": 10,
+       "web_search_first": "<標題> | <網址>",
+       "web_search_error": "",
+       "web_fetch_available": true,
+       "web_fetch": false,
+       "web_fetch_result": "<標題或完整錯誤訊息>",
        "started_at": "…",
        "finished_at": "…"
      }
