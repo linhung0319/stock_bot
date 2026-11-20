@@ -1,5 +1,6 @@
 // 網站的 API（T8）。/api/* 是真實帳本，/demo/api/* 是示範資料；兩邊是同一組端點。
 // 每個會改帳戶的端點都是：讀帳戶與市場 → 呼叫引擎的純函式 → 替新通知寫下理由 → 存檔。
+import { DraftError } from '../ownDraft';
 import {
   SLOW,
   SYSTEM_DEFAULT_PREMISES,
@@ -626,6 +627,17 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     // 申報事件的來源與說明換成白話（和持股頁一樣；掃描寫的類別代號、條件編號不給使用者看）
     const events = o.events.map((e) => ({ ...e, form: eventSource(e), detail: eventDetail(e.detail) }));
     return json({ ...o, events, vetoes: o.vetoes.map((v) => vetoView(book, v, BENCHMARK)) });
+  }
+  // 使用者按「請 stock bot 草擬」（T55，web_evidence_design §2.5）：{ ticker } → { runId, broken }。還在跑、7 天內草擬過 → 409。按鈕與草稿的畫面在 T56
+  if (rest === 'ops/own-draft' && post) {
+    if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI，沒辦法草擬論點。');
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    try {
+      return json({ ok: true, ...(await backend.ai.draft(tk)) });
+    } catch (e) {
+      throw new SiteError(e instanceof DraftError ? e.status : 422, errText(e));
+    }
   }
   if (rest === 'ops/own-check' && post) {
     // 重送出場條件去改寫（編輯論點頁送出失敗、或改寫沒有結果時）。T42：只能重送最近一次出場條件有改動的那一版（version）、

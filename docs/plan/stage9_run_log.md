@@ -57,13 +57,28 @@
 - 主持者：`.claude/commands/thesis.md` 第 34 行「stock bot 的審查只讀那些」改成也讀同業申報與清單內網站；`worker/SETUP.md` 的階段八 prompt 清單是當時的紀錄，不改，階段九的部署步驟在收尾時另寫一節；`web_evidence` §1.7 補實作細節（上面前四點）。
 - 成本：月底檢查點每檔多最多 4 個同業申報清單請求；減半檢視觸發那天 23:30 的流程多組目錄的請求。
 
+### T55（草稿任務）
+
+- `own_drafts` 多 `PENDING`（開執行時就寫）、`FAILED`（加 `error`）兩個狀態，與 `trigger`（AUTO／MANUAL）、`session`、`broken`、`settled_at`、`updated_at`（給 T56 分準備中、失敗、誰按的，給 T57 算成功率）。
+- 出場條件多 `kind`、`check`；反方改成 `{ text, evidence_ids }`；note 的引用不算反方或門檻的依據；新聞標題照設計仍算。
+- `keep_id`：不是現行前提、字改了、被判不成立的那一條 → 整份退回；文字很像只標 `like_broken`。來源：不是公開 https 或同業代號格式不對 → 退回；不列入的標 `EXCLUDED`、清單內 `LISTED`、其他 `NEW`。
+- 「乙類通知」的定義同網站的 `pendingBreakOf`（附在慢規則減半項目上的「AI 建議出清」不算）。
+- 字數上限直接寫同樣的數字（600／200／300），測試確認和 `THESIS_LIMITS` 一樣；`breaks_if`、反方每點、理由定 300 字。
+- 自動那一次：開檔 7 天內才補開（部署後不會替舊自選一次全開）、0 股的等持有後、這份論點檔已有成功或還在跑的草稿就不開；失敗下一次流程重試一次，第二次失敗推 `DRAFT_FAILED`。
+- 7 天上限自動與手動都算，失敗的不算；用 `created_at` 算日曆天。新的 `READY` 回來時同一檔舊的 `READY` 標 `EXPIRED`；30 天過期在每日第一次流程掃。
+- 結算：結果送回時當場；逾時的在每日流程套用時；沒觸發成的在開執行時。
+- 只加了手動的伺服器端 `POST /api/ops/own-draft`（7 天上限與「還在跑的不重開」要有入口可測）；按鈕、畫面、`DRAFT_READY`、LINE 留給 T56。`run.md` 沒改。
+- 草稿替只有系統預設前提的股票也組目錄、也能取文件（`buildDocMenu` 的 `anyKind`）；審查與減半檢視照舊。
+- 主持者把出場條件與反方的格式、`keep_id` 等補進 `web_evidence` §2.2。
+- 不放心：同時按兩次可能各開一次（「還在跑」的檢查不是原子的；T56 的按鈕要防連按）；專案沒跑 prettier，HEAD 的幾個檔本來就不過，沒整檔格式化。
+
 ## 要使用者親手做的事
 
 - **順序不能反**（舊的 Worker 不認得 `lookups`，會把整份結果退回）：
-  1. `git push`（雲端排程從 repo 讀 `own_review_v3.md`、`own_check_v5.md`、`own_drop_v3.md`）。
-  2. 套 `0016_web_docs.sql`（T51）、`0017_ai_runs_docs.sql`（T52）、`0018_ai_runs_lookups.sql`（T53）到遠端 D1，升 `VERSION`，部署。
+  1. `git push`（雲端排程從 repo 讀 `own_review_v3.md`、`own_check_v5.md`、`own_drop_v3.md`、`own_draft_v1.md`）。
+  2. 套 `0016_web_docs.sql`（T51）、`0017_ai_runs_docs.sql`（T52）、`0018_ai_runs_lookups.sql`（T53）、`0019_own_drafts.sql`（T55）到遠端 D1，**先套 migration 再部署**（部署後的每日流程與結果端點會讀寫 `own_drafts`），升 `VERSION`。
   3. 部署之後，把 `ai/prompts/run.md` 裡「## 排程的 prompt」標題以下到檔案結尾整段，貼到 claude.ai 雲端排程的 Instructions（網路設定不用動）。
-  4. 跑 M3（子代理裡 WebSearch 能不能用還沒實測）。
+  4. 跑 M3（子代理裡 WebSearch 能不能用還沒實測）；建議審查與草稿各跑一次。
 
 ## 畫面截圖
 

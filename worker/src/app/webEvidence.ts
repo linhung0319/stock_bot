@@ -209,6 +209,11 @@ export interface MenuInput {
   asOf: string;
   /** 這檔自己的 RSS（審查的證據已經抓過，不重抓）；沒有就不列這檔的 RSS 連結。 */
   headlines?: Headline[] | null;
+  /**
+   * 論點草稿（T55，web_evidence_design §2.2）：只有系統預設前提的也組目錄、可以取文件——草稿正是要替還沒有論點的股票寫論點，
+   * 研究員要能找資料（還沒有同業時目錄只有這檔的 RSS）。審查與減半檢視不給（只有預設前提的照舊不用網頁證據）。
+   */
+  anyKind?: boolean;
 }
 
 /**
@@ -220,7 +225,7 @@ export async function buildDocMenu(env: Env, fetcher: Fetcher, inp: MenuInput): 
   const notBefore = tf.lastReview ? minusDays(tf.lastReview.asOf, TOO_OLD_DAYS) : minusDays(asOf, NO_REVIEW_WEB_DAYS);
   const ws = inp.meta.webSources ?? null;
   const domains = ws?.domains ?? [];
-  if (fileKind(inp.meta) === 'DEFAULT_ONLY') return { facts: [], ctx: { menu: [], notBefore, domains: [], fileId: tf.fileId, off: '只有系統預設前提：不用網頁證據' }, notes: [], sources: { facts: [], domains: [] } };
+  if (!inp.anyKind && fileKind(inp.meta) === 'DEFAULT_ONLY') return { facts: [], ctx: { menu: [], notBefore, domains: [], fileId: tf.fileId, off: '只有系統預設前提：不用網頁證據' }, notes: [], sources: { facts: [], domains: [] } };
   const notes: string[] = [];
   const ua = env.EDGAR_USER_AGENT ?? '';
   // S1：同業在 EDGAR 的申報

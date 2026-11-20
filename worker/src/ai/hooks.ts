@@ -8,6 +8,7 @@ import { OWN_EARNINGS, checkEarningsPayload } from './earnings';
 import { EVENT_SCAN, HARD_EVENT, checkEventScanPayload, checkHardEventPayload } from './events';
 import { MOM_ENTRY, checkMomEntryPayload } from './momEntry';
 import { OWN_CHECK, checkOwnCheckPayload } from './ownCheck';
+import { OWN_DRAFT, checkDraftPayload } from './ownDraft';
 import { OWN_CONDITION, OWN_REVIEW, checkConditionPayload, checkOwnReviewPayload } from './ownReview';
 import { STRATEGY_REVIEW, checkStrategyPayload } from './strategy';
 
@@ -24,4 +25,6 @@ export const PAYLOAD_HOOKS: Record<string, PayloadHook> = {
   [STRATEGY_REVIEW]: (s, pack) => checkStrategyPayload(s, pack),
   [OWN_CHECK]: (s, pack) => checkOwnCheckPayload(s, pack, METRICS),
   [OWN_EARNINGS]: (s) => checkEarningsPayload(s),
+  // 論點草稿（T55）：程式檢查不過的整份退回（web_evidence_design §2.2）
+  [OWN_DRAFT]: (s, pack) => checkDraftPayload(s, pack, METRICS),
 };

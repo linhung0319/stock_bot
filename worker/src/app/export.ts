@@ -27,6 +27,8 @@ export const EXPORT_TABLES: Record<string, ExportTable> = {
   mom_reviews: { mode: 'replace', json: ['hits'], pageRows: 500 },
   own_conditions: { mode: 'replace', json: ['check_json', 'progress_json'], pageRows: 500 },
   own_thesis_log: { mode: 'append', json: ['body'], pageRows: 500 },
+  // T55：論點草稿（狀態會改：PENDING → READY／FAILED → USED／DISMISSED／EXPIRED）
+  own_drafts: { mode: 'replace', json: ['payload', 'broken'], pageRows: 200 },
   sec_events: { mode: 'replace', json: [], pageRows: 500 },
   macro_snapshots: { mode: 'replace', json: ['data'], pageRows: 50 },
   // 使用者的選擇與帳戶

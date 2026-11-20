@@ -74,6 +74,7 @@ records/                         ← .gitignore，不進 repo
 | `mom_reviews` | F1 否決法庭：每月每檔的 ALLOW／VETO／BLOCK、理由碼、由誰遞補；`data_missing = 1` 是申報抓不到、這次沒有檢查申報類失效模式（T32a） | 會改 | 被否決的股票事後表現 vs 遞補的股票 |
 | `own_conditions` | 自選股的條件：方向、種類、狀態與成立日；`file_id` 是屬於哪一份論點檔（T25 起）。T26 起審查只寫建議（`status = PROPOSED`），你勾選才監測：`accepted_at` 有值就是你定的條件、`action` 是成立時做什麼（出清／減半／重新審查）、`supersedes` 是取代的那一列、`met_basis` 是怎麼確認成立的（`XBRL`／`PRESS` 財報新聞稿擷取（T29c）／`FILING_VOTE`／`REVIEW_VOTE`／`WEB_VOTE` 審查三票依條件指名的網頁來源（T53；`check_json.confirm_by` 有 `web:<網域>` 的條件））、`verified_at` 是 `PRESS` 成立的條件在 10-Q／10-K 出來後核對的時間（核對結果寫在 `note`）、`progress_json` 是財報類條件最近一次比對的進度（`basis` 是 `XBRL` 或 `PRESS`）；撤下是 `RETIRED`、沒勾的建議過期是 `EXPIRED` | 會改 | 條件成立後股價怎麼走；哪種條件有用；AI 建議的條件你勾了多少 |
 | `own_thesis_log` | 自選股論點檔的歷史（T25 起）：`kind` = `OPEN`（開檔：怎麼加入、前提、開檔時的慢規則狀態與距高點跌幅；T40 起有寫的話帶 `buyNote` 買進時的一句話）／`CLOSE`（結案原因）／`PRESS_CHECK`（T29c：財報新聞稿成立的條件，10-Q／10-K 核對不一致，`body` 有兩邊的數字）；之後加論點的每一版（`THESIS`；T40 起 `exitLines` 只放送去改寫的新出場條件，沿用與撤下的條件編號在 `exitKept`、`exitRetired`；T42 起出場條件整組取代：`exitsChanged` 標有沒有改動，有改動時 `exitLines`／`exitActions` 是那一版要的全部出場條件、`exitsLive` 是存檔時監測中的條件編號、`exitSame` 是文字相同的，`silenceEnded` 是字改了而結束靜默期的前提）、失效通知、你的回應、條件的勾選（`CONDITION`；T42 起確認時沒被提到而撤下的帶 `reason: NOT_IN_EXITS`）、出場條件改寫結果的確認（`EXITS_CONFIRMED`，T42：哪一版、開始監測與撤下的條件編號）。`file_id` = `<代號>@<開檔日>`，`body` 是 JSON；復原快照時那一版寫的列會被刪掉（本機已拉的不會跟著刪，用 `account_version` 對 `account_history.rev`） | 只增加 | 論點從開檔到結案怎麼變；失效通知後你怎麼回應 |
+| `own_drafts` | stock bot 的論點草稿（T55，設計 `web_evidence_design` §2.2～§2.5）：每次草擬一列，`run_id` 對到 `ai_runs`（`fn = OWN_DRAFT`）；`trigger` = `AUTO`（新的自選自動開的，每份論點檔一次、失敗時重試一次）／`MANUAL`（使用者按的）；`status` = `PENDING` 還在跑／`READY` 等你看／`USED` 存檔用過／`DISMISSED` 不用／`EXPIRED`（30 天沒處理或有新的草稿）／`FAILED`（退回、逾時、沒觸發成；原因在 `error`）；`payload` 是程式檢查過的草稿（論點、前提與 `breaks_if`／`checkable_by`／`keep_id`、出場條件與財報門檻、來源、反方三點、今天會不會買、監測不了的觀察、通過檢查的引用）；`based_on_version` 是照第幾版論點寫的；`broken` 是開的時候還沒回覆的乙類通知（被判不成立的前提，草稿不能沿用它） | 會改 | 草稿的成功率與失敗原因；草稿的前提你勾了多少、之後審查判得怎樣（對 `own_thesis_log` 的論點與 `ai_runs` 的審查） |
 | `sec_events` | 申報與新聞事件的分類（規則或 AI）、處理狀態；`detail_code` 是細項（T28 起：`CEO_DEPART`、`IMPAIRMENT`、`BANKRUPTCY`…，條件提示 `CONDITION_HINT` 放條件的列編號；之前的列是空的） | 會改 | 事件分類準不準；硬事件後的報酬；規則與每日掃描各標到什麼 |
 | `macro_snapshots` | F5／F6 月報前抓的總經數字 | 會改（每月一列） | 崩盤規則檢視當時的背景 |
 
@@ -127,12 +128,13 @@ records/                         ← .gitignore，不進 repo
   - F21 策略檢討的提醒是規則發的，AI 只寫說明、不給建議，所以不帶。F18、F14、擬事件打分不產生通知。
 - **被退回的輸出 → 哪次分析**：`ai_rejections.task_id` → `ai_tasks.id` → `ai_runs.task_id`。整份被退回時 `ai_runs.repo_commit` 是 null，原文裡有雲端排程回報的 `repo_commit`。
 - **F1**：`mom_reviews.run_id` → `ai_runs.run_id`；`mom_reviews.month` 是月報的月份。
+- **論點草稿**：`own_drafts.run_id` → `ai_runs.run_id`（`fn = OWN_DRAFT`；研究員取回的文件在那一列的 `added_docs`）；`own_drafts.file_id` → `own_thesis_log.file_id`。
 - **F24／F25**：`own_conditions.run_id` → 寫下條件的那次 `ai_runs`（`fn = OWN_REVIEW`）；條件成立時的判斷是另一筆 `fn = OWN_CONDITION`。
 - **通知 → 帳本**：`ledger_events.notif`、`shadow_records.body.notif` → `notifications.id`。
 - **被作廢的回覆**：影子紀錄裡 `f = 'REOPEN'` 是「改決定」的作廢記號，它之前同一則通知的紀錄不算（網站用 `liveShadow()` 濾掉，分析時照同樣的規則）。
 - **上線日**：`manifest.json` 的 `launch_date`（T17 寫進 `flow_state`）。之前的資料只在 `pre-launch/`。
 
-功能代號對照（`ai_runs.fn`）：`OWN_REVIEW`（F24）、`OWN_CONDITION`（F25）、`OWN_CHECK`（F14 出場條件改寫；T27 之前叫新增自選健檢）、`OWN_DROP`（F7）、`OWN_EARNINGS`（財報新聞稿當天確認財報類條件，T29c 起）、`DROP_EXPLAIN`（F20；T32d 起不再開）、`MOM_ENTRY`／`MOM_SCORE`（F1；`MOM_SCORE` 擬事件打分 T32d 起不再開）、`HARD_EVENT`（F19）、`EVENT_SCAN`（F18）、`CRASH_REVIEW`（F5／F6）、`STRATEGY_REVIEW`（F21）。prompt 檔在 `ai/prompts/<prompt_version>.md`；同一個版本號的內容如果改過，用 `meta.json` 的 `repo_commit` 回 git 找當時的檔案（`git show <commit>:ai/prompts/<prompt_version>.md`）。`repo_commit` 是雲端排程在 clone 下來的 repo 跑 `git rev-parse HEAD` 回報的（`ai/prompts/run.md` 第 1 步）；沒回報或格式不像 commit 的存 null。
+功能代號對照（`ai_runs.fn`）：`OWN_REVIEW`（F24）、`OWN_CONDITION`（F25）、`OWN_CHECK`（F14 出場條件改寫；T27 之前叫新增自選健檢）、`OWN_DROP`（F7）、`OWN_EARNINGS`（財報新聞稿當天確認財報類條件，T29c 起）、`DROP_EXPLAIN`（F20；T32d 起不再開）、`MOM_ENTRY`／`MOM_SCORE`（F1；`MOM_SCORE` 擬事件打分 T32d 起不再開）、`HARD_EVENT`（F19）、`EVENT_SCAN`（F18）、`CRASH_REVIEW`（F5／F6）、`STRATEGY_REVIEW`（F21）、`OWN_DRAFT`（論點草稿，T55 起；結果另外在 `own_drafts`）。prompt 檔在 `ai/prompts/<prompt_version>.md`；同一個版本號的內容如果改過，用 `meta.json` 的 `repo_commit` 回 git 找當時的檔案（`git show <commit>:ai/prompts/<prompt_version>.md`）。`repo_commit` 是雲端排程在 clone 下來的 repo 跑 `git rev-parse HEAD` 回報的（`ai/prompts/run.md` 第 1 步）；沒回報或格式不像 commit 的存 null。
 
 ## 5. 範例分析問題
 

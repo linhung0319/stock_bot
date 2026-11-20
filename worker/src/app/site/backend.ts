@@ -2,6 +2,8 @@
 //   真實：帳本與價格都在 D1（T6 的資料層）。
 //   示範：假市場＋腳本（src/demo），整個狀態存在 D1 的 demo_state 一列；和真實帳本完全分開。
 // 網站的程式只認這個介面，所以兩種模式走同一套畫面與操作。
+import { requestOwnDraft } from '../ownDraft';
+import type { DraftBroken } from '../../ai/ownDraft';
 import { bookShares, pendingSplits, type Account, type Attention, type LedgerEvent, type MarketView, type OwnWebSources, type ShadowRecord, type Snapshot, type StrategyReviewState, type WebSourceCheck } from '../../engine';
 import { probeWebSources } from '../webEvidence';
 import { easternTime, lastCompletedSession } from '../../data/calendar';
@@ -97,6 +99,8 @@ export interface SiteBackend {
 export interface SiteAi {
   /** F14：把使用者要的出場條件送去改寫（T27 起只有改寫模式；T42 帶整組取代的對照資料）。 */
   ownCheck(ticker: string, exits: ExitLine[], set?: ExitSetRef): Promise<{ runId: string }>;
+  /** 使用者按「請 stock bot 草擬」（T55，web_evidence_design §2.5）：立刻開；還在跑、7 天內草擬過 → DraftError（409）。畫面在 T56。 */
+  draft(ticker: string): Promise<{ runId: string; broken: DraftBroken | null }>;
   /** 重送最近一次出場條件有改動的那一版（T42；version 不是最新的 → StaleExitsError）。 */
   resendExits(ticker: string, version: number | null): Promise<{ runId: string }>;
   /** 那一版把出場條件全部拿掉：確認後撤下（T42）。 */
@@ -258,6 +262,11 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
         if (!d.acct || !d.view) throw new Error('還沒有帳戶或價格資料');
         const run = await startOwnCheck(env, fetcher, d.acct, d.view, d.axis, ticker, exits, now, set);
         return { runId: run.runId };
+      },
+      async draft(ticker) {
+        const d = await self.load([ticker]);
+        if (!d.acct || !d.view) throw new Error('還沒有帳戶或價格資料');
+        return requestOwnDraft(env, fetcher, d.acct, d.view, d.axis, ticker, now);
       },
       async resendExits(ticker, version) {
         const d = await self.load([ticker]);

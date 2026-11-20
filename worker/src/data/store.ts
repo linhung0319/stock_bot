@@ -189,6 +189,7 @@ export type AlertKind =
   | 'F1_LOOKBACK_FAILED' // 進場前回看連續 2 次沒有結論，寫出哪些 8-K 還沒被 AI 看過（momentum_ai §3.2）
   | 'F1_COURT_FAILED' // 進場審查的法庭 2 次都沒有結論，月報照規則准許（momentum_ai §3.3）
   | 'CRASH_REVIEW_FAILED' // 崩盤規則檢視同一個月份＋方向連續 2 次、3 次沒有結論（core_ai §3.1）
+  | 'DRAFT_FAILED' // 新的自選自動開的論點草稿試了 2 次都沒有成功，不再自動草擬（web_evidence_design §2.5，T55）
   | 'MACRO_MISSING' // 總經資料（FRED）可用的序列不到 6 個、01:30 重抓之後還是不足；每個月份一次（core_ai §3.5）
   | 'TEST'; // 手動測試告警的推播（/admin/alert/test）
 /** 只表示「今天沒有產生訊號」的告警：同一個交易日後來再試成功了，就不必推播。 */

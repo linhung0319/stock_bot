@@ -386,6 +386,14 @@
 - `against` 要 3 點，每點至少一條通過檢查的引用。沒有反方的草稿不收。
 - `sources` 的網域要通過 `safeWebUrl`；不在共用清單的標「新的來源，存檔前會先試抓」。
 
+**實作時補的細節（T55，2026-11-21，主持者照建議定）**：
+
+- `exits` 多 `kind` 與 `check`（財報門檻的格式同審查的條件：`kind XBRL`、指標在 `XBRL_METRICS`、數字門檻、季數 1～8、有通過檢查的引用）——只有 `text` 程式驗不了「財報數字門檻」。`against` 改成 `[{ "text", "evidence_ids" }]`。
+- 引用來源是 note（論點檔、上一份論點檔、買進時的一句話＝使用者自己的話）的，不算反方或門檻的依據（比照 §2.4 第 4 點）。
+- `keep_id` 不是現行前提、字改了、或是被判不成立的那一條 → 整份退回；文字很像（雙字組重疊 ≥ 0.6 或去標點後相同）只標 `like_broken`。不列入的網站標 `EXCLUDED`、已在清單的標 `LISTED`、其他標 `NEW`。
+- `breaks_if`、反方每點、理由的上限 300 字。
+- `own_drafts` 多 `PENDING`、`FAILED` 狀態與 `trigger`（AUTO／MANUAL）等欄位；自動那一次只補開檔 7 天內的、0 股的等持有後再開；失敗下一次流程重試一次，再失敗推 `DRAFT_FAILED`。7 天上限自動與手動都算，失敗的不算。新的草稿回來時同一檔舊的 `READY` 標 `EXPIRED`。
+
 ### 2.3 使用者怎麼同意
 
 草稿存在新表 `own_drafts`（`ticker`、`file_id`、`run_id`、`created_at`、`status`：`READY`／`USED`／`DISMISSED`／`EXPIRED`、`payload`、`based_on_version`），不進帳戶狀態。
