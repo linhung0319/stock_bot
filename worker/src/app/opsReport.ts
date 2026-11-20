@@ -4,7 +4,10 @@
 // 報表分段：每一段是一個函式（Period → { id, title, rows }），登記在 OPS_SECTIONS。之後的任務要加一段，就寫一個函式並放進這個陣列。
 // 只讀 D1，不改任何東西。數字都用 SQL 算（json_extract／json_each 讀 JSON 欄位），不把整張表載進記憶體（影子紀錄例外，見 shadowSection）。
 // 比例是 0～1 的小數（四捨五入到小數三位）；分母是 0 時是 null。
+// T57（web_evidence_design §2.4 第 7 點、§1.3、第 3 章）加了七段：前提的審查結果（依前提的來源）、每次執行取了多少網頁、被拒絕的原因、被略過與抓不到的網域、草稿的成功率與失敗原因。
 import { liveShadow, type ShadowRecord } from '../engine';
+import { DOC_FNS } from '../ai/added';
+import { WEB_DOC_PER_SITE } from '../data/webDoc';
 import { launchDate } from './export';
 
 export type Cell = string | number | null;
@@ -431,8 +434,377 @@ export const momEntrySection: SectionFn = async (db, p) => {
 };
 const MOM_ENTRY_TITLE = '動能新股進場審查（F1 法庭）：開了幾次、依代碼、否決、沿用、沒有結論、晚到；累積否決';
 
-/** 報表的各段，照這個順序輸出。要加段就在這裡加一個函式（T31a 加了月底檢查點、T33b 加了崩盤規則、T32d 加了動能進場審查）。 */
-export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, momEntrySection];
+// ---------------------------------------------------------------- T57：網頁證據與草稿
+
+/** 草稿的前提判成立的比例這麼高（而且至少這麼多次檢查）、你寫的前提卻低於它，note 才提示「出題可能偏鬆」。門檻是主持者照建議定的（設計只寫「幾乎都判成立」）。 */
+export const LOOSE_HOLDS_RATIO = 0.9;
+export const LOOSE_MIN_CHECKS = 5;
+/** 被略過、抓不到的網域看最近幾天（到期間的迄日為止；設計 §1.3 寫 90 天，不跟著 from 走）。 */
+export const WEB_DOMAIN_DAYS = 90;
+/** 網域表最多列幾個（合計列算全部）。 */
+export const WEB_DOMAIN_ROWS = 20;
+
+const dayShift = (s: string, days: number): string => new Date(Date.parse(`${s}T00:00:00.000Z`) + days * 86_400_000).toISOString().slice(0, 10);
+const hostOf = (url: string | null | undefined): string => {
+  try {
+    return url ? new URL(url).hostname.toLowerCase().replace(/^www\./, '') : '';
+  } catch {
+    return '';
+  }
+};
+const FN_LIST = DOC_FNS.map((f) => `'${f}'`).join(', ');
+const SEP = '\u0000';
+
+/**
+ * 審查當時帳戶裡這檔的前提（含 origin）：account_history 裡訊號時間之前最新的一版；那一版沒有這檔就看現在的 account_state。
+ * L2 的證據包把 AI_DRAFT_ACCEPTED 遮成 USER（§2.4 第 4 點），所以來源要讀帳戶狀態，不能讀 ai_runs.pack。
+ */
+async function accountPremises(db: D1Database, ticker: string, at: string): Promise<{ id: string; text: string; origin: string }[]> {
+  if (!/^[A-Za-z0-9.^=_-]+$/.test(ticker)) return [];
+  const path = `$.own."${ticker}".premises`;
+  const parse = (raw: string | null | undefined) => {
+    try {
+      const v = raw ? (JSON.parse(raw) as unknown) : null;
+      return Array.isArray(v) ? (v as { id: string; text: string; origin: string }[]) : null;
+    } catch {
+      return null;
+    }
+  };
+  const h = await db.prepare('SELECT json_extract(state, ?) AS prem FROM account_history WHERE at <= ? ORDER BY rev DESC LIMIT 1').bind(path, at).first<{ prem: string | null }>();
+  const hist = parse(h?.prem);
+  if (hist) return hist;
+  const cur = await db.prepare('SELECT json_extract(state, ?) AS prem FROM account_state WHERE id = 1').bind(path).first<{ prem: string | null }>();
+  return parse(cur?.prem) ?? [];
+}
+
+const PREMISE_ORIGINS = ['USER', 'AI_DRAFT_ACCEPTED', 'SYSTEM_DEFAULT'];
+const PREMISE_ORIGIN_TITLE = '定期審查的前提結果，依前提的來源（USER 你寫的、AI_DRAFT_ACCEPTED 原樣勾選的草稿、SYSTEM_DEFAULT 系統預設）：成立、不成立、證據不足、票數不一致的次數';
+
+/**
+ * 自選定期審查的前提結果，依前提的來源分開（web_evidence_design §2.4 第 7 點）。
+ * 範圍：期間內（建立時間）已經有結論的定期審查（OWN_REVIEW；AGREED／SPLIT／INSUFFICIENT／DATA_MISSING）；減半檢視不算。
+ * 一次審查裡的一條前提算一次檢查（同一條前提每個月都會再被檢查，所以次數不是「幾條前提」）。
+ * 一條前提在這次審查的結果：格式合格的票至少 3 張而且判斷都一樣 → 那個判斷（holds 成立／broken 不成立／insufficient 證據不足；
+ * 判成立或不成立但引用沒通過檢查的票，check.ts 已經改成證據不足）；票數不到 3 張或判斷不一樣 → split。沒有任何一票提到的前提不算檢查。
+ * 來源（origin）：USER 你寫的（含勾了草稿又改字的）、AI_DRAFT_ACCEPTED 原樣勾選的草稿、SYSTEM_DEFAULT 系統預設；
+ * UNKNOWN = 證據包寫 USER、但找不到當時帳戶裡「編號與字都相同」的前提（例如帳戶紀錄被清過）。
+ * 草稿的前提判成立的比例 ≥ LOOSE_HOLDS_RATIO（至少 LOOSE_MIN_CHECKS 次）、而你寫的比它低 → AI_DRAFT_ACCEPTED 那一列的 note 提示出題可能偏鬆。
+ * 合計列的 reviews 是不重複的審查次數（一次審查可以同時有好幾種來源的前提，各列的 reviews 加起來會比較大）。
+ */
+export const premiseOriginSection: SectionFn = async (db, p) => {
+  const c = atCond(p, 'r.created_at');
+  const usable = USABLE.map((x) => `'${x}'`).join(', ');
+  const base = `r.fn = 'OWN_REVIEW' AND r.status = 'DONE' AND json_extract(r.outcome, '$.status') IN (${usable}) AND ${c.sql}`;
+  const packRows = await query(
+    db,
+    `SELECT r.run_id AS run_id, r.ticker AS ticker, r.created_at AS created_at, json_extract(x.value, '$.id') AS id, json_extract(x.value, '$.text') AS text, json_extract(x.value, '$.origin') AS origin
+     FROM ai_runs r, json_each(r.pack, '$.premises') x WHERE ${base} ORDER BY r.created_at, r.run_id`,
+    c.args,
+  );
+  const voteRows = await query(
+    db,
+    `SELECT r.run_id AS run_id, json_extract(v.value, '$.premise_id') AS id, json_extract(v.value, '$.status') AS status
+     FROM ai_runs r, json_each(r.outcome, '$.samples') s, json_each(s.value, '$.premises') v
+     WHERE ${base} AND json_extract(s.value, '$.valid') = 1`,
+    c.args,
+  );
+  const votes = new Map<string, string[]>();
+  for (const v of voteRows) votes.set(`${v.run_id}${SEP}${v.id}`, [...(votes.get(`${v.run_id}${SEP}${v.id}`) ?? []), String(v.status)]);
+
+  type Acc = { reviews: Set<string>; checks: number; holds: number; broken: number; insufficient: number; split: number };
+  const by = new Map<string, Acc>();
+  const allRuns = new Set<string>();
+  const stateCache = new Map<string, Awaited<ReturnType<typeof accountPremises>>>();
+  for (const r of packRows) {
+    const v = votes.get(`${r.run_id}${SEP}${r.id}`);
+    if (!v?.length) continue;
+    let origin = String(r.origin ?? '');
+    if (origin !== 'SYSTEM_DEFAULT') {
+      const key = `${r.ticker}${SEP}${r.created_at}`;
+      if (!stateCache.has(key)) stateCache.set(key, await accountPremises(db, String(r.ticker ?? ''), String(r.created_at)));
+      const hit = stateCache.get(key)!.find((x) => x.id === r.id && x.text === r.text);
+      origin = hit?.origin === 'AI_DRAFT_ACCEPTED' || hit?.origin === 'USER' ? hit.origin : 'UNKNOWN';
+    }
+    const a = by.get(origin) ?? { reviews: new Set<string>(), checks: 0, holds: 0, broken: 0, insufficient: 0, split: 0 };
+    a.reviews.add(String(r.run_id));
+    allRuns.add(String(r.run_id));
+    a.checks++;
+    if (!(v.length >= 3 && v.every((x) => x === v[0]))) a.split++;
+    else if (v[0] === 'HOLDS') a.holds++;
+    else if (v[0] === 'BROKEN') a.broken++;
+    else a.insufficient++;
+    by.set(origin, a);
+  }
+  if (!by.size) return { id: 'premise_origin', title: PREMISE_ORIGIN_TITLE, rows: [] };
+  const toRow = (origin: string, a: Acc | undefined): Row => ({
+    origin,
+    reviews: a?.reviews.size ?? 0,
+    premise_checks: a?.checks ?? 0,
+    holds: a?.holds ?? 0,
+    broken: a?.broken ?? 0,
+    insufficient: a?.insufficient ?? 0,
+    split: a?.split ?? 0,
+    holds_ratio: ratio(a?.holds ?? 0, a?.checks ?? 0),
+    broken_ratio: ratio(a?.broken ?? 0, a?.checks ?? 0),
+    insufficient_ratio: ratio(a?.insufficient ?? 0, a?.checks ?? 0),
+    note: null,
+  });
+  const rows = [...PREMISE_ORIGINS, ...(by.has('UNKNOWN') ? ['UNKNOWN'] : [])].map((o) => toRow(o, by.get(o)));
+  const user = rows.find((r) => r.origin === 'USER')!;
+  const draft = rows.find((r) => r.origin === 'AI_DRAFT_ACCEPTED')!;
+  if (n(draft.premise_checks) >= LOOSE_MIN_CHECKS && n(draft.holds_ratio) >= LOOSE_HOLDS_RATIO && (user.holds_ratio === null || n(user.holds_ratio) < LOOSE_HOLDS_RATIO)) {
+    draft.note = `草稿的前提 ${Math.round(n(draft.holds_ratio) * 100)}% 判成立、你寫的${user.holds_ratio === null ? '還沒有檢查' : `只有 ${Math.round(n(user.holds_ratio) * 100)}%`}：草稿出題可能偏鬆，看一次草稿的前提`;
+  }
+  const keys = ['premise_checks', 'holds', 'broken', 'insufficient', 'split'];
+  const out = withTotal(rows, { origin: '合計', note: null }, keys, (t) => {
+    t.reviews = allRuns.size;
+    t.holds_ratio = ratio(n(t.holds), n(t.premise_checks));
+    t.broken_ratio = ratio(n(t.broken), n(t.premise_checks));
+    t.insufficient_ratio = ratio(n(t.insufficient), n(t.premise_checks));
+  });
+  return { id: 'premise_origin', title: PREMISE_ORIGIN_TITLE, rows: out };
+};
+
+/**
+ * 每次執行取了多少網頁／同業申報（依功能：OWN_REVIEW 定期審查、OWN_DROP 減半檢視、OWN_DRAFT 草稿；ai_runs.added_docs 與 lookups，建立時間在期間內）：
+ *   off              不能取文件的執行（doc_ctx.off，例如只有系統預設前提的審查）
+ *   not_looking      可以取、但分析師沒有要（calls = 0）：「沒有要找」
+ *   looked           呼叫過取文件的端點（calls > 0）
+ *   got_none         想取、一份都沒取到：「沒取到」（原因在 web_refused）
+ *   got_some         取到至少一份
+ *   calls、docs、web_docs、filing_docs、chars、truncated_docs   呼叫次數、取回的份數（網頁、同業申報）、合計字數（給 AI 的原文）、被截掉的份數
+ *   avg_docs、avg_chars   每次「呼叫過端點」的執行平均取幾份、幾個字（沒呼叫的不算；合計列照合計重算）
+ *   max_docs、max_chars   單次執行最多取幾份、幾個字（上限 8 份、60,000 字）
+ *   sites_at_cap     同一個網站已經抓滿 WEB_DOC_PER_SITE 篇的（執行、網站）數
+ *   refused          被拒絕的總數（含 LIMIT）
+ *   lookups_reported、questions、queries、wanted   分析師自己回報的找資料紀錄（AI 寫的，只當參考；取到幾份以 docs 為準）：回報的執行數、要查的問題數、搜尋次數、想取的份數
+ */
+export const webRunsSection: SectionFn = async (db, p) => {
+  const c = atCond(p, 'r.created_at');
+  const calls = "COALESCE(json_extract(r.added_docs, '$.calls'), 0)";
+  const docs = "COALESCE(json_array_length(r.added_docs, '$.docs'), 0)";
+  const chars = "COALESCE(json_extract(r.added_docs, '$.chars'), 0)";
+  const off = "(COALESCE(json_extract(r.doc_ctx, '$.off'), '') != '')";
+  const kind = (k: string) => `COALESCE(SUM((SELECT COUNT(*) FROM json_each(r.added_docs, '$.docs') d WHERE json_extract(d.value, '$.kind') = '${k}')), 0)`;
+  const rows = await query(
+    db,
+    `SELECT r.fn AS fn, COUNT(*) AS runs,
+       COALESCE(SUM(${off}), 0) AS off,
+       COALESCE(SUM(NOT ${off} AND ${calls} = 0), 0) AS not_looking,
+       COALESCE(SUM(${calls} > 0), 0) AS looked,
+       COALESCE(SUM(${calls} > 0 AND ${docs} = 0), 0) AS got_none,
+       COALESCE(SUM(${docs} > 0), 0) AS got_some,
+       COALESCE(SUM(${calls}), 0) AS calls,
+       COALESCE(SUM(${docs}), 0) AS docs,
+       ${kind('web')} AS web_docs,
+       ${kind('filing')} AS filing_docs,
+       COALESCE(SUM(${chars}), 0) AS chars,
+       COALESCE(SUM((SELECT COUNT(*) FROM json_each(r.added_docs, '$.docs') d WHERE json_extract(d.value, '$.truncated') = 1)), 0) AS truncated_docs,
+       COALESCE(MAX(${docs}), 0) AS max_docs,
+       COALESCE(MAX(${chars}), 0) AS max_chars,
+       COALESCE(SUM((SELECT COUNT(*) FROM json_each(r.added_docs, '$.sites') s WHERE s.value >= ${WEB_DOC_PER_SITE})), 0) AS sites_at_cap,
+       COALESCE(SUM(COALESCE(json_extract(r.added_docs, '$.refusedTotal'), 0)), 0) AS refused,
+       COALESCE(SUM(r.lookups IS NOT NULL), 0) AS lookups_reported,
+       COALESCE(SUM(json_array_length(r.lookups, '$.questions')), 0) AS questions,
+       COALESCE(SUM(json_array_length(r.lookups, '$.queries')), 0) AS queries,
+       COALESCE(SUM(json_array_length(r.lookups, '$.wanted')), 0) AS wanted
+     FROM ai_runs r WHERE r.fn IN (${FN_LIST}) AND ${c.sql} GROUP BY r.fn ORDER BY r.fn`,
+    c.args,
+  );
+  const avg = (r: Row): Row => ({ ...r, avg_docs: n(r.looked) ? Math.round((n(r.docs) / n(r.looked)) * 10) / 10 : null, avg_chars: n(r.looked) ? Math.round(n(r.chars) / n(r.looked)) : null });
+  const keys = ['runs', 'off', 'not_looking', 'looked', 'got_none', 'got_some', 'calls', 'docs', 'web_docs', 'filing_docs', 'chars', 'truncated_docs', 'sites_at_cap', 'refused', 'lookups_reported', 'questions', 'queries', 'wanted'];
+  const out = withTotal(rows.map(avg), { fn: '合計' }, keys, (t) => {
+    t.max_docs = Math.max(...rows.map((r) => n(r.max_docs)));
+    t.max_chars = Math.max(...rows.map((r) => n(r.max_chars)));
+    Object.assign(t, avg(t));
+  });
+  return { id: 'web_runs', title: '每次執行取回的網頁與同業申報（依功能；沒有要找、沒取到、取到幾份、幾個字、被拒絕幾份）', rows: out };
+};
+
+/**
+ * 取文件被拒絕的原因（依功能與原因；ai_runs.added_docs.refused，只留每次執行前 60 筆，超過的合成 OVER_CAP 一列，所以每個功能的列加起來 = 被拒絕的總數）。
+ * 原因：NOT_LISTED 清單外（含不列入、路徑不收）、BLOCKED 被擋（HTTP 4xx、5xx）、THIN 內文太短、UNSUPPORTED 不是網頁、NO_DATE 認不出發布日、
+ * TOO_OLD 太舊、LIMIT 超過每次執行的上限、ERROR 其他（發布日晚於決策日、申報抓不到、轉址到清單外、格式不對）。
+ */
+export const webRefusedSection: SectionFn = async (db, p) => {
+  const c = atCond(p, 'r.created_at');
+  const rows = await query(
+    db,
+    `SELECT r.fn AS fn, json_extract(x.value, '$.reason') AS reason, COUNT(*) AS n
+     FROM ai_runs r, json_each(r.added_docs, '$.refused') x WHERE r.fn IN (${FN_LIST}) AND ${c.sql} GROUP BY r.fn, reason ORDER BY r.fn, reason`,
+    c.args,
+  );
+  const caps = await query(
+    db,
+    `SELECT r.fn AS fn, COALESCE(SUM(COALESCE(json_extract(r.added_docs, '$.refusedTotal'), 0) - COALESCE(json_array_length(r.added_docs, '$.refused'), 0)), 0) AS n
+     FROM ai_runs r WHERE r.fn IN (${FN_LIST}) AND ${c.sql} GROUP BY r.fn ORDER BY r.fn`,
+    c.args,
+  );
+  const over = caps.filter((x) => n(x.n) > 0).map((x) => ({ fn: x.fn, reason: 'OVER_CAP', n: n(x.n) }));
+  const all = [...rows, ...over].sort((a, b) => String(a.fn).localeCompare(String(b.fn)) || String(a.reason).localeCompare(String(b.reason)));
+  return { id: 'web_refused', title: '取文件被拒絕的原因（依功能；OVER_CAP = 超過每次執行只留 60 筆的部分）', rows: withTotal(all, { fn: '合計', reason: null }, ['n']) };
+};
+
+const webWindow = (p: Period): { sql: string; args: string[] } => ({ sql: 'fetched_at >= ? AND fetched_at < ?', args: [`${dayShift(p.to, 1 - WEB_DOMAIN_DAYS)}T00:00:00.000Z`, `${nextDay(p.to)}T00:00:00.000Z`] });
+const WEB_SKIPPED_TITLE = `被略過最多的網域（不在清單；最近 ${WEB_DOMAIN_DAYS} 天，到期間迄日為止；前 ${WEB_DOMAIN_ROWS} 個）`;
+const WEB_FAILED_TITLE = `抓取失敗的網域（清單內；最近 ${WEB_DOMAIN_DAYS} 天，到期間迄日為止；有失敗的前 ${WEB_DOMAIN_ROWS} 個）`;
+
+/**
+ * 被略過最多的網域（web_docs 的 NOT_LISTED：分析師要了、但不在共用清單也不在這檔的 domains；設計 §1.3「加網域的流程」）。
+ * 最近 WEB_DOMAIN_DAYS 天（到期間的迄日為止，不跟 from 走）；列前 WEB_DOMAIN_ROWS 個，合計列算全部。
+ * excluded = 評論與社群網站（不列入）；path = 網域在清單內但路徑不收；not_listed = 完全不在清單；tickers = 幾檔股票要過；last_title = 最近一次的標題（搜尋結果的標題）。
+ */
+export const webSkippedSection: SectionFn = async (db, p) => {
+  const w = webWindow(p);
+  const docs = await query(db, `SELECT url, error, ticker, fetched_at, title FROM web_docs WHERE status = 'NOT_LISTED' AND ${w.sql} ORDER BY fetched_at, row_id`, w.args);
+  if (!docs.length) return { id: 'web_skipped', title: WEB_SKIPPED_TITLE, rows: [] };
+  const by = new Map<string, { n: number; excluded: number; path: number; not_listed: number; tickers: Set<string>; last_at: string; last_title: string | null }>();
+  for (const d of docs) {
+    const host = hostOf(String(d.url)) || '(認不出網域)';
+    const a = by.get(host) ?? { n: 0, excluded: 0, path: 0, not_listed: 0, tickers: new Set<string>(), last_at: '', last_title: null };
+    a.n++;
+    if (d.error === 'EXCLUDED') a.excluded++;
+    else if (d.error === 'PATH') a.path++;
+    else a.not_listed++;
+    a.tickers.add(String(d.ticker));
+    a.last_at = String(d.fetched_at);
+    a.last_title = d.title === null ? null : String(d.title);
+    by.set(host, a);
+  }
+  const list = [...by.entries()].sort(([ka, a], [kb, b]) => b.n - a.n || ka.localeCompare(kb));
+  const rows: Row[] = list.slice(0, WEB_DOMAIN_ROWS).map(([domain, a]) => ({ domain, n: a.n, excluded: a.excluded, path: a.path, not_listed: a.not_listed, tickers: a.tickers.size, last_at: a.last_at, last_title: a.last_title }));
+  rows.push({
+    domain: '合計（全部網域）',
+    n: docs.length,
+    excluded: list.reduce((s, [, a]) => s + a.excluded, 0),
+    path: list.reduce((s, [, a]) => s + a.path, 0),
+    not_listed: list.reduce((s, [, a]) => s + a.not_listed, 0),
+    tickers: new Set(docs.map((d) => String(d.ticker))).size,
+    last_at: null,
+    last_title: null,
+  });
+  return { id: 'web_skipped', title: WEB_SKIPPED_TITLE, rows };
+};
+
+/**
+ * 抓取失敗的網域（web_docs，清單內的網域；NOT_LISTED 不算抓取，看 web_skipped）。同樣最近 WEB_DOMAIN_DAYS 天、前 WEB_DOMAIN_ROWS 個（有失敗的才列），合計列算全部。
+ * attempts = 實際抓過幾次（重用舊快照的不再抓、不算）；ok 抓到全文；失敗 failed = thin 內文太短 ＋ blocked 被擋 ＋ unsupported 不是網頁 ＋ no_date 認不出發布日 ＋ error 其他；
+ * too_old 發布日太舊（程式規則擋掉，不算失敗）；fail_ratio = failed ÷ attempts；thin_avg_chars = 內文太短的那幾篇轉成文字後平均幾字
+ * （門檻 1,500 字對韓文、中文偏嚴，設計 §0.5 說看這一欄再決定要不要改）；last_error = 最近一次失敗的原因。
+ */
+export const webFailedSection: SectionFn = async (db, p) => {
+  const w = webWindow(p);
+  const docs = await query(db, `SELECT url, domain, status, error, chars FROM web_docs WHERE status != 'NOT_LISTED' AND ${w.sql} ORDER BY fetched_at, row_id`, w.args);
+  type Acc = { attempts: number; ok: number; thin: number; blocked: number; unsupported: number; no_date: number; error: number; too_old: number; thinChars: number; thinN: number; lastError: string | null };
+  const blank = (): Acc => ({ attempts: 0, ok: 0, thin: 0, blocked: 0, unsupported: 0, no_date: 0, error: 0, too_old: 0, thinChars: 0, thinN: 0, lastError: null });
+  const by = new Map<string, Acc>();
+  const col = (st: string): 'thin' | 'blocked' | 'unsupported' | 'no_date' | 'error' | 'too_old' => ({ THIN: 'thin', BLOCKED: 'blocked', UNSUPPORTED: 'unsupported', NO_DATE: 'no_date', TOO_OLD: 'too_old' } as const)[st as 'THIN'] ?? 'error';
+  for (const d of docs) {
+    const key = String(d.domain ?? '') || hostOf(String(d.url)) || '(認不出網域)';
+    const a = by.get(key) ?? blank();
+    a.attempts++;
+    const st = String(d.status);
+    if (st === 'OK') a.ok++;
+    else {
+      a[col(st)]++;
+      if (st !== 'TOO_OLD') a.lastError = d.error === null ? st : `${st}：${String(d.error)}`;
+    }
+    if (st === 'THIN' && d.chars !== null) {
+      a.thinChars += n(d.chars);
+      a.thinN++;
+    }
+    by.set(key, a);
+  }
+  if (!by.size) return { id: 'web_failed', title: WEB_FAILED_TITLE, rows: [] };
+  const failedOf = (a: Acc) => a.thin + a.blocked + a.unsupported + a.no_date + a.error;
+  const toRow = (domain: string, a: Acc): Row => ({
+    domain,
+    attempts: a.attempts,
+    ok: a.ok,
+    failed: failedOf(a),
+    thin: a.thin,
+    blocked: a.blocked,
+    unsupported: a.unsupported,
+    no_date: a.no_date,
+    error: a.error,
+    too_old: a.too_old,
+    fail_ratio: ratio(failedOf(a), a.attempts),
+    thin_avg_chars: a.thinN ? Math.round(a.thinChars / a.thinN) : null,
+    last_error: a.lastError,
+  });
+  const total = blank();
+  for (const a of by.values()) for (const k of ['attempts', 'ok', 'thin', 'blocked', 'unsupported', 'no_date', 'error', 'too_old', 'thinChars', 'thinN'] as const) total[k] += a[k];
+  const rows = [...by.entries()]
+    .filter(([, a]) => failedOf(a) > 0)
+    .sort(([ka, a], [kb, b]) => failedOf(b) - failedOf(a) || ka.localeCompare(kb))
+    .slice(0, WEB_DOMAIN_ROWS)
+    .map(([domain, a]) => toRow(domain, a));
+  rows.push({ ...toRow('合計（全部網域）', total), last_error: null });
+  return { id: 'web_failed', title: WEB_FAILED_TITLE, rows };
+};
+
+/**
+ * 草稿（own_drafts，建立時間在期間內；依 AUTO 新自選自動開的、MANUAL 使用者按的）。每一列是一次草擬（自動失敗後重試的算另一次）。
+ *   pending 還在跑；ready／used／dismissed／expired／failed 各狀態的次數；
+ *   finished = drafts − pending；ok = ready ＋ used ＋ dismissed ＋ expired（通過程式檢查、使用者看得到的草稿）；
+ *   success_ratio = ok ÷ finished（失敗的原因在 draft_failures）；used_ratio = used ÷ ok（存檔用了至少一項）；avg_minutes = 通過檢查的草稿從建立到結算平均幾分鐘；
+ *   存檔用了的草稿（used_json）：premises_same 原樣勾選的前提、premises_edited 勾了又改字、premises_kept 沿用現有的、premises_unused 沒勾的；
+ *   premises_taken_ratio = (same ＋ edited) ÷ (same ＋ edited ＋ unused)；exits_used／exits_unused 出場條件勾了與沒勾的條數。
+ */
+export const draftsSection: SectionFn = async (db, p) => {
+  const c = atCond(p, 'created_at');
+  const okSt = "status IN ('READY', 'USED', 'DISMISSED', 'EXPIRED')";
+  const used = (path: string) => `COALESCE(SUM(json_extract(used_json, '${path}')), 0)`;
+  const rows = await query(
+    db,
+    `SELECT trigger, COUNT(*) AS drafts,
+       COALESCE(SUM(status = 'PENDING'), 0) AS pending,
+       COALESCE(SUM(status = 'READY'), 0) AS ready,
+       COALESCE(SUM(status = 'USED'), 0) AS used,
+       COALESCE(SUM(status = 'DISMISSED'), 0) AS dismissed,
+       COALESCE(SUM(status = 'EXPIRED'), 0) AS expired,
+       COALESCE(SUM(status = 'FAILED'), 0) AS failed,
+       ROUND(AVG(CASE WHEN ${okSt} AND settled_at IS NOT NULL THEN (julianday(settled_at) - julianday(created_at)) * 1440 END), 1) AS avg_minutes,
+       ${used('$.premises.same')} AS premises_same,
+       ${used('$.premises.edited')} AS premises_edited,
+       ${used('$.premises.kept')} AS premises_kept,
+       ${used('$.unused.premises')} AS premises_unused,
+       ${used('$.exits')} AS exits_used,
+       ${used('$.unused.exits')} AS exits_unused
+     FROM own_drafts WHERE ${c.sql} GROUP BY trigger ORDER BY trigger`,
+    c.args,
+  );
+  const fin = (r: Row): Row => {
+    const ok = n(r.ready) + n(r.used) + n(r.dismissed) + n(r.expired);
+    const finished = n(r.drafts) - n(r.pending);
+    const offered = n(r.premises_same) + n(r.premises_edited) + n(r.premises_unused);
+    return { ...r, finished, ok, success_ratio: ratio(ok, finished), used_ratio: ratio(n(r.used), ok), premises_taken_ratio: ratio(n(r.premises_same) + n(r.premises_edited), offered) };
+  };
+  const keys = ['drafts', 'pending', 'ready', 'used', 'dismissed', 'expired', 'failed', 'premises_same', 'premises_edited', 'premises_kept', 'premises_unused', 'exits_used', 'exits_unused'];
+  return { id: 'drafts', title: '論點草稿（依觸發：AUTO 新自選自動開的、MANUAL 使用者按的）：成功率、用了多少', rows: withTotal(rows.map(fin), { trigger: '合計', avg_minutes: null }, keys, (t) => Object.assign(t, fin(t))) };
+};
+
+/** 草稿失敗的原因（依觸發與原因；原因取 own_drafts.error 第一個冒號或括號之前的字，例如「程式檢查沒過」「送回的格式不合格」「研究員認為證據不夠寫草稿」）。 */
+export const draftFailuresSection: SectionFn = async (db, p) => {
+  const c = atCond(p, 'created_at');
+  const rows = await query(db, `SELECT trigger, error FROM own_drafts WHERE status = 'FAILED' AND ${c.sql} ORDER BY id`, c.args);
+  const by = new Map<string, number>();
+  for (const r of rows) {
+    const reason = (String(r.error ?? '').split(/[：:（(]/)[0].trim() || '(沒有寫原因)').slice(0, 60);
+    const k = `${r.trigger}${SEP}${reason}`;
+    by.set(k, (by.get(k) ?? 0) + 1);
+  }
+  const out: Row[] = [...by.entries()]
+    .map(([k, count]) => {
+      const [trigger, reason] = k.split(SEP);
+      return { trigger, reason, n: count };
+    })
+    .sort((a, b) => String(a.trigger).localeCompare(String(b.trigger)) || n(b.n) - n(a.n) || String(a.reason).localeCompare(String(b.reason)));
+  return { id: 'draft_failures', title: '草稿失敗的原因（依觸發）', rows: withTotal(out, { trigger: '合計', reason: null }, ['n']) };
+};
+
+/** 報表的各段，照這個順序輸出。要加段就在這裡加一個函式（T31a 加了月底檢查點、T33b 加了崩盤規則、T32d 加了動能進場審查、T57 加了前提結果、網頁與草稿七段）。 */
+export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, momEntrySection, premiseOriginSection, webRunsSection, webRefusedSection, webSkippedSection, webFailedSection, draftsSection, draftFailuresSection];
 
 export interface OpsReport {
   generated_at: string;

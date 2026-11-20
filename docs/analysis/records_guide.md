@@ -39,8 +39,15 @@ Worker 端是 `GET /admin/export`（`ADMIN_TOKEN` 的 Bearer；`worker/src/app/e
 | `checkpoints` | 月底檢查點（自選定期審查，T31a）：每個月審了幾檔（`reviewed`，有新證據）、跳過幾檔（`skipped`，沒有新證據）、有新證據但沒開成（`not_started`）、`skip_ratio`；`never`／`filing`／`event`／`thesis`／`stale`／`unknown`／`peer`（同業有新的財報新聞稿，T54）／`web_due`（有要上網查的前提或條件、距上次審查滿 25 天，T54）= 開了審查的那幾檔各有幾檔帶這個原因。資料在 `flow_state` 的 `review:checkpoint:<年月>` |
 | `crash_reviews` | 崩盤規則的切換與 AI 檢視（T33b）：期間內每一次切換一列（月報訊號日在期間內；重列的那一項不算）——`month`、`direction`（ON 啟動／OFF 解除）、`notif`、`state`（月報那一項現在的檢視狀態：OPINION 有意見、NO_OPINION 沒有意見、PENDING、FAILED、NO_DATA 總經資料不足、OFF）、`kind`（PREVIEW 月報前一天預估、MAKEUP 月報之後補開）、`runs`（這個月份＋方向開了幾次）、`no_conclusion`（沒有結論幾次）、`followups`（03:30 補推幾次）。合計列多一欄 `switches`（切換次數） |
 | `mom_entry` | 動能新股進場審查的 F1 法庭（T32d）：每列 `{ item, code, n, note }`——`courts`（期間內開了幾次法庭）、`courts_by_code`（依規則偵測命中的代碼，一次法庭兩個代碼各算一次，新聞標題來的不算）、`vetoes`（新的 AI 否決，不含沿用）、`carried`（沿用上一次的結論；`code` 是沿用的結論）、`no_conclusion`（跑完了但沒有結論）、`late`（月報之後才回來的否決）、`veto_total`（到期間結束累積的否決次數，連續沿用算同一次；跨過 5 的倍數時 `note` 提示看一次否決的紀錄）。資料在 `ai_runs`（`MOM_ENTRY`）與 `mom_reviews`（建立時間在期間內） |
+| `premise_origin` | 定期審查（`OWN_REVIEW`，有結論的）的前提結果，依前提的來源分開（T57，設計 `web_evidence_design` §2.4 第 7 點）：`origin` = `USER`（你寫的，含勾了草稿又改字的）／`AI_DRAFT_ACCEPTED`（原樣勾選的草稿）／`SYSTEM_DEFAULT`（系統預設）／`UNKNOWN`（當時的帳戶裡找不到編號與字都相同的前提）；`premise_checks` 是檢查次數（一次審查裡的一條前提算一次，同一條前提每月都會再被檢查）、`holds`／`broken`／`insufficient`（格式合格的票至少 3 張、判斷都一樣）／`split`（票數不到 3 張或判斷不一樣）和各自的比例。來源讀帳戶歷史（`account_history` 審查當時那一版），因為 L2 的證據包把 `AI_DRAFT_ACCEPTED` 遮成 `USER`。草稿的前提 ≥ 90% 判成立（至少 5 次）而你寫的比它低時，`note` 提示出題可能偏鬆。合計列的 `reviews` 是不重複的審查次數 |
+| `web_runs` | 每次執行取回多少（T57；依功能 `OWN_REVIEW`／`OWN_DROP`／`OWN_DRAFT`，資料在 `ai_runs.added_docs`、`doc_ctx`、`lookups`）：`off` 不能取文件、`not_looking` 可以取但分析師沒有要找、`looked` 呼叫過端點、`got_none` 想取但一份都沒取到、`got_some`；`calls`、`docs`（`web_docs`／`filing_docs`）、`chars`、`truncated_docs`、`avg_docs`／`avg_chars`（每次呼叫過端點的執行）、`max_docs`／`max_chars`（上限 8 份、60,000 字）、`sites_at_cap`（同一個網站抓滿 4 篇）、`refused`；`lookups_reported`、`questions`、`queries`、`wanted` 是分析師自己回報的找資料紀錄（AI 寫的，只當參考，取到幾份以 `docs` 為準） |
+| `web_refused` | 取文件被拒絕的原因（T57；依功能與原因 `NOT_LISTED`／`BLOCKED`／`THIN`／`UNSUPPORTED`／`NO_DATE`／`TOO_OLD`／`LIMIT`／`ERROR`）。`ai_runs.added_docs.refused` 每次執行只留前 60 筆，超過的合成 `OVER_CAP` 一列，所以每個功能的列加起來等於 `web_runs.refused` |
+| `web_skipped` | 被略過最多的網域（T57；`web_docs` 的 `NOT_LISTED`：分析師要了、但不在共用清單也不在這檔的 `domains`）：最近 90 天（到期間迄日為止，不跟 `--report-from`）、前 20 個、合計列算全部；`excluded` 評論與社群網站（不列入）、`path` 網域在清單內但路徑不收、`not_listed` 完全不在清單、`tickers`、`last_title`。要不要加進清單的依據（設計 §1.3） |
+| `web_failed` | 抓取失敗的網域（T57；`web_docs`，清單內，同樣最近 90 天、前 20 個、有失敗的才列，合計列算全部）：`attempts` 實際抓過幾次、`ok`、`failed` = `thin` 內文太短 ＋ `blocked` ＋ `unsupported` ＋ `no_date` ＋ `error`；`too_old` 發布日太舊（程式規則擋的，不算失敗）；`fail_ratio`、`thin_avg_chars`（內文太短的平均字數，看 1,500 字的門檻對韓文、中文是否太嚴）、`last_error` |
+| `drafts` | 論點草稿（T57；`own_drafts`，依 `AUTO` 新自選自動開的／`MANUAL` 使用者按的）：各狀態次數、`finished`（不含還在跑）、`ok`（通過程式檢查 = ready ＋ used ＋ dismissed ＋ expired）、`success_ratio` = ok ÷ finished、`used_ratio` = used ÷ ok、`avg_minutes`；存檔用了的草稿（`used_json`）：`premises_same` 原樣勾選、`premises_edited` 勾了又改字、`premises_kept`、`premises_unused`、`premises_taken_ratio`、`exits_used`／`exits_unused` |
+| `draft_failures` | 草稿失敗的原因（T57；依觸發與 `own_drafts.error` 第一個冒號或括號之前的字） |
 
-每段最後一列的第一欄是「合計」；比例是 0～1 的小數、分母是 0 時是 null。
+每段最後一列的第一欄是「合計」（`web_skipped`、`web_failed` 的合計列是「合計（全部網域）」）；比例是 0～1 的小數、分母是 0 時是 null。
 
 ## 2. 資料夾結構
 

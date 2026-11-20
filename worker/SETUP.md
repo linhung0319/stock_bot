@@ -236,3 +236,15 @@ npx wrangler deploy
 3. `npx wrangler deploy`：新的 03:30 排程（`30 3 * * TUE-SAT`）部署之後才生效。
 4. 把 `ai/prompts/run.md`、`ai/prompts/ping.md` 的「排程的 prompt」重新貼到 claude.ai 的雲端排程（T36 改過）。
 5. 部署後第一個交易日看 `GET /admin/flow/status`：三次排程都有紀錄、沒有 `ERROR`。
+
+## 階段九（2026-11-21）：網頁證據與草擬論點的部署（計畫 T58）
+
+階段九（`docs/plan/thesis_plan_2026-11-15.md`、設計 `docs/design/web_evidence_design_2026-11-20.md`）加了資料表、Worker 的取文件端點與新的 prompt。**順序不能反**：舊的 Worker 不認得審查結果裡的 `lookups`，會把整份退回；沒套 migration 就部署，每日流程與結果端點讀寫 `own_drafts` 會出錯。
+
+1. `git push`：雲端排程從 repo 讀 prompt（`own_review_v3`、`own_check_v5`、`own_drop_v3`、`own_draft_v1`）。
+2. 資料表：`npx wrangler d1 migrations apply stock-bot --remote`（新增 `0016`～`0020`；`0016_web_docs` 是市場資料，其他是 AI 與帳戶的欄位）。
+3. `npx wrangler deploy`，之後 `GET /health` 應該是 `0.15.0`。
+4. 部署之後，把 `ai/prompts/run.md` 裡「## 排程的 prompt」標題以下到檔案結尾整段，貼到 claude.ai 雲端排程的 Instructions（`ping.md` 沒改；雲端環境的網路設定不用動）。
+5. 排程的 connector 清單維持空的（設計 M5）。
+6. 實測 M3：手動觸發一次有自己論點的股票的審查（例如在持股頁改一條前提，隔天的流程會開；或等月底），再在持股頁按一次「請 stock bot 草擬」。看審查紀錄頁「AI 這次另外找了什麼」：分析師問了什麼、搜尋幾次、想取幾份、取到幾份；子代理裡 WebSearch 能不能用；執行多久。
+7. 一個月後（M4）：看 claude.ai 的用量頁，並跑 `uv run python scripts/export_records.py`，看 `records/reports/ops_<日期>.json` 的 `premise_origin`、`web_runs`、`web_refused`、`web_skipped`、`web_failed`、`drafts`、`draft_failures`，決定網域清單（`worker/src/data/webSources.ts`）要不要調、要不要做設計 §1.11 的第二階段。
