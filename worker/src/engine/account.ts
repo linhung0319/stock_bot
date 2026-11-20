@@ -30,7 +30,8 @@ export const SYSTEM_DEFAULT_PREMISES: Premise[] = [
 export interface Thesis {
   text: string;
   setAt: string;
-  source: 'TYPED' | 'DISCUSSION';
+  /** TYPED 在網站手寫／DISCUSSION 討論後貼回／DRAFT 用了 stock bot 草稿的論點本文、一字沒改（T56，web_evidence_design §2.3）。 */
+  source: 'TYPED' | 'DISCUSSION' | 'DRAFT';
   version: number;
   afterBreak: number;
   lastAfterBreakAt: string | null;

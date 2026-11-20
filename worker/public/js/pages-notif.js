@@ -4,7 +4,7 @@ import { aiOverview, crashLogBlock, runRow, shadowLines } from './pages-ai.js';
 import { actionText, day, h, money, pct, put, qty, toast } from './dom.js';
 import { consoleBox, glass, icon, longDay, menuList, page, tiles } from './layout.js';
 import { HALF_START_TEXT, actParts, attentionList, bucketTag, chevron, headline, orderRows, refillText, whyBlock } from './parts.js';
-import { copyPackButton, newOwnBox } from './pages-thesis.js';
+import { attnDraftAction, copyPackButton, newOwnBox } from './pages-thesis.js';
 import { say } from './slime.js';
 
 const errBox = (e) => h('p', { class: 'err', role: 'alert' }, e?.message ?? String(e));
@@ -17,7 +17,7 @@ let todoFlash = null;
 const takeFlash = () => {
   const f = todoFlash;
   todoFlash = null;
-  return f ? h('div', { style: 'margin-bottom:14px' }, newOwnBox(f.rows, f.lead)) : null;
+  return f ? h('div', { style: 'margin-bottom:14px' }, newOwnBox(f.rows, f.lead, f.drafts)) : null;
 };
 const em = (t) => ({ t, tone: 'em' });
 const neg = (t) => ({ t, tone: 'neg' });
@@ -415,7 +415,7 @@ function slip(it, v, ui) {
                       const r = await api.post(`/notif/${v.id}/action`, { key: it.key, action: a.id, reason: ta.value });
                       toast(a.id === 'EXCLUDE' ? '已排除，清單重算了' : a.id === 'TRANSFER' ? '已轉入自選' : '已認養到自選');
                       // 新開的自選還沒有論點（T45）：重畫之後在頁首下面列同一張清單
-                      if (r.newOwnRows?.length) todoFlash = { rows: r.newOwnRows, lead: a.id === 'TRANSFER' ? '轉入自選的' : '認養到自選的' };
+                      if (r.newOwnRows?.length) todoFlash = { rows: r.newOwnRows, lead: a.id === 'TRANSFER' ? '轉入自選的' : '認養到自選的', drafts: r.newOwnDrafts ?? {} };
                       ui.afterAction(r.notifId);
                     } catch (e) {
                       msg.replaceChildren(errBox(e));
@@ -510,7 +510,8 @@ function attentionBox(v) {
     { class: 'glass pad', style: 'margin-top:16px' },
     h('h2', { class: 'panel-h' }, `持股有 ${v.attention.length} 件事要看（不用下單）`),
     h('p', { class: 'small dim' }, '這些不是清單上的單，也不用回覆；同一件事不會每個月都列。'),
-    attentionList(v.attention, { groups: true }),
+    // 草稿好了 →「看草稿」；論點滿一年、前提證據不足、連續沒有一致結論 →「請 stock bot 草擬」（T56；月報裡的是當時的清單，按了照伺服器現在的狀態回）
+    attentionList(v.attention, { groups: true, action: (x) => attnDraftAction(x) }),
   );
 }
 
@@ -740,7 +741,7 @@ function askForm(v, ctx) {
       await ctx.refresh(false);
       wrap.replaceChildren(
         glass('pad', h('h2', { class: 'panel-h' }, `已歸到自選：${ticker} ${qty(quantity)} 股`), h('div', { class: 'btn-row', style: 'margin-top:12px' }, h('a', { class: 'btn primary', href: next }, r.notifId ? '看重算的月報' : '回待辦'))),
-        h('div', { style: 'margin-top:14px' }, newOwnBox(r.newOwnRows)),
+        h('div', { style: 'margin-top:14px' }, newOwnBox(r.newOwnRows, undefined, r.newOwnDrafts ?? {})),
       );
     } catch (e) {
       msg.replaceChildren(errBox(e));
@@ -1051,7 +1052,7 @@ export async function snapshotPage(ctx) {
           r.created.map((n) => h('p', null, n.title)),
           r.cashWarn ? null : h('p', { class: 'small faint' }, '填錯了可以到「我要…」→「復原上一份快照」，回到送出之前再重填。'),
         ),
-        ...(r.newOwn?.length ? [h('div', { style: 'margin-top:14px' }, newOwnBox(r.newOwnRows ?? r.newOwn.map((t) => ({ ticker: t, buyNote: (ctx.state.thesisTodo ?? []).find((x) => x.ticker === t)?.buyNote ?? null }))))] : []),
+        ...(r.newOwn?.length ? [h('div', { style: 'margin-top:14px' }, newOwnBox(r.newOwnRows ?? r.newOwn.map((t) => ({ ticker: t, buyNote: (ctx.state.thesisTodo ?? []).find((x) => x.ticker === t)?.buyNote ?? null })), undefined, r.newOwnDrafts ?? {}))] : []),
         ...(r.cashWarn ? [cashWarnBox(ctx, r.cashOther, null)] : []),
       );
     } catch (e) {

@@ -8,6 +8,7 @@
 // 8-K 的挑選順序、論點那一份 note）。讀 D1，所以不在引擎裡。
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
 import { ownCheckResult, type ExitLine } from '../ai/ownCheck';
+import { packOrigin } from '../ai/pack';
 import { confirmMode, namedWebDomains, webConfirmText, type OwnCondition } from '../ai/ownReview';
 import { DEFAULT_CONFIG, clone, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Thesis, type Tier } from '../engine';
 import { concentrationHits, sizeText } from './concentration';
@@ -240,6 +241,28 @@ export interface ThesisFile {
    * pending：那一次改寫還沒勾的條數。沒有是空陣列（舊的呼叫端沒給：undefined）。
    */
   unchecked?: { runId: string; at: string; pending: number }[];
+  /**
+   * 這份論點檔等你看的 stock bot 草稿（own_drafts 的 READY，T56，web_evidence_design §2.3、§2.5）：「要看的事」的 DRAFT_READY 用。
+   * at：回來的時間；until：哪天之後不再列（回來後 30 天就過期）。沒有是 null（舊的呼叫端、示範模式：undefined）。
+   */
+  draft?: { runId: string; at: string; until: string; trigger: 'AUTO' | 'MANUAL' } | null;
+}
+
+/** READY 的草稿幾天沒處理 → EXPIRED（web_evidence_design §2.3；src/app/ownDraft.ts 也用這個數字）。 */
+export const DRAFT_EXPIRE_DAYS = 30;
+
+/** 一個時間在台北是哪一天（YYYY-MM-DD；草稿的日期是給人看的，照使用者的日曆）。 */
+export const taipeiDay = (at: string): string => new Date(Date.parse(at) + 8 * 3600_000).toISOString().slice(0, 10);
+/** 草稿回來的時間 → 哪一天之後不再列（台北的日期加 30 天）。 */
+export const draftUntil = (at: string): string => new Date(Date.parse(taipeiDay(at)) + DRAFT_EXPIRE_DAYS * 86400_000).toISOString().slice(0, 10);
+
+/** 這份論點檔最新的 READY 草稿（DRAFT_READY 用）。沒有論點檔編號的舊自選沒有草稿。 */
+async function readyDraftOf(db: D1Database, fileId: string | null): Promise<ThesisFile['draft']> {
+  if (!fileId) return null;
+  const r = await db.prepare("SELECT run_id, trigger, created_at, settled_at FROM own_drafts WHERE file_id = ? AND status = 'READY' ORDER BY created_at DESC, id DESC LIMIT 1").bind(fileId).first<{ run_id: string; trigger: string; created_at: string; settled_at: string | null }>();
+  if (!r) return null;
+  const at = r.settled_at ?? r.created_at;
+  return { runId: r.run_id, at, until: draftUntil(at), trigger: r.trigger === 'AUTO' ? 'AUTO' : 'MANUAL' };
 }
 
 /** 持股頁列出多少天內的出場條件改寫結果（own_thesis §1.8 確認的第 4 點）。 */
@@ -447,6 +470,7 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     log,
     splits: await loadSplits(db, ticker, fileId),
     unchecked,
+    draft: await readyDraftOf(db, fileId),
   };
 }
 
@@ -681,7 +705,7 @@ function toEvent(e: SecEventRow, last: ThesisFile['lastReview'], newSince: strin
 
 /** 證據包的前提（F19 用）：論點檔的現行前提，格式同 ownPremises。 */
 export function filePremises(tf: Pick<ThesisFile, 'premises'>): PackPremise[] {
-  return tf.premises.map((p) => ({ id: p.id, text: p.text, origin: p.origin, ...(p.breaksIf ? { breaksIf: p.breaksIf } : {}) }));
+  return tf.premises.map((p) => ({ id: p.id, text: p.text, origin: packOrigin(p.origin), ...(p.breaksIf ? { breaksIf: p.breaksIf } : {}) }));
 }
 
 // ---------------------------------------------------------------- 證據包要的部分（純函式）
@@ -770,6 +794,11 @@ export function pickFilings<F extends Pick<Filing, 'accession' | 'form' | 'items
   return [...(pr ? [pr] : []), ...marked, ...rest].slice(0, n);
 }
 
+/**
+ * 論點那一份 note 寫論點是怎麼來的（給 L2 看）。用了 stock bot 草稿的論點本文（DRAFT，T56）不寫來源：
+ * 判的人看不到出題的過程（web_evidence_design §2.4 第 4 點）。
+ */
+const PACK_SOURCE_TEXT: Record<string, string> = { DISCUSSION: '討論後貼回，', TYPED: '在網站手寫，' };
 const ORIGIN_TEXT: Record<string, string> = { INITIAL: '上線時就持有', NEW: '新增自選', TRANSFER: '從動能轉入', ADOPT: '認養', MANUAL: '自己買進' };
 const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
 const OUTCOME_TEXT: Record<string, string> = { FOLLOW: '照做', REVISE: '修正論點', DISAGREE: '不同意', SKIPPED: '月報裡沒有動它（當成不同意）', NONE: '上次的失效通知沒有回應', RULE: '照規則' };
@@ -789,7 +818,7 @@ export function thesisNote(tf: ThesisFile, asOf: string): PackDoc | null {
   L.push(`論點檔 ${tf.fileId ?? tf.ticker}（${tf.openedAt ?? '開檔日不明'} 開檔，${ORIGIN_TEXT[tf.origin] ?? tf.origin}；${tf.kind === 'THESIS' ? '有論點' : '只有系統預設前提'}）。`);
   L.push('這一份是背景，不是前提成立或不成立的證據。');
   L.push('');
-  if (tf.thesis?.text) L.push(`論點（${tf.thesis.setAt} 定，${tf.thesis.source === 'DISCUSSION' ? '討論後貼回' : '在網站手寫'}，第 ${tf.thesis.version} 版${tf.thesis.afterBreak ? `，失效後修改 ${tf.thesis.afterBreak} 次` : ''}）：`, tf.thesis.text);
+  if (tf.thesis?.text) L.push(`論點（${tf.thesis.setAt} 定，${PACK_SOURCE_TEXT[tf.thesis.source] ?? ''}第 ${tf.thesis.version} 版${tf.thesis.afterBreak ? `，失效後修改 ${tf.thesis.afterBreak} 次` : ''}）：`, tf.thesis.text);
   else L.push('論點本文：還沒寫。');
   if (reviews.length) {
     L.push('', '最近的定期審查：');
@@ -1039,6 +1068,17 @@ export const OWN_ATTN: AttnKind[] = [
     kind: 'EXITS_UNCHECKED',
     detect({ file }) {
       return (file.unchecked ?? []).map((u) => ({ key: `EXITS_UNCHECKED@${u.runId}`, every: null, since: u.at.slice(0, 10), text: `${file.ticker}：你寫的 ${u.pending} 條出場條件 AI 改寫好了，還沒勾選；勾選之後才會開始監測（${plusDays(u.at.slice(0, 10), REWRITE_DAYS)} 之後就不再列在持股頁）` }));
+    },
+  },
+  {
+    // stock bot 的論點草稿回來了、等你看（web_evidence_design §2.5，T56）：每一份草稿列一次（鍵帶那一次的執行編號）；
+    // 持股頁列到你用了、不用、或 30 天過期為止。使用者按的另外推 LINE 一行；自動開的不推，月報的「要看的事」那一行會算到
+    kind: 'DRAFT_READY',
+    detect({ file }) {
+      const d = file.draft;
+      if (!d) return [];
+      const md = `${Number(d.until.slice(5, 7))}/${Number(d.until.slice(8, 10))}`;
+      return [{ key: `DRAFT_READY@${d.runId}`, every: null, since: taipeiDay(d.at), text: `${file.ticker} 的論點草稿好了，等你看（${md} 之後不再列）` }];
     },
   },
   {

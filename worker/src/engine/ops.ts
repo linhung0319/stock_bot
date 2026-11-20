@@ -1103,13 +1103,15 @@ export interface PremiseMapping {
  *   其他 → 新的，從 premiseSeq 接著編號（編號不重用、不重排）；
  *   現行有、新的沒對到 → 撤下。
  * 新的一條都沒有：原本只有系統預設 → 預設留著；原本有你的前提 → 丟錯（至少留一條）。
+ * 草稿（T56，web_evidence_design §2.3）：新的一條帶 origin（原樣勾選的草稿是 AI_DRAFT_ACCEPTED，其他 USER）與 breaksIf（怎樣算不成立）；
+ *   沿用的一條照舊保留原本的來源，帶了 breaksIf 就換成新的（空字串 = 拿掉）。原樣勾選的草稿前提之後被你改了字 → 來源改成 USER（字是你的了）。
  */
-export function mapPremises(meta: Pick<OwnMeta, 'premises' | 'premiseSeq'>, next: { id?: string | null; text: string }[], date: string): PremiseMapping {
+export function mapPremises(meta: Pick<OwnMeta, 'premises' | 'premiseSeq'>, next: PremiseInput[], date: string): PremiseMapping {
   const cur = meta.premises;
   const onlyDefault = cur.every((p) => p.origin === 'SYSTEM_DEFAULT');
   // 原樣送回來的系統預設前提（預覽裡沒動的）：全部都是 → 照舊；混了自己的前提 → 預設整組拿掉
   const isDefaultEcho = (r: { text: string }) => cur.some((p) => p.origin === 'SYSTEM_DEFAULT' && premiseKey(p.text) === premiseKey(r.text));
-  const all = next.map((p) => ({ id: p.id ?? null, text: p.text.trim() })).filter((p) => p.text);
+  const all = next.map((p) => ({ id: p.id ?? null, text: p.text.trim(), origin: p.origin, breaksIf: typeof p.breaksIf === 'string' ? p.breaksIf.trim() : p.breaksIf })).filter((p) => p.text);
   const rows = all.filter((r) => !isDefaultEcho(r));
   let seq = nextPremiseSeq(meta);
   if (!rows.length) {
@@ -1128,21 +1130,37 @@ export function mapPremises(meta: Pick<OwnMeta, 'premises' | 'premiseSeq'>, next
     if (hit) {
       used.add(hit.id);
       kept.push(hit.id);
-      if (premiseKey(hit.text) !== premiseKey(r.text)) edited.push({ id: hit.id, before: hit.text, after: r.text });
-      premises.push({ ...hit, text: r.text });
+      const changed = premiseKey(hit.text) !== premiseKey(r.text);
+      if (changed) edited.push({ id: hit.id, before: hit.text, after: r.text });
+      const p: Premise = { ...hit, text: r.text, ...(changed && hit.origin === 'AI_DRAFT_ACCEPTED' ? { origin: 'USER' as const } : {}) };
+      if (r.breaksIf !== undefined) {
+        if (r.breaksIf) p.breaksIf = r.breaksIf;
+        else delete p.breaksIf;
+      }
+      premises.push(p);
     } else {
       const id = `P${seq++}`;
       added.push(id);
-      premises.push({ id, text: r.text, origin: 'USER', addedAt: date });
+      premises.push({ id, text: r.text, origin: r.origin === 'AI_DRAFT_ACCEPTED' ? 'AI_DRAFT_ACCEPTED' : 'USER', ...(r.breaksIf ? { breaksIf: r.breaksIf } : {}), addedAt: date });
     }
   }
   return { premises, kept, added, retired: cur.filter((p) => !used.has(p.id)), edited, premiseSeq: seq };
 }
 
+/** 編輯論點時送來的一條前提（T56 起可以帶草稿的來源與「怎樣算不成立」）。 */
+export interface PremiseInput {
+  id?: string | null;
+  text: string;
+  /** 新的一條的來源：原樣勾選的草稿是 AI_DRAFT_ACCEPTED；沒給是 USER。沿用的一條不看這個。 */
+  origin?: 'USER' | 'AI_DRAFT_ACCEPTED';
+  /** 怎樣算不成立（進審查的證據包）。undefined = 不改（沿用的照舊）；空字串或 null = 拿掉。 */
+  breaksIf?: string | null;
+}
+
 export interface ThesisInput {
   text: string;
   source: Thesis['source'];
-  premises: { id?: string | null; text: string }[];
+  premises: PremiseInput[];
   /** 訊號日。 */
   date: string;
   /** 這是對乙類通知的回應（修正論點，own_thesis §1.10）：「失效後修改」的次數加 1、記日期。 */

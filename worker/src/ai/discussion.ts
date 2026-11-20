@@ -280,7 +280,7 @@ function prevSection(prev: PrevFile | null): string[] {
 function thesisSection(file: ThesisFile): string[] {
   const t = file.thesis;
   if (!t?.text) return ['還沒有'];
-  const meta = `（${t.setAt} 定，${t.source === 'DISCUSSION' ? '討論後貼回' : '在網站手寫'}，第 ${t.version} 版${t.afterBreak ? `，失效後修改第 ${t.afterBreak} 次` : ''}）`;
+  const meta = `（${t.setAt} 定，${t.source === 'DISCUSSION' ? '討論後貼回' : t.source === 'DRAFT' ? '用了 stock bot 的草稿' : '在網站手寫'}，第 ${t.version} 版${t.afterBreak ? `，失效後修改第 ${t.afterBreak} 次` : ''}）`;
   return [t.text, meta];
 }
 

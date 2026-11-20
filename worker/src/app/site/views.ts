@@ -40,6 +40,7 @@ import { HORIZONS, indexOn, type PriceBook } from '../../ai/shadow';
 import type { AiRun } from '../aiRuns';
 import type { RunRow } from './aiViews';
 import { prevFileOf, type PrevFile } from '../thesis';
+import { draftStateOf, type DraftState } from '../ownDraft';
 import type { SiteData } from './backend';
 import { accountBubble, todoBubble, type Bubble } from './bubble';
 import { coreLineWhy, crashReasonText, explainItem, findNote, liveCashflow, liveCrash, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
@@ -904,6 +905,8 @@ export interface StateView {
   undo: { date: string; at: string; cashOther: number; cashWarn: boolean } | null;
   /** 還沒有論點的新自選（T40，own_thesis §1.8「存完之後的引導」）：帳戶頁的入口與那張清單。沒有帳戶時是空的。 */
   thesisTodo: ThesisTodoRow[];
+  /** 每檔自選的論點草稿狀態（T56；那張清單每一行的「請 stock bot 草擬」）。示範模式、沒有帳戶時是空的。 */
+  drafts?: Record<string, DraftState>;
 }
 
 export interface ThesisTodoRow {
@@ -925,6 +928,16 @@ export function thesisTodoOf(acct: Pick<Account, 'own' | 'thesisTodo' | 'ownClos
       const prev = prevFileOf(acct, t);
       return { ticker: t, buyNote: acct.own[t].buyNote ?? null, ...(prev?.hasThesis ? { prev: { closedAt: prev.closedAt, closedVerb: prev.closedVerb } } : {}) };
     });
+}
+
+/**
+ * 剛加進自選的那幾檔（快照結果頁、轉入／認養的回應頁的清單）的草稿狀態（T56，web_evidence_design §2.6）：存檔之前載入的狀態裡
+ * 還沒有它們，照「還沒有草稿」算（下一次每日流程會不會自動草擬）。示範模式（d.drafts 沒有）是空的。
+ */
+export function newOwnDrafts(d: Pick<SiteData, 'drafts' | 'aiReady'> & { view: Pick<MarketView, 'date'> }, acct: Account, tickers: string[]): Record<string, DraftState> {
+  if (!d.drafts) return {};
+  const now = new Date();
+  return Object.fromEntries(tickers.map((t) => [t, d.drafts?.[t] ?? draftStateOf([], acct, t, now, d.view.date, !!d.aiReady)]));
 }
 
 /**
@@ -959,7 +972,7 @@ export function stateView(d: SiteData): StateView {
   const first = todo[0];
   const firstN = first?.type === 'DECIDE' ? r.acct.notifs.find((n) => n.id === first.id) : undefined;
   const plan = firstN ? notifView(r, firstN) : null;
-  return { ...base, hasAccount: true, account, todo, recent, thesisTodo: thesisTodoOf(r.acct), bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
+  return { ...base, hasAccount: true, account, todo, recent, thesisTodo: thesisTodoOf(r.acct), drafts: d.drafts ?? {}, bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
 }
 
 // ---------------------------------------------------------------- 紀錄
@@ -1142,7 +1155,7 @@ export interface HoldingDetail {
     scaled: boolean;
     /** id：前提的編號；system：系統預設前提。 */
     /** silenced：這條前提在靜默期內的那一句（own_thesis §1.10；不在是 null）。 */
-    premises: { id: string; text: string; origin: string; system: boolean; silenced: string | null }[];
+    premises: { id: string; text: string; origin: string; system: boolean; silenced: string | null; breaksIf?: string | null }[];
     lastReview: string | null;
     /** 月底檢查點沒有新證據、沒審的那一句（own_thesis §3.7）；之後有新的審查就不顯示。 */
     reviewSkip: string | null;
@@ -1165,6 +1178,8 @@ export interface HoldingDetail {
     pendingBreakName: string | null;
     /** 網頁證據的來源（T52，web_evidence_design §1.3）：同業、這檔的一手網域、存檔時試抓的結果。沒有指定是 null。 */
     webSources: OwnWebSources | null;
+    /** stock bot 的論點草稿（T56，web_evidence_design §2.5、§2.6）：「請 stock bot 草擬」按鈕的狀態。示範模式是 null。 */
+    draft: DraftState | null;
   } | null;
   ai: AiNote | null;
   history: { date: string; text: string; notif: number | null }[];
@@ -1190,6 +1205,8 @@ function openOrdersOf(acct: Account, ticker: string): HoldingDetail['open'] {
 }
 
 const ORIGIN: Record<string, string> = { USER: '你寫的', AI_DRAFT_ACCEPTED: 'AI 草擬、你勾選的', SYSTEM_DEFAULT: '系統預設' };
+/** 論點本文是怎麼來的（持股頁那一行；DRAFT 是 T56 的：用了 stock bot 草稿的論點、一字沒改）。 */
+export const THESIS_SOURCE: Record<string, string> = { TYPED: '在網站手寫', DISCUSSION: '討論後貼回', DRAFT: '用了 stock bot 的草稿' };
 
 export function chartOf(d: Ready, ticker: string, days = 250): HoldingDetail['chart'] {
   const c = d.view.close[ticker];
@@ -1310,10 +1327,11 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
             half: rule.applied === 'HALF',
             fill: ownDepositFill(acct.rule, acct.cfg, ticker) ?? 0,
             scaled: ownDepositScale(acct.rule, acct.cfg.ratio.own) < 1,
-            premises: meta.premises.map((p) => ({ id: p.id, text: p.text + (p.breaksIf ? `（不成立的訊號：${p.breaksIf}）` : ''), origin: ORIGIN[p.origin] ?? p.origin, system: p.origin === 'SYSTEM_DEFAULT', silenced: silencedText(meta, p.id, view.date) })),
+            // breaksIf 另外給一份（T56：編輯論點頁要能看、能改「怎樣算不成立」；text 照舊接在後面給持股頁顯示）
+            premises: meta.premises.map((p) => ({ id: p.id, text: p.text + (p.breaksIf ? `（不成立的訊號：${p.breaksIf}）` : ''), origin: ORIGIN[p.origin] ?? p.origin, system: p.origin === 'SYSTEM_DEFAULT', silenced: silencedText(meta, p.id, view.date), breaksIf: p.breaksIf ?? null })),
             lastReview: meta.aiTier ? `${meta.aiTier.date}：${TIER_NAME[meta.aiTier.tier]}` : null,
             reviewSkip: reviewSkipOf(meta, view.date),
-            thesis: meta.thesis?.text ? { text: meta.thesis.text, setAt: meta.thesis.setAt, source: meta.thesis.source === 'DISCUSSION' ? '討論後貼回' : '在網站手寫', version: meta.thesis.version, afterBreak: meta.thesis.afterBreak } : null,
+            thesis: meta.thesis?.text ? { text: meta.thesis.text, setAt: meta.thesis.setAt, source: THESIS_SOURCE[meta.thesis.source] ?? '在網站手寫', version: meta.thesis.version, afterBreak: meta.thesis.afterBreak } : null,
             kind: meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT') ? 'THESIS' : 'DEFAULT_ONLY',
             buyNote: meta.buyNote ?? null,
             openNote: openNoteOf(acct, ticker),
@@ -1321,6 +1339,7 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
             pendingBreak: pendingBreakOf(acct, ticker),
             pendingBreakName: refNameOf(acct, pendingBreakOf(acct, ticker)?.notif),
             webSources: meta.webSources ?? null,
+            draft: d.drafts?.[ticker] ?? null,
           }
         : null,
     ai: note,

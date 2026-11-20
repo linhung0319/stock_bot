@@ -30,6 +30,7 @@ import type { AiNote } from './site/types';
 import { sweepTimeoutTasks, taskLabels, timeoutAlert } from './aiTasks';
 import { purgeUnusedWebText } from '../data/webDoc';
 import { breakLogs, monthOwnAttention } from './thesis';
+import { pushDraftLines } from './ownDraft';
 import { momHoldings, monthMomAttention } from './momNotes';
 import type { Env, Fetcher } from './env';
 import { ConflictError, loadAccount, patchAccount, requiredTickers, saveAccount, shadowTickers, thesisLogStmt } from './ledgerStore';
@@ -379,6 +380,15 @@ export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: A
         out.errors.push(`告警：${r.error}`);
       }
     }
+  }
+  // 使用者按的論點草稿回來或失敗、還沒推出去的（逾時的在每日流程才結算；結果送回時推失敗的這裡重推）：LINE 一行（T56）
+  try {
+    const d = await pushDraftLines(env, fetcher, now);
+    out.sent += d.sent;
+    out.failed += d.failed;
+    out.errors.push(...d.errors);
+  } catch (e) {
+    out.errors.push(`論點草稿的推播：${errText(e)}`);
   }
   return out;
 }

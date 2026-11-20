@@ -143,7 +143,13 @@ export function ownRuleFacts(acct: Account, view: MarketView, ticker: string): E
   ].map((x) => (x.note === undefined ? { id: x.id, label: x.label, value: x.value } : x));
 }
 
+/**
+ * 證據包裡前提的來源：原樣勾選的 stock bot 草稿（AI_DRAFT_ACCEPTED）寫成 USER——判前提的 AI 看不到題目是誰出的
+ * （web_evidence_design §2.4 第 4 點，T56）。系統預設照舊分得出來（審查要知道 P1～P3 是一般健康檢查）。
+ */
+export const packOrigin = (o: string): string => (o === 'AI_DRAFT_ACCEPTED' ? 'USER' : o);
+
 /** 自選股的前提（使用者寫的、勾選的 AI 草稿，或系統預設）。 */
 export function ownPremises(acct: Account, ticker: string): PackPremise[] {
-  return (acct.own[ticker]?.premises ?? []).map((p) => ({ id: p.id, text: p.text, origin: p.origin, ...(p.breaksIf ? { breaksIf: p.breaksIf } : {}) }));
+  return (acct.own[ticker]?.premises ?? []).map((p) => ({ id: p.id, text: p.text, origin: packOrigin(p.origin),...(p.breaksIf ? { breaksIf: p.breaksIf } : {}) }));
 }

@@ -2,7 +2,8 @@
 //   真實：帳本與價格都在 D1（T6 的資料層）。
 //   示範：假市場＋腳本（src/demo），整個狀態存在 D1 的 demo_state 一列；和真實帳本完全分開。
 // 網站的程式只認這個介面，所以兩種模式走同一套畫面與操作。
-import { requestOwnDraft } from '../ownDraft';
+import { dismissDraft, draftForSave, draftStates, markDraftUsed, readyDraft, requestOwnDraft, type DraftRow, type DraftState, type DraftUse, type DraftView } from '../ownDraft';
+import { routineReady } from '../ownAi';
 import type { DraftBroken } from '../../ai/ownDraft';
 import { bookShares, pendingSplits, type Account, type Attention, type LedgerEvent, type MarketView, type OwnWebSources, type ShadowRecord, type Snapshot, type StrategyReviewState, type WebSourceCheck } from '../../engine';
 import { probeWebSources } from '../webEvidence';
@@ -70,6 +71,10 @@ export interface SiteData {
   undoable?: SnapshotUndoInfo | null;
   /** 策略檢討的狀態（改比例那一列「動能相對大盤」，core_ai §3.11）；示範模式沒有。 */
   strategy?: StrategyReviewState | null;
+  /** 每檔自選的論點草稿狀態（T56，web_evidence_design §2.5、§2.6；各入口的「請 stock bot 草擬」按鈕用）。示範模式沒有。 */
+  drafts?: Record<string, DraftState>;
+  /** 雲端排程設定好了（新的自選「明天早上會自動草擬一次」的提示用）。示範模式沒有。 */
+  aiReady?: boolean;
 }
 
 export interface SiteBackend {
@@ -100,7 +105,15 @@ export interface SiteAi {
   /** F14：把使用者要的出場條件送去改寫（T27 起只有改寫模式；T42 帶整組取代的對照資料）。 */
   ownCheck(ticker: string, exits: ExitLine[], set?: ExitSetRef): Promise<{ runId: string }>;
   /** 使用者按「請 stock bot 草擬」（T55，web_evidence_design §2.5）：立刻開；還在跑、7 天內草擬過 → DraftError（409）。畫面在 T56。 */
-  draft(ticker: string): Promise<{ runId: string; broken: DraftBroken | null }>;
+  draft(ticker: string): Promise<{ runId: string; broken: DraftBroken | null; failed: string | null }>;
+  /** 編輯論點頁讀的草稿（T56）：這份論點檔等你看的那一份；沒有是 null。 */
+  readyDraft(ticker: string, acct: Account): Promise<DraftView | null>;
+  /** 存檔時用到的那一份草稿（T56；這檔的，是不是這份論點檔的由存檔那邊對）。 */
+  draftForSave(ticker: string, id: number): Promise<DraftRow | null>;
+  /** 存檔用了草稿 → USED（T56）。 */
+  markDraftUsed(ticker: string, use: DraftUse): Promise<boolean>;
+  /** 「不用這份草稿」→ DISMISSED（T56）。 */
+  dismissDraft(ticker: string, id: number): Promise<boolean>;
   /** 重送最近一次出場條件有改動的那一版（T42；version 不是最新的 → StaleExitsError）。 */
   resendExits(ticker: string, version: number | null): Promise<{ runId: string }>;
   /** 那一版把出場條件全部拿掉：確認後撤下（T42）。 */
@@ -208,7 +221,9 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const aiNotes = (await listRuns(env.DB, now, { limit: 200 })).map(noteOfRun).filter((n): n is AiNote => n !== null);
       const undoable = acct ? await snapshotUndoInfo(env.DB, loaded?.rev ?? null) : null;
       const strategy = acct ? await loadStrategyState(env.DB) : null;
-      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), asOf: easternTime(now).date, warnings, undoable, strategy };
+      // 論點草稿的狀態（T56）：放在 listRuns 之後（逾時的執行先照規則結束，草稿才結算得到）；讀不到不擋網站
+      const drafts: Record<string, DraftState> = acct && view ? await draftStates(env, acct, now, view.date).catch((e) => (console.error('論點草稿的狀態', e), {})) : {};
+      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), asOf: easternTime(now).date, warnings, undoable, strategy, drafts, aiReady: routineReady(env) };
     },
     async save(acct, cause, log = []) {
       // 論點檔紀錄和這一版帳戶同一筆交易寫（account_version = 這次存檔的 rev，復原快照時一起刪）
@@ -268,6 +283,10 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
         if (!d.acct || !d.view) throw new Error('還沒有帳戶或價格資料');
         return requestOwnDraft(env, fetcher, d.acct, d.view, d.axis, ticker, now);
       },
+      readyDraft: (ticker, acct) => readyDraft(env.DB, acct, ticker),
+      draftForSave: (ticker, id) => draftForSave(env.DB, ticker, id),
+      markDraftUsed: (ticker, use) => markDraftUsed(env.DB, ticker, use, now),
+      dismissDraft: (ticker, id) => dismissDraft(env.DB, ticker, id, now),
       async resendExits(ticker, version) {
         const d = await self.load([ticker]);
         if (!d.acct || !d.view) throw new Error('還沒有帳戶或價格資料');

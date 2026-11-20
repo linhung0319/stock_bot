@@ -59,7 +59,7 @@ export function sourcesEditor(ticker, ws, onChange) {
   };
   const rm = (fn) => h('button', { class: 'btn quiet', type: 'button', 'aria-label': '拿掉這一項', onclick: fn }, '拿掉');
   const addPeer = (p = {}) => {
-    if (peers.length >= LIMITS.peers) return;
+    if (peers.length >= LIMITS.peers) return false;
     const r = { name: inp(p.name, '名稱，例如 SK 海力士', '同業名稱', 60), edgar: inp(p.edgar, 'EDGAR 代號', 'EDGAR 代號', 12), yahoo: inp(p.yahoo, 'Yahoo 代號', 'Yahoo 代號', 20) };
     r.el = h(
       'div',
@@ -74,9 +74,10 @@ export function sourcesEditor(ticker, ws, onChange) {
     );
     peers.push(r);
     peerList.append(r.el);
+    return true;
   };
   const addDom = (d = '') => {
-    if (doms.length >= LIMITS.domains) return;
+    if (doms.length >= LIMITS.domains) return false;
     const r = { input: inp(d, '例如 news.skhynix.com', '網站', 200) };
     r.el = h(
       'div',
@@ -90,6 +91,7 @@ export function sourcesEditor(ticker, ws, onChange) {
     );
     doms.push(r);
     domList.append(r.el);
+    return true;
   };
   for (const p of ws?.peers ?? []) addPeer(p);
   for (const d of ws?.domains ?? []) addDom(d);
@@ -124,5 +126,13 @@ export function sourcesEditor(ticker, ws, onChange) {
     h('div', { class: 'btn-row', style: 'margin-top:6px' }, probe),
     probeMsg,
   );
-  return { el, value, changed: () => norm(value()) !== norm(ws) };
+  // 草稿勾來的同業與網站（T56）：勾了加一列、取消勾選拿掉那一列（照代號或網域找）；滿了回 false
+  const samePeer = (r, p) => (!!p.edgar && r.edgar.value.trim().toUpperCase() === p.edgar) || (!!p.yahoo && r.yahoo.value.trim().toUpperCase() === p.yahoo);
+  const pick = {
+    addPeer: (p) => peers.some((r) => samePeer(r, p)) || addPeer(p),
+    removePeer: (p) => peers.filter((r) => samePeer(r, p)).forEach((r) => (peers.splice(peers.indexOf(r), 1), r.el.remove())),
+    addDom: (d) => doms.some((r) => r.input.value.trim().toLowerCase() === d) || addDom(d),
+    removeDom: (d) => doms.filter((r) => r.input.value.trim().toLowerCase() === d).forEach((r) => (doms.splice(doms.indexOf(r), 1), r.el.remove())),
+  };
+  return { el, value, changed: () => norm(value()) !== norm(ws), ...pick };
 }

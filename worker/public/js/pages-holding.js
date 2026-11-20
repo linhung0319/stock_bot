@@ -7,7 +7,7 @@ import { glass, meterEl, page, tiles } from './layout.js';
 import { aiBlock, attentionList, chart, refillText } from './parts.js';
 import { actionButton, errBox } from './pages-notif.js';
 import { ownMonitor } from './pages-ai.js';
-import { copyPackButton } from './pages-thesis.js';
+import { attnDraftAction, copyPackButton, draftAction } from './pages-thesis.js';
 
 const em = (t) => ({ t, tone: 'em' });
 const PREM = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
@@ -100,12 +100,22 @@ function thesisPanel(d) {
     premiseList(o, t, premiseChecks(d)),
     silencedRetired(o, t),
     o.reviewSkip ? h('p', { class: 'small dim', style: 'margin-top:10px' }, o.reviewSkip) : null,
+    // 「請 stock bot 草擬」在前、「複製討論包」在後（T56，web_evidence_design §2.6）；草稿準備中、好了、要等幾天、上次失敗的原因寫在按鈕下面
     h(
       'div',
-      { class: 'btn-row', style: 'margin-top:18px' },
-      def ? [copyPackButton(d.ticker, null, '複製討論包', 'primary'), h('a', { class: 'btn', href: edit }, '編輯論點')] : [h('a', { class: 'btn primary', href: edit }, '編輯論點'), copyPackButton(d.ticker)],
+      { style: 'margin-top:18px' },
+      def
+        ? draftAction(d.ticker, o.draft, { primary: true, after: [copyPackButton(d.ticker), h('a', { class: 'btn', href: edit }, '編輯論點')] })
+        : draftAction(d.ticker, o.draft, { before: [h('a', { class: 'btn primary', href: edit }, '編輯論點')], after: [copyPackButton(d.ticker)] }),
     ),
-    h('p', { class: 'small faint', style: 'margin-top:8px' }, def ? `按「複製討論包」貼到 claude.ai 的新對話，它會${o.prev ? '從上次為什麼賣、這次為什麼買回問起' : o.buyNote ? '從你買進時寫的那一句問起' : '先問你為什麼買'}；討論完說「收尾」，把結果貼回「編輯論點」。` : '「複製討論包」把論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論；說「收尾」後把結果貼回「編輯論點」。'),
+    pb ? h('p', { class: 'small', style: 'margin-top:8px;color:var(--hot)' }, `前提 ${pb.premiseId ?? ''} 剛被 AI 判不成立：這時候請 stock bot 草擬，草稿最上面會提醒你別只是替繼續持有找新理由，也不能沿用那一條。`) : null,
+    h(
+      'p',
+      { class: 'small faint', style: 'margin-top:8px' },
+      def
+        ? `按「請 stock bot 草擬」，stock bot 讀申報、財報與清單內的網站寫一份草稿（反方先寫），你在「編輯論點」逐條勾你同意的才會生效。想自己和 AI 討論，按「複製討論包」貼到 claude.ai 的新對話，它會${o.prev ? '從上次為什麼賣、這次為什麼買回問起' : o.buyNote ? '從你買進時寫的那一句問起' : '先問你為什麼買'}；討論完說「收尾」，把結果貼回「編輯論點」。`
+        : '「請 stock bot 草擬」寫一份新的草稿給你對照（每檔 7 天一次，勾了的才會換上）；「複製討論包」把論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論，說「收尾」後把結果貼回「編輯論點」。',
+    ),
     // 這一次已經有論點：上一次的收起來放在最下面，還是找得到（T44）
     !def && o.prev ? prevBlock(o.prev, false) : null,
   );
@@ -177,7 +187,8 @@ function silencedRetired(o, t) {
 
 function attentionPanel(d) {
   if (!d.attention?.length) return null;
-  return glass('pad hp', panelTop('要看的事', h('span', { class: 'chip warn' }, `${d.attention.length} 件`)), h('p', { class: 'small dim' }, '不用下單、不用回覆；月報也會列出來（同一件事不會每個月都列）。'), attentionList(d.attention, { link: false }));
+  // 論點滿一年、前提證據不足、連續沒有一致結論的那一行多「請 stock bot 草擬」；草稿好了的那一行連到編輯論點頁（T56）
+  return glass('pad hp', panelTop('要看的事', h('span', { class: 'chip warn' }, `${d.attention.length} 件`)), h('p', { class: 'small dim' }, '不用下單、不用回覆；月報也會列出來（同一件事不會每個月都列）。'), attentionList(d.attention, { link: false, action: (x) => attnDraftAction(x, d.own?.draft ?? null) }));
 }
 
 /** 出場條件：你定的、AI 建議的、改寫回來還沒勾的。 */

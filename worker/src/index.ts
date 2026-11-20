@@ -27,7 +27,7 @@ import { NEWS_SOURCES, tryHeadlineSource } from './data/edgar';
 import { probeRss, probeWebPage } from './data/webProbe';
 import { handleAdminThesis, handleSite } from './app/site/api';
 import { handleTaskDocs } from './app/webEvidence';
-import { settleDrafts } from './app/ownDraft';
+import { pushDraftLines, settleDrafts } from './app/ownDraft';
 import { handleLineLogin } from './app/site/lineLogin';
 import { APPLY_CRON, FINAL_CRON, INGEST_CRON, attemptOfCron } from './app/schedule';
 import { loadCalendarOverrides, loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
@@ -70,7 +70,15 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
     if (ai[2] === 'evidence' && request.method === 'GET') return readEvidence(env.DB, ai[1], now);
     if (ai[2] === 'docs' && request.method === 'POST') return handleTaskDocs(env, fetcher, ai[1], await request.text(), now);
     // 論點草稿（T55）收下之後當場結算成 READY 或 FAILED（使用者在等的回覆不用等到下一次每日流程）
-    if (ai[2] === 'result' && request.method === 'POST') return acceptResult(env.DB, ai[1], await request.text(), now, (task, result) => (task.kind === 'RUN' ? finalizeRun(env.DB, task, result, now).then(() => settleDrafts(env.DB, now)) : Promise.resolve()));
+    // 使用者按的草稿回來或失敗：推 LINE 一行（T56，web_evidence_design §2.5）
+    if (ai[2] === 'result' && request.method === 'POST')
+      return acceptResult(env.DB, ai[1], await request.text(), now, (task, result) =>
+        task.kind === 'RUN'
+          ? finalizeRun(env.DB, task, result, now)
+              .then(() => settleDrafts(env.DB, now))
+              .then(() => pushDraftLines(env, fetcher, now))
+          : Promise.resolve(),
+      );
     return json({ error: 'method_not_allowed' }, 405);
   }
 
