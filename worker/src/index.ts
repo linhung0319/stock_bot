@@ -23,12 +23,13 @@ import { lineConfigured } from './app/line';
 import { handleLineWebhook } from './app/lineWebhook';
 import { probeSummary, runProbe, saveProbe } from './app/probe';
 import { NEWS_SOURCES, tryHeadlineSource } from './data/edgar';
+import { probeRss, probeWebPage } from './data/webProbe';
 import { handleAdminThesis, handleSite } from './app/site/api';
 import { handleLineLogin } from './app/site/lineLogin';
 import { APPLY_CRON, FINAL_CRON, INGEST_CRON, attemptOfCron } from './app/schedule';
 import { loadCalendarOverrides, loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
-export const VERSION = '0.14.0';
+export const VERSION = '0.14.1';
 
 // 三次排程（UTC 23:30、01:30、03:30）各做什麼寫在 src/app/schedule.ts
 export { APPLY_CRON, FINAL_CRON, INGEST_CRON };
@@ -86,6 +87,13 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
           const r = await tryHeadlineSource(fetcher, src, t);
           out.push(r.ok ? { ticker: t, source: src.key, ok: true, items: r.items.length, newest: r.items[0] ? `${r.items[0].at} ${r.items[0].title}` : null, oldest: r.items.at(-1)?.at ?? null } : { ticker: t, source: src.key, ok: false, error: r.error });
         }
+      return json(out);
+    }
+    // T50 的實測：Worker 抓不抓得到網頁全文（只量、不存）。?url= 可以重複最多 8 個；?rss=<代號> 抓 Yahoo RSS 並探前 3 則的連結
+    if (path === '/admin/web/test') {
+      const out: unknown[] = [];
+      for (const u of url.searchParams.getAll('url').slice(0, 8)) out.push(await probeWebPage(fetcher, u));
+      for (const t of url.searchParams.getAll('rss').slice(0, 3)) out.push(await probeRss(fetcher, NEWS_SOURCES[1].url(t.trim().toUpperCase())));
       return json(out);
     }
     if (path === '/admin/ingest' && request.method === 'POST') {
