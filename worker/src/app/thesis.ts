@@ -8,7 +8,7 @@
 // 8-K 的挑選順序、論點那一份 note）。讀 D1，所以不在引擎裡。
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
 import { ownCheckResult, type ExitLine } from '../ai/ownCheck';
-import { confirmMode, type OwnCondition } from '../ai/ownReview';
+import { confirmMode, namedWebDomains, webConfirmText, type OwnCondition } from '../ai/ownReview';
 import { DEFAULT_CONFIG, clone, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Thesis, type Tier } from '../engine';
 import { concentrationHits, sizeText } from './concentration';
 import type { ThesisLogInput } from './ledgerStore';
@@ -844,12 +844,16 @@ export function ownerText(c: Pick<FileCondition, 'origin' | 'acceptedAt' | 'crea
   return c.acceptedAt ? `AI 建議，你在 ${md(c.acceptedAt)} 勾選` : `AI 建議，${md(c.createdAt)} 的審查寫的`;
 }
 
-/** 怎麼確認（§1.5 的顯示）。 */
+const FILING_CONFIRM_TEXT = '新申報出來時由 AI 確認';
+
+/** 怎麼確認（§1.5 的顯示）；指名了網頁來源的事件條件寫「審查時用 <來源> 的網頁檢查」（T53，web_evidence_design §1.6）。 */
 export function confirmText(c: Pick<FileCondition, 'kind' | 'check' | 'auto' | 'status'>): string {
   const s = acceptStatus(c);
   if (s === 'MANUAL') return '只記錄';
-  if (s === 'REVIEW_ONLY') return '只在定期審查時檢查';
-  return c.kind === 'XBRL' ? '新財報出來時比對' : '新申報出來時由 AI 確認';
+  const web = c.kind === 'EVENT' ? webConfirmText(c.check) : null;
+  if (s === 'REVIEW_ONLY') return web ?? '只在定期審查時檢查';
+  if (c.kind === 'XBRL') return '新財報出來時比對';
+  return web ? `${FILING_CONFIRM_TEXT}；${web.replace('審查時用', '審查時也用')}` : FILING_CONFIRM_TEXT;
 }
 
 const STATE_TEXT: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '只在定期審查時檢查', MANUAL: '只記錄', MET: '已成立', PROPOSED: '建議中', RETIRED: '已撤下', EXPIRED: '已過期' };
@@ -861,9 +865,11 @@ const STATE_TEXT: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '
  * map：證據包的編號 → own_conditions 的列編號（審查回來時對回條件用，放在 rule.detail.conds）。
  * rows：XBRL 季度表（新的在前）；null = 抓不到。
  */
-export function condFacts(tf: Pick<ThesisFile, 'conditions' | 'lastReview' | 'newSince'>, rows: QuarterRow[] | null, opt: { live?: boolean } = {}): { facts: Fact[]; map: Record<string, number> } {
+export function condFacts(tf: Pick<ThesisFile, 'conditions' | 'lastReview' | 'newSince'>, rows: QuarterRow[] | null, opt: { live?: boolean } = {}): { facts: Fact[]; map: Record<string, number>; web: Record<string, string[]> } {
   const facts: Fact[] = [];
   const map: Record<string, number> = {};
+  // 指名了網頁來源的你定的條件（T53）：證據包編號 → 網域；審查回來時，那個來源的網頁引用可以確認它成立（rule.detail.condWeb）
+  const web: Record<string, string[]> = {};
   // opt.live（T42，出場條件改寫用）：C 是目前監測中的你定的條件（ACTIVE、REVIEW_ONLY、MANUAL），也就是整組取代的範圍；不放已成立的
   const owned = opt.live
     ? tf.conditions.filter((c) => isOwned(c) && LIVE_CODES.includes(c.status))
@@ -871,6 +877,8 @@ export function condFacts(tf: Pick<ThesisFile, 'conditions' | 'lastReview' | 'ne
   owned.forEach((c, k) => {
     const id = `C${k + 1}`;
     map[id] = c.id;
+    const named = c.kind === 'EVENT' && acceptStatus(c) !== 'MANUAL' ? namedWebDomains(c.check) : [];
+    if (named.length) web[id] = named;
     const act = c.action ?? (notifyTier(c) ?? 'REVIEW');
     facts.push({
       id,
@@ -906,7 +914,7 @@ export function condFacts(tf: Pick<ThesisFile, 'conditions' | 'lastReview' | 'ne
         note: `${check}；AI 建議成立時：${ACTION_TEXT[defaultAction(c)]}${c.auto === false ? '；沒有通過格式檢查，勾選後只記錄' : ''}`,
       });
     });
-  return { facts, map };
+  return { facts, map, web };
 }
 
 // ---------------------------------------------------------------- 「要看的事」（T37，own_thesis §3.6.6；純函式，本身不讀資料庫）

@@ -1,6 +1,6 @@
 // AI 執行（T9）：存證據包 → 建任務、觸發雲端排程 → 收到結果後檢查每一票、表決 → 存結論。
 // 沒有結果（觸發失敗、逾時、結果被退回）也存一份「照規則」的結論，所以每一次執行最後都有結論可以看。
-import { parseAdded, withAdded, type AddedRecord, type DocCtx } from '../ai/added';
+import { cleanLookups, parseAdded, parseLookups, withAdded, type AddedRecord, type DocCtx, type Lookups } from '../ai/added';
 import { judge, noResult, packHash, type EvidencePack, type Outcome } from '../ai/check';
 import { PAYLOAD_HOOKS } from '../ai/hooks';
 import { LATE_FETCH_ERROR, TASK_TIMEOUT_MS, createTask, fireRoutine, timeoutReason, type AiTaskRow } from './aiTasks';
@@ -37,6 +37,8 @@ export interface AiRun {
    */
   added?: AddedRecord;
   addedHash?: string | null;
+  /** T53：分析師自己回報的找資料紀錄（要查的問題、搜尋的字、想取的每一份）；沒有回報、舊紀錄是 null。只用來顯示。 */
+  lookups?: Lookups | null;
 }
 
 interface Row {
@@ -58,6 +60,7 @@ interface Row {
   doc_ctx?: string | null;
   added_docs?: string | null;
   added_hash?: string | null;
+  lookups?: string | null;
 }
 
 const toRun = (r: Row): AiRun => {
@@ -81,6 +84,7 @@ const toRun = (r: Row): AiRun => {
     docCtx: r.doc_ctx ? (JSON.parse(r.doc_ctx) as DocCtx) : null,
     added,
     addedHash: r.added_hash ?? null,
+    lookups: parseLookups(r.lookups),
   };
 };
 
@@ -91,10 +95,10 @@ export function commitOf(v: unknown): string | null {
   return /^[0-9a-f]{7,64}$/.test(c) ? c : null;
 }
 
-async function close(db: D1Database, runId: string, outcome: Outcome, now: Date, process: ProcessStep[] = [], repoCommit: string | null = null): Promise<void> {
+async function close(db: D1Database, runId: string, outcome: Outcome, now: Date, process: ProcessStep[] = [], repoCommit: string | null = null, lookups: Lookups | null = null): Promise<void> {
   await db
-    .prepare("UPDATE ai_runs SET status = 'DONE', outcome = ?, process = ?, completed_at = ?, repo_commit = ? WHERE run_id = ? AND status = 'PENDING'")
-    .bind(JSON.stringify(outcome), JSON.stringify(process), now.toISOString(), repoCommit, runId)
+    .prepare("UPDATE ai_runs SET status = 'DONE', outcome = ?, process = ?, completed_at = ?, repo_commit = ?, lookups = ? WHERE run_id = ? AND status = 'PENDING'")
+    .bind(JSON.stringify(outcome), JSON.stringify(process), now.toISOString(), repoCommit, lookups ? JSON.stringify(lookups) : null, runId)
     .run();
 }
 
@@ -125,7 +129,7 @@ export async function finalizeRun(db: D1Database, task: AiTaskRow, result: Recor
   if (!row || row.status !== 'PENDING') return null;
   const run = toRun(row);
   const outcome = judge(run.pack, result.samples as unknown[], PAYLOAD_HOOKS[run.fn]);
-  await close(db, run.runId, outcome, now, (result.process as ProcessStep[] | undefined) ?? [], commitOf(result.repo_commit));
+  await close(db, run.runId, outcome, now, (result.process as ProcessStep[] | undefined) ?? [], commitOf(result.repo_commit), cleanLookups(result.lookups));
   return outcome;
 }
 

@@ -65,3 +65,34 @@ export function matchWebSource(url: URL, extraDomains: readonly string[] = [], l
   if (extra) return { domain: extra, tier: 'PRIMARY', label: extra };
   return { miss: 'NOT_LISTED' };
 }
+
+/** 級別的白話（目錄、取回的文件標題、網站用）。 */
+export const TIER_TEXT: Record<WebTier, string> = { PRIMARY: '一手', NAMED: '指名的產業來源', MEDIA: '媒體' };
+
+/** 兩個網域是不是同一個來源：一個是另一個的子網域也算（`www.trendforce.com` 與 `trendforce.com`）。 */
+export const sameWebDomain = (a: string, b: string): boolean => hostMatches(a, b) || hostMatches(b, a);
+
+/**
+ * 可以當證據的網頁來源（T53，設計 §1.3、§1.6）：共用清單＋這檔自己的一手網域。
+ * 審查的證據包列出來（分析師搜尋時優先挑）、事件條件指名來源（`confirm_by` 的 `web:<網域>`）時也只能指名這些。
+ */
+export function listedWebSources(extraDomains: readonly string[] = [], list: readonly WebSource[] = WEB_SOURCES): (WebSourceMatch & { paths?: readonly string[] })[] {
+  const out: (WebSourceMatch & { paths?: readonly string[] })[] = list.map((s) => ({ domain: s.domain, tier: s.tier, label: s.label, ...(s.paths ? { paths: s.paths } : {}) }));
+  for (const raw of extraDomains) {
+    const d = raw.trim().toLowerCase();
+    if (!d || WEB_EXCLUDED.some((x) => hostMatches(d, x)) || out.some((s) => sameWebDomain(d, s.domain))) continue;
+    out.push({ domain: d, tier: 'PRIMARY', label: d });
+  }
+  return out;
+}
+
+/** 指名的網域對到哪一個可以用的來源（對不到是 null）：網域本身或它的子網域都算，回傳清單上的寫法。 */
+export function findWebSource(domain: string, extraDomains: readonly string[] = [], list: readonly WebSource[] = WEB_SOURCES): WebSourceMatch | null {
+  const d = domain.trim().toLowerCase().replace(/\.$/, '');
+  if (!d) return null;
+  const s = listedWebSources(extraDomains, list).find((x) => hostMatches(d, x.domain));
+  return s ? { domain: s.domain, tier: s.tier, label: s.label } : null;
+}
+
+/** 來源的名稱（網站與通知用）：清單上有就用它的名稱，沒有就寫網域。 */
+export const webLabel = (domain: string, list: readonly WebSource[] = WEB_SOURCES): string => list.find((s) => sameWebDomain(domain, s.domain))?.label ?? domain;

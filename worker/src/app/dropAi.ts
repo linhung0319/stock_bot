@@ -16,7 +16,7 @@ import type { ApplyCtx, StartCtx } from './aiCtx';
 import { startRun, type AiRun } from './aiRuns';
 import { insertHitStmts, sectorEtfs } from './filings';
 import { patchAccount } from './ledgerStore';
-import { citedDoc, docOf, lastReview, newsDoc } from './ownAi';
+import { citedBasis, docOf, lastReview, newsDoc } from './ownAi';
 import { condFacts, defaultFacts, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote } from './thesis';
 
 /** 最近一次 F24 的摘要（F7 的底）。 */
@@ -175,7 +175,10 @@ export async function applyOwnDrop(ctx: ApplyCtx, run: AiRun): Promise<void> {
   const mine = meta0.dropReview ? meta0.dropReview.runId === run.runId : true;
   if (meta0.dropReview && !mine) return void ctx.log.push(`${run.runId}：${t} 的論點檢查回來了，但已經不是目前這一次減半（${meta0.dropReview.session} 又觸發過），只放網站`);
   if (meta0.dropReview && !mine) return void ctx.log.push(`${run.runId}：${t} 的論點檢查回來了，但已經不是目前這一次減半（${meta0.dropReview.session} 又觸發過），只放網站`);
-  const basis = d.status === 'EXIT' && d.premiseId ? citedDoc(run, (s) => s.premises.find((p) => p.premise_id === d.premiseId && p.status === 'BROKEN')?.evidence_ids ?? []) : null;
+  // 依據（T53）：不成立的前提和定期審查同一個定義（brokenPremises），依據那一句也用同一個函式（有網頁時括號裡寫明是網頁）
+  const cited = d.status === 'EXIT' && d.premiseId ? citedBasis(run, (s) => s.premises.find((p) => p.premise_id === d.premiseId && p.status === 'BROKEN')?.evidence_ids ?? []) : null;
+  const basis = cited?.text ?? null;
+  const basisNote = cited?.web ? cited.note : null;
   const setResult = (told: boolean) => {
     const acct = clone(ctx.acct);
     const dr = acct.own[t].dropReview;
@@ -185,7 +188,7 @@ export async function applyOwnDrop(ctx: ApplyCtx, run: AiRun): Promise<void> {
   // 還在等：這檔有還沒回覆的減半項目，或這次減半還在等月報
   if (mine && (openReduce(ctx.acct, t) || meta0.pending?.action === 'REDUCE')) {
     setResult(false);
-    if (d.status === 'EXIT' && d.premiseId) ctx.acct = recordAiTier(ctx.acct, t, 'EXIT', run.asOf, false, run.runId, { premiseId: d.premiseId, trigger: 'DROP', basis, agreed: true });
+    if (d.status === 'EXIT' && d.premiseId) ctx.acct = recordAiTier(ctx.acct, t, 'EXIT', run.asOf, false, run.runId, { premiseId: d.premiseId, trigger: 'DROP', basis, basisNote, agreed: true });
     const r = refreshOwnAiChoice(ctx.acct, ctx.view, t);
     ctx.acct = r.acct;
     return void ctx.log.push(`${run.runId}：${t} 的論點檢查：${DROP_TEXT[d.status]}（${d.why}）${r.changed.length ? `→ 更新通知 #${r.changed.join('、#')}` : ''}`);
@@ -197,7 +200,7 @@ export async function applyOwnDrop(ctx: ApplyCtx, run: AiRun): Promise<void> {
   if (meta0.dropReview?.runId === run.runId) setResult(true);
   const it = answered.items.find((i) => i.f === 'F7' && i.ticker === t)!;
   if (d.status === 'EXIT' && d.premiseId) {
-    const r = routeReview(ctx.acct, ctx.view, t, { tier: 'EXIT', suggest: true, consensus: true, premiseId: d.premiseId, trigger: 'DROP', date: run.asOf, runId: run.runId, basis });
+    const r = routeReview(ctx.acct, ctx.view, t, { tier: 'EXIT', suggest: true, consensus: true, premiseId: d.premiseId, trigger: 'DROP', date: run.asOf, runId: run.runId, basis, basisNote });
     ctx.acct = r.acct;
     return void ctx.log.push(`${run.runId}：${t} 的論點檢查建議出清，通知 #${answered.id} 已經回覆 → ${r.why}`);
   }

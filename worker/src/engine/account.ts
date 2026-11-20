@@ -70,9 +70,10 @@ export interface OwnMeta {
    * 最近一次 F24 的檔位（AI 層給的輸入）。suggest = 3 票一致、和目前不同、有一條不成立的前提 → 月報並列。
    * premiseId：三票都判不成立（有申報或財報引用）的那條前提，有多條時取編號最小的（own_thesis §1.6 第 1 點）。
    * trigger：那次審查的觸發原因（§1.9 決定當天通知還是等月報）；basis：判不成立的依據（例如「8-K 2027-01-06」，乙類通知的理由用）。
+   * basisNote：依據後面括號裡的字；依據有網頁時是「網頁；引用與連結在網站」（web_evidence_design §1.6），沒有這一欄 = 「引用在網站」。
    * agreed：三票同一個檔位、資料沒有缺漏（不看和目前狀態同不同、也不看靜默期）。慢規則通知上的「照 AI」只認這種（§3.4）；舊資料沒有 = 不算。
    */
-  aiTier: { tier: Tier; date: string; runId?: string; suggest: boolean; premiseId?: string; trigger?: ReviewTrigger; basis?: string; agreed?: boolean } | null;
+  aiTier: { tier: Tier; date: string; runId?: string; suggest: boolean; premiseId?: string; trigger?: ReviewTrigger; basis?: string; basisNote?: string; agreed?: boolean } | null;
   raisedAt: string | null;
   /** 未解除的硬事件標記。 */
   flags: string[];

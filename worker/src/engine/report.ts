@@ -841,7 +841,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
     // 乙類（own_thesis §1.10）：月報裡是同一種項目（預設不動）；那條前提在靜默期內就不列
     if ((tier === 'EXIT' || tier === 'HALF') && m.aiTier.premiseId) {
       if (silenced(acct, tk, m.aiTier.premiseId, view.date, tier)) continue;
-      const it = breakItem(acct, view, tk, { tier, premiseId: m.aiTier.premiseId, basis: m.aiTier.basis ?? null, runIds: m.aiTier.runId ? [m.aiTier.runId] : [] }, false);
+      const it = breakItem(acct, view, tk, { tier, premiseId: m.aiTier.premiseId, basis: m.aiTier.basis ?? null, basisNote: m.aiTier.basisNote ?? null, runIds: m.aiTier.runId ? [m.aiTier.runId] : [] }, false);
       if (it) items.push(it);
       continue;
     }
@@ -972,12 +972,12 @@ export function recordExternalFlow(acct: Account, view: MarketView, amount: numb
 
 /**
  * AI 層回報：這檔自選的最新 F24 檔位。suggest = 3 票一致、和目前不同、有一條不成立的前提（還沒給使用者的）；
- * extra.premiseId = 那條前提（own_thesis §1.6）、trigger = 觸發原因、basis = 判不成立的依據（乙類的理由用）、
+ * extra.premiseId = 那條前提（own_thesis §1.6）、trigger = 觸發原因、basis = 判不成立的依據（乙類的理由用；basisNote 是後面括號裡的字）、
  * agreed = 三票同一個檔位而且資料沒有缺漏（慢規則通知上的「照 AI」只認這種，§3.4）。
  */
-export function recordAiTier(acct0: Account, ticker: string, tier: Tier, date: string, suggest: boolean, runId?: string, extra?: { premiseId?: string | null; trigger?: ReviewTrigger; basis?: string | null; agreed?: boolean }): Account {
+export function recordAiTier(acct0: Account, ticker: string, tier: Tier, date: string, suggest: boolean, runId?: string, extra?: { premiseId?: string | null; trigger?: ReviewTrigger; basis?: string | null; basisNote?: string | null; agreed?: boolean }): Account {
   const acct = clone(acct0);
-  if (acct.own[ticker]) acct.own[ticker].aiTier = { tier, date, suggest, runId, ...(extra?.premiseId ? { premiseId: extra.premiseId } : {}), ...(extra?.trigger ? { trigger: extra.trigger } : {}), ...(extra?.basis ? { basis: extra.basis } : {}), ...(extra?.agreed ? { agreed: true } : {}) };
+  if (acct.own[ticker]) acct.own[ticker].aiTier = { tier, date, suggest, runId, ...(extra?.premiseId ? { premiseId: extra.premiseId } : {}), ...(extra?.trigger ? { trigger: extra.trigger } : {}), ...(extra?.basis ? { basis: extra.basis } : {}), ...(extra?.basis && extra.basisNote ? { basisNote: extra.basisNote } : {}), ...(extra?.agreed ? { agreed: true } : {}) };
   return acct;
 }
 
@@ -1110,11 +1110,15 @@ export function condMetNotice(acct0: Account, view: MarketView, ticker: string, 
   return { acct, notif, why: '當天通知' };
 }
 
-/** 乙類的內容：哪條前提、建議什麼、依據（例如「8-K 2027-01-06」）。 */
+/**
+ * 乙類的內容：哪條前提、建議什麼、依據（例如「8-K 2027-01-06」）。
+ * basisNote：依據後面括號裡的字（web_evidence_design §1.6）：依據是網頁時「網頁；引用與連結在網站」；沒給 = 「引用在網站」。
+ */
 export interface BreakSpec {
   tier: 'EXIT' | 'HALF';
   premiseId: string;
   basis?: string | null;
+  basisNote?: string | null;
   runIds?: string[];
 }
 
@@ -1136,7 +1140,7 @@ export function breakItem(acct: Account, view: MarketView, ticker: string, s: Br
     ticker,
     title: `${ticker}：前提「${p?.text ?? s.premiseId}」3 票都判不成立`,
     aiLine: `AI 建議${act}`,
-    why: `依據：${s.basis ?? '審查引用的申報'}（引用在網站）。你沒有為這件事定過出場條件，由你決定。${defaultOnly(meta) ? '這檔還沒有你的論點，檢查的是系統預設前提。' : ''}`,
+    why: `依據：${s.basis ?? '審查引用的申報'}（${(s.basis && s.basisNote) || '引用在網站'}）。你沒有為這件事定過出場條件，由你決定。${defaultOnly(meta) ? '這檔還沒有你的論點，檢查的是系統預設前提。' : ''}`,
     choices: [
       { id: 'AI', label: `照 AI（${act}）`, tier: s.tier, lines: [{ ticker, bucket: 'own', shares: sh, reason: 'AI 建議' }], effects: [{ type: 'APPLY_TIER', ticker, tier: s.tier }] },
       { id: 'SKIP', label: '不同意，不動', lines: [] },
@@ -1188,6 +1192,7 @@ export interface ReviewResult {
   date: string;
   runId?: string;
   basis?: string | null;
+  basisNote?: string | null;
 }
 
 /** KEPT 月中的建議留著；NONE 只放網站；SILENT 靜默期內；MONTHLY 記著進月報；RULE_NOTICE 更新還沒回覆的慢規則通知；BREAK_UPDATE 更新還沒回覆的乙類；SAME_DAY 當天通知。 */
@@ -1210,7 +1215,7 @@ export function routeReview(acct0: Account, view: MarketView, ticker: string, r:
   if (!r.consensus && meta0.aiTier?.suggest) return { acct: acct0, route: 'KEPT', notif: null, changed: [], why: `這次沒有三票一致的結論，${meta0.aiTier.date} 的建議留著進月報` };
   const down = r.tier === 'EXIT' || r.tier === 'HALF';
   const silent = r.suggest && down && !!r.premiseId && silenced(acct0, ticker, r.premiseId, r.date, r.tier);
-  let acct = recordAiTier(acct0, ticker, r.tier, r.date, r.suggest && !silent, r.runId, { premiseId: r.premiseId, trigger: r.trigger, basis: r.basis, agreed: r.consensus });
+  let acct = recordAiTier(acct0, ticker, r.tier, r.date, r.suggest && !silent, r.runId, { premiseId: r.premiseId, trigger: r.trigger, basis: r.basis, basisNote: r.basisNote, agreed: r.consensus });
   const done = (route: ReviewRoute, why: string, notif: Notif | null = null, changed: number[] = []) => {
     if (route !== 'MONTHLY' && acct.own[ticker]?.aiTier) acct.own[ticker].aiTier!.suggest = false;
     return { acct, route, notif, changed: [...new Set([...ruleChanged, ...changed])], why };
@@ -1238,7 +1243,7 @@ export function routeReview(acct0: Account, view: MarketView, ticker: string, r:
   if (pb) {
     const cur = pb.it.choices.find((c) => c.id === 'AI')?.tier;
     if (cur === r.tier) return done('BREAK_UPDATE', `有還沒回覆的乙類通知 #${pb.n.id}，檔位相同，不另發`);
-    const fresh = breakItem(acct, view, ticker, { tier: r.tier as 'EXIT' | 'HALF', premiseId: r.premiseId, basis: r.basis, runIds: [...new Set([...(pb.it.runIds ?? []), ...(r.runId ? [r.runId] : [])])] }, !!pb.it.reasonRequired);
+    const fresh = breakItem(acct, view, ticker, { tier: r.tier as 'EXIT' | 'HALF', premiseId: r.premiseId, basis: r.basis, basisNote: r.basisNote, runIds: [...new Set([...(pb.it.runIds ?? []), ...(r.runId ? [r.runId] : [])])] }, !!pb.it.reasonRequired);
     if (fresh) {
       const keep = { key: pb.it.key, choice: pb.it.choice === 'AI' ? 'AI' : 'SKIP' } as const;
       for (const k of Object.keys(pb.it)) delete (pb.it as unknown as Record<string, unknown>)[k];
@@ -1251,7 +1256,7 @@ export function routeReview(acct0: Account, view: MarketView, ticker: string, r:
   if (!SAME_DAY_TRIGGERS.includes(r.trigger)) return done('MONTHLY', '月審的建議進隔天的月報');
   const last = acct.own[ticker].aiNotifiedAt;
   if (last && calDays(last, r.date) < AI_NOTICE_GAP) return done('MONTHLY', `${last} 已經發過 AI 的當天通知（${AI_NOTICE_GAP} 天內），進下一份月報`);
-  const b = breakNotice(acct, view, ticker, { tier: r.tier as 'EXIT' | 'HALF', premiseId: r.premiseId, basis: r.basis, runIds: r.runId ? [r.runId] : [] });
+  const b = breakNotice(acct, view, ticker, { tier: r.tier as 'EXIT' | 'HALF', premiseId: r.premiseId, basis: r.basis, basisNote: r.basisNote, runIds: r.runId ? [r.runId] : [] });
   if (!b.notif) return done('NONE', '換算出來不用賣，只放網站');
   acct = b.acct;
   acct.own[ticker].aiNotifiedAt = r.date;

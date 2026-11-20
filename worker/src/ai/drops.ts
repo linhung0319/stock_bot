@@ -117,7 +117,8 @@ export function idioWithinHalf(attr: { stock?: unknown; idio?: unknown } | null 
 
 /**
  * F7 的結論（own_thesis §3.3，修 K4）：
- *   EXIT  三票都選出清、資料沒有缺漏，而且有一條「不成立的前提」（三票都判同一條 BROKEN、每一票都有申報原文或財報表的引用；定義同 §1.6 第 1 點）
+ *   EXIT  三票都選出清、資料沒有缺漏，而且有一條「不成立的前提」（三票都判同一條 BROKEN、每一票都有合格的引用；定義同 §1.6 第 1 點，
+ *         合格的來源照 web_evidence_design §1.6：申報原文、財報表，或分析師取回的清單內網頁——T53 起和定期審查同一個函式 brokenPremises）
  *   HOLD  三票都選不動、資料沒有缺漏；三票的歸類都是大盤或產業；沒有任何一票把任何前提判成不成立（被引用檢查降級的也算判過）；
  *         而且程式核對跌幅拆解：個股是跌的、個股自身的跌幅不超過整段跌幅的一半
  *   AGREE 三票都選減半（每一票都是自己選的，不是被檢查降級或補上的）
@@ -134,7 +135,7 @@ export function dropDecision(outcome: Outcome, pack: Pick<EvidencePack, 'documen
   if (outcome.status !== 'AGREED' || valid.length < wanted) return out('NONE', outcome.reason);
   if (outcome.verdict === 'EXIT') {
     const broken = brokenPremises(valid, pack, wanted);
-    return broken.length ? out('EXIT', `${wanted} 票都選出清，而且都判前提 ${broken[0]} 不成立（有申報或財報的引用）。`, broken[0]) : out('NONE', `${wanted} 票都選出清，但沒有一條前提三票都判「不成立」而且有申報或財報的引用，照規則。`);
+    return broken.length ? out('EXIT', `${wanted} 票都選出清，而且都判前提 ${broken[0]} 不成立（每一票都有合格的引用）。`, broken[0]) : out('NONE', `${wanted} 票都選出清，但沒有一條前提三票都判「不成立」而且有合格的引用（申報、財報表，或清單內的網頁），照規則。`);
   }
   if (outcome.verdict === 'HOLD' && pack.policy.verdicts.includes('HOLD')) {
     if (!valid.every((x) => x.payload?.cause_class === 'MARKET' || x.payload?.cause_class === 'SECTOR')) return out('NONE', `${wanted} 票都選不動，但跌幅的歸類不是每一票都是大盤或產業，照規則。`);

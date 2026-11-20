@@ -13,7 +13,8 @@ export interface AiNote {
   votes?: string;
   summary: string;
   premises?: { text: string; origin: Premise['origin']; status: 'HOLDS' | 'BROKEN' | 'INSUFFICIENT'; evidence?: string }[];
-  quotes?: { source: string; date: string; quote: string }[];
+  /** url（T53）：引用來自分析師取回的網頁時，原始網址（通知寫「引用與連結在網站」）。 */
+  quotes?: { source: string; date: string; quote: string; url?: string }[];
   conditions?: { kind: '財報' | '事件' | '價格'; text: string; then: string }[];
   sections?: { title: string; text: string }[];
   /** true = 示範用的假內容。 */

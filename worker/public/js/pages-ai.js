@@ -68,6 +68,60 @@ function sampleBlock(s, d) {
 
 const docTitle = (d, source) => d.documents.find((x) => x.source === source)?.title ?? source;
 
+/**
+ * 「AI 這次另外找了什麼」（T53，web_evidence_design §1.4、§1.5）：一行結論（沒有要找、取回幾份、想找但取到 0 份分得出來）、
+ * 分析師要查的問題與搜尋的字、取回的文件（來源、級別、發布日、抓取日、連結、幾票引用與引用的片段）、沒有讀到的與原因。
+ * 不提供整篇全文（著作權）：要看全文點原始網址。
+ */
+function foundBlock(f) {
+  if (!f) return null;
+  const about = (x) => (x ? h('span', { class: 'st', style: 'margin-right:8px' }, x) : null);
+  const head = (t) => h('h5', { style: 'margin-top:16px' }, t);
+  const ext = (url) => (url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, '原始網址') : null);
+  return glass(
+    'pad',
+    h('h2', { class: 'panel-h' }, 'AI 這次另外找了什麼'),
+    h('p', { class: f.state === 'ZERO' ? 'notice' : null }, f.line),
+    f.notes.map((n) => h('p', { class: 'small', style: 'margin-top:6px;color:var(--warn)' }, n)),
+    f.questions.length ? [head(`分析師要查的問題（${f.questions.length} 個）`), h('ul', { class: 'found-list' }, f.questions.map((q) => h('li', null, about(q.about), q.ask)))] : null,
+    f.queries.length
+      ? [head(`搜尋的字（${f.queries.length} 次）`), h('ul', { class: 'found-list small' }, f.queries.map((q) => h('li', null, q))), h('p', { class: 'small faint', style: 'margin-top:4px' }, '搜尋結果只有標題與網址，不是證據；要當證據，原文要由程式抓回來、存快照（下面「取回的文件」）。')]
+      : null,
+    f.docs.length
+      ? [
+          head(`取回的文件（${f.docs.length} 份）`),
+          f.docs.map((x) =>
+            h(
+              'div',
+              { class: 'cond found-doc' },
+              h('p', null, h('b', { style: 'font-weight:500' }, x.title)),
+              h('p', { class: 'small dim', style: 'margin-top:2px' }, [x.source, x.level, `發布 ${x.published}`, `${x.fetched} 抓`, x.via, x.cut].filter(Boolean).join('；'), x.url ? ['；', ext(x.url)] : null),
+              x.why || x.about ? h('p', { class: 'small', style: 'margin-top:4px' }, about(x.about), x.why ? `為什麼要：${x.why}` : '') : null,
+              x.votes === null ? null : h('p', { class: 'small ' + (x.votes ? '' : 'faint'), style: 'margin-top:4px' }, x.votes ? `${x.votes} 票引用了它：` : '沒有一票引用它。'),
+              x.quotes.map((q) => h('blockquote', { class: 'quote', style: 'margin-top:6px' }, `「${q}」`)),
+            ),
+          ),
+        ]
+      : null,
+    f.missed.length
+      ? [
+          head(`沒有讀到的（${f.missed.length + f.missedMore} 份）`),
+          f.missed.map((x) =>
+            h(
+              'div',
+              { class: 'cond found-doc' },
+              h('p', { class: 'found-what' }, x.url ? h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer' }, x.what) : x.what),
+              h('p', { class: 'small', style: 'margin-top:2px;color:var(--warn)' }, `沒有讀到：${x.reason}`),
+              x.why || x.about ? h('p', { class: 'small dim', style: 'margin-top:2px' }, about(x.about), x.why ? `為什麼要：${x.why}` : '') : null,
+            ),
+          ),
+          f.missedMore ? h('p', { class: 'small faint' }, `另外 ${f.missedMore} 份沒有列出（紀錄只留前 ${f.missed.length} 筆）。`) : null,
+          h('p', { class: 'small faint', style: 'margin-top:6px' }, '沒有讀到的網頁，AI 只能寫「有這樣的標題」，不能當成事實，也不能當引用。'),
+        ]
+      : null,
+  );
+}
+
 export async function aiRunPage(ctx, id) {
   const d = await api.get('/ai/run/' + encodeURIComponent(id));
   const back = { href: '#/history', label: '紀錄' };
@@ -143,6 +197,7 @@ export async function aiRunPage(ctx, id) {
             ),
           )
         : null,
+      foundBlock(d.found),
       d.samples.length ? [h('h2', { class: 'sec', style: 'margin:8px 0 0' }, '每一票'), ...d.samples.map((s) => sampleBlock(s, d))] : glass('empty', h('p', { class: 'dim' }, d.status === 'PENDING' ? '還沒有結果。' : '沒有任何一票：' + d.reason)),
       d.followUp.length ? glass('pad', h('h2', { class: 'panel-h' }, '之後的實際結果'), dl(d.followUp.map((f) => [f.label, f.text]))) : null,
       d.facts.length ? details('程式算好的數字（AI 只能用這些）', dl(d.facts.map((f) => [`${f.id} ${f.label}`, h('span', { class: 'num' }, f.value), f.note]))) : null,
@@ -156,7 +211,7 @@ export async function aiRunPage(ctx, id) {
                 null,
                 h('h5', null, `${x.title}（${day(x.date)}）`),
                 h('p', { class: 'small faint' }, x.source, x.url ? [' · ', h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer' }, '原始網址')] : null, ` · ${x.chars.toLocaleString('en-US')} 字`),
-                h('pre', { class: 'small', style: 'white-space:pre-wrap;max-height:18em;overflow:auto;margin-top:6px' }, x.preview + (x.chars > x.preview.length ? '\n…（完整原文在匯出的 md 裡）' : '')),
+                x.hidden ? h('p', { class: 'small dim', style: 'margin-top:6px' }, x.hidden) : h('pre', { class: 'small', style: 'white-space:pre-wrap;max-height:18em;overflow:auto;margin-top:6px' }, x.preview + (x.chars > x.preview.length ? '\n…（完整原文在匯出的 md 裡）' : '')),
               ),
             ),
           )
@@ -341,11 +396,32 @@ function actionSelect(value, onchange) {
   return h('select', { style: 'width:auto;min-height:36px;padding:4px 10px', onchange }, COND_ACTIONS.map(([v, t]) => h('option', { value: v, selected: v === value }, t)));
 }
 
+const TIER_NAME = { PRIMARY: '一手', NAMED: '指名的產業來源', MEDIA: '媒體' };
+/**
+ * 勾選條件時的網頁來源（T53，web_evidence_design §1.6）：審查時用哪個來源的網頁檢查這一條；可以改，也可以不指名。
+ * sources：這檔可以指名的來源（共用清單＋這檔自己的一手網域）；current：AI 寫的來源（網域）。回傳 { el, value() }；
+ * value() 是 undefined 表示沒有動（照 AI 寫的）。沒有可以指名的來源、或這一條不能指名 → null。
+ */
+function sourcePick(sources, current) {
+  if (!sources?.length) return null;
+  const cur = current?.[0] ?? '';
+  let v = cur;
+  const known = sources.some((s) => s.domain === cur);
+  const sel = h(
+    'select',
+    { 'aria-label': '審查時用哪個來源的網頁檢查', onchange: (e) => (v = e.target.value) },
+    h('option', { value: '', selected: !cur }, '不指名（要申報或財報的引用才算成立）'),
+    !known && cur ? h('option', { value: cur, selected: true }, `${cur}（不在清單內）`) : null,
+    sources.map((s) => h('option', { value: s.domain, selected: s.domain === cur }, `${s.label}（${TIER_NAME[s.tier] ?? ''}）`)),
+  );
+  return { el: h('div', { class: 'cond-src' }, h('span', { class: 'small' }, '審查時用這個來源的網頁檢查（可以改）'), sel), value: () => (v === cur ? undefined : v) };
+}
+
 /**
  * 一條條件：文字與狀態、誰定的與怎麼確認、進度條、說明；controls 是這一條能做的事。
  * 狀態標籤和「怎麼確認」相同時（只在定期審查時檢查、只記錄）只寫一次（T24 留下的重複，T34 整理）。
  */
-function condRow(c, controls) {
+function condRow(c, controls, extra = null) {
   const tone = c.code === 'MET' ? 'hot' : c.code === 'ACTIVE' ? 'ok' : c.code === 'PROPOSED' ? 'now' : '';
   const how = c.confirm && c.confirm !== c.status ? (c.code === 'PROPOSED' ? `勾選後${c.confirm}` : c.confirm) : null;
   return h(
@@ -356,6 +432,7 @@ function condRow(c, controls) {
     c.steps ? stepsBar(c.steps) : null,
     c.progress ? h('p', { class: 'small', style: 'margin-top:2px' }, c.progress) : null,
     c.note ? h('p', { class: 'small faint', style: 'margin-top:2px' }, c.note) : null,
+    extra,
     controls ? h('div', { class: 'btn-row cond-ctl' }, controls) : null,
   );
 }
@@ -408,10 +485,12 @@ export function ownMonitor(ctx, d) {
       h('p', { class: 'small dim' }, `沒勾選的不會自己發通知，只給下一次審查參考；勾選之後才監測，成立時通知你。下一次審查寫了新的建議時，沒勾的會過期。${live >= MAX_OWNED ? `你定的條件已經 ${MAX_OWNED} 條，要先撤下一條才能再勾。` : ''}`),
       proposed.map((c) => {
         let act = c.action;
+        // 指名了網頁來源的（或只在審查時檢查的）事件條件：勾選時看得到來源、可以改
+        const src = c.canSource ? sourcePick(d.condSources, c.web) : null;
         return condRow(c, [
           ...(c.recordOnly ? [h('span', { class: 'small dim' }, '勾選後只記錄，不會通知')] : [h('span', { class: 'small' }, '成立時'), actionSelect(act, (e) => (act = e.target.value))]),
-          h('button', { class: 'btn', type: 'button', onclick: () => condOp(ctx, d.ticker, msg, { id: c.id, op: 'accept', action: act }, c.recordOnly ? '已勾選（只記錄）' : '已勾選，開始監測') }, c.recordOnly ? '勾選' : '勾選，開始監測'),
-        ]);
+          h('button', { class: 'btn', type: 'button', onclick: () => condOp(ctx, d.ticker, msg, { id: c.id, op: 'accept', action: act, ...(src && src.value() !== undefined ? { source: src.value() } : {}) }, c.recordOnly ? '已勾選（只記錄）' : '已勾選，開始監測') }, c.recordOnly ? '勾選' : '勾選，開始監測'),
+        ], src?.el);
       }),
     );
   if (owned.length || proposed.length) out.push(msg);
@@ -513,7 +592,9 @@ function rewriteBlock(ctx, d) {
       const same = c.sames?.[x.condId] ?? null;
       let act = x.action;
       const box = same ? null : h('input', { type: 'checkbox', checked: !x.manual, 'aria-label': '勾選：開始監測' });
-      return { x, same, box, get act() { return act; }, sel: same || x.manual ? null : actionSelect(act, (e) => (act = e.target.value)) };
+      // 指名了網頁來源的（或只在審查時檢查的）事件條件：確認時看得到來源、可以改（T53）
+      const src = !same && x.canSource ? sourcePick(d.condSources, x.web) : null;
+      return { x, same, box, src, get act() { return act; }, sel: same || x.manual ? null : actionSelect(act, (e) => (act = e.target.value)) };
     });
     const tag = (r) => {
       if (r.same) return h('span', { class: 'rw-tag same' }, `和現在的「${r.same.text}」相同：不新增，舊的接著監測${r.same.actionTo ? `（成立時改成${ACTION_NAME[r.same.actionTo]}）` : ''}`);
@@ -541,6 +622,7 @@ function rewriteBlock(ctx, d) {
               tag(r),
             ),
           ),
+          r.src?.el ?? null,
           r.sel ? h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, '成立時'), r.sel) : null,
         ),
       ),
@@ -553,7 +635,8 @@ function rewriteBlock(ctx, d) {
         busyButton('確認', async () => {
           const pick = rows.filter((r) => r.box?.checked);
           try {
-            const r = await api.post('/ops/own-conditions', { ticker: d.ticker, runId: c.runId, ids: pick.map((p) => p.x.condId), actions: Object.fromEntries(pick.map((p) => [p.x.condId, p.act])) });
+            const sources = Object.fromEntries(pick.filter((p) => p.src && p.src.value() !== undefined).map((p) => [p.x.condId, p.src.value()]));
+            const r = await api.post('/ops/own-conditions', { ticker: d.ticker, runId: c.runId, ids: pick.map((p) => p.x.condId), actions: Object.fromEntries(pick.map((p) => [p.x.condId, p.act])), ...(Object.keys(sources).length ? { sources } : {}) });
             toast([`開始監測 ${r.added} 條`, r.retired?.length ? `撤下 ${r.retired.length} 條` : '', r.actionChanged?.length ? `${r.actionChanged.length} 條改了成立時的動作` : ''].filter(Boolean).join('，'));
             ctx.refresh();
           } catch (e) {

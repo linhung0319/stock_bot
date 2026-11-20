@@ -15,7 +15,7 @@ import { NEWS_SOURCES, fetchFilingDoc, tryHeadlineSource, type Headline } from '
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { errText } from '../data/util';
 import { markWebDocUsed, normalizeWebUrl, obtainWebDoc, safeWebUrl, webDocId } from '../data/webDoc';
-import { WEB_EXCLUDED, WEB_SOURCES, hostMatches, matchWebSource, type WebTier } from '../data/webSources';
+import { TIER_TEXT, WEB_EXCLUDED, WEB_SOURCES, hostMatches, listedWebSources, matchWebSource, type WebTier } from '../data/webSources';
 import type { OwnMeta, OwnWebSources, WebPeer, WebSourceCheck } from '../engine';
 import { TASK_TIMEOUT_MS, getTask } from './aiTasks';
 import { json, type Env, type Fetcher } from './env';
@@ -37,8 +37,8 @@ export const NO_REVIEW_WEB_DAYS = 365;
 
 const minusDays = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) - n * 86400_000).toISOString().slice(0, 10);
 
-/** 級別的白話（目錄與取回的文件標題用）。 */
-export const TIER_TEXT: Record<WebTier, string> = { PRIMARY: '一手', NAMED: '指名的產業來源', MEDIA: '媒體' };
+/** 級別的白話（目錄與取回的文件標題用；定義在 webSources.ts）。 */
+export { TIER_TEXT };
 
 // ---------------------------------------------------------------- 每檔的來源：檢查與試抓
 
@@ -191,12 +191,12 @@ export interface MenuInput {
  * 審查的目錄與「可以取什麼」（ai_runs.doc_ctx）。只有系統預設前提 → 沒有目錄、off（不能取文件）。
  * 抓不到的同業只記在 notes（組證據包時的紀錄），不影響審查。
  */
-export async function buildDocMenu(env: Env, fetcher: Fetcher, inp: MenuInput): Promise<{ facts: Fact[]; ctx: DocCtx; notes: string[] }> {
+export async function buildDocMenu(env: Env, fetcher: Fetcher, inp: MenuInput): Promise<{ facts: Fact[]; ctx: DocCtx; notes: string[]; sources: { facts: Fact[]; domains: string[] } }> {
   const { tf, asOf } = inp;
   const notBefore = tf.lastReview ? minusDays(tf.lastReview.asOf, TOO_OLD_DAYS) : minusDays(asOf, NO_REVIEW_WEB_DAYS);
   const ws = inp.meta.webSources ?? null;
   const domains = ws?.domains ?? [];
-  if (fileKind(inp.meta) === 'DEFAULT_ONLY') return { facts: [], ctx: { menu: [], notBefore, domains: [], fileId: tf.fileId, off: '只有系統預設前提：不用網頁證據' }, notes: [] };
+  if (fileKind(inp.meta) === 'DEFAULT_ONLY') return { facts: [], ctx: { menu: [], notBefore, domains: [], fileId: tf.fileId, off: '只有系統預設前提：不用網頁證據' }, notes: [], sources: { facts: [], domains: [] } };
   const notes: string[] = [];
   const ua = env.EDGAR_USER_AGENT ?? '';
   // S1：同業在 EDGAR 的申報
@@ -226,7 +226,24 @@ export async function buildDocMenu(env: Env, fetcher: Fetcher, inp: MenuInput): 
   const menu = all.slice(0, MENU_MAX).map((e, k) => ({ ...e, id: `M${k + 1}` }));
   const facts: Fact[] = menu.map((e, k) => ({ id: e.id, label: '可以取的文件', value: e.text, ...(k === 0 ? { note: '目錄只有標題；要讀全文，向 Worker 的取文件端點送這個編號' } : {}) }));
   if (all.length > MENU_MAX) facts.push({ id: 'M+', label: '可以取的文件', value: `另有 ${all.length - MENU_MAX} 項沒有列出` });
-  return { facts, ctx: { menu, notBefore, domains, fileId: tf.fileId }, notes };
+  // sources（T53）：清單內的網頁來源（facts 的 S 開頭）和目錄分開回傳，呼叫的地方接在目錄後面
+  return { facts, ctx: { menu, notBefore, domains, fileId: tf.fileId }, notes, sources: sourceFacts(domains) };
+}
+
+/**
+ * 可以當證據的網頁來源（facts 的 S 開頭，T53；§1.5 的分析師步驟「優先挑證據包裡列出的清單內網域」、§1.6 條件指名來源時只能指名這些）：
+ * 共用清單＋這檔自己的一手網域，一行一個（網域、名稱、級別、只收哪些路徑）。domains 是同一份的網域清單（記在 rule.detail.webDomains）。
+ * 只有系統預設前提的股票不用網頁證據：呼叫的地方不要放。
+ */
+export function sourceFacts(extraDomains: readonly string[]): { facts: Fact[]; domains: string[] } {
+  const list = listedWebSources(extraDomains);
+  const facts: Fact[] = list.map((s, k) => ({
+    id: `S${k + 1}`,
+    label: '清單內的網頁來源',
+    value: `${s.domain}｜${s.label}｜${TIER_TEXT[s.tier]}${s.paths ? `｜只收 ${s.paths.join('、')}` : ''}`,
+    ...(k === 0 ? { note: '只有這些網域的網頁取得到全文；其他網站的標題只能當線索' } : {}),
+  }));
+  return { facts, domains: list.map((s) => s.domain) };
 }
 
 // ---------------------------------------------------------------- 取文件的端點（§1.5）
@@ -396,7 +413,7 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
       refuse(w, 'TOO_OLD', `發布日 ${row.published} 早於 ${ctx.notBefore}`);
       continue;
     }
-    const doc = give({ source_id: row.id, kind: 'web', tier: hit.tier, date: row.published, title: `〔網頁｜${TIER_TEXT[hit.tier]}｜${hit.label}〕${row.title ?? row.url}（發布 ${row.published}，${row.fetched_at.slice(0, 10)} 抓）`, url: row.final_url ?? row.url, text: row.text, truncated: !!row.truncated, cap: WEB_GIVE, fetched_at: row.fetched_at, via, menu: w.menu, for: w.for, why: w.why, role, at, row_id: row.row_id });
+    const doc = give({ source_id: row.id, kind: 'web', tier: hit.tier, date: row.published, title: `〔網頁｜${TIER_TEXT[hit.tier]}｜${hit.label}〕${row.title ?? row.url}（發布 ${row.published}，${row.fetched_at.slice(0, 10)} 抓）`, url: row.final_url ?? row.url, text: row.text, truncated: !!row.truncated, cap: WEB_GIVE, fetched_at: row.fetched_at, via, menu: w.menu, for: w.for, why: w.why, role, at, row_id: row.row_id, domain: hit.domain, label: hit.label });
     await markWebDocUsed(db, row.row_id, run.run_id);
     reply.docs.push(docReply(doc));
   }

@@ -578,7 +578,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     // 論點那一塊（T34）：前提最近一次的檢查、事件時間軸、歷次審查與回應、靜默中的前提、減半檢視
     // 賣光之後又買回（T44）：上一份論點檔補上當時的出場條件（帳戶狀態沒有條件）
     if (backend.ai && hd.own?.prev) hd.own.prev = await backend.ai.prevFile(tk, d.acct).catch(() => hd.own!.prev);
-    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), rewrites: await backend.ai.rewrites(tk), attention: await backend.ai.attention(tk, d.acct, d.view).catch(() => []), mom: await backend.ai.mom(tk, d.acct, d.view, d.rankOrder).catch(() => null), thesis: await backend.ai.thesis(tk, d.acct, d.view).catch(() => null) });
+    if (backend.ai) return json({ ...hd, monitor: await backend.ai.monitor(tk), rewrites: await backend.ai.rewrites(tk), condSources: await backend.ai.condSources(tk).catch(() => []), attention: await backend.ai.attention(tk, d.acct, d.view).catch(() => []), mom: await backend.ai.mom(tk, d.acct, d.view, d.rankOrder).catch(() => null), thesis: await backend.ai.thesis(tk, d.acct, d.view).catch(() => null) });
     // 示範模式（T34 的決定）：論點檔只有帳戶狀態（沒有條件、事件、審查紀錄），論點那一塊與「要看的事」從它算
     return json({ ...hd, ...demoHolding(d.acct, d.view, tk) });
   }
@@ -670,8 +670,10 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     // T42：確認改寫結果。勾選的開始監測、被取代的與這次沒提到的撤下；沒有勾也可以確認（只撤下或改動作）
     const ids = Array.isArray(b.ids) ? b.ids.filter((x): x is string => typeof x === 'string').slice(0, 10) : [];
     const actions = b.actions && typeof b.actions === 'object' && !Array.isArray(b.actions) ? (b.actions as Record<string, unknown>) : {};
+    // T53：勾選時改的網頁來源（條件編號 → 網域，'' = 不指名）；清單外的回 422
+    const sources = b.sources && typeof b.sources === 'object' && !Array.isArray(b.sources) ? (b.sources as Record<string, unknown>) : {};
     try {
-      return json({ ok: true, ...(await backend.ai.acceptConditions(tk, runId, ids, actions)) });
+      return json({ ok: true, ...(await backend.ai.acceptConditions(tk, runId, ids, actions, sources)) });
     } catch (e) {
       throw new SiteError(e instanceof StaleExitsError ? 409 : 422, errText(e));
     }
@@ -686,7 +688,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const op = b.op === 'accept' || b.op === 'retire' || b.op === 'action' ? b.op : null;
     if (!op) throw new SiteError(422, '操作只能是 accept、retire 或 action');
     try {
-      return json({ ok: true, ...(await backend.ai.condition(tk, id, op, b.action)) });
+      return json({ ok: true, ...(await backend.ai.condition(tk, id, op, b.action, op === 'accept' ? b.source : undefined)) });
     } catch (e) {
       throw new SiteError(422, errText(e));
     }

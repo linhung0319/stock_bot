@@ -1,12 +1,14 @@
 // T10：F24 自選定期審查、F25 自選條件監測（ai_layer_design 的 F24、F25、F23 卡片）。
 // 純函式：證據包、payload 的逐欄檢查、結論怎麼變成引擎的輸入。資料抓取與排程在 src/app/ownAi.ts。
 import { TIER_NAME, type Account, type MarketView, type ReviewTrigger, type Tier } from '../engine';
+import { hostMatches, sameWebDomain, webLabel } from '../data/webSources';
+import { webMetaOf, type WebMeta } from './added';
 import { keptByChoice, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
 import { buildPack, ownPremises, ownRuleFacts, priceDoc, priceFacts } from './pack';
 
 export const OWN_REVIEW = 'OWN_REVIEW';
 export const OWN_CONDITION = 'OWN_CONDITION';
-export const OWN_REVIEW_PROMPT = 'own_review_v2';
+export const OWN_REVIEW_PROMPT = 'own_review_v3';
 /** F24 獨立跑幾次。 */
 export const OWN_REVIEW_SAMPLES = 3;
 export const OWN_CONDITION_PROMPT = 'own_condition_v1';
@@ -57,8 +59,13 @@ export interface OwnReviewInput {
   xbrl: PackDoc | null;
   filings: PackDoc[];
   news: PackDoc | null;
-  /** 論點檔的條件：你定的 C、觀察項 W（thesis.ts 的 condFacts）；map 是證據包編號 → 條件的列編號，記在 rule.detail.conds。 */
-  conds?: { facts: EvidencePack['facts']; map: Record<string, number> };
+  /**
+   * 論點檔的條件：你定的 C、觀察項 W（thesis.ts 的 condFacts）；map 是證據包編號 → 條件的列編號，記在 rule.detail.conds。
+   * web（T53）：指名了網頁來源的條件（confirm_by 有 `web:<網域>`）→ 那幾個網域，記在 rule.detail.condWeb。
+   */
+  conds?: { facts: EvidencePack['facts']; map: Record<string, number>; web?: Record<string, string[]> };
+  /** 可以當證據的網頁來源（共用清單＋這檔的一手網域；webEvidence.ts 的 sourceFacts）：建議的條件指名來源時只能指名這些。記在 rule.detail.webDomains。 */
+  webDomains?: string[];
   dataQuality: EvidencePack['data_quality'];
   /** 由論點檔組的數字（T0、事件 V、預設前提的 D1～D3；own_thesis §1.6），接在原本的數字後面。 */
   extraFacts?: EvidencePack['facts'];
@@ -81,6 +88,8 @@ export function ownReviewPack(inp: OwnReviewInput) {
   const verdicts: Tier[] = ['EXIT', 'HALF', 'HOLD', 'STANDARD', ...(raise.ok ? (['RAISE'] as Tier[]) : [])];
   const docs = [priceDoc(view, inp.axis, ticker, 60), inp.xbrl, ...inp.filings, inp.news, ...(inp.extraDocs ?? [])].filter((d): d is PackDoc => !!d);
   const conds = inp.conds ?? { facts: [], map: {} };
+  const condWeb = conds.web && Object.keys(conds.web).length ? { condWeb: conds.web } : {};
+  const webDomains = inp.webDomains?.length ? { webDomains: inp.webDomains } : {};
   const hasC = conds.facts.some((f) => f.id.startsWith('C'));
   const hasW = conds.facts.some((f) => f.id.startsWith('W'));
   return buildPack({
@@ -99,7 +108,7 @@ export function ownReviewPack(inp: OwnReviewInput) {
       (hasC || hasW ? `並逐條檢查${hasC ? '使用者定的條件（facts 的 C 開頭）' : ''}${hasC && hasW ? '與' : ''}${hasW ? '觀察項（facts 的 W 開頭）' : ''}是否已經成立（payload.condition_checks）。` : '') +
       '最後可以建議最多 3 條新增的條件（payload.proposed_conditions）：現有的條件已經涵蓋的事不要再提，還適用的觀察項原樣再提（算在 3 條內）；使用者勾選才會監測。',
     policy: { level: 'A3', verdicts, abstain: 'HOLD', min_evidence: 1, samples: OWN_REVIEW_SAMPLES },
-    rule: { action: `規則這次沒有動作；慢規則狀態：${state === 'HALF' ? '減半中' : '標準'}`, detail: { trigger: inp.trigger, state, raise: raise.why, conds: conds.map, thesisVersion: acct.own[ticker]?.thesis?.version ?? 0, ...(inp.reasons ? { reasons: inp.reasons } : {}), ...(inp.early ? { events: inp.early.events } : {}) } },
+    rule: { action: `規則這次沒有動作；慢規則狀態：${state === 'HALF' ? '減半中' : '標準'}`, detail: { trigger: inp.trigger, state, raise: raise.why, conds: conds.map, ...condWeb, ...webDomains, thesisVersion: acct.own[ticker]?.thesis?.version ?? 0, ...(inp.reasons ? { reasons: inp.reasons } : {}), ...(inp.early ? { events: inp.early.events } : {}) } },
     facts: [...priceFacts(view, ticker), ...ownRuleFacts(acct, view, ticker), ...conds.facts, ...(inp.extraFacts ?? [])],
     premises: ownPremises(acct, ticker),
     documents: docs,
@@ -111,11 +120,34 @@ export function ownReviewPack(inp: OwnReviewInput) {
 const CONFIRM_BY = ['8-K', '10-Q', '10-K', 'SEC', 'earnings_call', 'major_news'];
 const FILING_SOURCES = ['8-K', '10-Q', '10-K', 'SEC'];
 
+/** 事件條件指名網頁來源的寫法（web_evidence_design §1.6）：`web:<網域>`，例如 `web:trendforce.com`。 */
+const WEB_REF = /^web:((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})$/i;
+/** `web:trendforce.com` → `trendforce.com`；不是這種寫法 → null。 */
+export const webRefDomain = (x: unknown): string | null => {
+  const m = typeof x === 'string' ? WEB_REF.exec(x.trim()) : null;
+  return m ? m[1].toLowerCase() : null;
+};
+/** 條件指名的網頁來源（confirm_by 裡的 `web:<網域>`；沒有就是空的）。 */
+export function namedWebDomains(check: Record<string, unknown>): string[] {
+  const by = Array.isArray(check.confirm_by) ? check.confirm_by : [];
+  return [...new Set(by.map(webRefDomain).filter((d): d is string => !!d))];
+}
+
+/**
+ * 指名了網頁來源的事件條件怎麼檢查（web_evidence_design §1.6；G24：寫的就是實際在做的事）：`審查時用 TrendForce 的網頁檢查`。
+ * 沒有指名 → null。
+ */
+export function webConfirmText(check: Record<string, unknown>): string | null {
+  const named = namedWebDomains(check);
+  return named.length ? `審查時用 ${named.map((d) => webLabel(d)).join('、')} 的網頁檢查` : null;
+}
+
 /**
  * 條件怎麼確認（own_thesis §1.5「怎麼確認」，由條件本身推出來，不另存）：
  *   XBRL        財報條件，新 10-Q／10-K 出來時程式比對
- *   FILING      事件條件，確認來源裡有申報類型 → 新申報出現時 F25 三票讀原文
- *   REVIEW_ONLY 事件條件，確認來源只有 earnings_call、major_news → 沒有申報可讀，只在定期審查時由三票判斷（P4）
+ *   FILING      事件條件，確認來源裡有申報類型 → 新申報出現時 F25 三票讀原文（另外指名了網頁來源的，審查時也用那個來源檢查）
+ *   REVIEW_ONLY 事件條件，確認來源只有 earnings_call、major_news、`web:<網域>` → 沒有申報可讀，只在定期審查時由三票判斷（P4）；
+ *               指名了網頁來源的（T53，web_evidence_design §1.6）審查時用那個來源的網頁檢查，不每天監測
  *   NONE        價格條件、或沒通過格式檢查的（含事件條件沒寫確認來源）→ 只記錄
  */
 export type ConfirmMode = 'XBRL' | 'FILING' | 'REVIEW_ONLY' | 'NONE';
@@ -126,12 +158,31 @@ export function confirmMode(c: { kind: string; check: Record<string, unknown>; m
   const by = Array.isArray(c.check.confirm_by) ? c.check.confirm_by.map(String) : [];
   if (!by.length) return 'NONE';
   if (by.some((x) => FILING_SOURCES.includes(x))) return 'FILING';
-  return by.every((x) => x === 'earnings_call' || x === 'major_news') ? 'REVIEW_ONLY' : 'NONE';
+  return by.every((x) => x === 'earnings_call' || x === 'major_news' || webRefDomain(x) !== null) ? 'REVIEW_ONLY' : 'NONE';
+}
+
+/** 證據包記下的「可以指名的網頁來源」（rule.detail.webDomains）；沒有（舊的證據包、只有預設前提的股票）就是空的。 */
+const packWebDomains = (pack: Pick<EvidencePack, 'rule'>): string[] => {
+  const d = (pack.rule?.detail as { webDomains?: unknown } | undefined)?.webDomains;
+  return Array.isArray(d) ? d.filter((x): x is string => typeof x === 'string') : [];
+};
+
+/** 事件條件的確認來源哪裡不合格（null = 合格）：固定的幾種，或指名清單內的網頁來源（清單外的擋下）。 */
+function confirmByIssue(by: unknown, allowed: readonly string[]): string | null {
+  if (!Array.isArray(by) || !by.length) return '事件條件要寫確認來源（confirm_by）';
+  for (const x of by) {
+    if (CONFIRM_BY.includes(String(x))) continue;
+    const d = webRefDomain(x);
+    if (!d) return '事件條件要寫確認來源（confirm_by）';
+    if (!allowed.some((a) => hostMatches(d, a))) return `指名的網頁來源 ${d} 不在清單或這檔的來源裡（清單外的網站不能當確認來源）`;
+  }
+  return null;
 }
 
 /**
  * F24 的 payload 逐欄檢查（ai_layer F24 卡片；own_review_v2）：tier 要和 verdict 一致；建議新增的條件（proposed_conditions）最多 3 條，
  * kind 只能是 XBRL（指標要是程式算得出來的）／EVENT（要寫確認來源）／PRICE（只記錄，不通知），tier_if_met 要是合法檔位。
+ * 事件條件的確認來源可以指名清單內的網頁來源（`web:<網域>`，T53；清單是證據包的 rule.detail.webDomains），清單外的改標人工。
  * 不合格的條件改標人工，不整票作廢。F14 健檢（payload.conditions，最多 5 條）共用同一套條件檢查。
  */
 export function checkOwnReviewPayload(s: CheckedSample, pack: EvidencePack, metrics: ReadonlySet<string>): void {
@@ -139,6 +190,7 @@ export function checkOwnReviewPayload(s: CheckedSample, pack: EvidencePack, metr
   if (p.tier !== undefined && p.tier !== s.rawVerdict) s.issues.push(`payload.tier（${String(p.tier)}）和 verdict 不同`);
   if (Array.isArray(p.conditions) && p.conditions.length > 5) s.issues.push('條件超過 5 條，只看前 5 條');
   if (Array.isArray(p.proposed_conditions) && p.proposed_conditions.length > 3) s.issues.push('建議的條件超過 3 條，只看前 3 條');
+  const allowed = packWebDomains(pack);
   for (const c of s.conditions) {
     if ((c.from !== 'payload.conditions' && c.from !== 'payload.proposed_conditions') || !c.auto) continue;
     const raw = c.raw;
@@ -151,9 +203,9 @@ export function checkOwnReviewPayload(s: CheckedSample, pack: EvidencePack, metr
             ? `財報條件的指標 ${String(check.metric)} 程式算不出來`
             : null
           : raw.kind === 'EVENT'
-            ? c.type !== 'event' || !Array.isArray(check.confirm_by) || !check.confirm_by.length || check.confirm_by.some((x) => !CONFIRM_BY.includes(String(x)))
+            ? c.type !== 'event'
               ? '事件條件要寫確認來源（confirm_by）'
-              : null
+              : confirmByIssue(check.confirm_by, allowed)
             : raw.kind === 'PRICE'
               ? '價格條件只記錄、不通知（B-1：價格面交給慢規則）'
               : 'kind 要是 XBRL、EVENT 或 PRICE';
@@ -181,9 +233,14 @@ export interface ReviewDecision {
   consensus: boolean;
   /** 建議新增的條件（最多 3 條，取自和結論同檔位的第一張合格票）；consensus 是 false 時是空的。 */
   proposed: ProposedDraft[];
-  /** 三票的 condition_checks 都寫 MET、各有通過檢查的申報或財報引用的條件（證據包的編號 C…、W…）；consensus 是 false 時是空的。 */
+  /** 三票的 condition_checks 都寫 MET、各有合格引用的條件（證據包的編號 C…、W…；合格的來源見 condCite）；consensus 是 false 時是空的。 */
   metChecks: string[];
-  /** 不成立的前提（§1.6 第 1 點：三票都判 BROKEN、每一票都至少有一條申報或財報的引用；取交集），編號由小到大。 */
+  /**
+   * metChecks 裡每一條是靠什麼確認的（T53）：REVIEW_VOTE = 三票都有申報或財報表的引用（照舊）；
+   * WEB_VOTE = 至少一票靠的是條件指名的那個網頁來源（web_evidence_design §1.6）。
+   */
+  metBasis: Record<string, 'REVIEW_VOTE' | 'WEB_VOTE'>;
+  /** 不成立的前提（§1.6 第 1 點：三票都判 BROKEN、每一票都有合格的引用；取交集），編號由小到大。合格的來源見 premiseCite。 */
   brokenPremises: string[];
   /** 主要的不成立前提（編號最小的那條）；沒有是 null。寫進 aiTier.premiseId。 */
   premiseId: string | null;
@@ -191,49 +248,125 @@ export interface ReviewDecision {
 
 const pnum = (id: string) => Number(/\d+/.exec(id)?.[0] ?? Infinity);
 
-/** 這一票的某幾條證據裡，有沒有一條通過檢查、而且來源是申報原文或財報表（documents 的 kind 是 filing 或 xbrl）。 */
-function hardCited(s: CheckedSample, ids: unknown, hard: Set<string>): boolean {
-  if (!Array.isArray(ids)) return false;
+/** `MEDIA` 級的網頁要判前提不成立，每一票至少要引用幾個不同網域的文件（web_evidence_design §1.6、第 6 章第 5 項）。 */
+export const MEDIA_MIN_DOMAINS = 2;
+
+/** 證據包的文件照來源分：hard = 申報原文或財報表（自己的與同業的）；web = 程式抓、存了快照的清單內網頁（帶級別與網域）。其他（新聞標題、價格、論點 note）都不算。 */
+export interface PackSources {
+  hard: Set<string>;
+  web: Map<string, WebMeta>;
+}
+export function packSources(pack: Pick<EvidencePack, 'documents'>): PackSources {
+  const hard = new Set<string>();
+  const web = new Map<string, WebMeta>();
+  for (const d of pack.documents) {
+    if (d.kind === 'filing' || d.kind === 'xbrl') hard.add(d.source_id);
+    const w = webMetaOf(d);
+    if (w) web.set(d.source_id, w);
+  }
+  return { hard, web };
+}
+
+/** 這一票的某幾條證據裡，通過逐字檢查的引用各來自哪一份文件（source_id，照引用的順序）。 */
+export function citedSources(s: CheckedSample, ids: unknown): string[] {
+  if (!Array.isArray(ids)) return [];
   const ok = new Map(s.evidence.filter((e) => e.ok).map((e) => [e.id, e.source_id]));
-  return ids.some((id) => hard.has(ok.get(String(id)) ?? ''));
+  return ids.map((id) => ok.get(String(id))).filter((x): x is string => !!x);
+}
+
+/** HARD = 靠申報或財報表；WEB = 靠網頁；null = 不合格。 */
+export type CiteBasis = 'HARD' | 'WEB' | null;
+
+/**
+ * 這一票判某條前提「不成立」的引用夠不夠（web_evidence_design §1.6 表的第二欄）：
+ *   申報、財報表（自己或同業的）        → 可以（照舊）
+ *   網頁，一手或指名的產業來源          → 可以
+ *   網頁，媒體                          → 要引用 2 個不同網域的文件（單一媒體的一篇報導不夠）
+ *   新聞標題、價格、論點 note、其他      → 不行
+ * hardOnly：只認申報與財報表（往上加碼的判斷不放寬）。
+ */
+export function premiseCite(s: CheckedSample, ids: unknown, src: PackSources, hardOnly = false): CiteBasis {
+  const from = citedSources(s, ids);
+  if (from.some((id) => src.hard.has(id))) return 'HARD';
+  if (hardOnly) return null;
+  const webs = from.map((id) => src.web.get(id)).filter((w): w is WebMeta => !!w);
+  if (webs.some((w) => w.tier === 'PRIMARY' || w.tier === 'NAMED')) return 'WEB';
+  return new Set(webs.map((w) => w.domain)).size >= MEDIA_MIN_DOMAINS ? 'WEB' : null;
 }
 
 /**
- * 不成立的前提（own_thesis §1.6 第 1 點；減半檢視的「出清」也用同一個定義，§3.3）：每一票都判 BROKEN、而且每一票都至少有一條通過檢查、
- * 來源是申報原文或財報表的引用——取交集，編號由小到大。samples 是合格的票；不到 wanted 票就是空的。
+ * 這一票確認某條條件「成立」的引用夠不夠（§1.6 表的第三欄）：
+ *   申報、財報表                        → 可以（照舊）
+ *   網頁                                → 只有條件指名了這個網域時可以（不論級別；沒指名的一手、指名的產業來源、媒體都不行）
+ *   新聞標題與其他                      → 不行
+ * named：條件指名的網域（namedWebDomains）。
  */
-export function brokenPremises(samples: CheckedSample[], pack: Pick<EvidencePack, 'documents'>, wanted = OWN_REVIEW_SAMPLES): string[] {
+export function condCite(s: CheckedSample, ids: unknown, src: PackSources, named: readonly string[]): CiteBasis {
+  const from = citedSources(s, ids);
+  if (from.some((id) => src.hard.has(id))) return 'HARD';
+  if (!named.length) return null;
+  return from.some((id) => {
+    const w = src.web.get(id);
+    return !!w && named.some((n) => sameWebDomain(w.domain, n));
+  })
+    ? 'WEB'
+    : null;
+}
+
+/**
+ * 不成立的前提（own_thesis §1.6 第 1 點；減半檢視的「出清」也用同一個定義，§3.3）：每一票都判 BROKEN、而且每一票都有合格的引用
+ * （premiseCite：申報或財報表；清單內的網頁照級別，T53）——取交集，編號由小到大。samples 是合格的票；不到 wanted 票就是空的。
+ * opt.hardOnly：只認申報與財報表的引用。
+ */
+export function brokenPremises(samples: CheckedSample[], pack: Pick<EvidencePack, 'documents'>, wanted = OWN_REVIEW_SAMPLES, opt: { hardOnly?: boolean } = {}): string[] {
   if (samples.length < wanted) return [];
-  const hard = new Set(pack.documents.filter((d) => d.kind === 'filing' || d.kind === 'xbrl').map((d) => d.source_id));
-  const sets = samples.map((s) => new Set(s.premises.filter((p) => p.status === 'BROKEN' && hardCited(s, p.evidence_ids, hard)).map((p) => p.premise_id)));
+  const src = packSources(pack);
+  const sets = samples.map((s) => new Set(s.premises.filter((p) => p.status === 'BROKEN' && premiseCite(s, p.evidence_ids, src, opt.hardOnly)).map((p) => p.premise_id)));
   return [...sets[0]].filter((id) => sets.every((x) => x.has(id))).sort((a, b) => pnum(a) - pnum(b));
 }
 
+/** 往上的檔位（回到標準、提高到 125%）不能只靠網頁（§1.6）：每一票判成立的每一條前提，引用裡至少要有一條來自申報或財報表。 */
+function holdsHard(samples: CheckedSample[], src: PackSources): boolean {
+  return samples.every((s) => s.premises.filter((p) => p.status === 'HOLDS').every((p) => premiseCite(s, p.evidence_ids, src, true) === 'HARD'));
+}
+
 /**
- * F24 的結論 → 引擎的輸入與條件的變動（own_thesis §1.5、§1.6「程式怎麼用結論」第 1、2、4 點）。
- * suggest：3 票一致、和目前狀態不同、而且有一條「不成立的前提」（只有新聞標題或價格當引用的不算；修 N5）；RAISE 另外要求前提全部成立（F23）。
- * 其他情況只放網站。什麼時候當天通知（§1.9）由之後的任務做。
+ * F24 的結論 → 引擎的輸入與條件的變動（own_thesis §1.5、§1.6「程式怎麼用結論」第 1、2、4 點；合格的引用來源照 web_evidence_design §1.6）。
+ * suggest：3 票一致、和目前狀態不同、而且有一條「不成立的前提」（只有新聞標題或價格當引用的不算；修 N5）。
+ * 往上的檔位不放寬：回到標準只認申報或財報引用的「不成立」；RAISE 另外要求前提全部成立（F23），而且每條成立的前提都有申報或財報的引用。
+ * 其他情況只放網站。什麼時候當天通知（§1.9）由 routeReview 決定。
+ * pack.rule.detail.condWeb：指名了網頁來源的條件（證據包編號 → 網域）。
  */
-export function reviewDecision(outcome: Outcome, acct: Account, ticker: string, asOf: string, pack: Pick<EvidencePack, 'documents'>): ReviewDecision {
-  const empty: ReviewDecision = { tier: null, suggest: false, why: outcome.reason, consensus: false, proposed: [], metChecks: [], brokenPremises: [], premiseId: null };
+export function reviewDecision(outcome: Outcome, acct: Account, ticker: string, asOf: string, pack: Pick<EvidencePack, 'documents'> & { rule?: EvidencePack['rule'] }): ReviewDecision {
+  const empty: ReviewDecision = { tier: null, suggest: false, why: outcome.reason, consensus: false, proposed: [], metChecks: [], metBasis: {}, brokenPremises: [], premiseId: null };
   if (outcome.status !== 'AGREED' && outcome.status !== 'INSUFFICIENT' && outcome.status !== 'DATA_MISSING') return empty;
   const tier = outcome.verdict as Tier;
   const samples = outcome.samples.filter((s) => s.valid);
   const full = samples.length >= OWN_REVIEW_SAMPLES;
   const consensus = full && (outcome.status === 'AGREED' || (outcome.status === 'INSUFFICIENT' && keptByChoice('HOLD', outcome.samples, OWN_REVIEW_SAMPLES)));
-  const hard = new Set(pack.documents.filter((d) => d.kind === 'filing' || d.kind === 'xbrl').map((d) => d.source_id));
+  const src = packSources(pack);
 
   // §1.6 第 1 點：不成立的前提取交集
   const broken = brokenPremises(samples, pack);
   const premiseId = broken[0] ?? null;
 
-  // §1.6 第 2 點：三票都寫 MET、各有申報或財報的引用
+  // §1.6 第 2 點：三票都寫 MET、各有合格的引用（申報或財報；條件指名了網頁來源時，那個來源的網頁也算）
+  const condWeb = ((pack.rule?.detail as { condWeb?: Record<string, unknown> } | undefined)?.condWeb ?? {}) as Record<string, unknown>;
+  const namedOf = (id: string): string[] => (Array.isArray(condWeb[id]) ? (condWeb[id] as unknown[]).filter((x): x is string => typeof x === 'string') : []);
   const metOf = (s: CheckedSample) => {
     const list = Array.isArray(s.payload?.condition_checks) ? (s.payload!.condition_checks as Record<string, unknown>[]) : [];
-    return new Set(list.filter((c) => c && c.status === 'MET' && hardCited(s, c.evidence_ids, hard)).map((c) => String(c.id)));
+    const out = new Map<string, CiteBasis>();
+    for (const c of list) {
+      if (!c || c.status !== 'MET') continue;
+      const id = String(c.id);
+      const b = condCite(s, c.evidence_ids, src, namedOf(id));
+      if (b && out.get(id) !== 'HARD') out.set(id, b);
+    }
+    return out;
   };
   const mets = samples.map(metOf);
-  const metChecks = consensus ? [...mets[0]].filter((id) => mets.every((x) => x.has(id))) : [];
+  const metChecks = consensus ? [...mets[0].keys()].filter((id) => mets.every((x) => x.has(id))) : [];
+  const metBasis: ReviewDecision['metBasis'] = Object.fromEntries(metChecks.map((id) => [id, mets.every((x) => x.get(id) === 'HARD') ? 'REVIEW_VOTE' : 'WEB_VOTE']));
 
   // §1.5 第 1 點：建議新增的條件，取自和結論同檔位的第一張合格票
   const rep = samples.find((s) => s.verdict === tier) ?? samples[0];
@@ -256,17 +389,27 @@ export function reviewDecision(outcome: Outcome, acct: Account, ticker: string, 
         }))
     : [];
 
-  const base = { tier, consensus, proposed, metChecks, brokenPremises: broken, premiseId };
+  const base = { tier, consensus, proposed, metChecks, metBasis, brokenPremises: broken, premiseId };
   if (!outcome.actionable) return { ...base, suggest: false, why: outcome.reason };
   const state = acct.rule.own[ticker]?.applied ?? 'STD';
   if (tier === 'HOLD' || tier === STATE_TIER[state]) return { ...base, suggest: false, why: `和目前狀態相同（${TIER_NAME[tier]}），不列進月報。` };
   if (tier === 'RAISE') {
     const allHold = samples.every((s) => s.premises.length > 0 && s.premises.every((p) => p.status === 'HOLDS'));
+    if (allHold && !holdsHard(samples, src)) return { ...base, suggest: false, why: '要提高到 125%，每一條成立的前提都要有申報或財報表的引用（不能只靠網頁、新聞標題或價格）。' };
     const r = raiseAllowed(acct, ticker, asOf);
     return allHold && r.ok ? { ...base, suggest: true, why: '前提全部成立、規則條件成立：月報列提高到 125% 的建議。' } : { ...base, suggest: false, why: allHold ? `不能提高（${r.why}）` : '要提高到 125%，前提要全部成立。' };
   }
-  if (premiseId) return { ...base, suggest: true, why: `3 票都判前提 ${premiseId} 不成立（有申報或財報的引用）：月報並列 AI 建議。` };
-  return { ...base, suggest: false, why: '檔位和目前不同，但沒有一條前提三票都判「不成立」而且有申報或財報的引用，只放網站。' };
+  if (tier !== 'EXIT' && tier !== 'HALF') {
+    // 回到標準：往上的檔位不放寬，只認申報或財報引用的「不成立」，而且判成立的前提不能只靠網頁
+    const hardBroken = brokenPremises(samples, pack, OWN_REVIEW_SAMPLES, { hardOnly: true });
+    if (hardBroken.length && holdsHard(samples, src)) return { ...base, suggest: true, why: `3 票都判前提 ${hardBroken[0]} 不成立（有申報或財報的引用）：月報並列 AI 建議。` };
+    return { ...base, suggest: false, why: `往上的檔位（${TIER_NAME[tier]}）不放寬：沒有一條前提三票都判「不成立」而且有申報或財報的引用，或判成立的前提沒有申報或財報的引用，只放網站。` };
+  }
+  if (premiseId) {
+    const web = samples.some((s) => s.premises.some((p) => p.premise_id === premiseId && p.status === 'BROKEN' && premiseCite(s, p.evidence_ids, src) === 'WEB'));
+    return { ...base, suggest: true, why: `3 票都判前提 ${premiseId} 不成立（${web ? '有清單內網頁全文的引用' : '有申報或財報的引用'}）：月報並列 AI 建議。` };
+  }
+  return { ...base, suggest: false, why: '檔位和目前不同，但沒有一條前提三票都判「不成立」而且有合格的引用（申報、財報表，或清單內的網頁：一手與指名的產業來源一份、媒體要兩個不同網域），只放網站。' };
 }
 
 // ---------------------------------------------------------------- F25 事件條件（新申報出現時）

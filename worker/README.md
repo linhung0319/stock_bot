@@ -88,7 +88,7 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - `src/data/edgar.ts`：XBRL companyfacts（point-in-time 季度表、財報條件比對）、申報原文（MD&A、8-K 與 EX-99.1）、Nasdaq 新聞標題。
 - `src/ai/ownReview.ts`：F24／F25 的證據包、payload 檢查、結論怎麼變成引擎的輸入；`src/app/ownAi.ts`：接進每日流程（`aiStep`）。
 - 用真實資料看 F24 的證據長什麼樣（不觸發 AI）：`npx tsx scripts/own-evidence-local.ts MU 2026-11-13`。
-- prompt：`../ai/prompts/own_review_v2.md`（T26 起；`own_review_v1` 不再使用）、`own_condition_v1.md`。
+- prompt：`../ai/prompts/own_review_v3.md`（T53 起：分析師可以另外找資料、網頁證據照來源的級別算數；`own_review_v1`、`v2` 不再使用）、`own_condition_v1.md`。
 
 ## 其餘 AI 功能（T11）
 

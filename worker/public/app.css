@@ -467,9 +467,11 @@ a.step-in:hover, button.step-in:hover { color: #fff; }
 .math { display: grid; gap: 4px; font-size: 14px; color: var(--ink-2); }
 .math li::before { content: "· "; color: var(--ink-3); }
 .rule-text { font-size: 14px; color: var(--ink-2); line-height: 1.8; }
-.facts { display: grid; grid-template-columns: minmax(7em, auto) 1fr; gap: 8px 18px; font-size: 14px; }
-.facts dt { color: var(--ink-3); }
-.facts dd { color: var(--ink); }
+/* 項目那一欄最多占 45%（長的項目名稱折行，至少 7em），數值那一欄可以縮、長的英文代號可以斷行：
+   手機上 AI 紀錄頁「問 AI 的問題」原本把整頁撐寬 24px，證據包的長項目名稱會把數值擠到看不見（T53 截圖時看到） */
+.facts { display: grid; grid-template-columns: fit-content(45%) minmax(0, 1fr); gap: 8px 18px; font-size: 14px; }
+.facts dt { color: var(--ink-3); min-width: 7em; }
+.facts dd { color: var(--ink); overflow-wrap: anywhere; }
 .facts dd small { display: block; color: var(--ink-3); font-size: 12.5px; }
 
 /* 門檻條：條的長度＝離門檻走了多遠；白線是門檻；白線之後是會觸發的範圍（下面寫著會發生什麼）；白點是現在 */
@@ -762,6 +764,14 @@ a.rv:hover { background: var(--wash); }
 .cond-h { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
 .cond-h b { font-weight: 500; overflow-wrap: anywhere; }
 .cond-h .chip { flex: none; }
+/* AI 紀錄頁「AI 這次另外找了什麼」（T53）：問題與搜尋的字、取回的文件、沒有讀到的 */
+.found-list { display: grid; gap: 6px; margin-top: 6px; }
+.found-list li { overflow-wrap: anywhere; }
+.found-doc p, .found-doc blockquote { overflow-wrap: anywhere; }
+.found-what { font-size: 14px; }
+/* 勾選條件時的網頁來源（T53）：說明在上、選單在下；選單不比外框寬（手機上選項的字很長） */
+.cond-src { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin-top: 8px; }
+.cond-src select { width: 100%; max-width: 30rem; min-width: 0; min-height: 36px; padding: 4px 10px; }
 .cond-ctl { margin-top: 8px; gap: 8px; }
 .cond-ctl select { width: auto; min-height: 36px; padding: 4px 10px; }
 /* 財報條件的進度：一季一段，已符合的那幾季是紅的（和門檻條「會觸發的範圍」同一個意思），每一段寫那一季的數值或「下一季」 */

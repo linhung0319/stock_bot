@@ -168,7 +168,7 @@ export function aiBlock(note) {
           note.premises.map((p) => h('li', null, h('span', { class: 'st ' + p.status }, PREM[p.status]), h('span', null, p.text, ' ', h('span', { class: 'faint' }, `（${ORIGIN[p.origin] ?? p.origin}）`)), p.evidence ? h('small', null, '依據：' + p.evidence) : null)),
         )
       : null,
-    (note.quotes ?? []).map((q) => h('blockquote', { class: 'quote' }, `「${q.quote}」`, h('cite', null, `${q.source}，${q.date}`))),
+    (note.quotes ?? []).map((q) => h('blockquote', { class: 'quote' }, `「${q.quote}」`, h('cite', null, `${q.source}，${q.date}`, q.url ? [' · ', h('a', { href: q.url, target: '_blank', rel: 'noopener noreferrer' }, '原始網址')] : null))),
     note.conditions?.length || note.sections?.length
       ? h(
           'details',

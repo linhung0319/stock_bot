@@ -6,12 +6,12 @@
 import { TIER_NAME, type Tier } from '../engine';
 import type { CheckedSample, EvidencePack, Outcome, PackDoc, PackPremise } from './check';
 import type { EntryHit } from './momEntry';
-import { checkOwnReviewPayload, type ConditionDraft } from './ownReview';
+import { checkOwnReviewPayload, confirmMode, namedWebDomains, webConfirmText, type ConditionDraft } from './ownReview';
 import { buildPack } from './pack';
 import type { CondAction } from '../app/thesis';
 
 export const OWN_CHECK = 'OWN_CHECK';
-export const OWN_CHECK_PROMPT = 'own_check_v4';
+export const OWN_CHECK_PROMPT = 'own_check_v5';
 
 /** 使用者寫的一條出場條件與選的成立時動作。 */
 export interface ExitLine {
@@ -48,6 +48,11 @@ export interface OwnCheckInput {
   exitsVersion?: number | null;
   live?: number[];
   sameByText?: Record<string, number>;
+  /**
+   * 可以指名的網頁來源（T53，web_evidence_design §1.6）：facts 的 S 開頭那幾行與網域清單（webEvidence.ts 的 sourceFacts）；
+   * 事件條件的確認來源可以寫 `web:<網域>`，只能指名這些。只有系統預設前提的股票不給（它的審查不用網頁證據）。記在 rule.detail.webDomains。
+   */
+  sources?: { facts: EvidencePack['facts']; domains: string[] };
   now: Date;
 }
 
@@ -66,7 +71,8 @@ export function ownCheckPack(inp: OwnCheckInput) {
       '請把每一條改寫成可追蹤的格式（payload.conditions，格式和定期審查相同），每一條寫 line（對應的 U 編號）；數字門檻要對應證據包裡的數字；改寫不了的在 report 說明。' +
       'U 是使用者這次要的全部出場條件（整組取代 facts 的 C 開頭：目前監測中的條件）。每一條 U 都要標出和既有條件的關係：' +
       '和某條 C 是同一件事、門檻也一樣 → 寫 same（那條 C 的編號），不會新增、舊的保留；是在更新某條 C 或 W（例如門檻改了）→ 寫 supersedes（被更新的編號），使用者確認後舊的撤下；都不是就兩個都不寫（新的）。' +
-      '沒有被任何 U 標成 same 或 supersedes 的 C，使用者確認後會撤下。現行的論點、前提（premises）是背景：不用逐條檢查前提。不要評論該不該買。',
+      '沒有被任何 U 標成 same 或 supersedes 的 C，使用者確認後會撤下。現行的論點、前提（premises）是背景：不用逐條檢查前提。不要評論該不該買。' +
+      (inp.sources?.domains.length ? '使用者的條件寫明要看某個產業來源或公司新聞室、而那個來源在 facts 的 S 開頭裡時，確認來源寫 web:<網域>（只能指名 S 列出的網域）。' : ''),
     policy: { level: 'A1', verdicts: ['DONE', 'INSUFFICIENT'], abstain: 'INSUFFICIENT', min_evidence: 0, samples: 1 },
     rule: {
       action: '只提供資訊（不給買或不買的結論）',
@@ -77,12 +83,14 @@ export function ownCheckPack(inp: OwnCheckInput) {
         thesisVersion: inp.thesisVersion,
         ...(inp.condMap && Object.keys(inp.condMap).length ? { condMap: inp.condMap } : {}),
         ...(inp.exitsVersion !== undefined && inp.exitsVersion !== null ? { exitsVersion: inp.exitsVersion, live: inp.live ?? [], sameByText: inp.sameByText ?? {} } : {}),
+        ...(inp.sources?.domains.length ? { webDomains: inp.sources.domains } : {}),
       },
     },
     facts: [
       ...inp.facts,
       ...exits.map((e, k) => ({ id: `U${k + 1}`, label: `使用者要的出場條件（整組取代目前監測中的；成立時：${ACTION_TEXT[e.action]}）`, value: e.text })),
       ...inp.condFacts,
+      ...(inp.sources?.facts ?? []),
       ...inp.hits.map((h, k) => ({ id: `H${k + 1}`, label: `硬事件掃描：${h.code}（${h.sub}）`, value: h.date ?? inp.asOf, note: h.detail })),
     ],
     premises: inp.premises,
@@ -106,15 +114,20 @@ export interface OwnCheckResult {
    * same（T42）：和哪一條監測中的條件是同一件事（列編號）：不新增、舊的保留。AI 寫的 same，或文字和那一條相同（程式的後備）。
    * line：對到使用者寫的第幾條（0 起；對不到是 null）。
    */
-  conditions: (ConditionDraft & { then: string; action: CondAction; from: string | null; supersedes: number | null; same: number | null; line: number | null })[];
+  /** web（T53）：這條指名的網頁來源（網域）；canSource：勾選時可以改來源（事件條件、通過檢查、只在審查時檢查或已經指名了來源）。 */
+  conditions: (ConditionDraft & { then: string; action: CondAction; from: string | null; supersedes: number | null; same: number | null; line: number | null; web: string[]; canSource: boolean })[];
   summary: string | null;
 }
 
 const confirmOf = (kind: string, check: Record<string, unknown>): string => {
   if (kind === 'XBRL') return '新財報出來時比對';
-  const by = Array.isArray(check.confirm_by) ? check.confirm_by.map(String) : [];
-  return by.length && by.every((x) => x === 'earnings_call' || x === 'major_news') ? '只在定期審查時檢查' : '新申報出來時由 AI 確認';
+  const web = webConfirmText(check);
+  if (confirmMode({ kind, check }) === 'REVIEW_ONLY') return web ?? '只在定期審查時檢查';
+  return web ? `新申報出來時由 AI 確認；${web.replace('審查時用', '審查時也用')}` : '新申報出來時由 AI 確認';
 };
+
+/** 勾選時可以改網頁來源的條件（§1.6「使用者勾選條件時看得到並可以改」）：通過檢查的事件條件，只在審查時檢查的，或已經指名了來源的。 */
+export const canPickSource = (c: { kind: string; check: Record<string, unknown>; manual?: boolean }): boolean => !c.manual && c.kind === 'EVENT' && (confirmMode(c) === 'REVIEW_ONLY' || namedWebDomains(c.check).length > 0);
 
 /**
  * 改寫的結果（網站顯示，讓使用者勾選）。exits：送去改寫的那幾條（證據包的 rule.detail.exits）；
@@ -159,6 +172,8 @@ export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: E
         same,
         line: src ? Number(line![1]) - 1 : null,
         then: c.auto ? confirmOf(kind, check) : `只記錄：${c.why ?? ''}`,
+        web: c.auto && kind === 'EVENT' ? namedWebDomains(check) : [],
+        canSource: canPickSource({ kind, check, manual: !c.auto }),
       };
     });
   return { conditions, summary: s.report?.split(/\n\s*\n/)[0]?.slice(0, 400) ?? null };

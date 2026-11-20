@@ -71,6 +71,9 @@ export interface AddedDoc {
   at: string;
   /** web_docs 的列編號（同業申報沒有）。 */
   row_id: number | null;
+  /** 網頁對到清單上的哪個來源（T53）：清單上的網域寫法（`trendforce.com`、這檔自己的 `news.skhynix.com`）與名稱。T52 存的舊紀錄沒有。 */
+  domain?: string | null;
+  label?: string | null;
 }
 
 export interface RefusedItem {
@@ -107,8 +110,47 @@ export function parseAdded(raw: string | null | undefined): AddedRecord {
   }
 }
 
-/** 取回的文件 → 證據包的文件。 */
-export const packDocOf = (d: AddedDoc): PackDoc => ({ id: d.id, source_id: d.source_id, kind: d.kind, date: d.date, title: d.title, ...(d.url ? { url: d.url } : {}), text: d.text, fetched_at: d.fetched_at });
+/**
+ * 網頁文件多帶的三樣（T53，web_evidence_design §1.6：級別決定它能觸發什麼）：級別、清單上的網域、來源名稱。
+ * 由程式在取文件時記下（不是 AI 寫的）；放在證據包的文件上，判斷「合格的引用」時讀（src/ai/ownReview.ts）。
+ * check.ts 的 PackDoc 不改：逐字引用檢查不看這三樣。
+ */
+export interface WebMeta {
+  tier: 'PRIMARY' | 'NAMED' | 'MEDIA';
+  domain: string;
+  label: string;
+}
+export type WebPackDoc = PackDoc & Partial<WebMeta>;
+
+const hostOf = (url: string | null | undefined): string => {
+  try {
+    return url ? new URL(url).hostname.toLowerCase().replace(/^www\./, '') : '';
+  } catch {
+    return '';
+  }
+};
+
+/** 證據包裡一份網頁文件的級別與網域；不是網頁、或沒有級別（不該發生）→ null（當成不合格的來源）。 */
+export function webMetaOf(d: PackDoc): WebMeta | null {
+  if (d.kind !== 'web') return null;
+  const w = d as WebPackDoc;
+  if (w.tier !== 'PRIMARY' && w.tier !== 'NAMED' && w.tier !== 'MEDIA') return null;
+  const domain = (w.domain || hostOf(d.url)).toLowerCase();
+  return domain ? { tier: w.tier, domain, label: w.label || domain } : null;
+}
+
+/** 取回的文件 → 證據包的文件（網頁多帶級別、網域、來源名稱）。 */
+export const packDocOf = (d: AddedDoc): WebPackDoc => ({
+  id: d.id,
+  source_id: d.source_id,
+  kind: d.kind,
+  date: d.date,
+  title: d.title,
+  ...(d.url ? { url: d.url } : {}),
+  text: d.text,
+  fetched_at: d.fetched_at,
+  ...(d.kind === 'web' && d.tier ? { tier: d.tier, domain: (d.domain || hostOf(d.url)).toLowerCase(), label: d.label || d.domain || hostOf(d.url) } : {}),
+});
 
 /**
  * 表決用的證據包：原本的文件＋取回的文件（同一個 source_id 原本就有的不再加）。
@@ -125,4 +167,60 @@ export function withAdded(pack: EvidencePack, docs: readonly AddedDoc[]): Eviden
 export async function addedHash(docs: readonly AddedDoc[]): Promise<string | null> {
   if (!docs.length) return null;
   return packHash({ documents: docs.map(packDocOf) } as unknown as EvidencePack);
+}
+
+// ---------------------------------------------------------------- 分析師自己回報的找資料紀錄（T53，§1.5 第 5 點）
+
+/** 要查的問題最多幾個、搜尋最多幾次（§1.5；prompt 也寫同樣的數字）。超過的照樣存，網站寫明超過。 */
+export const LOOKUP_QUESTIONS = 6;
+export const LOOKUP_QUERIES = 6;
+const LOOKUP_KEEP = { questions: 12, queries: 20, wanted: 40 } as const;
+
+/**
+ * 送回的結果裡的 lookups（存進 ai_runs.lookups）：分析師列的問題、搜尋的字、想取的每一份與結果。
+ * 這是 AI 自己寫的，只用來顯示「AI 這次另外找了什麼、為什麼」；取到幾份、被拒絕幾份以程式記的 added_docs 為準。
+ */
+export interface Lookups {
+  questions: { for: string | null; ask: string }[];
+  queries: string[];
+  wanted: { url: string | null; menu: string | null; for: string | null; why: string | null; got: string | null }[];
+}
+
+const txt = (v: unknown, max: number): string | null => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
+const refOf = (v: unknown): string | null => (typeof v === 'string' && /^[A-Z]{1,2}\d{1,4}$/.test(v.trim()) ? v.trim() : null);
+
+/**
+ * 不可信的輸入 → 固定的形狀；整份不是物件、或三樣都是空的 → null（＝沒有回報）。
+ * 格式不對的項目丟掉，不因此退回整份結果（三票的結論不該因為這份附帶的紀錄寫錯而作廢）。
+ */
+export function cleanLookups(raw: unknown): Lookups | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const arr = (v: unknown, n: number): unknown[] => (Array.isArray(v) ? v.slice(0, n) : []);
+  const questions = arr(o.questions, LOOKUP_KEEP.questions).flatMap((q) => {
+    if (typeof q === 'string') return txt(q, 500) ? [{ for: null, ask: txt(q, 500)! }] : [];
+    if (typeof q !== 'object' || q === null) return [];
+    const r = q as Record<string, unknown>;
+    const ask = txt(r.ask, 500) ?? txt(r.question, 500);
+    return ask ? [{ for: refOf(r.for), ask }] : [];
+  });
+  const queries = arr(o.queries, LOOKUP_KEEP.queries).flatMap((q) => (txt(q, 300) ? [txt(q, 300)!] : []));
+  const wanted = arr(o.wanted, LOOKUP_KEEP.wanted).flatMap((w) => {
+    if (typeof w !== 'object' || w === null) return [];
+    const r = w as Record<string, unknown>;
+    const url = txt(r.url, 2000);
+    const menu = txt(r.menu, 10);
+    return url || menu ? [{ url, menu, for: refOf(r.for), why: txt(r.why, 300), got: txt(r.got, 200) }] : [];
+  });
+  return questions.length || queries.length || wanted.length ? { questions, queries, wanted } : null;
+}
+
+/** 讀 ai_runs.lookups：沒有或壞掉的都當成沒有回報。 */
+export function parseLookups(raw: string | null | undefined): Lookups | null {
+  if (!raw) return null;
+  try {
+    return cleanLookups(JSON.parse(raw));
+  } catch {
+    return null;
+  }
 }

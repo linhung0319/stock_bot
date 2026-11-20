@@ -178,7 +178,7 @@ describe('T27：貼回 → 改寫 → 勾選 → 監測 → 新財報成立時�
       // 改寫的證據包：v2、帶論點、前提與使用者選的動作
       const run = (await getRun(c.db, saved.body.rewrite.runId))!;
       expect(run.fn).toBe(OWN_CHECK);
-      expect(run.pack.prompt_version).toBe('own_check_v4'); // T42：整組取代、每一條標 same／supersedes
+      expect(run.pack.prompt_version).toBe('own_check_v5'); // T42：整組取代、每一條標 same／supersedes；T53：可以指名網頁來源（v5）
       expect(run.pack.facts.filter((f) => f.id.startsWith('U')).map((f) => [f.label, f.value])).toEqual([
         ['使用者要的出場條件（整組取代目前監測中的；成立時：出清）', '毛利率連兩季低於 58%'],
         ['使用者要的出場條件（整組取代目前監測中的；成立時：減半）', '公司在 8-K 下修全年財測'],

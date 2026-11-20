@@ -12,8 +12,10 @@
 //                               沒有就不審、記 reviewSkip（月報那天用上一次的結論）；
 //                               前提有增減（thesisReviewDue）→ 論點變動後的審查（每檔 30 天 1 次，own_thesis §3.6.5）
 // 雲端排程（ROUTINE_FIRE_URL／ROUTINE_TOKEN）還沒設定時不開新的執行；EDGAR 的 User-Agent 沒設定時不看申報。
-import type { CheckedSample, PackDoc } from '../ai/check';
-import { OWN_CONDITION, OWN_REVIEW, confirmMode, conditionDecision, conditionPack, ownReviewPack, reviewDecision, type ConditionDraft, type ProposedDraft } from '../ai/ownReview';
+import { webMetaOf } from '../ai/added';
+import type { CheckedSample, EvidencePack, PackDoc } from '../ai/check';
+import { MEDIA_MIN_DOMAINS, OWN_CONDITION, OWN_REVIEW, citedSources, condCite, confirmMode, conditionDecision, conditionPack, namedWebDomains, ownReviewPack, packSources, reviewDecision, type ConditionDraft, type ProposedDraft } from '../ai/ownReview';
+import { sameWebDomain } from '../data/webSources';
 import { newRunId } from '../ai/pack';
 import { TIER_NAME, clone, condMetNotice, ownHeld, routeReview, type Account, type CondNotice, type MarketView, type OwnMeta, type ReviewTrigger } from '../engine';
 import { ConflictError, loadAccount, saveAccount, thesisLogStmt } from './ledgerStore';
@@ -80,8 +82,8 @@ export function insertConditionStmts(db: D1Database, ticker: string, runId: stri
   });
 }
 
-/** 條件成立（met_basis：XBRL 程式比對、PRESS 財報新聞稿擷取、FILING_VOTE 申報原文三票、REVIEW_VOTE 審查三票）。 */
-export const metStmt = (db: D1Database, id: number, at: string, note: string, basis: 'XBRL' | 'PRESS' | 'FILING_VOTE' | 'REVIEW_VOTE') => db.prepare("UPDATE own_conditions SET status = 'MET', met_at = ?, note = ?, met_basis = ? WHERE id = ?").bind(at, note, basis, id);
+/** 條件成立（met_basis：XBRL 程式比對、PRESS 財報新聞稿擷取、FILING_VOTE 申報原文三票、REVIEW_VOTE 審查三票、WEB_VOTE 審查三票依條件指名的網頁來源，T53）。 */
+export const metStmt = (db: D1Database, id: number, at: string, note: string, basis: 'XBRL' | 'PRESS' | 'FILING_VOTE' | 'REVIEW_VOTE' | 'WEB_VOTE') => db.prepare("UPDATE own_conditions SET status = 'MET', met_at = ?, note = ?, met_basis = ? WHERE id = ?").bind(at, note, basis, id);
 
 // ---------------------------------------------------------------- 證據
 
@@ -211,19 +213,82 @@ export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, 
   const conds = tf ? condFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null) : undefined;
   const extra = tf ? await reviewThesisEvidence(env, fetcher, tf, ev, view.date) : { facts: [], filings: [], docs: [], notes: [] };
   // 目錄（T52，web_evidence_design §1.2）：同業的申報、清單內的 RSS 連結，只有標題；只有預設前提的沒有目錄、不能取文件
+  // 清單內的網頁來源（T53，facts 的 S 開頭）跟目錄一起：分析師搜尋時優先挑、建議的條件指名來源時只能指名這些
   const menu = tf && acct.own[ticker] ? await buildDocMenu(env, fetcher, { ticker, tf, meta: acct.own[ticker], asOf: view.date, headlines: ev.headlines ?? null }) : null;
-  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, dataQuality: ev.dataQuality, extraFacts: [...extra.facts, ...(early?.facts ?? []), ...(menu?.facts ?? [])], extraDocs: extra.docs, reasons, ...(early ? { early: { reason: early.reason, events: early.events } } : {}), now });
+  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, webDomains: menu?.sources.domains ?? [], dataQuality: ev.dataQuality, extraFacts: [...extra.facts, ...(early?.facts ?? []), ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: extra.docs, reasons, ...(early ? { early: { reason: early.reason, events: early.events } } : {}), now });
   return startRun(env, fetcher, pack, now, [...ev.notes, ...extra.notes, ...(menu?.notes ?? []), ...notes], menu?.ctx ?? null);
 }
 
 // ---------------------------------------------------------------- 套用結論
 
-/** 申報或財報表的簡稱（失效通知的理由用）：`8-K 2027-01-06`、`財報數字表（XBRL，2027-01-08）`。 */
+/**
+ * 申報或財報表的簡稱（失效通知的理由用）：`8-K 2027-01-06`、`財報數字表（XBRL，2027-01-08）`；
+ * 分析師取回的同業申報（T52，標題是「〔同業申報｜Micron〕8-K…」）：`Micron 的 8-K 2026-09-25`。
+ */
 export function docLabel(doc: Pick<PackDoc, 'kind' | 'title' | 'date'> | undefined): string | null {
   if (!doc) return null;
   if (doc.kind === 'xbrl') return `財報數字表（XBRL，${doc.date}）`;
-  const form = /^([^\s（：]+)/.exec(doc.title)?.[1] ?? '申報';
-  return `${form} ${doc.date}`;
+  const peer = /^〔同業申報｜(.+?)〕(.*)$/.exec(doc.title);
+  const form = /^([^\s（：]+)/.exec(peer ? peer[2] : doc.title)?.[1] ?? '申報';
+  return `${peer ? `${peer[1]} 的 ` : ''}${form} ${doc.date}`;
+}
+
+/** 網頁文件的簡稱（T53）：`TrendForce 2026-09-30 的新聞稿`；網址路徑看不出是新聞稿的寫「文章」。不是網頁 → null。 */
+export function webDocLabel(doc: PackDoc | undefined): string | null {
+  const w = doc ? webMetaOf(doc) : null;
+  if (!doc || !w) return null;
+  const path = (() => {
+    try {
+      return doc.url ? new URL(doc.url).pathname : '';
+    } catch {
+      return '';
+    }
+  })();
+  return `${w.label} ${doc.date} 的${/press/i.test(path) ? '新聞稿' : '文章'}`;
+}
+
+/** 通知上「依據」那一句（web_evidence_design §1.6）：text 是依據、note 是後面括號裡的字、web 是依據裡有沒有網頁。 */
+export interface CitedBasis {
+  text: string;
+  note: string;
+  web: boolean;
+}
+export const BASIS_NOTE = { filing: '引用在網站', web: '網頁；引用與連結在網站', both: '後者是網頁；引用與連結在網站' } as const;
+
+/**
+ * 三票裡第一張有合格引用的票，它引用的依據（乙類的「依據：…」、甲類 WEB_VOTE 的理由）：
+ *   申報或財報表寫在前面（第一份）；網頁接在後面——判前提不成立時取第一份一手或指名的產業來源，沒有的話取媒體的前兩個不同網域；
+ *   確認條件成立時（named = 條件指名的網域）只取那個來源的第一份。
+ * pick：從一票裡取出那件事的引用編號（某條前提或某條條件的 evidence_ids）。
+ */
+export function citedBasis(run: { outcome: AiRun['outcome']; pack: Pick<EvidencePack, 'documents'> }, pick: (s: CheckedSample) => unknown, named?: readonly string[]): CitedBasis | null {
+  const src = packSources(run.pack);
+  const docs = new Map(run.pack.documents.map((d) => [d.source_id, d]));
+  for (const s of run.outcome?.samples.filter((x) => x.valid) ?? []) {
+    const from = [...new Set(citedSources(s, pick(s)))];
+    const hard = from.find((id) => src.hard.has(id));
+    const webs = from.filter((id) => src.web.has(id));
+    let web: string[] = [];
+    if (named) web = webs.filter((id) => named.some((n) => sameWebDomain(src.web.get(id)!.domain, n))).slice(0, 1);
+    else {
+      const strong = webs.find((id) => src.web.get(id)!.tier !== 'MEDIA');
+      if (strong) web = [strong];
+      else {
+        const seen = new Set<string>();
+        const media = webs.filter((id) => {
+          const dom = src.web.get(id)!.domain;
+          if (seen.has(dom)) return false;
+          seen.add(dom);
+          return true;
+        });
+        if (media.length >= MEDIA_MIN_DOMAINS) web = media.slice(0, MEDIA_MIN_DOMAINS);
+      }
+    }
+    const parts = [hard ? docLabel(docs.get(hard)) : null, ...web.map((id) => webDocLabel(docs.get(id)))].filter((x): x is string => !!x);
+    if (!parts.length) continue;
+    return { text: parts.join('、'), note: !web.length ? BASIS_NOTE.filing : hard ? BASIS_NOTE.both : BASIS_NOTE.web, web: web.length > 0 };
+  }
+  return null;
 }
 
 /**
@@ -291,6 +356,7 @@ export function notifyOwnCondition(ctx: ApplyCtx, c: FileCondition, why: string,
  * F24 → 引擎記下檔位與不成立的前提，照 own_thesis §1.9 決定怎麼給（routeReview：當天通知乙類、進月報、更新還沒回覆的通知、只放網站）；
  * 條件只在三票一致（含一致選「不動」）時動（own_thesis §1.5、§1.6）：
  *   你定的條件（REVIEW_ONLY、申報確認的 ACTIVE）三票確認成立 → MET（met_basis = REVIEW_VOTE），甲類通知（月審確認的進隔天的月報）
+ *     條件指名了網頁來源、靠那個來源的引用成立的（T53，web_evidence_design §1.6）→ met_basis = WEB_VOTE，理由寫是哪個來源哪一天的文章
  *   財報類的你定的條件以程式比對為準，審查的看法只記錄；觀察項（W）成立與否只是給下一次審查的輸入
  *   建議新增的條件 → PROPOSED（有寫入時舊的建議 EXPIRED，沒提時留著）。你定的條件不會被換掉。
  */
@@ -303,8 +369,8 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
   const detail = (run.pack.rule.detail ?? {}) as { conds?: Record<string, number>; trigger?: string };
   const trigger = (detail.trigger || 'MANUAL') as ReviewTrigger;
   if (d.tier) {
-    const basis = d.premiseId ? citedDoc(run, (s) => s.premises.find((p) => p.premise_id === d.premiseId && p.status === 'BROKEN')?.evidence_ids ?? []) : null;
-    const r = routeReview(ctx.acct, ctx.view, t, { tier: d.tier, suggest: d.suggest, consensus: d.consensus, premiseId: d.premiseId, trigger, date: run.asOf, runId: run.runId, basis });
+    const basis = d.premiseId ? citedBasis(run, (s) => s.premises.find((p) => p.premise_id === d.premiseId && p.status === 'BROKEN')?.evidence_ids ?? []) : null;
+    const r = routeReview(ctx.acct, ctx.view, t, { tier: d.tier, suggest: d.suggest, consensus: d.consensus, premiseId: d.premiseId, trigger, date: run.asOf, runId: run.runId, basis: basis?.text ?? null, basisNote: basis?.web ? basis.note : null });
     ctx.acct = r.acct;
     // 上一次成立的降級條件已經被這次審查處理過（F8 不再註明）
     if (r.route !== 'KEPT') ctx.acct.own[t].metConds = [];
@@ -322,11 +388,24 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
       continue;
     }
     if (!(c.status === 'REVIEW_ONLY' || (c.status === 'ACTIVE' && confirmMode(c) === 'FILING'))) continue;
-    ctx.stmts.push(metStmt(ctx.db, c.id, at, `定期審查 ${run.runId} 3 票確認`, 'REVIEW_VOTE'));
-    const label = `${run.runId}：你定的條件 ${c.condId} 由審查 3 票確認成立`;
+    // 合格的引用以條件現在指名的來源再看一次（§1.6；組證據包之後改過來源的照現在的）：每一票都要有申報、財報表或那個來源的網頁
+    const src = packSources(run.pack);
+    const votes = run.outcome.samples.filter((s) => s.valid);
+    const condIds = (s: CheckedSample) => (Array.isArray(s.payload?.condition_checks) ? (s.payload!.condition_checks as Record<string, unknown>[]) : []).find((x) => x && String(x.id) === pid && x.status === 'MET')?.evidence_ids ?? [];
+    const named = namedWebDomains(c.check);
+    const bases = votes.map((s) => condCite(s, condIds(s), src, named));
+    if (bases.some((b) => !b)) {
+      ctx.log.push(`${run.runId}：你定的條件 ${c.condId} 3 票認為成立，但引用的網頁不是這條條件現在指名的來源，不算成立`);
+      continue;
+    }
+    // 至少一票靠的是指名的網頁來源 → WEB_VOTE，理由寫那一份（靠網頁的那一票排前面）
+    const viaWeb = bases.some((b) => b === 'WEB');
+    const webBasis = viaWeb ? citedBasis({ outcome: { ...run.outcome, samples: [...votes.filter((_, k) => bases[k] === 'WEB'), ...votes.filter((_, k) => bases[k] !== 'WEB')] }, pack: run.pack }, condIds, named) : null;
+    ctx.stmts.push(metStmt(ctx.db, c.id, at, viaWeb ? `定期審查 ${run.runId} 3 票確認（${webBasis!.text}）` : `定期審查 ${run.runId} 3 票確認`, viaWeb ? 'WEB_VOTE' : 'REVIEW_VOTE'));
+    const label = `${run.runId}：你定的條件 ${c.condId} 由審查 3 票確認成立${viaWeb ? '（指名的網頁來源）' : ''}`;
     // 動作是重新審查：確認它成立的就是這次審查，結論照 §1.9 處理，不再另外開
     if (!notifyTier(c)) ctx.log.push(`${label}（成立時重新審查）→ 這次審查就是重新審查，結論照建議的規則處理`);
-    else notifyOwnCondition(ctx, c, `${run.asOf} 的審查 3 票確認（引用在網站）`, [run.runId, c.runId], label, trigger === 'MONTHLY');
+    else notifyOwnCondition(ctx, c, viaWeb ? `${webBasis!.text}，3 票確認（${webBasis!.note}）` : `${run.asOf} 的審查 3 票確認（引用在網站）`, [run.runId, c.runId], label, trigger === 'MONTHLY');
   }
   if (d.proposed.length) {
     ctx.stmts.push(...proposeStmts(ctx.db, t, ctx.acct.own[t].fileId ?? null, run.runId, d.proposed, at, map));

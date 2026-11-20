@@ -911,7 +911,8 @@ function ownCond(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const c = closeOf(view, t);
   const cur = acct.lots.own[t] ?? 0;
   const m = /你在 (\d{4}-\d{2}-\d{2}) 定的條件「(.+)」成立/.exec(it.title);
-  const note = findNote(ctx.aiNotes, 'CONDITION', t, n.date, it.runIds);
+  // 由定期審查確認成立的（審查三票、或依你指名的網頁來源，T53）：AI 說明是那一次審查的，引用與原始網址列在這裡（理由寫「引用在網站」）
+  const note = noteByRun(ctx.aiNotes, 'CONDITION', it.runIds) ?? noteByRun(ctx.aiNotes, 'REVIEW', it.runIds) ?? findNote(ctx.aiNotes, 'CONDITION', t, n.date, it.runIds);
   return {
     gauge: c ? contextDrawdown(c, view.i) : undefined,
     short: `你定的條件成立：${m?.[2] ?? ''}`,
