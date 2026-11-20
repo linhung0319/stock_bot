@@ -568,7 +568,8 @@ describe('T26：F24、F7 的證據包有你定的條件（C）與觀察項（W�
       await c.run('2026-11-23');
       const [drop] = (await listRuns(c.db, new Date('2026-11-24T00:00:00Z'), { limit: 50 })).filter((x) => x.fn === 'OWN_DROP');
       const ids = drop.pack.facts.map((f) => f.id);
-      expect(ids.slice(-2)).toEqual(['C1', 'W1']);
+      // T54：C、W 之後再接清單內的網頁來源（S*；減半檢視的分析師可以另外找資料）
+      expect(ids.filter((x) => !/^S\d+$/.test(x)).slice(-2)).toEqual(['C1', 'W1']);
       expect(drop.pack.facts.find((f) => f.id === 'W1')!.note).toContain('程式比對：成立');
       expect(drop.pack.rule.detail).not.toHaveProperty('conds'); // F7 不確認條件
       void getRun;

@@ -11,7 +11,8 @@ import { brokenPremises } from './ownReview';
 import { buildPack, ownPremises, ownRuleFacts, priceDoc, priceFacts } from './pack';
 
 export const OWN_DROP = 'OWN_DROP';
-export const OWN_DROP_PROMPT = 'own_drop_v2';
+/** T54：v3 多分析師找資料的步驟（web_evidence_design §1.7、§1.8）；判前提不成立的來源規則和定期審查相同（T53）。 */
+export const OWN_DROP_PROMPT = 'own_drop_v3';
 /** F7 獨立跑幾次。 */
 export const OWN_DROP_SAMPLES = 3;
 

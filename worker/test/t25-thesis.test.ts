@@ -511,10 +511,13 @@ describe('T25：F7 的證據包', () => {
         expect(drop.ticker).toBe('NVDA');
         const ids = drop.pack.facts.map((f) => f.id);
         // 原本的：價格 F1～F7、規則 R1～R3（R4 = R1 指標在 T31a 拿掉）、跌幅拆解 A*；新增的接在後面
-        const old = ids.filter((x) => !/^(T0|V\d+|D\d)$/.test(x));
+        // （T54：最後再接清單內的網頁來源 S*；這檔沒有同業、RSS 沒有清單內的連結 → 沒有目錄 M*）
+        const old = ids.filter((x) => !/^(T0|V\d+|D\d|S\d+|M[\d+]+)$/.test(x));
         expect(old.slice(0, 10)).toEqual(['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'R1', 'R2', 'R3']);
         expect(old.slice(10).every((x) => /^A\d$/.test(x))).toBe(true);
-        expect(ids.slice(old.length)).toEqual(['T0', 'V1']);
+        expect(ids.slice(old.length, old.length + 2)).toEqual(['T0', 'V1']);
+        expect(ids.slice(old.length + 2).length).toBeGreaterThan(0);
+        expect(ids.slice(old.length + 2).every((x) => /^S\d+$/.test(x))).toBe(true);
         expect(drop.pack.facts.find((f) => f.id === 'V1')!.note).toContain(`edgar:${k2.accession}`);
         // 原文：上次審查之後的申報（沒有審查：45 天）照順序（有標記的在前），然後價格表；沒有論點本文、沒有審查 → 沒有 note
         expect(drop.pack.documents.map((d) => d.source_id)).toEqual([`edgar:${k2.accession}`, `edgar:${k1.accession}`, `edgar:${TENQ_FILING.accession}`, 'price:NVDA']);

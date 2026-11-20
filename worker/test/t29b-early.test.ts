@@ -16,13 +16,13 @@ import { loadEvents, type FilingCheck } from '../src/app/filings';
 import { runFlow } from '../src/app/flow';
 import { LINE_PUSH_URL } from '../src/app/line';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
-import { EARLY_GAP, monthlyWithin, startEarlyReviews } from '../src/app/ownAi';
+import { EARLY_GAP, EARLY_NO_FILING_ASK, monthlyWithin, startEarlyReviews } from '../src/app/ownAi';
 import type { Attempt } from '../src/app/schedule';
 import { EARLY_NOTE, dueAttention, ownAttention, thesisFile } from '../src/app/thesis';
 import type { CompanyFacts, XbrlFact } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
-import { createAccount, type Account, type MarketView, type Notif } from '../src/engine';
+import { SYSTEM_DEFAULT_PREMISES, createAccount, type Account, type MarketView, type Notif } from '../src/engine';
 import { handle } from '../src/index';
 import { freshDb } from './helpers/d1';
 import { fakeFetcher, newWorld, type World } from './helpers/fakeSources';
@@ -147,6 +147,13 @@ async function withWorld(fn: (c: Ctx) => Promise<void>) {
 // ---------------------------------------------------------------- 小工具
 
 const acctOf = async (db: D1Database): Promise<Account> => (await loadAccount(db))!.acct;
+/** NVDA 改成只有系統預設前提（T54：個股自身大跌、沒有新申報時只有這種照舊不開）。 */
+async function defaultOnly(db: D1Database): Promise<void> {
+  const loaded = (await loadAccount(db))!;
+  const a = structuredClone(loaded.acct);
+  a.own.NVDA.premises = structuredClone(SYSTEM_DEFAULT_PREMISES);
+  await saveAccount(db, a, loaded, 'test', new Date('2026-11-19T12:30:00Z'));
+}
 
 /** 直接呼叫開執行的函式用的 StartCtx（session 可以和 view 的日子不同：只看日期判斷的情況用）。 */
 async function startCtx(c: Ctx, session: string, o: { view?: { view: MarketView; axis: string[] }; checks?: FilingCheck[]; reduced?: { ticker: string; session: string }[] } = {}): Promise<StartCtx> {
@@ -319,10 +326,12 @@ describe('§2.4 的表（照順序，第一個符合的決定）', () => {
     });
   });
 
-  it('③ 只限價格類：上次有結論的審查之後沒有新的申報或事件 → 不開，「沒有新的申報可以檢查」，列進要看的事（發生後的第一份月報）；有新申報或還沒審過 → 開', async () => {
+  it('③ 只限價格類：上次有結論的審查之後沒有新的申報或事件、只有系統預設前提 → 不開，「沒有新的申報可以檢查」，列進要看的事（發生後的第一份月報）；有新申報或還沒審過 → 開（T54：有論點的另見下一個測試）', async () => {
     await withWorld(async (c) => {
       await c.run('2026-11-20');
       const v20 = await c.viewAt('2026-11-20');
+      // T54：只有系統預設前提的才照舊不開（有論點的改成開提前審查、請分析師上網找）
+      await defaultOnly(c.db);
       await addRun(c, 'rev-1119', 'OWN_REVIEW', '2026-11-19');
       const p = await addEvent(c.db, PRICE('2026-11-20'));
       const old = check([{ accession: TENQ.accession, form: '10-Q', filingDate: '2026-10-30', acceptedAt: '2026-10-30T20:10:00.000Z' }]);
@@ -348,6 +357,45 @@ describe('§2.4 的表（照順序，第一個符合的決定）', () => {
       await startEarlyReviews(sc2);
       expect(sc2.res.started).toHaveLength(1);
       expect((await eventById(c.db, p2)).handled_note).toBe(`提前審查 ${sc2.res.started[0]}`);
+    });
+  });
+
+  it('③ T54（web_evidence_design §1.7）：有論點的股票，大跌而且沒有新的申報或事件 → 照樣開提前審查，題目請分析師找清單內來源的消息、可以取文件；仍受 30 天上限與減半檢視那一條擋', async () => {
+    await withWorld(async (c) => {
+      await c.run('2026-11-20');
+      const v20 = shocked(await c.viewAt('2026-11-20'), -0.2, -0.05);
+      await addRun(c, 'rev-1119', 'OWN_REVIEW', '2026-11-19');
+      const p = await addEvent(c.db, PRICE('2026-11-20'));
+      const old = check([{ accession: TENQ.accession, form: '10-Q', filingDate: '2026-10-30', acceptedAt: '2026-10-30T20:10:00.000Z' }]);
+      const sc = await startCtx(c, '2026-11-20', { view: v20, checks: old });
+      await startEarlyReviews(sc);
+      expect(sc.res.started).toHaveLength(1);
+      const r = (await reviews(c.db)).find((x) => x.runId === sc.res.started[0])!;
+      expect(await eventById(c.db, p)).toMatchObject({ status: 'HANDLED', handled_note: `提前審查 ${r.runId}` });
+      expect(r.pack.question.startsWith(`這次是提前審查，原因：最近 21 個交易日個股自身跌 15.0%；${EARLY_NO_FILING_ASK}。`)).toBe(true);
+      expect(EARLY_NO_FILING_ASK).toBe('沒有新的申報，請分析師找有沒有清單內來源的消息');
+      expect(r.pack.rule.detail).toMatchObject({ trigger: 'EARLY', events: [p] });
+      // 分析師可以取文件：證據包有清單內的網頁來源（S），doc_ctx 沒有被關掉
+      expect(r.pack.facts.some((f) => /^S\d+$/.test(f.id))).toBe(true);
+      const ctx = await c.db.prepare('SELECT doc_ctx FROM ai_runs WHERE run_id = ?').bind(r.runId).first<{ doc_ctx: string | null }>();
+      expect(JSON.parse(ctx!.doc_ctx!).off ?? null).toBeNull();
+      expect((await acctOf(c.db)).own.NVDA.earlyReviewAt).toBe('2026-11-20');
+      // 不列進要看的事（PRICE_NO_FILING 只給只有預設前提的）
+      const acct = await acctOf(c.db);
+      expect(ownAttention([(await thesisFile(c.db, acct, 'NVDA', '2026-11-20'))!], acct, v20.view).some((h) => h.kind === 'PRICE_NO_FILING')).toBe(false);
+      // 同一個 30 天上限：12-10 再大跌（一樣沒有新申報）→ 擋下
+      const p2 = await addEvent(c.db, { ...PRICE('2026-12-10'), accession: 'price:NVDA:2026-12-10' });
+      const sc2 = await startCtx(c, '2026-12-10', { view: v20, checks: old });
+      await startEarlyReviews(sc2);
+      expect(sc2.res.started).toEqual([]);
+      expect(await eventById(c.db, p2)).toMatchObject({ status: 'HANDLED', handled_note: EARLY_NOTE.recent });
+      // 30 天內跑過減半檢視 → 照舊不開
+      await addRun(c, 'drop-1', 'OWN_DROP', '2026-12-28', null);
+      const p3 = await addEvent(c.db, { ...PRICE('2026-12-30'), accession: 'price:NVDA:2026-12-30' });
+      const sc3 = await startCtx(c, '2026-12-30', { view: v20, checks: old });
+      await startEarlyReviews(sc3);
+      expect(sc3.res.started).toEqual([]);
+      expect(await eventById(c.db, p3)).toMatchObject({ status: 'HANDLED', handled_note: EARLY_NOTE.dropReview });
     });
   });
 

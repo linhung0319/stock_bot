@@ -142,7 +142,7 @@ describe('五種要看的事：成立與不成立', () => {
     const prem = (id: string, text: string, status: string | null, origin = 'USER', date = '2026-11-21') => ({ id, text, origin, addedAt: '2026-11-20', lastCheck: status ? { date, runId: 'rev-9', status } : null, splitAfter: false });
     const one = fileOf({ premises: [prem('P4', 'HBM 營收持續成長', 'HOLDS'), prem('P5', 'MU 的 HBM 市占沒有流失', 'INSUFFICIENT')] });
     expect(hits('PREMISE_NO_DATA', one)).toEqual([
-      { ticker: 'MU', kind: 'PREMISE_NO_DATA', src: 'own', key: 'PREMISE_NO_DATA:P5', every: 6, since: '2026-11-21', text: 'MU 的前提 P5「MU 的 HBM 市占沒有流失」最近一次審查 3 票都是證據不足：公司的申報與財報裡查不到，stock bot 監測不了這一條。可以改寫成財報查得到的事，或複製討論包到 claude.ai 討論' },
+      { ticker: 'MU', kind: 'PREMISE_NO_DATA', src: 'own', key: 'PREMISE_NO_DATA:P5', every: 6, since: '2026-11-21', text: 'MU 的前提 P5「MU 的 HBM 市占沒有流失」最近一次審查 3 票都是證據不足：公司的申報、財報與 AI 另外取到的網頁裡都沒有找到依據。距上次審查滿 25 天，月底會為這一條再審一次、讓 AI 再去找；也可以改寫成查得到的事，或複製討論包到 claude.ai 討論' }, // T54 改文字（審查可以另外取網頁、月底會再審）
     ]);
     // 兩條：併成一件，鍵帶兩個編號，日期取較新的；太長的字截掉
     const two = fileOf({ premises: [prem('P5', 'MU 的 HBM 市占沒有流失', 'INSUFFICIENT', 'USER', '2026-10-30'), prem('P6', 'SK 海力士與三星在未來兩年內都沒有大幅擴充 HBM 產能而造成供過於求', 'INSUFFICIENT')] });
@@ -151,7 +151,7 @@ describe('五種要看的事：成立與不成立', () => {
     expect(h[0].key).toBe('PREMISE_NO_DATA:P5,P6');
     expect(h[0].since).toBe('2026-11-21');
     expect(h[0].text).toContain('P6「SK 海力士與三星在未來兩年內都沒有大幅擴充 HBM 產能而…」');
-    expect(h[0].text).toContain('監測不了這 2 條');
+    expect(h[0].text).toContain('月底會為這 2 條再審一次');
     // 不列：都成立、不成立、還沒檢查過、系統預設前提的證據不足
     expect(hits('PREMISE_NO_DATA', fileOf({ premises: [prem('P4', 'a', 'HOLDS'), prem('P5', 'b', 'BROKEN'), prem('P6', 'c', null)] }))).toEqual([]);
     expect(hits('PREMISE_NO_DATA', fileOf({ kind: 'DEFAULT_ONLY', premises: [prem('P3', '稀釋每股盈餘沒有連兩季低於去年同季', 'INSUFFICIENT', 'SYSTEM_DEFAULT')] }))).toEqual([]);

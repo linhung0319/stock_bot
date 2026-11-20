@@ -139,14 +139,14 @@ describe('T31b：減半檢視的五種結果（own_thesis §3.3，修 K4）', ()
     expect(dropDecision({ status: 'NO_RESULT', verdict: null, votes: {}, actionable: false, followRule: true, reason: '被退回，照規則。', samples: [] }, pack).status).toBe('NONE');
   });
 
-  it('只有預設前提的股票只能選減半或出清：證據包的 verdicts 沒有 HOLD、題目多一句；三票寫 HOLD 也不會變成「不動」；prompt 升成 v2', () => {
+  it('只有預設前提的股票只能選減半或出清：證據包的 verdicts 沒有 HOLD、題目多一句；三票寫 HOLD 也不會變成「不動」；prompt 升成 v2（T54 起 v3）', () => {
     const sc = scenarios.s2();
     const sim = new Sim(sc.market, sc.init);
     const axis = sim.market.days.slice(0, sim.d);
     const inp = { acct: sim.acct, view: sim.pre, axis, runId: 'r1', attr: { from: '2026-10-01', to: sim.pre.date, sectorTicker: null, ...MARKET_ATTR }, base: null, baseRunId: null, docs: [], urgent: false, dataQuality: {}, now: new Date('2026-12-07T00:00:00Z') };
     // META 沒有自己的前提（系統預設三條）
     const meta = ownDropPack({ ...inp, ticker: 'META' }).pack;
-    expect(meta.prompt_version).toBe('own_drop_v2');
+    expect(meta.prompt_version).toBe('own_drop_v3'); // T54 升成 v3（分析師可以另外找資料）
     expect(meta.policy.verdicts).toEqual(['EXIT', 'HALF']);
     expect(meta.question).toContain('這檔沒有使用者的論點，只能選照規則減半或出清');
     expect(meta.rule.detail).toMatchObject({ attr: { stock: -0.25, idio: -0.05 } });
@@ -792,7 +792,7 @@ describe('T31b：整條流程——推播時間（own_thesis §3.5，修 K3）',
       expect(r1.push).toMatchObject({ sent: 0, failed: 0, held: [n.id] });
       expect(await pushRows(db)).toEqual([]);
       const [drop] = await dropRuns(db);
-      expect(drop).toMatchObject({ ticker: 'NVDA', status: 'PENDING', promptVersion: 'own_drop_v2' });
+      expect(drop).toMatchObject({ ticker: 'NVDA', status: 'PENDING', promptVersion: 'own_drop_v3' }); // T54：v3（分析師可以另外找資料）推播時間照舊
       expect((await acct()).own.NVDA.dropReview).toEqual({ session: '2026-11-23', runId: drop.runId, status: 'PENDING', cause: null, premiseId: null, told: false });
       expect(f7(await acct())).toMatchObject({ aiLine: 'AI 論點檢查進行中，台灣 09:30 前更新', drop: 'PENDING' });
       // 程式算的跌幅拆解：個股自身的跌幅不超過整段的一半

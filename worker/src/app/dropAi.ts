@@ -3,20 +3,23 @@
 // T32d：動能持股的 F20 也拿掉（momentum_ai §3.6）：不再開 DROP_EXPLAIN，改成「要看的事」的一行（src/app/momNotes.ts 的 DROP_21D，不呼叫 AI）。
 // T31b：減半檢視的結果寫進帳戶狀態的 dropReview（own_thesis §3.3）：開的時候 PENDING（沒開成、AI 層沒設定是 NONE），套用時改成
 //       建議不動／建議出清／同意減半／沒有可用的結論，慢規則通知上 AI 的那一行跟著重算（§3.4）。使用者先回覆、結果才回來的照 §3.5。
+// T54：減半檢視的分析師可以另外找資料（web_evidence_design §1.7）：證據包多目錄（M）與清單內的網頁來源（S），ai_runs.doc_ctx 記可以取什麼；
+//       還是在觸發那天跑，減半通知的推播時間不變（own_thesis §3.5）。
 import { verdictText } from '../ai/functions';
 import type { PackDoc } from '../ai/check';
 import { attribution, highIndex, idioDrop, idioDropText } from '../ai/detect';
 import { OWN_DROP, dropDecision, ownDropPack } from '../ai/drops';
 import { newRunId } from '../ai/pack';
 import { clone, newNotif, notifName, recordAiTier, refreshOwnAiChoice, routeReview, type Account, type DropReview, type MarketView, type Notif } from '../engine';
-import { fetchCompanyFacts, fetchFilingDoc, quarterTable, type QuarterRow } from '../data/edgar';
+import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlineFeed, quarterTable, type QuarterRow } from '../data/edgar';
 import type { FilingHit } from '../data/secEvents';
 import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
 import { startRun, type AiRun } from './aiRuns';
 import { insertHitStmts, sectorEtfs } from './filings';
 import { patchAccount } from './ledgerStore';
-import { citedBasis, docOf, lastReview, newsDoc } from './ownAi';
+import { citedBasis, docOf, lastReview, newsDocOf } from './ownAi';
+import { buildDocMenu } from './webEvidence';
 import { condFacts, defaultFacts, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote } from './thesis';
 
 /** 最近一次 F24 的摘要（F7 的底）。 */
@@ -65,7 +68,8 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
       const since = base?.asOf ?? new Date(Date.parse(session) - 45 * 86400_000).toISOString().slice(0, 10);
       const tf = await thesisFile(env.DB, acct, t, session);
       const docs = await filingDocs(t, since, 3, tf ? flaggedAccessions(tf) : undefined);
-      const news = await newsDoc(fetcher, t, session, since).catch(() => null);
+      const feed = await fetchHeadlineFeed(fetcher, t).catch(() => null);
+      const news = feed ? newsDocOf(feed, t, session, since) : null;
       if (news) docs.push(news);
       const urgent = acct.own[t].pending?.action !== 'REDUCE';
       // 只有預設前提的股票：D1～D3 要季度數字；有財報類觀察項時也要（W 附程式比對的結果）。F7 原本不抓 XBRL
@@ -82,8 +86,19 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
       const note = tf ? thesisNote(tf, session) : null;
       // 你定的條件 C 與觀察項 W 只當背景：F7 不確認條件成不成立（own_thesis §3.3）
       const extraFacts = tf ? [...thesisFacts(tf), ...defaultFacts(tf, rows, session), ...condFacts(tf, rows).facts] : [];
-      const { pack, notes } = ownDropPack({ acct, view, axis, ticker: t, runId: newRunId(session, OWN_DROP, t), attr, base: baseDoc(base, t), baseRunId: base?.runId ?? null, docs, urgent, dataQuality: { filings: 'ok', news: 'partial', ...(base ? {} : { review: 'partial' }) }, extraFacts, extraDocs: note ? [note] : [], now });
-      const run = await startRun(env, fetcher, pack, now, notes);
+      // 分析師可以另外找資料（T54，web_evidence_design §1.7、§1.8）：目錄（M）與清單內的網頁來源（S）和定期審查同一個函式；
+      // 只有系統預設前提的沒有目錄、不能取文件（doc_ctx 記 off）。目錄組不成時照樣跑減半檢視（不能取文件，免得用沒有記下的範圍去取）
+      let menu: Awaited<ReturnType<typeof buildDocMenu>> | null = null;
+      if (tf) {
+        try {
+          menu = await buildDocMenu(env, fetcher, { ticker: t, tf, meta: acct.own[t], asOf: view.date, headlines: feed?.items ?? null });
+        } catch (e) {
+          res.log.push(`${t} 的減半檢視：目錄沒有組成（${errText(e)}），這次分析師不能另外找資料`);
+        }
+      }
+      const docCtx = menu?.ctx ?? { menu: [], notBefore: view.date, domains: [], fileId: tf?.fileId ?? null, off: '目錄沒有組成：這次不能另外找資料' };
+      const { pack, notes } = ownDropPack({ acct, view, axis, ticker: t, runId: newRunId(session, OWN_DROP, t), attr, base: baseDoc(base, t), baseRunId: base?.runId ?? null, docs, urgent, dataQuality: { filings: 'ok', news: 'partial', ...(base ? {} : { review: 'partial' }) }, extraFacts: [...extraFacts, ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: note ? [note] : [], now });
+      const run = await startRun(env, fetcher, pack, now, [...notes, ...(menu?.notes ?? [])], docCtx);
       res.started.push(run.runId);
       // 雲端排程沒有觸發成功時，這次執行已經用「沒有結果」結束
       mark(t, r.session, run.runId, run.status === 'PENDING');

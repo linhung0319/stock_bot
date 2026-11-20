@@ -24,7 +24,7 @@ import { attribution } from '../ai/detect';
 import { attrFacts } from '../ai/drops';
 import { isAdvanceable } from '../data/secEvents';
 import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlineFeed, isEarningsFiling, quarterTable, quarterTableText, xbrlConditionMet, XBRL_METRICS, type Headline, type HeadlineFeed, type QuarterRow } from '../data/edgar';
-import { buildDocMenu } from './webEvidence';
+import { buildDocMenu, fetchPeerFilings } from './webEvidence';
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
@@ -32,7 +32,7 @@ import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { accOf, cikFor, fetchFilingChecks, handledStmt, loadEvents, sectorEtfs, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
-import { EARLY_NOTE, EVIDENCE_TEXT, MAX_PROPOSED, MAX_REVIEW_8K, afterLastReview, condFacts, defaultAction, defaultFacts, fileConditions, flaggedAccessions, fmtMetric, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
+import { EARLY_NOTE, EVIDENCE_TEXT, MAX_PROPOSED, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultFacts, externalNeeds, fileConditions, flaggedAccessions, fmtMetric, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
 
 export { cikFor } from './filings';
 export { loadConditions } from './thesis';
@@ -188,6 +188,24 @@ export async function reviewThesisEvidence(env: Env, fetcher: Fetcher, tf: Thesi
   return { facts: [...thesisFacts(tf), ...defaultFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null, asOf)], filings, docs: note ? [note] : [], notes };
 }
 
+/**
+ * 月底檢查點的題目多一句（T54，web_evidence_design §1.7）：原因有 PEER → 同業有新的財報新聞稿（在目錄裡）；
+ * 有 WEB_DUE → 哪幾條前提、條件需要外部資料（證據包的編號），請分析師找清單內來源的新消息。兩個都沒有 → null。
+ * condMap：證據包的條件編號（C…、W…）→ 列編號（condFacts 的 map）。
+ */
+export function lookForText(reasons: readonly string[], tf: Pick<ThesisFile, 'kind' | 'premises' | 'conditions'>, condMap: Record<string, number>): string | null {
+  const parts: string[] = [];
+  if (reasons.includes('PEER')) parts.push('同業在上次有結論的審查之後有新的財報新聞稿（在 facts 的 M 開頭的目錄裡），請分析師看要不要取來讀');
+  if (reasons.includes('WEB_DUE')) {
+    const need = externalNeeds(tf);
+    const byRow = new Map(Object.entries(condMap).map(([id, row]) => [row, id]));
+    const conds = need.conds.map((row) => byRow.get(row)).filter((x): x is string => !!x);
+    const what = [need.premises.length ? `前提 ${need.premises.join('、')}` : '', conds.length ? `指名網頁來源的條件 ${conds.join('、')}` : ''].filter(Boolean).join('，以及');
+    if (what) parts.push(`${what} 在公司的申報與財報裡可能查不到（上次證據不足、還沒檢查過，或要用指名的網頁來源確認），距上次有結論的審查已經滿 ${WEB_DUE_DAYS} 天，請分析師找有沒有清單內來源的新消息`);
+  }
+  return parts.length ? `這次是月底檢查點：${parts.join('；')}。` : null;
+}
+
 /** 提前審查（own_thesis §2.4）多帶的：題目的原因、觸發的事件編號、價格類的跌幅拆解（A1～A5）。 */
 export interface EarlyInput {
   reason: string;
@@ -215,7 +233,9 @@ export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, 
   // 目錄（T52，web_evidence_design §1.2）：同業的申報、清單內的 RSS 連結，只有標題；只有預設前提的沒有目錄、不能取文件
   // 清單內的網頁來源（T53，facts 的 S 開頭）跟目錄一起：分析師搜尋時優先挑、建議的條件指名來源時只能指名這些
   const menu = tf && acct.own[ticker] ? await buildDocMenu(env, fetcher, { ticker, tf, meta: acct.own[ticker], asOf: view.date, headlines: ev.headlines ?? null }) : null;
-  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, webDomains: menu?.sources.domains ?? [], dataQuality: ev.dataQuality, extraFacts: [...extra.facts, ...(early?.facts ?? []), ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: extra.docs, reasons, ...(early ? { early: { reason: early.reason, events: early.events } } : {}), now });
+  // 月底檢查點因為同業的新申報或「要上網查」開的審查（T54，web_evidence_design §1.7）：題目寫明要分析師找什麼
+  const lookFor = tf && reasons && menu && !menu.ctx.off ? lookForText(reasons, tf, conds?.map ?? {}) : null;
+  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, webDomains: menu?.sources.domains ?? [], dataQuality: ev.dataQuality, extraFacts: [...extra.facts, ...(early?.facts ?? []), ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: extra.docs, reasons, ...(early ? { early: { reason: early.reason, events: early.events } } : {}), ...(lookFor ? { lookFor } : {}), now });
   return startRun(env, fetcher, pack, now, [...ev.notes, ...extra.notes, ...(menu?.notes ?? []), ...notes], menu?.ctx ?? null);
 }
 
@@ -540,7 +560,9 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
       }
       const tf = await thesisFile(env.DB, acct, t, session);
       const all = sc.checks.find((c) => c.ticker === t)?.all ?? null;
-      const reasons: EvidenceReason[] = tf ? newEvidence(tf, all, session) : ['NEVER'];
+      // 同業的申報（PEER，T54）：只有有論點的股票用網頁證據與同業（只有預設前提的沒有目錄）
+      const peers = tf && tf.kind === 'THESIS' && tf.lastReview ? await fetchPeerFilings(env, fetcher, acct.own[t].webSources ?? null, res.log, t) : undefined;
+      const reasons: EvidenceReason[] = tf ? newEvidence(tf, all, session, peers) : ['NEVER'];
       if (reasons.length) {
         review.set(t, 'MONTHLY');
         reasonsOf.set(t, reasons);
@@ -651,6 +673,9 @@ export function monthlyWithin(session: string, ov: CalendarOverrides, n = EARLY_
   return false;
 }
 
+/** 個股自身大跌、上次有結論的審查之後沒有新的申報或事件、這檔有論點時，提前審查的題目多的那一句（web_evidence_design §1.7）。 */
+export const EARLY_NO_FILING_ASK = '沒有新的申報，請分析師找有沒有清單內來源的消息';
+
 /** 題目裡的事件說明（白話，給 AI 讀）。 */
 const EARLY_TEXT: Record<string, string> = {
   CEO_DEPART: '執行長離任',
@@ -674,7 +699,9 @@ export function earlyEventText(e: Pick<SecEventRow, 'code' | 'detail_code' | 'de
  * 提前審查（own_thesis §2.4；L1、L0 交給 L2）：自選股 sec_events 裡 NEW 的候選，照表的順序決定開不開，事件標 HANDLED、handled_note 寫原因：
  *   1. 這檔已經有一次審查的決策日 ≥ 事件日（含今天已經開的財報後、月審）→ 「已經在 <run_id> 的證據包裡」
  *   2. 只限價格類：30 天內跑過減半檢視（F7）→ 「30 天內已經做過減半檢視」
- *   3. 只限價格類：上次有結論的審查之後沒有新的申報或事件（新證據沒有 FILING、EVENT，也不是 NEVER）→ 「沒有新的申報可以檢查」（要看的事 PRICE_NO_FILING）
+ *   3. 只限價格類：上次有結論的審查之後沒有新的申報或事件（新證據沒有 FILING、EVENT，也不是 NEVER）：
+ *      只有系統預設前提 → 「沒有新的申報可以檢查」（要看的事 PRICE_NO_FILING）；
+ *      有論點 → 不擋，照下面的順序走（T54，web_evidence_design §1.7），開成時題目多一句「沒有新的申報，請分析師找有沒有清單內來源的消息」
  *   4. 月審在接下來 3 個交易日內 → 「留給月審」
  *   5. 30 天內提前開過（earlyReviewAt）→ 「30 天內已經提前審查過，留給下一次審查」
  *   6. 其餘 → 開一次審查（觸發原因 EARLY，同一檔的事件併成一次），earlyReviewAt 記今天 → 「提前審查 <run_id>」
@@ -704,6 +731,9 @@ export async function startEarlyReviews(sc: StartCtx, opt: { fetchChecks?: boole
     const last = await env.DB.prepare('SELECT run_id, as_of FROM ai_runs WHERE fn = ? AND ticker = ? ORDER BY as_of DESC, created_at DESC LIMIT 1').bind(OWN_REVIEW, t).first<{ run_id: string; as_of: string }>();
     const f7 = evs.some(isPriceEvent) && !!(await env.DB.prepare("SELECT 1 AS x FROM ai_runs WHERE fn = 'OWN_DROP' AND ticker = ? AND as_of > ? LIMIT 1").bind(t, cutoff).first());
     let evidence: EvidenceReason[] | null = null;
+    let kind: ThesisFile['kind'] | null = null;
+    // 個股自身大跌、沒有新的申報可以檢查，但這檔有論點 → 照樣開，題目請分析師上網找（T54，web_evidence_design §1.7）
+    let noFiling = false;
     const open: SecEventRow[] = [];
     for (const e of evs) {
       if (last && last.as_of >= e.event_date) {
@@ -717,15 +747,20 @@ export async function startEarlyReviews(sc: StartCtx, opt: { fetchChecks?: boole
         }
         if (!evidence) {
           const tf = await thesisFile(env.DB, acct, t, session);
+          kind = tf?.kind ?? null;
           let filings: Filing[] | null = sc.checks.find((c) => c.ticker === t)?.all ?? null;
           if (!filings && opt.fetchChecks && env.EDGAR_USER_AGENT) filings = (await fetchFilingChecks(env, fetcher, [t], session, res.log))[0]?.all ?? null;
           evidence = tf ? newEvidence(tf, filings, session) : ['NEVER'];
         }
         // 申報清單抓不到（UNKNOWN）當成有新證據，照審（和月底檢查點相同）
         if (!evidence.some((r) => r === 'NEVER' || r === 'FILING' || r === 'EVENT' || r === 'UNKNOWN')) {
-          mark(EARLY_NOTE.noFiling, e);
-          res.log.push(`${t} 個股自身大跌（${e.detail ?? ''}），上次審查之後沒有新的申報或事件：不提前審查，列進要看的事`);
-          continue;
+          // 只有預設前提的：照舊不開、列進要看的事（它不用網頁證據，審了也只能說「價格跌了」）
+          if (kind !== 'THESIS') {
+            mark(EARLY_NOTE.noFiling, e);
+            res.log.push(`${t} 個股自身大跌（${e.detail ?? ''}），上次審查之後沒有新的申報或事件，只有系統預設前提：不提前審查，列進要看的事`);
+            continue;
+          }
+          noFiling = true;
         }
       }
       if (soon) {
@@ -753,6 +788,7 @@ export async function startEarlyReviews(sc: StartCtx, opt: { fetchChecks?: boole
       const attr = i >= 21 ? attribution(axis, view.close, t, acct.cfg.coreTicker, sector, i - 21, i) : null;
       facts = attrFacts(attr);
       reasons.unshift(attr ? `最近 21 個交易日個股自身跌 ${(Math.abs(attr.idio) * 100).toFixed(1)}%` : (price.detail ?? '個股自身大跌'));
+      if (noFiling) reasons.splice(1, 0, EARLY_NO_FILING_ASK);
     }
     try {
       const run = await startOwnReview(env, fetcher, acct, view, axis, t, 'EARLY', now, undefined, undefined, { reason: reasons.join('；'), events: open.map((e) => e.id), facts });

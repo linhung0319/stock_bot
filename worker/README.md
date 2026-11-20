@@ -100,7 +100,7 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - 各功能：F18／F19 `src/ai/events.ts`＋`src/app/events.ts`；F1 `src/ai/momEntry.ts`＋`src/app/momAi.ts`；F7 `src/ai/drops.ts`＋`src/app/dropAi.ts`；F5／F6 `src/ai/crash.ts`＋`src/app/crashAi.ts`；F21 `src/ai/strategy.ts`＋`src/app/strategyAi.ts`；F14 `src/ai/ownCheck.ts`＋`src/app/ownCheckAi.ts`。資料表 `migrations/0007_events_entry.sql`。
 - 用真實資料看規則段（不觸發 AI）：`npx tsx scripts/t11-local.ts MU NVDA`（F1 規則偵測、FRED 儀表板、French 動能因子回撤）。
 - 網站：「紀錄 → AI 紀錄」上方有本月動能進場審查、總經儀表板、最近的申報事件；持股頁見下面「自選股的論點與三層配合」；新增自選不再請 AI 草擬前提（T27 拿掉，論點改在 claude.ai 討論）。
-- prompt：`../ai/prompts/` 的 `event_scan_v2`（T28 起；`event_scan_v1` 不再使用）、`hard_event_v1`、`own_earnings_v1`（T29c）、`mom_entry_v2`（T32b 起；`mom_entry_v1` 不再使用）、`own_drop_v2`（T31b 起；`own_drop_v1` 不再使用）、`crash_review_v2`（T33d 起；`crash_review_v1` 不再使用）、`strategy_review_v1`、`own_check_v2`（T27 起；`own_check_v1` 不再使用）。`mom_score_v1`、`drop_explain_v1` T32d 起不再使用。
+- prompt：`../ai/prompts/` 的 `event_scan_v2`（T28 起；`event_scan_v1` 不再使用）、`hard_event_v1`、`own_earnings_v1`（T29c）、`mom_entry_v2`（T32b 起；`mom_entry_v1` 不再使用）、`own_drop_v3`（T54 起；`own_drop_v1`、`own_drop_v2` 不再使用）、`crash_review_v2`（T33d 起；`crash_review_v1` 不再使用）、`strategy_review_v1`、`own_check_v2`（T27 起；`own_check_v1` 不再使用）。`mom_score_v1`、`drop_explain_v1` T32d 起不再使用。
 
 ## 自選股的論點與三層配合（階段八，2026-11-16）
 

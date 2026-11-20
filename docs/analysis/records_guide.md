@@ -36,7 +36,7 @@ Worker 端是 `GET /admin/export`（`ADMIN_TOKEN` 的 Bearer；`worker/src/app/e
 | `ai_votes` | AI 的每一票，格式合格的比例 |
 | `ai_tasks` | 雲端任務依種類的結局；`pass_ratio` = done ÷（done ＋ rejected ＋ late）；逾時分「沒有來取證據包」與「取了沒送回」 |
 | `ai_rejections` | 被退回（REJECTED）或逾時才送到（LATE）的輸出 |
-| `checkpoints` | 月底檢查點（自選定期審查，T31a）：每個月審了幾檔（`reviewed`，有新證據）、跳過幾檔（`skipped`，沒有新證據）、有新證據但沒開成（`not_started`）、`skip_ratio`；`never`／`filing`／`event`／`thesis`／`stale`／`unknown` = 開了審查的那幾檔各有幾檔帶這個原因。資料在 `flow_state` 的 `review:checkpoint:<年月>` |
+| `checkpoints` | 月底檢查點（自選定期審查，T31a）：每個月審了幾檔（`reviewed`，有新證據）、跳過幾檔（`skipped`，沒有新證據）、有新證據但沒開成（`not_started`）、`skip_ratio`；`never`／`filing`／`event`／`thesis`／`stale`／`unknown`／`peer`（同業有新的財報新聞稿，T54）／`web_due`（有要上網查的前提或條件、距上次審查滿 25 天，T54）= 開了審查的那幾檔各有幾檔帶這個原因。資料在 `flow_state` 的 `review:checkpoint:<年月>` |
 | `crash_reviews` | 崩盤規則的切換與 AI 檢視（T33b）：期間內每一次切換一列（月報訊號日在期間內；重列的那一項不算）——`month`、`direction`（ON 啟動／OFF 解除）、`notif`、`state`（月報那一項現在的檢視狀態：OPINION 有意見、NO_OPINION 沒有意見、PENDING、FAILED、NO_DATA 總經資料不足、OFF）、`kind`（PREVIEW 月報前一天預估、MAKEUP 月報之後補開）、`runs`（這個月份＋方向開了幾次）、`no_conclusion`（沒有結論幾次）、`followups`（03:30 補推幾次）。合計列多一欄 `switches`（切換次數） |
 | `mom_entry` | 動能新股進場審查的 F1 法庭（T32d）：每列 `{ item, code, n, note }`——`courts`（期間內開了幾次法庭）、`courts_by_code`（依規則偵測命中的代碼，一次法庭兩個代碼各算一次，新聞標題來的不算）、`vetoes`（新的 AI 否決，不含沿用）、`carried`（沿用上一次的結論；`code` 是沿用的結論）、`no_conclusion`（跑完了但沒有結論）、`late`（月報之後才回來的否決）、`veto_total`（到期間結束累積的否決次數，連續沿用算同一次；跨過 5 的倍數時 `note` 提示看一次否決的紀錄）。資料在 `ai_runs`（`MOM_ENTRY`）與 `mom_reviews`（建立時間在期間內） |
 

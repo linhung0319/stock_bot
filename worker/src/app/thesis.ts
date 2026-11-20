@@ -561,10 +561,29 @@ export function afterLastReview(tf: Pick<ThesisFile, 'lastReview' | 'newSince'>,
 
 // ---------------------------------------------------------------- 月底檢查點的「新證據」（T31a，own_thesis §3.7；純函式）
 
-/** 新證據的原因（own_thesis §3.7 的表）。 */
-export type EvidenceReason = 'NEVER' | 'FILING' | 'EVENT' | 'THESIS' | 'STALE' | 'UNKNOWN';
+/** 新證據的原因（own_thesis §3.7 的表；PEER、WEB_DUE 是 T54 加的，web_evidence_design §1.7）。 */
+export type EvidenceReason = 'NEVER' | 'FILING' | 'EVENT' | 'THESIS' | 'STALE' | 'UNKNOWN' | 'PEER' | 'WEB_DUE';
 /** 距上一次有結論的審查滿幾個日曆天就照審（STALE）。 */
 export const STALE_DAYS = 100;
+/** 有「需要外部資料」的前提或條件時，距上一次有結論的審查滿幾個日曆天就照審（WEB_DUE；web_evidence_design §1.7、第 6 章第 7 項）。 */
+export const WEB_DUE_DAYS = 25;
+
+/**
+ * 「需要外部資料」的前提與條件（web_evidence_design §1.5 最後那張表；§1.7 的 WEB_DUE、月底審查的題目用）：
+ *   你的前提（不含系統預設）最近一次檢查是三票一致的「證據不足」，或還沒被檢查過；
+ *   你定的、監測中的條件（ACTIVE、REVIEW_ONLY）指名了網頁來源（confirm_by 有 `web:<網域>`）。
+ * 只有系統預設前提的論點檔不用網頁證據（不能取文件）→ 一律是空的。分析師自己不受這張表限制。
+ */
+export function externalNeeds(file: Pick<ThesisFile, 'kind' | 'premises' | 'conditions'>): { premises: string[]; conds: number[] } {
+  if (file.kind !== 'THESIS') return { premises: [], conds: [] };
+  return {
+    premises: file.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT' && (!p.lastCheck || p.lastCheck.status === 'INSUFFICIENT')).map((p) => p.id),
+    conds: file.conditions.filter((c) => isOwned(c) && OWNED_LIVE.includes(c.status) && namedWebDomains(c.check).length > 0).map((c) => c.id),
+  };
+}
+
+/** 同業在 EDGAR 的申報（PEER 用；月底檢查點那天由 startOwnRuns 抓）。 */
+export type PeerFiling = Pick<Filing, 'form' | 'filingDate' | 'acceptedAt' | 'items'>;
 /** 算新證據的申報種類：8-K、10-Q、10-K（含修正）。 */
 const EVIDENCE_FORM = /^(8-K|10-Q|10-K)/;
 /** 新聞來源的事件（每日掃描從新聞標題標的）：新聞標題不能當引用，不算新證據。 */
@@ -574,22 +593,40 @@ const isNewsEvent = (e: Pick<ThesisEvent, 'form' | 'sourceId'>) => e.form === 'N
  * 相對於這檔最近一次有結論的審查，有沒有新證據（own_thesis §3.7）。回傳原因的清單；空的 = 沒有新證據，這個月不審。
  *   NEVER    這份論點檔還沒有過有結論的審查（只回這一項）
  *   FILING   有那次審查之後申報的 8-K、10-Q、10-K（同一天的看接受時間是否晚於那次審查開始）
- *   EVENT    sec_events 有建立時間比那次審查晚的列（任何狀態；價格規則 PRICE 與新聞標題來源的不算）
+ *   EVENT    sec_events 有建立時間比那次審查晚的列（任何狀態；價格規則 PRICE 與新聞標題來源的不算；
+ *            例外：有論點的股票、價格規則的大跌被提前審查標成「留給月審」的算，T54）
  *   THESIS   論點或前提改過（版本和那次證據包記的不同，或那次之後有 THESIS 紀錄），或那次之後有條件的變動（CONDITION）
  *   STALE    距那次審查的決策日滿 100 個日曆天
  *   UNKNOWN  申報清單抓不到（filings = null）：當成有新證據
+ *   PEER     同業（論點檔的 webSources.peers）有那次審查之後申報的 8-K Item 2.02（財報新聞稿；T54，web_evidence_design §1.7）。
+ *            peers 沒給（undefined）或同業的申報抓不到（null）→ 不算（不是這檔自己的資料，抓不到不當成新證據）
+ *   WEB_DUE  有「需要外部資料」的前提或條件（externalNeeds），而且距那次審查的決策日滿 25 個日曆天（T54）。
+ *            只有在論點檔帶了 premises 與 conditions 時才判斷（舊的呼叫端只給前幾項 → 不算）
  * 新聞標題、慢規則還沒列進清單的減半或加回都不算。
  */
-export function newEvidence(file: Pick<ThesisFile, 'lastReview' | 'newSince' | 'events' | 'thesis' | 'log'>, filings: Pick<Filing, 'form' | 'filingDate' | 'acceptedAt'>[] | null, asOf: string): EvidenceReason[] {
+export function newEvidence(
+  file: Pick<ThesisFile, 'lastReview' | 'newSince' | 'events' | 'thesis' | 'log'> & Partial<Pick<ThesisFile, 'kind' | 'premises' | 'conditions'>>,
+  filings: Pick<Filing, 'form' | 'filingDate' | 'acceptedAt'>[] | null,
+  asOf: string,
+  peers?: PeerFiling[] | null,
+): EvidenceReason[] {
   const r = file.lastReview;
   if (!r) return ['NEVER'];
   const out: EvidenceReason[] = [];
   if (filings?.some((f) => EVIDENCE_FORM.test(f.form) && f.filingDate <= asOf && afterLastReview(file, f.filingDate, f.acceptedAt || null))) out.push('FILING');
-  if (file.events.some((e) => e.source !== 'PRICE' && !isNewsEvent(e) && e.createdAt > r.createdAt)) out.push('EVENT');
+  // 價格規則的事件照舊不算；例外（T54）：有論點的股票大跌、沒有新申報、因為月審在 3 個交易日內而「留給月審」的——
+  // 它沒有開提前審查，是等這次月審（web_evidence_design §1.7：有論點的大跌無申報照 §2.4 開審查，留給月審就是月審接手）
+  const priceLeft = (e: ThesisEvent) => e.source === 'PRICE' && e.handledNote === EARLY_NOTE.monthly && file.kind === 'THESIS';
+  if (file.events.some((e) => (e.source !== 'PRICE' || priceLeft(e)) && !isNewsEvent(e) && e.createdAt > r.createdAt)) out.push('EVENT');
   const changed = typeof r.thesisVersion === 'number' && r.thesisVersion !== (file.thesis?.version ?? 0);
   if (changed || file.log.some((l) => (l.kind === 'THESIS' || l.kind === 'CONDITION') && l.at > r.createdAt)) out.push('THESIS');
   if (daysBetween(r.asOf, asOf) >= STALE_DAYS) out.push('STALE');
   if (filings === null) out.push('UNKNOWN');
+  if (peers?.some((f) => f.form.startsWith('8-K') && f.items.includes('2.02') && f.filingDate <= asOf && afterLastReview(file, f.filingDate, f.acceptedAt || null))) out.push('PEER');
+  if (file.kind && file.premises && file.conditions && daysBetween(r.asOf, asOf) >= WEB_DUE_DAYS) {
+    const need = externalNeeds({ kind: file.kind, premises: file.premises, conditions: file.conditions });
+    if (need.premises.length || need.conds.length) out.push('WEB_DUE');
+  }
   return out;
 }
 
@@ -610,7 +647,16 @@ export const EARLY_NOTE = {
 } as const;
 
 /** 證據包與紀錄用的原因說明。 */
-export const EVIDENCE_TEXT: Record<EvidenceReason, string> = { NEVER: '還沒有過有結論的審查', FILING: '有新的申報', EVENT: '有新的事件', THESIS: '論點、前提或條件改過', STALE: '距上次審查滿 100 天', UNKNOWN: '申報清單抓不到' };
+export const EVIDENCE_TEXT: Record<EvidenceReason, string> = {
+  NEVER: '還沒有過有結論的審查',
+  FILING: '有新的申報',
+  EVENT: '有新的事件',
+  THESIS: '論點、前提或條件改過',
+  STALE: '距上次審查滿 100 天',
+  UNKNOWN: '申報清單抓不到',
+  PEER: '同業有新的財報新聞稿',
+  WEB_DUE: `有要上網查的前提或條件，距上次審查滿 ${WEB_DUE_DAYS} 天`,
+};
 
 function toEvent(e: SecEventRow, last: ThesisFile['lastReview'], newSince: string): ThesisEvent {
   const ref = accOf(e.accession);
@@ -1036,7 +1082,7 @@ export const OWN_ATTN: AttnKind[] = [
     },
   },
   {
-    // 你的前提最近一次檢查是 3 票一致的「證據不足」（§3.6.6，T47）：公司的申報與財報查不到，審查監測不了這一條。
+    // 你的前提最近一次檢查是 3 票一致的「證據不足」（§3.6.6，T47）：公司的申報與財報、AI 另外取到的網頁裡都沒有依據（T54 改文字）。
     // 同一組前提每 6 個月列一次（鍵帶編號；哪幾條變了就是新的一件）。系統預設前提不列（程式先算好的，資料不足是暫時的）
     kind: 'PREMISE_NO_DATA',
     detect({ file }) {
@@ -1050,7 +1096,8 @@ export const OWN_ATTN: AttnKind[] = [
           key: `PREMISE_NO_DATA:${ps.map((p) => p.id).join(',')}`,
           every: 6,
           since,
-          text: `${file.ticker} 的前提 ${ps.map((p) => `${p.id}「${short(p.text)}」`).join('、')}最近一次審查 3 票都是證據不足：公司的申報與財報裡查不到，stock bot 監測不了${which}。可以改寫成財報查得到的事，或複製討論包到 claude.ai 討論`,
+          // T54：審查的 AI 現在可以另外取同業申報與清單內的網頁，月底也會因為這幾條再審（WEB_DUE），所以不再寫「監測不了」
+          text: `${file.ticker} 的前提 ${ps.map((p) => `${p.id}「${short(p.text)}」`).join('、')}最近一次審查 3 票都是證據不足：公司的申報、財報與 AI 另外取到的網頁裡都沒有找到依據。距上次審查滿 ${WEB_DUE_DAYS} 天，月底會為${which}再審一次、讓 AI 再去找；也可以改寫成查得到的事，或複製討論包到 claude.ai 討論`,
         },
       ];
     },

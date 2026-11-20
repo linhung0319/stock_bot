@@ -160,6 +160,30 @@ export function pickPeerFilings(filings: Filing[], tf: Pick<ThesisFile, 'lastRev
   return (pr ? [pr, ...list.filter((f) => f !== pr)] : list).slice(0, n);
 }
 
+/**
+ * 同業在 EDGAR 的申報清單（月底檢查點的 PEER，T54，web_evidence_design §1.7）：有 EDGAR 代號的同業各抓一次，合在一起。
+ * 沒有同業（或都沒有 EDGAR 代號）→ 空的；全部抓不到 → null（不當成新證據）；抓不到的寫進 log。
+ */
+export async function fetchPeerFilings(env: Env, fetcher: Fetcher, ws: OwnWebSources | null, log: string[], ticker: string): Promise<Filing[] | null> {
+  const peers = (ws?.peers ?? []).slice(0, PEERS_MAX).filter((p) => !!p.edgar);
+  if (!peers.length) return [];
+  const ua = env.EDGAR_USER_AGENT ?? '';
+  const out: Filing[] = [];
+  let ok = 0;
+  for (const p of peers) {
+    try {
+      if (!ua) throw new Error('沒有設定 EDGAR 的 User-Agent');
+      const cik = await cikFor(env, fetcher, p.edgar!);
+      if (!cik) throw new Error('EDGAR 找不到這個代號');
+      out.push(...(await fetchEdgarSubmissions(fetcher, cik, ua)).filings);
+      ok += 1;
+    } catch (e) {
+      log.push(`${ticker} 的同業 ${p.name}（${p.edgar}）的申報抓不到（月底檢查點不算同業的新申報）：${errText(e)}`);
+    }
+  }
+  return ok ? out : null;
+}
+
 /** RSS 標題裡連結在清單內的（S2）：決策日以前、不早於 notBefore；同一個網址只留一則，新的在前。 */
 export function listedHeadlines(items: Headline[], domains: readonly string[], asOf: string, notBefore: string): MenuEntry[] {
   const seen = new Set<string>();

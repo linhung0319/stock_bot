@@ -46,10 +46,21 @@
 - 不放心：prompt 只有檔案內容的測試，真的 AI 照不照做要等 M3；共用清單的 `MEDIA` 只有 techpowerup 一個，「媒體兩個網域」現在實際上成立不了；同一次審查可能同時發甲類與乙類（既有行為）；討論包與 `PREMISE_DATA_NOTE` 的「審查只讀公司自己的資料」留給 T54；「DRAMeXchange（TrendForce） 的網頁」括號後多一個空格。
 - subagent 截圖時跑過一次 `git stash` / `stash pop`（內容完整還原、stash 清單是空的；主持者重跑過三個指令）。
 
+### T54（時機）
+
+- 同業的申報抓不到不算新證據（只寫紀錄）；同業只在有論點、有上次有結論的審查時才抓。
+- `WEB_DUE` 只算有論點的股票；條件只算你定的、監測中（ACTIVE、REVIEW_ONLY）、指名 `web:` 的；「還沒檢查過的你的前提」照設計也算。
+- 因 `PEER`／`WEB_DUE` 開的月審，題目寫明要找的前提或條件（題目不是 prompt，不升版）。
+- `EVENT` 多一個例外：有論點的股票大跌、提前審查標「留給月審」的，月底算新證據（不加的話兩邊都不審）。
+- 減半檢視的目錄組不成時 `doc_ctx` 記 `off`（不能取文件，減半檢視照跑）。
+- `PREMISE_NO_DATA`（「要看的事」）的文字順著改（原文「stock bot 監測不了」T54 之後不對）；運作統計月底檢查點多 `peer`、`web_due`。
+- 主持者：`.claude/commands/thesis.md` 第 34 行「stock bot 的審查只讀那些」改成也讀同業申報與清單內網站；`worker/SETUP.md` 的階段八 prompt 清單是當時的紀錄，不改，階段九的部署步驟在收尾時另寫一節；`web_evidence` §1.7 補實作細節（上面前四點）。
+- 成本：月底檢查點每檔多最多 4 個同業申報清單請求；減半檢視觸發那天 23:30 的流程多組目錄的請求。
+
 ## 要使用者親手做的事
 
 - **順序不能反**（舊的 Worker 不認得 `lookups`，會把整份結果退回）：
-  1. `git push`（雲端排程從 repo 讀 `own_review_v3.md`、`own_check_v5.md`）。
+  1. `git push`（雲端排程從 repo 讀 `own_review_v3.md`、`own_check_v5.md`、`own_drop_v3.md`）。
   2. 套 `0016_web_docs.sql`（T51）、`0017_ai_runs_docs.sql`（T52）、`0018_ai_runs_lookups.sql`（T53）到遠端 D1，升 `VERSION`，部署。
   3. 部署之後，把 `ai/prompts/run.md` 裡「## 排程的 prompt」標題以下到檔案結尾整段，貼到 claude.ai 雲端排程的 Instructions（網路設定不用動）。
   4. 跑 M3（子代理裡 WebSearch 能不能用還沒實測）。

@@ -13,7 +13,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { DISCUSSION_V3, MAX_PACK_CHARS, discussionPack, parseThesisBlock, pickMode, type DiscussionNumbers } from '../src/ai/discussion';
+import { DISCUSSION_V3, MAX_PACK_CHARS, PREMISE_DATA_NOTE, discussionPack, parseThesisBlock, pickMode, type DiscussionNumbers } from '../src/ai/discussion';
 import { OWN_CHECK, ownCheckPack } from '../src/ai/ownCheck';
 import type { ApplyCtx } from '../src/app/aiCtx';
 import { finalizeRun, getRun, listRuns } from '../src/app/aiRuns';
@@ -404,7 +404,12 @@ describe('T27：討論包（§1.7）', () => {
     expect(n).toContain('這檔是在大跌之後買的（加入時比 52 週高點低 23%）。\n請先問我：它為什麼跌、為什麼我認為市場錯了。');
     expect(n).toContain('（這些是系統預設的一般健康檢查，不是我的論點。）');
     // T47：前提那一節最後說明審查讀得到什麼（每一種情境都有）；出場條件那一節接在後面
-    expect(n).toContain('不是我的論點。）\n\n（stock bot 的審查只讀這家公司自己的資料：最近 8 季的財報數字、最近一份 10-Q／10-K、之後的 8-K。同業、客戶、市占調查、產業報價它查不到。\n標「證據不足」的前提就是它查不到的。收尾時請盡量把前提寫成公司申報或財報裡查得到的事；寫不成的，先告訴我這一條 stock bot 監測不了、要靠我自己留意。）\n\n## 出場條件');
+    // T54：說明改成審查也讀同業申報與清單內的網頁（文字在 PREMISE_DATA_NOTE；這裡驗位置與要點）
+    expect(n).toContain(`不是我的論點。）\n\n${PREMISE_DATA_NOTE.slice(1).join('\n')}\n\n## 出場條件`);
+    expect(n).toContain('我填的同業在 EDGAR 的申報，以及清單內網站的網頁全文');
+    expect(n).toContain('距上次審查滿 25 天，月底會再審一次');
+    expect(n).toContain('先告訴我這一條 stock bot 監測不了、要靠我自己留意。）');
+    expect(n).not.toContain('只讀這家公司自己的資料');
     expect(n).toContain('## 我的論點\n還沒有');
     expect(discussionPack(f, NUMS, 'NEW')).not.toContain('大跌之後');
     const b = discussionPack({ ...f, thesis: { text: 'x', setAt: '2026-11-01', source: 'TYPED', version: 1, afterBreak: 1, lastAfterBreakAt: null } }, NUMS, 'BREAK', { notif: 12, premiseId: 'P2', premiseText: '營收年增率沒有連兩季是負的', tier: 'HALF', quote: 'Revenue decreased 12%', source: '8-K（2027-01-06）' });

@@ -313,7 +313,7 @@ export const shadowSection: SectionFn = async (db, p) => {
 };
 
 /** 月底檢查點的新證據原因（own_thesis §3.7；和 app/thesis.ts 的 EvidenceReason 相同）。 */
-const REASONS = ['NEVER', 'FILING', 'EVENT', 'THESIS', 'STALE', 'UNKNOWN'];
+const REASONS = ['NEVER', 'FILING', 'EVENT', 'THESIS', 'STALE', 'UNKNOWN', 'PEER', 'WEB_DUE'];
 const CHECKPOINT_KEY_LEN = 'review:checkpoint:'.length;
 
 /**

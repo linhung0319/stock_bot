@@ -75,6 +75,8 @@ export interface OwnReviewInput {
   reasons?: string[];
   /** 提前審查（own_thesis §2.4）：題目加一句原因；觸發的事件編號（sec_events.id）記在 rule.detail.events。 */
   early?: { reason: string; events: number[] };
+  /** 月底檢查點因為同業的新申報或「要上網查」開的審查（T54）：題目加的那一句（ownAi.ts 的 lookForText）。 */
+  lookFor?: string;
   now: Date;
 }
 
@@ -100,6 +102,7 @@ export function ownReviewPack(inp: OwnReviewInput) {
     subject: { ticker },
     question:
       (inp.early ? `這次是提前審查，原因：${inp.early.reason}。` : '') +
+      (inp.lookFor ?? '') +
       `${ticker} 是自選股，目前慢規則狀態「${state === 'HALF' ? '減半中' : '標準'}」（等於檔位 ${STATE_TIER[state]}）。` +
       '請逐條檢查使用者的前提：哪些證據顯示它成立？哪些證據顯示它不成立？把「論點壞了」和「價格跌了」分開。' +
       '假設三個月後回頭看，這次維持現狀是錯的，最可能的原因是什麼、今天有什麼證據？' +
