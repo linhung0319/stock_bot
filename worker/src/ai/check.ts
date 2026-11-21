@@ -6,6 +6,7 @@
 //     格式、verdict 在列舉值內                  → 不通過就當成「證據不足」那一票
 //     evidence 的 source_id 在證據包內、date ≤ as_of、quote 是原文的子字串 → 不通過就刪掉這條證據
 //     前提的判斷引用的證據都被刪掉              → 改成「證據不足」
+//     判成立的前提沒有指出正面的引用，或那幾份原文比驗證頻率還舊（逾期；policy.holds_fresh_days 有設才核對，T61） → 改成「證據不足」
 //     A3／A4 的動作需要的證據條數不足          → 這一票降級為「證據不足」
 //     條件只能用固定的類型，數字門檻要對應一條通過檢查的證據 → 否則改標「人工」，不進自動追蹤
 //     資料缺漏（data_quality 有 missing）       → 禁止 A3、A4
@@ -52,6 +53,12 @@ export interface PackPolicy {
   min_evidence: number;
   /** 要獨立跑幾次。 */
   samples: number;
+  /**
+   * 判 HOLDS 要有正面的引用（composite_layer_design §2.1，T61）：有這個欄位的證據包，每條判成立的前提要在 confirm_ids 指出
+   * 哪幾條引用正面顯示它成立，而且那幾份原文裡最新的一份不能比「決策日減驗證頻率」舊。驗證頻率是前提的 verify.every（天），
+   * 沒寫用這裡的數字。沒有這個欄位 = 不核對（其他功能，以及 T61 之前開的執行：它們讀的 prompt 沒有這條規則）。
+   */
+  holds_fresh_days?: number;
 }
 
 export interface EvidencePack {
@@ -116,8 +123,16 @@ export interface CheckedPremise {
   premise_id: string;
   status: (typeof PREMISE_STATUS)[number];
   evidence_ids: string[];
-  /** 原本的判斷（引用的證據被刪掉而改成證據不足時）。 */
+  /** 原本的判斷（被程式改成證據不足時：引用的證據被刪掉，或判成立但沒過 T61 的核對）。 */
   downgradedFrom?: string;
+  /** 判成立時指出的「正面顯示成立」的引用（通過逐字檢查的；T61，composite §2.1）。 */
+  confirm_ids?: string[];
+  /**
+   * 判成立但沒過 T61 的核對、被改成證據不足的原因：
+   *   NO_CONFIRM 沒有指出正面的引用（或指出的都沒通過逐字檢查、都只是背景與新聞標題）
+   *   STALE      逾期：正面的引用裡最新一份原文的日期（latest）比決策日減驗證頻率（days 天）還舊
+   */
+  holdsIssue?: { why: 'NO_CONFIRM' } | { why: 'STALE'; latest: string; days: number };
 }
 export interface CheckedCondition {
   /** 在哪裡：lift_or_flip、payload.conditions，或 F24 的建議新增條件 payload.proposed_conditions（own_review_v2）。 */
@@ -150,6 +165,29 @@ export interface CheckedSample {
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown, max = 2000): string | null => (typeof v === 'string' && v.length <= max ? v : null);
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** 不能當「正面的引用」的文件種類：note（論點那一份、上次審查的摘要；prompt 寫明是背景）與 news（只有標題）。它們的日期永遠是新的，算進去日期核對就沒有意義。 */
+const NOT_ORIGINAL: ReadonlySet<PackDoc['kind']> = new Set(['note', 'news']);
+const dayShift = (d: string, days: number): string => new Date(Date.parse(`${d}T00:00:00.000Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+/**
+ * 判成立的前提過不過 T61 的核對（composite_layer_design §2.1；只有日期是程式核對得了的）。純函式。
+ * confirm：這一票指出的正面引用裡通過逐字檢查的；sources：那幾條引用各自出自哪一份文件。
+ * 回傳 null = 通過。
+ */
+function holdsIssueOf(pack: EvidencePack, premise: PackPremise | undefined, confirm: string[], sourceOf: Map<string, string>, docs: Map<string, PackDoc>): CheckedPremise['holdsIssue'] | null {
+  const fallback = pack.policy.holds_fresh_days;
+  if (fallback === undefined) return null;
+  const dates = confirm
+    .map((id) => docs.get(sourceOf.get(id) ?? ''))
+    .filter((d): d is PackDoc => !!d && !NOT_ORIGINAL.has(d.kind) && DATE.test(d.date))
+    .map((d) => d.date);
+  if (!dates.length) return { why: 'NO_CONFIRM' };
+  const every = premise?.verify?.every;
+  const days = typeof every === 'number' && Number.isFinite(every) && every > 0 ? every : fallback;
+  const latest = dates.sort().at(-1)!;
+  return latest < dayShift(pack.as_of, -days) ? { why: 'STALE', latest, days } : null;
+}
 
 /** 比對引用用：Unicode 正規化、各種引號與破折號統一、連續空白壓成一個。 */
 export function normalizeText(s: string): string {
@@ -234,17 +272,32 @@ export function checkSample(pack: EvidencePack, raw: unknown, index: number, hoo
   out.evidence = (raw.evidence as unknown[]).slice(0, 40).map((e) => checkEvidence(e, pack, docs));
   const okIds = new Set(out.evidence.filter((e) => e.ok).map((e) => e.id));
 
-  const premiseIds = new Set(pack.premises.map((p) => p.id));
+  const premiseOf = new Map(pack.premises.map((p) => [p.id, p]));
+  const packDocs = new Map(pack.documents.map((d) => [d.source_id, d]));
+  const sourceOf = new Map(out.evidence.filter((e) => e.ok).map((e) => [e.id, e.source_id]));
   for (const p of (raw.premise_checks as unknown[] | undefined) ?? []) {
-    if (!isObj(p) || typeof p.premise_id !== 'string' || !premiseIds.has(p.premise_id) || !PREMISE_STATUS.includes(p.status as never)) {
+    if (!isObj(p) || typeof p.premise_id !== 'string' || !premiseOf.has(p.premise_id) || !PREMISE_STATUS.includes(p.status as never)) {
       out.issues.push(`前提的判斷格式不對：${JSON.stringify(p).slice(0, 120)}`);
       continue;
     }
     const ids = (Array.isArray(p.evidence_ids) ? p.evidence_ids : []).filter((x): x is string => typeof x === 'string');
     const kept = ids.filter((id) => okIds.has(id));
     const status = p.status as CheckedPremise['status'];
-    if (status !== 'INSUFFICIENT' && !kept.length) out.premises.push({ premise_id: p.premise_id, status: 'INSUFFICIENT', evidence_ids: [], downgradedFrom: status });
-    else out.premises.push({ premise_id: p.premise_id, status, evidence_ids: kept });
+    if (status !== 'INSUFFICIENT' && !kept.length) {
+      out.premises.push({ premise_id: p.premise_id, status: 'INSUFFICIENT', evidence_ids: [], downgradedFrom: status });
+      continue;
+    }
+    // T61（composite_layer_design §2.1）：判成立要指出正面的引用，而且不能逾期；不過就降成證據不足（和上面的引用檢查降級同一個地方）
+    const confirm = status === 'HOLDS' ? (Array.isArray(p.confirm_ids) ? p.confirm_ids : []).filter((x): x is string => typeof x === 'string' && okIds.has(x)) : [];
+    const issue = status === 'HOLDS' ? holdsIssueOf(pack, premiseOf.get(p.premise_id), confirm, sourceOf, packDocs) : null;
+    if (issue) {
+      out.issues.push(
+        issue.why === 'STALE'
+          ? `前提 ${p.premise_id} 判成立，但正面的引用裡最新一份原文是 ${issue.latest}，比決策日 ${pack.as_of} 減驗證頻率 ${issue.days} 天還舊（逾期），這一條改成證據不足`
+          : `前提 ${p.premise_id} 判成立，但沒有指出哪一條引用正面顯示它成立（要通過逐字檢查、出自原文，不是背景或新聞標題），這一條改成證據不足`,
+      );
+      out.premises.push({ premise_id: p.premise_id, status: 'INSUFFICIENT', evidence_ids: kept, downgradedFrom: 'HOLDS', holdsIssue: issue });
+    } else out.premises.push({ premise_id: p.premise_id, status, evidence_ids: kept, ...(confirm.length ? { confirm_ids: confirm } : {}) });
   }
 
   out.payload = (raw.payload as Record<string, unknown> | undefined) ?? {};

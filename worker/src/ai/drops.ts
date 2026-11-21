@@ -4,15 +4,18 @@
 // F7：以最近一次 F24 為底，補上之後的新證據；程式先算好跌幅拆解（大盤、產業、個股）。
 //     AI 把跌幅歸類、逐條對照前提、選一個檔位（EXIT／HALF／HOLD；HALF 就是照規則）。只有預設前提的股票只能選 EXIT 或 HALF。
 //     結論是五種之一（own_thesis §3.3）：建議出清、建議不動、同意減半、沒有可用的結論、還沒有結果；寫進帳戶狀態的 dropReview。
-import { DROP_CAUSE_TEXT, type Account, type DropStatus, type MarketView } from '../engine';
+import { DROP_CAUSE_TEXT, VERIFY_EVERY_DEFAULT, type Account, type DropStatus, type MarketView } from '../engine';
 import { keptByChoice, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
 import { attributionText, type Attribution } from './detect';
 import { brokenPremises } from './ownReview';
 import { buildPack, ownPremises, ownRuleFacts, priceDoc, priceFacts } from './pack';
 
 export const OWN_DROP = 'OWN_DROP';
-/** T54：v3 多分析師找資料的步驟（web_evidence_design §1.7、§1.8）；判前提不成立的來源規則和定期審查相同（T53）。 */
-export const OWN_DROP_PROMPT = 'own_drop_v3';
+/**
+ * T54：v3 多分析師找資料的步驟（web_evidence_design §1.7、§1.8）；判前提不成立的來源規則和定期審查相同（T53）。
+ * T61：v4 判前提成立要有正面的引用，標準和定期審查相同（composite_layer_design §2.1）。
+ */
+export const OWN_DROP_PROMPT = 'own_drop_v4';
 /** F7 獨立跑幾次。 */
 export const OWN_DROP_SAMPLES = 3;
 
@@ -73,7 +76,8 @@ export function ownDropPack(inp: OwnDropInput) {
       (noThesis
         ? '這檔沒有使用者的論點，只能選照規則減半或出清：EXIT（出清）、HALF（減半，等於照規則）。拿不定主意就選 HALF（照規則）。'
         : '最後選一個檔位：EXIT（出清）、HALF（減半，等於照規則）、HOLD（不動）。拿不定主意就選 HALF（照規則）。'),
-    policy: { level: 'A3', verdicts: noThesis ? ['EXIT', 'HALF'] : ['EXIT', 'HALF', 'HOLD'], abstain: 'HALF', min_evidence: 1, samples: OWN_DROP_SAMPLES },
+    // holds_fresh_days（T61）：判成立要指出正面的引用，而且那幾份原文不能比驗證頻率舊；「不動」「出清」的條件都不靠成立，照舊
+    policy: { level: 'A3', verdicts: noThesis ? ['EXIT', 'HALF'] : ['EXIT', 'HALF', 'HOLD'], abstain: 'HALF', min_evidence: 1, samples: OWN_DROP_SAMPLES, holds_fresh_days: VERIFY_EVERY_DEFAULT },
     // attr：程式算的跌幅拆解（從 52 週高點那天到今天），結論是「不動」時拿來核對（dropDecision）
     rule: { action: '減半（賣掉一半）', detail: { urgent: inp.urgent, baseReview: inp.baseRunId, attr: inp.attr ? { stock: inp.attr.stock, market: inp.attr.market, sector: inp.attr.sector, idio: inp.attr.idio } : null } },
     facts: [...priceFacts(view, ticker), ...ownRuleFacts(acct, view, ticker), ...attrFacts(inp.attr), ...(inp.extraFacts ?? [])],

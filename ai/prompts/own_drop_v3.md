@@ -1,3 +1,5 @@
+> 不再使用（2026-11-21）：T61 起改用 `own_drop_v4.md`（判前提成立的標準和定期審查一起收緊：要有正面的引用並在 `confirm_ids` 指出來，程式核對那幾份原文的日期；前提多 `breaksIf` 子句、`confirmsIf`、`verify`）。
+
 # own_drop_v3：自選慢規則減半的 AI 論點檢查（減半檢視，F7）
 
 共用的取證據包、取文件、外殼格式與送回方式見 `run.md`；這份只寫這個功能怎麼判斷。設計依據：`docs/design/own_thesis_design_2026-11-15.md` 的 §3.2～§3.4，以及 `docs/design/web_evidence_design_2026-11-20.md` 的 §1.5～§1.8（和 `ai_layer_design_2026-11-08.md` 的 F7 卡片不同時以前兩份為準）。

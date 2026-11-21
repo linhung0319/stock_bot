@@ -162,7 +162,8 @@ function reviewVote(pack: EvidencePack, verdict: string) {
     verdict,
     model: 'claude-opus-5-5',
     premise_checks: [
-      { premise_id: 'P1', status: 'HOLDS', evidence_ids: ['E1'] },
+      // T61（own_review_v4）：判成立要在 confirm_ids 指出正面的引用
+      { premise_id: 'P1', status: 'HOLDS', evidence_ids: ['E1'], confirm_ids: ['E1'] },
       { premise_id: 'P2', status: 'BROKEN', evidence_ids: ['E2'] },
     ],
     evidence: [

@@ -191,7 +191,7 @@ export async function aiRunPage(ctx, id) {
                   null,
                   h('span', { class: 'faint num' }, p.id),
                   h('span', null, p.text, p.origin ? h('span', { class: 'faint' }, `（${ORIGIN[p.origin] ?? p.origin}）`) : null),
-                  h('small', null, p.votes.length ? p.votes.map((v) => [h('span', { class: 'st ' + v.status, style: 'margin-right:6px' }, `第 ${v.index + 1} 票 ${v.label}${v.downgraded ? '（引用被刪）' : ''}`)]) : '沒有判斷'),
+                  h('small', { class: 'prem-votes' }, p.votes.length ? p.votes.map((v) => [h('span', { class: 'st ' + v.status, style: 'margin-right:6px' }, `第 ${v.index + 1} 票 ${v.label}${v.downgraded ? `（${v.note ?? '引用被刪'}）` : ''}`)]) : '沒有判斷'),
                 ),
               ),
             ),

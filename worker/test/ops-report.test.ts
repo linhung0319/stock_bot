@@ -302,7 +302,7 @@ describe('T16 運作統計：結構', () => {
   it('空的資料庫：每一段都有、列是空的、沒有錯誤', async () => {
     await withDb(async (_db, env) => {
       const r = await report(env);
-      expect(r.sections.map((s) => s.id)).toEqual(['notifications', 'choices', 'shadow', 'data_runs', 'flow_runs', 'alerts', 'pushes', 'ai_runs', 'ai_votes', 'ai_tasks', 'ai_rejections', 'checkpoints', 'crash_reviews', 'mom_entry', 'premise_origin', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'drafts', 'draft_failures']);
+      expect(r.sections.map((s) => s.id)).toEqual(['notifications', 'choices', 'shadow', 'data_runs', 'flow_runs', 'alerts', 'pushes', 'ai_runs', 'ai_votes', 'ai_tasks', 'ai_rejections', 'checkpoints', 'crash_reviews', 'mom_entry', 'premise_origin', 'premise_prompt', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'drafts', 'draft_failures']); // T61 加了 premise_prompt
       for (const s of r.sections) {
         expect(s.error, s.id).toBeUndefined();
         expect(s.rows, s.id).toEqual([]);

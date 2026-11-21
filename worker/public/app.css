@@ -516,6 +516,9 @@ a.step-in:hover, button.step-in:hover { color: #fff; }
 .prem { display: grid; gap: 8px; margin-top: 10px; }
 .prem li { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; align-items: baseline; }
 .prem li small { grid-column: 2; color: var(--ink-3); font-size: 12.5px; }
+/* 每一票的標籤（T61 起可能帶「原本判成立，引用逾期」這種原因）：一票一個、排不下就換行，長的在手機上可以折行 */
+.prem li small.prem-votes { display: flex; flex-wrap: wrap; gap: 4px 0; min-width: 0; }
+.prem-votes .st { height: auto; min-height: 22px; padding: 2px 8px; white-space: normal; }
 .st { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 7px; background: rgba(255, 255, 255, 0.08); font-size: 12px; font-weight: 600; white-space: nowrap; }
 .st.HOLDS { background: rgba(22, 207, 120, 0.16); color: #7cefb5; }
 .st.BROKEN { background: rgba(255, 59, 48, 0.16); color: #ff9a90; }
@@ -795,6 +798,9 @@ select option { background: #14162a; }
 .plist li > div > p:first-child { overflow-wrap: anywhere; }
 .plist-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 4px; font-size: 13px; }
 .plist-quiet { margin-top: 4px; padding-left: 10px; border-left: 2px solid var(--line-hi); color: var(--ink-2); }
+/* 前提最近一次的結果（T61）：那一句的理由緊接在下面；長的句子在手機上可以換行 */
+.plist-meta .st { height: auto; min-height: 22px; padding: 2px 8px; white-space: normal; }
+.plist-why { margin-top: 4px; overflow-wrap: anywhere; }
 .tl { display: grid; margin-top: 6px; }
 .tl li { display: grid; grid-template-columns: 5.8em minmax(0, 1fr); gap: 2px 14px; padding: 12px 0; border-top: 1px solid var(--line-2); }
 .tl li:first-child { border-top: 0; }

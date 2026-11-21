@@ -1,3 +1,5 @@
+> 不再使用（2026-11-21）：T61 起改用 `own_review_v4.md`（判前提成立要有正面的引用並在 `confirm_ids` 指出來，程式核對那幾份原文的日期；前提多 `breaksIf` 子句、`confirmsIf`、`verify`，`breaksIf` 逐句回答）。
+
 # own_review_v3：自選定期審查（F24）
 
 共用的取證據包、取文件、外殼格式與送回方式見 `run.md`；這份只寫這個功能怎麼判斷。設計依據：`docs/design/own_thesis_design_2026-11-15.md` 的 §1.5、§1.6，以及 `docs/design/web_evidence_design_2026-11-20.md` 的 §1.5、§1.6（和 `ai_layer_design_2026-11-08.md` 的 F24、F23 卡片不同時以前兩份為準）。

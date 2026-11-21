@@ -370,8 +370,9 @@ describe('T57 登記在報表裡', () => {
   it('七段接在原本的十四段後面，空的資料庫不出錯', async () => {
     await withDb(async (_db, env) => {
       const r = await report(env, '');
-      expect(r.sections.slice(14).map((s) => s.id)).toEqual(['premise_origin', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'drafts', 'draft_failures']);
-      expect(OPS_SECTIONS).toHaveLength(21);
+      // T61 在 premise_origin 後面加了一段 premise_prompt（前提的判定，依功能與 prompt 版本）
+      expect(r.sections.slice(14).map((s) => s.id)).toEqual(['premise_origin', 'premise_prompt', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'drafts', 'draft_failures']);
+      expect(OPS_SECTIONS).toHaveLength(22);
       for (const s of r.sections.slice(14)) {
         expect(s.error, s.id).toBeUndefined();
         expect(s.rows, s.id).toEqual([]);

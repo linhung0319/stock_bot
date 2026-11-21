@@ -1,7 +1,7 @@
 // 網站的 AI 紀錄（T9；design_v2 §6.6）：每一次 AI 執行一頁（輸入、每一票、檢查、結論、過程），「匯出 md 拿去問 AI」，
 // 以及把 AI 紀錄轉成建議單上的 AI 說明（AiNote）。
 import { DOC_FNS, LOOKUP_QUERIES, LOOKUP_QUESTIONS, type RefuseReason } from '../../ai/added';
-import { keptByChoice, type CheckedSample, type Outcome } from '../../ai/check';
+import { keptByChoice, type CheckedPremise, type CheckedSample, type Outcome } from '../../ai/check';
 import { TIER_TEXT } from '../../data/webSources';
 import { CRASH_REVIEW } from '../../ai/crash';
 import { EVENT_SCAN, scanQualified } from '../../ai/events';
@@ -67,7 +67,7 @@ export interface RunDetail extends RunRow {
   votes: { verdict: string; text: string; n: number }[];
   samplesWanted: number;
   facts: { id: string; label: string; value: string; note?: string }[];
-  premises: { id: string; text: string; origin: string | null; votes: { index: number; status: string; label: string; downgraded: boolean; evidence: string[] }[] }[];
+  premises: { id: string; text: string; origin: string | null; votes: { index: number; status: string; label: string; downgraded: boolean; /** 被程式改成證據不足的原因（白話；沒有被改是 null）。 */ note: string | null; evidence: string[] }[] }[];
   samples: {
     index: number;
     valid: boolean;
@@ -238,6 +238,18 @@ export function runRow(run: AiRun): RunRow {
 
 export const WEB_TEXT_HIDDEN = '網頁的全文不在這裡顯示：被引用的片段列在「AI 這次另外找了什麼」與每一票的引用，要看全文請開原始網址。';
 
+/**
+ * 一票對一條前提的判斷被程式改成證據不足的原因（沒有被改是 null）：引用沒通過逐字檢查被刪掉；
+ * 或判成立但沒過 T61 的核對（composite_layer_design §2.1：沒有指出正面的引用、正面的引用逾期）。
+ * 只寫短的一句（放在票的標籤裡）；日期與驗證頻率寫在那一票的「程式檢查發現」（check.ts 的 issues）。
+ */
+export function downgradeNote(c: Pick<CheckedPremise, 'downgradedFrom' | 'holdsIssue'>): string | null {
+  if (!c.downgradedFrom) return null;
+  if (c.holdsIssue?.why === 'STALE') return '原本判成立，引用逾期';
+  if (c.holdsIssue?.why === 'NO_CONFIRM') return '原本判成立，沒有指出正面的引用';
+  return '引用被刪';
+}
+
 const conditionText = (raw: Record<string, unknown>): string => {
   const t = typeof raw.text === 'string' ? raw.text : '';
   if (t) return t;
@@ -272,7 +284,7 @@ export function runDetail(run: AiRun, followUp: Record<string, { ret: number; be
       origin: p.origin ?? null,
       votes: (o?.samples ?? []).flatMap((s) => {
         const c = s.premises.find((x) => x.premise_id === p.id);
-        return c ? [{ index: s.index, status: c.status, label: PREMISE_LABEL[c.status], downgraded: !!c.downgradedFrom, evidence: c.evidence_ids }] : [];
+        return c ? [{ index: s.index, status: c.status, label: PREMISE_LABEL[c.status], downgraded: !!c.downgradedFrom, note: downgradeNote(c), evidence: c.evidence_ids }] : [];
       }),
     })),
     samples: (o?.samples ?? []).map((s) => ({
@@ -378,7 +390,7 @@ export function exportMd(run: AiRun, ctx: ExportContext): string {
   if (d.facts.length) L.push('## 程式算好的數字', '', '| 編號 | 項目 | 數值 | 說明 |', '|---|---|---|---|', ...d.facts.map((f) => `| ${f.id} | ${f.label} | ${f.value} | ${f.note ?? ''} |`), '');
   if (d.premises.length) {
     L.push('## 前提逐條', '');
-    for (const p of d.premises) L.push(`- **${p.id}** ${p.text}：${p.votes.map((v) => `第 ${v.index + 1} 票 ${v.label}${v.downgraded ? '（引用被刪，改成證據不足）' : ''}`).join('；') || '沒有判斷'}`);
+    for (const p of d.premises) L.push(`- **${p.id}** ${p.text}：${p.votes.map((v) => `第 ${v.index + 1} 票 ${v.label}${v.note ? `（${v.note}，改成證據不足）` : ''}`).join('；') || '沒有判斷'}`);
     L.push('');
   }
   d.samples.forEach((s) => {

@@ -170,8 +170,9 @@ const E_REV = E('E9', TENQ_DOC, Q_REV);
 const E_GM = E('E8', TENQ_DOC, Q_GM);
 
 type Check = [string, 'HOLDS' | 'BROKEN' | 'INSUFFICIENT', string[]];
+/** T61（own_review_v4）起判成立要在 confirm_ids 指出正面的引用：這裡的假票把判成立的每一條引用都當成正面的。 */
 function vote(pack: EvidencePack, verdict: string, checks: Check[], evidence: unknown[], payload: Record<string, unknown> = {}) {
-  return { run_id: pack.run_id, verdict, premise_checks: checks.map(([premise_id, status, evidence_ids]) => ({ premise_id, status, evidence_ids })), evidence, payload: { tier: verdict, condition_checks: [], proposed_conditions: [], ...payload }, report: '測試' };
+  return { run_id: pack.run_id, verdict, premise_checks: checks.map(([premise_id, status, evidence_ids]) => ({ premise_id, status, evidence_ids, ...(status === 'HOLDS' ? { confirm_ids: evidence_ids } : {}) })), evidence, payload: { tier: verdict, condition_checks: [], proposed_conditions: [], ...payload }, report: '測試' };
 }
 const three = <T>(v: T) => [v, v, v];
 const HOOK = PAYLOAD_HOOKS[OWN_REVIEW];
@@ -728,7 +729,7 @@ describe('T53：分析師找資料的紀錄（§1.5 的 lookups、G22）', () =>
   it('證據包列出清單內的來源；取回的文件記下來源；送回的 lookups 存進執行紀錄；審查紀錄頁列「AI 另外找了什麼」與沒取到的', async () => {
     await withWorld(async (c) => {
       const r = await startOwnReview(c.env, c.fetcher, c.acct, c.view, c.axis, 'NVDA', 'MANUAL', T0);
-      expect(r.promptVersion).toBe('own_review_v3');
+      expect(r.promptVersion).toBe('own_review_v4');
       // 清單內的網頁來源（S）接在目錄（M）後面；網域清單記在 rule.detail
       expect(r.pack.facts.filter((f) => /^[MS]\d+$/.test(f.id)).map((f) => f.id)).toEqual(['M1', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6']);
       expect(r.pack.facts.find((f) => f.id === 'S3')).toMatchObject({ label: '清單內的網頁來源', value: 'trendforce.com｜TrendForce｜指名的產業來源｜只收 /presscenter/、/news/' });
@@ -895,8 +896,9 @@ describe('T53：prompt', () => {
   const read = (f: string) => readFileSync(join(dir, f), 'utf8');
 
   it('own_review_v3：分析師的找資料步驟、哪些引用算數、lookups；v2 開頭標「不再使用」', () => {
-    expect(OWN_REVIEW_PROMPT).toBe('own_review_v3');
-    const v3 = read('own_review_v3.md');
+    // T61 升成 v4（判成立要有正面的引用）：T53 的這些內容 v4 要照樣有
+    expect(OWN_REVIEW_PROMPT).toBe('own_review_v4');
+    const v3 = read(`${OWN_REVIEW_PROMPT}.md`);
     expect(v3).toContain('**只有分析師可以用 WebSearch、可以取文件。**');
     expect(v3).toContain('最多 6 個');
     expect(v3).toContain('兩個方向都要找');

@@ -5,6 +5,7 @@
 // 只讀 D1，不改任何東西。數字都用 SQL 算（json_extract／json_each 讀 JSON 欄位），不把整張表載進記憶體（影子紀錄例外，見 shadowSection）。
 // 比例是 0～1 的小數（四捨五入到小數三位）；分母是 0 時是 null。
 // T57（web_evidence_design §2.4 第 7 點、§1.3、第 3 章）加了七段：前提的審查結果（依前提的來源）、每次執行取了多少網頁、被拒絕的原因、被略過與抓不到的網域、草稿的成功率與失敗原因。
+// T61（composite_layer_design §2.1）：前提的審查結果多一欄 stale（逾期）；加一段「前提的判定，依功能與 prompt 版本」（HOLDS 收緊前後對照）。
 import { liveShadow, type ShadowRecord } from '../engine';
 import { DOC_FNS } from '../ai/added';
 import { WEB_DOC_PER_SITE } from '../data/webDoc';
@@ -490,6 +491,8 @@ const PREMISE_ORIGIN_TITLE = '定期審查的前提結果，依前提的來源�
  * UNKNOWN = 證據包寫 USER、但找不到當時帳戶裡「編號與字都相同」的前提（例如帳戶紀錄被清過）。
  * 草稿的前提判成立的比例 ≥ LOOSE_HOLDS_RATIO（至少 LOOSE_MIN_CHECKS 次）、而你寫的比它低 → AI_DRAFT_ACCEPTED 那一列的 note 提示出題可能偏鬆。
  * 合計列的 reviews 是不重複的審查次數（一次審查可以同時有好幾種來源的前提，各列的 reviews 加起來會比較大）。
+ * stale（T61，composite_layer_design §2.1）：這幾次檢查裡，至少有一票「判成立但正面的引用比驗證頻率還舊」被程式改成證據不足的次數
+ * （那一票已經算在 insufficient 或 split 裡；T61 之前的審查沒有這個核對，一律是 0）。信念不進審查，不在這張表裡（T60）。
  */
 export const premiseOriginSection: SectionFn = async (db, p) => {
   const c = atCond(p, 'r.created_at');
@@ -503,15 +506,19 @@ export const premiseOriginSection: SectionFn = async (db, p) => {
   );
   const voteRows = await query(
     db,
-    `SELECT r.run_id AS run_id, json_extract(v.value, '$.premise_id') AS id, json_extract(v.value, '$.status') AS status
+    `SELECT r.run_id AS run_id, json_extract(v.value, '$.premise_id') AS id, json_extract(v.value, '$.status') AS status, json_extract(v.value, '$.holdsIssue.why') AS issue
      FROM ai_runs r, json_each(r.outcome, '$.samples') s, json_each(s.value, '$.premises') v
      WHERE ${base} AND json_extract(s.value, '$.valid') = 1`,
     c.args,
   );
   const votes = new Map<string, string[]>();
-  for (const v of voteRows) votes.set(`${v.run_id}${SEP}${v.id}`, [...(votes.get(`${v.run_id}${SEP}${v.id}`) ?? []), String(v.status)]);
+  const staleKeys = new Set<string>();
+  for (const v of voteRows) {
+    votes.set(`${v.run_id}${SEP}${v.id}`, [...(votes.get(`${v.run_id}${SEP}${v.id}`) ?? []), String(v.status)]);
+    if (v.issue === 'STALE') staleKeys.add(`${v.run_id}${SEP}${v.id}`);
+  }
 
-  type Acc = { reviews: Set<string>; checks: number; holds: number; broken: number; insufficient: number; split: number };
+  type Acc = { reviews: Set<string>; checks: number; holds: number; broken: number; insufficient: number; split: number; stale: number };
   const by = new Map<string, Acc>();
   const allRuns = new Set<string>();
   const stateCache = new Map<string, Awaited<ReturnType<typeof accountPremises>>>();
@@ -525,10 +532,11 @@ export const premiseOriginSection: SectionFn = async (db, p) => {
       const hit = stateCache.get(key)!.find((x) => x.id === r.id && x.text === r.text);
       origin = hit?.origin === 'AI_DRAFT_ACCEPTED' || hit?.origin === 'USER' ? hit.origin : 'UNKNOWN';
     }
-    const a = by.get(origin) ?? { reviews: new Set<string>(), checks: 0, holds: 0, broken: 0, insufficient: 0, split: 0 };
+    const a = by.get(origin) ?? { reviews: new Set<string>(), checks: 0, holds: 0, broken: 0, insufficient: 0, split: 0, stale: 0 };
     a.reviews.add(String(r.run_id));
     allRuns.add(String(r.run_id));
     a.checks++;
+    if (staleKeys.has(`${r.run_id}${SEP}${r.id}`)) a.stale++;
     if (!(v.length >= 3 && v.every((x) => x === v[0]))) a.split++;
     else if (v[0] === 'HOLDS') a.holds++;
     else if (v[0] === 'BROKEN') a.broken++;
@@ -544,6 +552,7 @@ export const premiseOriginSection: SectionFn = async (db, p) => {
     broken: a?.broken ?? 0,
     insufficient: a?.insufficient ?? 0,
     split: a?.split ?? 0,
+    stale: a?.stale ?? 0,
     holds_ratio: ratio(a?.holds ?? 0, a?.checks ?? 0),
     broken_ratio: ratio(a?.broken ?? 0, a?.checks ?? 0),
     insufficient_ratio: ratio(a?.insufficient ?? 0, a?.checks ?? 0),
@@ -555,7 +564,7 @@ export const premiseOriginSection: SectionFn = async (db, p) => {
   if (n(draft.premise_checks) >= LOOSE_MIN_CHECKS && n(draft.holds_ratio) >= LOOSE_HOLDS_RATIO && (user.holds_ratio === null || n(user.holds_ratio) < LOOSE_HOLDS_RATIO)) {
     draft.note = `草稿的前提 ${Math.round(n(draft.holds_ratio) * 100)}% 判成立、你寫的${user.holds_ratio === null ? '還沒有檢查' : `只有 ${Math.round(n(user.holds_ratio) * 100)}%`}：草稿出題可能偏鬆，看一次草稿的前提`;
   }
-  const keys = ['premise_checks', 'holds', 'broken', 'insufficient', 'split'];
+  const keys = ['premise_checks', 'holds', 'broken', 'insufficient', 'split', 'stale'];
   const out = withTotal(rows, { origin: '合計', note: null }, keys, (t) => {
     t.reviews = allRuns.size;
     t.holds_ratio = ratio(n(t.holds), n(t.premise_checks));
@@ -563,6 +572,59 @@ export const premiseOriginSection: SectionFn = async (db, p) => {
     t.insufficient_ratio = ratio(n(t.insufficient), n(t.premise_checks));
   });
   return { id: 'premise_origin', title: PREMISE_ORIGIN_TITLE, rows: out };
+};
+
+const PREMISE_PROMPT_TITLE = '前提的判定，依功能與 prompt 版本（判「成立」收緊前後對照；OWN_REVIEW 定期審查、OWN_DROP 減半檢視）：成立、不成立、證據不足、票數不一致；逾期、沒指出正面引用的次數';
+
+/**
+ * 前提的判定，依功能與 prompt 版本分開（T61，composite_layer_design §2.1：判「成立」要有正面的引用，v4 起）。
+ * 用來看收緊之後成立的比例掉了多少、證據不足多了多少，以及程式的日期核對擋了幾次（門檻是建議值，上線後看這張表再調）。
+ * 範圍：期間內（建立時間）已經有結論的定期審查與減半檢視（AGREED／SPLIT／INSUFFICIENT／DATA_MISSING）。
+ * 一次執行裡的一條前提算一次檢查；結果的算法同 premise_origin（格式合格的票至少 3 張而且判斷都一樣 → holds／broken／insufficient，否則 split）。
+ * stale：至少一票「判成立但正面的引用比驗證頻率還舊（逾期）」被程式改成證據不足的檢查次數；
+ * no_confirm：至少一票「判成立但沒有指出通過檢查的正面引用」被改成證據不足的檢查次數（這個數字高表示 AI 沒照新格式寫，要看 prompt）。
+ * 兩個都只有 v4 起的執行才會有（之前沒有這個核對）。
+ */
+export const premisePromptSection: SectionFn = async (db, p) => {
+  const c = atCond(p, 'r.created_at');
+  const usable = USABLE.map((x) => `'${x}'`).join(', ');
+  const rows = await query(
+    db,
+    `SELECT r.run_id AS run_id, r.fn AS fn, r.prompt_version AS prompt_version, json_extract(v.value, '$.premise_id') AS id, json_extract(v.value, '$.status') AS status, json_extract(v.value, '$.holdsIssue.why') AS issue
+     FROM ai_runs r, json_each(r.outcome, '$.samples') s, json_each(s.value, '$.premises') v
+     WHERE r.fn IN ('OWN_REVIEW', 'OWN_DROP') AND r.status = 'DONE' AND json_extract(r.outcome, '$.status') IN (${usable}) AND ${c.sql} AND json_extract(s.value, '$.valid') = 1
+     ORDER BY r.fn, r.prompt_version, r.run_id`,
+    c.args,
+  );
+  type Check = { group: string; votes: string[]; stale: boolean; noConfirm: boolean };
+  const checks = new Map<string, Check>();
+  const runsOf = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const group = `${r.fn}${SEP}${r.prompt_version}`;
+    const key = `${r.run_id}${SEP}${r.id}`;
+    const x = checks.get(key) ?? { group, votes: [], stale: false, noConfirm: false };
+    x.votes.push(String(r.status));
+    if (r.issue === 'STALE') x.stale = true;
+    if (r.issue === 'NO_CONFIRM') x.noConfirm = true;
+    checks.set(key, x);
+    runsOf.set(group, (runsOf.get(group) ?? new Set<string>()).add(String(r.run_id)));
+  }
+  const by = new Map<string, Row>();
+  for (const x of checks.values()) {
+    const [fn, prompt_version] = x.group.split(SEP);
+    const a = by.get(x.group) ?? { fn, prompt_version, runs: runsOf.get(x.group)!.size, premise_checks: 0, holds: 0, broken: 0, insufficient: 0, split: 0, stale: 0, no_confirm: 0 };
+    a.premise_checks = n(a.premise_checks) + 1;
+    const same = x.votes.length >= 3 && x.votes.every((v) => v === x.votes[0]);
+    const k = !same ? 'split' : x.votes[0] === 'HOLDS' ? 'holds' : x.votes[0] === 'BROKEN' ? 'broken' : 'insufficient';
+    a[k] = n(a[k]) + 1;
+    if (x.stale) a.stale = n(a.stale) + 1;
+    if (x.noConfirm) a.no_confirm = n(a.no_confirm) + 1;
+    by.set(x.group, a);
+  }
+  const fin = (r: Row): Row => ({ ...r, holds_ratio: ratio(n(r.holds), n(r.premise_checks)), insufficient_ratio: ratio(n(r.insufficient), n(r.premise_checks)) });
+  const out = [...by.values()].sort((a, b) => String(a.fn).localeCompare(String(b.fn)) || String(a.prompt_version).localeCompare(String(b.prompt_version))).map(fin);
+  const keys = ['runs', 'premise_checks', 'holds', 'broken', 'insufficient', 'split', 'stale', 'no_confirm'];
+  return { id: 'premise_prompt', title: PREMISE_PROMPT_TITLE, rows: withTotal(out, { fn: '合計', prompt_version: null }, keys, (t) => Object.assign(t, fin(t))) };
 };
 
 /**
@@ -803,8 +865,8 @@ export const draftFailuresSection: SectionFn = async (db, p) => {
   return { id: 'draft_failures', title: '草稿失敗的原因（依觸發）', rows: withTotal(out, { trigger: '合計', reason: null }, ['n']) };
 };
 
-/** 報表的各段，照這個順序輸出。要加段就在這裡加一個函式（T31a 加了月底檢查點、T33b 加了崩盤規則、T32d 加了動能進場審查、T57 加了前提結果、網頁與草稿七段）。 */
-export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, momEntrySection, premiseOriginSection, webRunsSection, webRefusedSection, webSkippedSection, webFailedSection, draftsSection, draftFailuresSection];
+/** 報表的各段，照這個順序輸出。要加段就在這裡加一個函式（T31a 加了月底檢查點、T33b 加了崩盤規則、T32d 加了動能進場審查、T57 加了前提結果、網頁與草稿七段、T61 加了前提的判定依 prompt 版本）。 */
+export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, momEntrySection, premiseOriginSection, premisePromptSection, webRunsSection, webRefusedSection, webSkippedSection, webFailedSection, draftsSection, draftFailuresSection];
 
 export interface OpsReport {
   generated_at: string;

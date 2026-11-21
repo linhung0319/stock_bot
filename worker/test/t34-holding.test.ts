@@ -69,11 +69,17 @@ function review(o: Partial<ThesisReview> = {}): ThesisReview {
 const metaOf = (o: Partial<OwnMeta> = {}): OwnMeta => ({ premises: [], flags: [], ...o }) as unknown as OwnMeta;
 
 describe('T34：持股頁的論點那一塊（thesisView）', () => {
-  it('前提最近一次的檢查：3 票一致的結果與日期；沒檢查過寫「還沒有檢查過」；之後沒有一致結論另外標', () => {
-    const v = thesisView(fileOf(), metaOf(), { notifs: [] }, '2026-11-13');
-    expect(v.premiseChecks.P1).toEqual({ status: 'HOLDS', text: '成立（11/12 審查，3 票一致）', when: '11/12 審查，3 票一致', split: false });
-    expect(v.premiseChecks.P2).toMatchObject({ status: 'BROKEN', when: '10/20 審查，3 票一致', split: true });
-    expect(v.premiseChecks.P3).toEqual({ status: null, text: '還沒有檢查過', when: null, split: false });
+  // T61（composite_layer_design §2.1）改了這裡的顯示：原本是「最近一次 3 票一致的結果＋之後沒有一致結論另外標」，
+  // 現在由歷次審查算出四種寫法之一（細節的測試在 t61-holds.test.ts）
+  it('前提最近一次的結果：證實與日期；之後沒有一致結論寫「這次沒驗到」並帶上一次的結果；沒檢查過寫「還沒有檢查過」', () => {
+    const reviews = [
+      review({ runId: 'r3', date: '2026-11-12', premiseVotes: { P1: ['HOLDS', 'HOLDS', 'HOLDS'], P2: ['BROKEN', 'INSUFFICIENT', 'BROKEN'] } }),
+      review({ runId: 'r1', date: '2026-10-20', premiseVotes: { P2: ['BROKEN', 'BROKEN', 'BROKEN'] } }),
+    ];
+    const v = thesisView(fileOf({ reviews }), metaOf(), { notifs: [] }, '2026-11-13');
+    expect(v.premiseChecks.P1).toEqual({ kind: 'CONFIRMED', text: '11/12 證實', why: '3 票都判成立' });
+    expect(v.premiseChecks.P2).toEqual({ kind: 'MISSED', text: '這次沒驗到（上次 10/20 被判不成立）', why: '11/12 審查：三票不一致（2 票不成立、1 票證據不足）' });
+    expect(v.premiseChecks.P3).toEqual({ kind: null, text: '還沒有檢查過', why: null });
     // 示範模式（只有帳戶狀態）不說「還沒有檢查過」，說示範資料沒有紀錄
     expect(thesisView(fileOf(), metaOf(), { notifs: [] }, '2026-11-13', true).premiseChecks.P3.text).toBe('示範資料沒有審查紀錄');
   });
@@ -244,12 +250,13 @@ describe('T34：持股頁的 API', () => {
       const b = breakNotice(loaded.acct, c.view, 'NVDA', { tier: 'HALF', premiseId: 'P2', basis: '10-Q 2026-10-30', runIds: ['2026-11-19_OWN_REVIEW_NVDA_aaa'] });
       const at = new Date('2026-11-19T13:00:00Z');
       await saveAccount(c.db, b.acct, loaded, '測試：乙類', at, breakLogs(b.acct, [b.notif!]).map((l) => thesisLogStmt(c.db, l, null, at.toISOString())));
-      const r = await c.api<{ thesis: { premiseChecks: Record<string, { status: string }>; events: { label: string; detail: string }[]; reviews: { result: string; broken: string[]; response: string | null; trigger: string }[]; silenced: unknown[]; partial: boolean }; own: { pendingBreak: unknown } }>('GET', 'holding/NVDA');
+      const r = await c.api<{ thesis: { premiseChecks: Record<string, { kind: string; text: string }>; events: { label: string; detail: string }[]; reviews: { result: string; broken: string[]; response: string | null; trigger: string }[]; silenced: unknown[]; partial: boolean }; own: { pendingBreak: unknown } }>('GET', 'holding/NVDA');
       expect(r.status).toBe(200);
       const t = r.body.thesis;
       expect(t.partial).toBe(false);
-      expect(t.premiseChecks.P1.status).toBe('HOLDS');
-      expect(t.premiseChecks.P2.status).toBe('BROKEN');
+      // T61：四種寫法（證實／被判不成立／這次沒驗到／已經 N 次沒驗到）
+      expect(t.premiseChecks.P1).toMatchObject({ kind: 'CONFIRMED', text: '11/19 證實' });
+      expect(t.premiseChecks.P2).toMatchObject({ kind: 'BROKEN', text: '11/19 被判不成立' });
       expect(t.events.map((e) => e.label)).toEqual(['財測下修']);
       expect(t.events[0].detail).toBe('每日掃描標記：財測（財測下修）；可能和你的條件有關（等申報原文證實）');
       expect(t.reviews[0]).toMatchObject({ result: '3 票一致：減半', broken: ['P2'], response: '還沒回', trigger: '財報後' });

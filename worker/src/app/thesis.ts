@@ -198,6 +198,11 @@ export interface ThesisReview {
   response: { outcome: string; reason: string | null; type?: string } | null;
   /** 這次每一票對每條前提的判斷（算「最近一次檢查」用）。 */
   premiseVotes: Record<string, string[]>;
+  /**
+   * 這次每條前提有幾票是「判成立但引用逾期」被程式改成證據不足的（T61，composite_layer_design §2.1；check.ts 的 holdsIssue.why = STALE）。
+   * 沒有的前提不列；T61 之前的審查沒有這個欄位。
+   */
+  premiseStale?: Record<string, number>;
   /** 和結論同檔位的第一張合格票的報告第一段（討論包用；沒有是 null）。 */
   summary: string | null;
 }
@@ -360,14 +365,19 @@ function toReview(r: RunRow): ThesisReview {
   const detail = r.detail ? (JSON.parse(r.detail) as Record<string, unknown>) : {};
   const valid = (o?.samples ?? []).filter((s) => s.valid);
   const premiseVotes: Record<string, string[]> = {};
-  for (const s of valid) for (const p of s.premises) (premiseVotes[p.premise_id] ??= []).push(p.status);
+  const premiseStale: Record<string, number> = {};
+  for (const s of valid)
+    for (const p of s.premises) {
+      (premiseVotes[p.premise_id] ??= []).push(p.status);
+      if (p.holdsIssue?.why === 'STALE') premiseStale[p.premise_id] = (premiseStale[p.premise_id] ?? 0) + 1;
+    }
   const brokenPremises = Object.entries(premiseVotes)
     .filter(([, v]) => v.length === valid.length && valid.length > 0 && v.every((x) => x === 'BROKEN'))
     .map(([id]) => id);
   const trigger = r.fn === 'OWN_REVIEW' ? String(detail.trigger ?? '') || null : r.fn === 'HARD_EVENT' ? ((detail.codes as string[] | undefined) ?? []).join('、') || null : r.fn === 'OWN_DROP' ? '慢規則減半' : r.fn === 'OWN_CONDITION' ? '新申報' : r.fn === 'OWN_EARNINGS' ? '財報新聞稿' : null;
   const rep = valid.find((s) => s.verdict === o?.verdict) ?? valid[0];
   const summary = rep?.report?.split(/\n\s*\n/)[0]?.trim().slice(0, 400) || null;
-  return { runId: r.run_id, date: r.as_of, fn: r.fn, label: FILE_FNS[r.fn] ?? r.fn, trigger, status: r.status === 'PENDING' || !o ? 'PENDING' : o.status, verdict: o?.verdict ?? null, votes: o?.votes ?? {}, brokenPremises, notif: null, response: null, premiseVotes, summary };
+  return { runId: r.run_id, date: r.as_of, fn: r.fn, label: FILE_FNS[r.fn] ?? r.fn, trigger, status: r.status === 'PENDING' || !o ? 'PENDING' : o.status, verdict: o?.verdict ?? null, votes: o?.votes ?? {}, brokenPremises, notif: null, response: null, premiseVotes, ...(Object.keys(premiseStale).length ? { premiseStale } : {}), summary };
 }
 
 /**
@@ -1042,15 +1052,8 @@ export const UNVERIFIED_AFTER = 3;
 /** 那一件的後半句（設計原文）。 */
 export const UNVERIFIED_TEXT = '這一條一直查不到，可以改寫、配一個查得到的指標，或改標成信念';
 
-/**
- * 一條前提最近連續幾次定期審查「沒驗到」（composite_layer_design §2.3；純函式。T61 持股頁的「已經 3 次沒驗到」也可以用）：
- *   新到舊看這份論點檔的定期審查，有這一條的票才算一次（逾時、沒有合格票、這一條是信念沒進證據包的，不算也不中斷）；
- *   3 票都判成立（證實）或 3 票都判不成立 → 這一串停在那裡；其他（證據不足、票數不一致）算一次沒驗到。
- *   這條前提的字改過（論點檔 log 的 THESIS 前後這一條的字不同，只改標點空白不算）那天以前的審查不算：看的是舊的字。
- * 回傳：count 連續幾次；first 這一串最早的那次審查（「要看的事」的鍵）；reachedAt 達到 3 次的那次審查的日期；
- *   lastConfirmed 字改過之後最近一次 3 票都判成立的日期（沒有是 null）。
- */
-export function unverifiedStreak(file: Pick<ThesisFile, 'reviews' | 'log'>, premiseId: string): { count: number; first: string | null; reachedAt: string | null; lastConfirmed: string | null } {
+/** 這條前提的字最後一次改動的訊號日（論點檔 log 的 THESIS 前後這一條的字不同；只改標點空白不算）。沒改過是空字串。 */
+function premiseTextCutoff(file: Pick<ThesisFile, 'log'>, premiseId: string): string {
   const textOf = (ps: unknown) => (Array.isArray(ps) ? (ps as { id?: unknown; text?: unknown }[]).find((p) => p?.id === premiseId)?.text : undefined);
   let cutoff = '';
   for (const l of file.log) {
@@ -1059,23 +1062,81 @@ export function unverifiedStreak(file: Pick<ThesisFile, 'reviews' | 'log'>, prem
     const a = textOf((l.body.after as { premises?: unknown } | undefined)?.premises);
     if (typeof b === 'string' && typeof a === 'string' && premiseKey(a) !== premiseKey(b) && l.session > cutoff) cutoff = l.session;
   }
-  const streak: { runId: string; date: string }[] = [];
-  let lastConfirmed: string | null = null;
-  let open = true;
-  for (const r of file.reviews) {
-    if (r.fn !== 'OWN_REVIEW' || r.status === 'PENDING' || r.date <= cutoff) continue;
-    const v = r.premiseVotes[premiseId];
-    if (!v?.length) continue;
-    const same = v.length >= 3 && v.every((x) => x === v[0]);
-    if (same && v[0] === 'HOLDS') {
-      lastConfirmed ??= r.date;
-      open = false;
-    } else if (same && v[0] === 'BROKEN') open = false;
-    else if (open) streak.push({ runId: r.runId, date: r.date });
-    if (!open && lastConfirmed) break;
-  }
+  return cutoff;
+}
+
+/** 一次定期審查對一條前提的結果：3 票都判成立＝證實、3 票都判不成立＝被判不成立，其他（證據不足、票數不一致）＝沒驗到。 */
+type PremiseResult = 'HOLDS' | 'BROKEN' | 'UNVERIFIED';
+const premiseResult = (v: string[]): PremiseResult => (v.length >= 3 && v.every((x) => x === v[0]) && (v[0] === 'HOLDS' || v[0] === 'BROKEN') ? v[0] : 'UNVERIFIED');
+
+/** 這條前提有票的定期審查（新到舊；逾時、沒有合格票、這一條是信念沒進證據包的不在裡面），只看字改過之後的。 */
+function premiseReviews(file: Pick<ThesisFile, 'reviews' | 'log'>, premiseId: string): { review: ThesisReview; votes: string[]; result: PremiseResult }[] {
+  const cutoff = premiseTextCutoff(file, premiseId);
+  return file.reviews.flatMap((r) => {
+    if (r.fn !== 'OWN_REVIEW' || r.status === 'PENDING' || r.date <= cutoff) return [];
+    const votes = r.premiseVotes[premiseId];
+    return votes?.length ? [{ review: r, votes, result: premiseResult(votes) }] : [];
+  });
+}
+
+/**
+ * 一條前提最近連續幾次定期審查「沒驗到」（composite_layer_design §2.3；純函式）：
+ *   新到舊看這份論點檔的定期審查，有這一條的票才算一次（逾時、沒有合格票、這一條是信念沒進證據包的，不算也不中斷）；
+ *   3 票都判成立（證實）或 3 票都判不成立 → 這一串停在那裡；其他（證據不足、票數不一致）算一次沒驗到。
+ *   這條前提的字改過（論點檔 log 的 THESIS 前後這一條的字不同，只改標點空白不算）那天以前的審查不算：看的是舊的字。
+ * 回傳：count 連續幾次；first 這一串最早的那次審查（「要看的事」的鍵）；reachedAt 達到 3 次的那次審查的日期；
+ *   lastConfirmed 字改過之後最近一次 3 票都判成立的日期（沒有是 null）。
+ */
+export function unverifiedStreak(file: Pick<ThesisFile, 'reviews' | 'log'>, premiseId: string): { count: number; first: string | null; reachedAt: string | null; lastConfirmed: string | null } {
+  const rows = premiseReviews(file, premiseId);
+  const end = rows.findIndex((x) => x.result !== 'UNVERIFIED');
+  const streak = end < 0 ? rows : rows.slice(0, end);
   const n = streak.length;
-  return { count: n, first: n ? streak[n - 1].runId : null, reachedAt: n >= UNVERIFIED_AFTER ? streak[n - UNVERIFIED_AFTER].date : null, lastConfirmed };
+  return {
+    count: n,
+    first: n ? streak[n - 1].review.runId : null,
+    reachedAt: n >= UNVERIFIED_AFTER ? streak[n - UNVERIFIED_AFTER].review.date : null,
+    lastConfirmed: rows.find((x) => x.result === 'HOLDS')?.review.date ?? null,
+  };
+}
+
+/**
+ * 一條前提最近一次的結果（T61，composite_layer_design §2.1 的「顯示」）：由歷次定期審查算出來，不是新的判定值。純函式。
+ * 持股頁照它寫四種寫法（thesisView）：證實、被判不成立、這次沒驗到（上次證實哪一天）、已經 N 次沒驗到。
+ * 規則和 unverifiedStreak 相同（同一個 premiseReviews）：只看定期審查、有這一條的票才算、字改過以前的不算。
+ * 沒有任何一次算得上的審查 → null（還沒有檢查過；信念也是 null，它不進審查）。
+ */
+export interface PremiseStanding {
+  /** 最近一次有這一條的票的定期審查。 */
+  runId: string;
+  date: string;
+  /** 那一次的結果。 */
+  result: PremiseResult;
+  /** 那一次每一票的判斷。 */
+  votes: string[];
+  /** 那一次有幾票是「判成立但引用逾期」被程式改成證據不足的。 */
+  stale: number;
+  /** 連續幾次沒驗到（result 是 UNVERIFIED 時 ≥ 1，否則 0）。 */
+  missed: number;
+  /** 這一串沒驗到之前，最近一次 3 票一致的結果（證實或被判不成立）；沒有是 null。result 不是 UNVERIFIED 時也是 null。 */
+  prior: { result: 'HOLDS' | 'BROKEN'; date: string } | null;
+}
+export function premiseStanding(file: Pick<ThesisFile, 'reviews' | 'log'>, premiseId: string): PremiseStanding | null {
+  const rows = premiseReviews(file, premiseId);
+  if (!rows.length) return null;
+  const [top] = rows;
+  const end = rows.findIndex((x) => x.result !== 'UNVERIFIED');
+  const missed = end < 0 ? rows.length : end;
+  const before = missed > 0 && end >= 0 ? rows[end] : null;
+  return {
+    runId: top.review.runId,
+    date: top.review.date,
+    result: top.result,
+    votes: top.votes,
+    stale: top.review.premiseStale?.[premiseId] ?? 0,
+    missed,
+    prior: before ? { result: before.result as 'HOLDS' | 'BROKEN', date: before.review.date } : null,
+  };
 }
 
 /**

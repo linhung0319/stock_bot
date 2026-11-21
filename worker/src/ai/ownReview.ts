@@ -1,6 +1,6 @@
 // T10：F24 自選定期審查、F25 自選條件監測（ai_layer_design 的 F24、F25、F23 卡片）。
 // 純函式：證據包、payload 的逐欄檢查、結論怎麼變成引擎的輸入。資料抓取與排程在 src/app/ownAi.ts。
-import { TIER_NAME, type Account, type MarketView, type ReviewTrigger, type Tier } from '../engine';
+import { TIER_NAME, VERIFY_EVERY_DEFAULT, type Account, type MarketView, type ReviewTrigger, type Tier } from '../engine';
 import { hostMatches, sameWebDomain, webLabel } from '../data/webSources';
 import { webMetaOf, type WebMeta } from './added';
 import { keptByChoice, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
@@ -8,7 +8,8 @@ import { buildPack, ownPremises, ownRuleFacts, priceDoc, priceFacts } from './pa
 
 export const OWN_REVIEW = 'OWN_REVIEW';
 export const OWN_CONDITION = 'OWN_CONDITION';
-export const OWN_REVIEW_PROMPT = 'own_review_v3';
+/** T61：v4 判前提成立要有正面的引用（composite_layer_design §2.1）；前提的子句、怎樣算證實、怎麼驗證也在這一版說明。 */
+export const OWN_REVIEW_PROMPT = 'own_review_v4';
 /** F24 獨立跑幾次。 */
 export const OWN_REVIEW_SAMPLES = 3;
 export const OWN_CONDITION_PROMPT = 'own_condition_v1';
@@ -110,7 +111,8 @@ export function ownReviewPack(inp: OwnReviewInput) {
       (raise.ok ? '只有前提全部成立時才可以選 RAISE。' : `這個月不能選 RAISE（${raise.why}）。`) +
       (hasC || hasW ? `並逐條檢查${hasC ? '使用者定的條件（facts 的 C 開頭）' : ''}${hasC && hasW ? '與' : ''}${hasW ? '觀察項（facts 的 W 開頭）' : ''}是否已經成立（payload.condition_checks）。` : '') +
       '最後可以建議最多 3 條新增的條件（payload.proposed_conditions）：現有的條件已經涵蓋的事不要再提，還適用的觀察項原樣再提（算在 3 條內）；使用者勾選才會監測。',
-    policy: { level: 'A3', verdicts, abstain: 'HOLD', min_evidence: 1, samples: OWN_REVIEW_SAMPLES },
+    // holds_fresh_days（T61）：判成立要指出正面的引用，而且那幾份原文不能比驗證頻率舊（前提沒寫 every 時用 100 天）
+    policy: { level: 'A3', verdicts, abstain: 'HOLD', min_evidence: 1, samples: OWN_REVIEW_SAMPLES, holds_fresh_days: VERIFY_EVERY_DEFAULT },
     rule: { action: `規則這次沒有動作；慢規則狀態：${state === 'HALF' ? '減半中' : '標準'}`, detail: { trigger: inp.trigger, state, raise: raise.why, conds: conds.map, ...condWeb, ...webDomains, thesisVersion: acct.own[ticker]?.thesis?.version ?? 0, ...(inp.reasons ? { reasons: inp.reasons } : {}), ...(inp.early ? { events: inp.early.events } : {}) } },
     facts: [...priceFacts(view, ticker), ...ownRuleFacts(acct, view, ticker), ...conds.facts, ...(inp.extraFacts ?? [])],
     premises: ownPremises(acct, ticker),

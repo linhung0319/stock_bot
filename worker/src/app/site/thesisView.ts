@@ -1,20 +1,26 @@
 // 持股頁的論點那一塊（T34，own_thesis §1.3）：從論點檔組出畫面要的白話——前提最近一次的檢查、事件時間軸、
 // 歷次審查與你的回應、靜默中的前提、減半檢視的狀態。純函式：論點檔由呼叫的地方組好（真實模式 thesisFile，示範模式 metaFile）。
 import { verdictText } from '../../ai/functions';
-import { DROP_CAUSE_TEXT, notifName, type Account, type Attention, type MarketView, type OwnMeta } from '../../engine';
+import { DROP_CAUSE_TEXT, isBelief, notifName, verifyEvery, type Account, type Attention, type MarketView, type OwnMeta } from '../../engine';
 import { concentrationHits } from '../concentration';
 import { CODE_TEXT, eventDetail, eventLabel, eventSource, eventStatus, eventVia } from '../eventText';
-import { metaFile, outcomeText, ownAttention, toAttention, type ThesisFile, type ThesisReview } from '../thesis';
+import { UNVERIFIED_AFTER, metaFile, outcomeText, ownAttention, premiseStanding, toAttention, type PremiseStanding, type ThesisFile, type ThesisReview } from '../thesis';
 
+/**
+ * 一條前提最近一次的結果（T61，composite_layer_design §2.1 的「顯示」）：由歷次定期審查算出來（thesis.ts 的 premiseStanding），
+ * 不是新的判定值。四種寫法：
+ *   CONFIRMED   `11/20 證實`                       最近一次 3 票都判成立
+ *   BROKEN      `11/20 被判不成立`                 最近一次 3 票都判不成立
+ *   MISSED      `這次沒驗到（上次證實 9/30）`       最近一次是證據不足或票數不一致，連續不到 3 次
+ *   MISSED_MANY `已經 3 次沒驗到`                  連續 3 次以上（同時列在「要看的事」）
+ * 沒被審查過（含改過字之後還沒審、信念、示範資料）是 null。
+ */
 export interface PremiseCheck {
-  /** 最近一次 3 票一致的檢查（沒有是 null）。 */
-  status: 'HOLDS' | 'BROKEN' | 'INSUFFICIENT' | null;
-  /** 「成立（11/20 審查，3 票一致）」「還沒有檢查過」。 */
+  kind: 'CONFIRMED' | 'BROKEN' | 'MISSED' | 'MISSED_MANY' | null;
+  /** 畫面上的那一句（四種寫法之一；沒被審查過是「還沒有檢查過」）。 */
   text: string;
-  /** 「11/20 審查，3 票一致」（沒有檢查過是 null）。 */
-  when: string | null;
-  /** 之後的審查對這一條沒有一致結論。 */
-  split: boolean;
+  /** 那一句的理由，放在同一塊：哪一次審查、三票怎麼判；沒驗到的寫為什麼。沒被審查過是 null。 */
+  why: string | null;
 }
 
 export interface EventView {
@@ -75,9 +81,34 @@ export const VIEW_EVENTS = 12;
 export const VIEW_REVIEWS = 8;
 
 const md = (iso: string) => `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
-const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
 const TRIGGER_TEXT: Record<string, string> = { MONTHLY: '月底檢查點', EARNINGS: '財報後', EARLY: '提前審查', CONDITION: '你定的條件要求重新審查', DROP: '慢規則減半', THESIS: '論點變動後', MANUAL: '手動' };
 const FAIL_TEXT: Record<string, string> = { SPLIT: '三票沒有一致結論', INVALID: '格式不合格，沒有結論', DATA_MISSING: '資料缺漏，沒有結論', TIMEOUT: '逾時，沒有結論', NO_RESULT: '沒有結果' };
+
+const VOTE_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
+
+/** 三票怎麼判：「3 票都判證據不足」「三票不一致（2 票成立、1 票證據不足）」「只有 2 票合格（…）」。 */
+function votesText(votes: string[]): string {
+  const cnt = new Map<string, number>();
+  for (const v of votes) cnt.set(v, (cnt.get(v) ?? 0) + 1);
+  const parts = ['HOLDS', 'BROKEN', 'INSUFFICIENT'].filter((k) => cnt.has(k)).map((k) => `${cnt.get(k)} 票${VOTE_TEXT[k]}`);
+  if (cnt.size === 1) return votes.length >= 3 ? `${votes.length} 票都判${VOTE_TEXT[votes[0]] ?? votes[0]}` : `只有 ${parts[0]}，其他票不合格`;
+  return `${votes.length >= 3 ? '三票不一致' : `只有 ${votes.length} 票合格`}（${parts.join('、')}）`;
+}
+
+/**
+ * 一條前提的那一句與理由（composite_layer_design §2.1）。st：premiseStanding 的結果；every：這一條的驗證頻率（天）。
+ * 「上次證實」只在這一串沒驗到之前最近一次 3 票一致的結果是證實時寫；那一次是被判不成立就照實寫，都沒有就寫還沒有證實過。
+ */
+export function premiseCheckOf(st: PremiseStanding | null, every: number, partial = false): PremiseCheck {
+  if (!st) return { kind: null, text: partial ? '示範資料沒有審查紀錄' : '還沒有檢查過', why: null };
+  if (st.result === 'HOLDS') return { kind: 'CONFIRMED', text: `${md(st.date)} 證實`, why: `${st.votes.length} 票都判成立` };
+  if (st.result === 'BROKEN') return { kind: 'BROKEN', text: `${md(st.date)} 被判不成立`, why: `${st.votes.length} 票都判不成立` };
+  const prior = st.prior ? (st.prior.result === 'HOLDS' ? `上次證實 ${md(st.prior.date)}` : `上次 ${md(st.prior.date)} 被判不成立`) : '還沒有證實過';
+  const stale = st.stale ? `；其中 ${st.stale} 票原本判成立，但引用的原文比這一條的驗證頻率（${every} 天）還舊，算逾期` : '';
+  const why = `${md(st.date)} 審查：${votesText(st.votes)}${stale}`;
+  if (st.missed >= UNVERIFIED_AFTER) return { kind: 'MISSED_MANY', text: `已經 ${st.missed} 次沒驗到`, why: `最近一次是 ${why}。${prior}` };
+  return { kind: 'MISSED', text: `這次沒驗到（${prior}）`, why };
+}
 
 function triggerText(r: Pick<ThesisReview, 'fn' | 'trigger'>): string | null {
   if (!r.trigger) return null;
@@ -132,17 +163,9 @@ function pendingRuleNotif(acct: Pick<Account, 'notifs'>, ticker: string): number
  * partial：示範模式的論點檔只有帳戶狀態（沒有事件、審查），畫面要說清楚。
  */
 export function thesisView(file: ThesisFile, meta: OwnMeta, acct: Pick<Account, 'notifs'>, date: string, partial = false): ThesisView {
+  // 每條前提最近一次的結果（T61 的四種寫法）；信念不進審查，沒有結果
   const premiseChecks: Record<string, PremiseCheck> = {};
-  for (const p of file.premises) {
-    const c = p.lastCheck;
-    const status = c && (c.status === 'HOLDS' || c.status === 'BROKEN' || c.status === 'INSUFFICIENT') ? c.status : null;
-    premiseChecks[p.id] = {
-      status,
-      text: c ? `${PREM_TEXT[c.status] ?? c.status}（${md(c.date)} 審查，3 票一致）` : partial ? '示範資料沒有審查紀錄' : '還沒有檢查過',
-      when: c ? `${md(c.date)} 審查，3 票一致` : null,
-      split: p.splitAfter,
-    };
-  }
+  for (const p of file.premises) premiseChecks[p.id] = premiseCheckOf(isBelief(p) ? null : premiseStanding(file, p.id), verifyEvery(p), partial);
   const events: EventView[] = file.events
     .filter((e) => !file.openedAt || e.date >= file.openedAt || e.isNew)
     .map((e) => ({

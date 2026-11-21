@@ -9,9 +9,9 @@ import { actionButton, errBox } from './pages-notif.js';
 import { ownMonitor } from './pages-ai.js';
 import { attnDraftAction, copyPackButton, draftAction } from './pages-thesis.js';
 import { BELIEF_TEXT } from './thesis-fields.js';
+import { CHECK_TONE, premiseChecks, premiseSummary } from './premise-check.js';
 
 const em = (t) => ({ t, tone: 'em' });
-const PREM = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
 const panelTop = (title, ...right) => h('div', { class: 'panel-top' }, h('h2', { class: 'panel-h' }, title), ...right);
 
 export async function holdingPage(ctx, ticker) {
@@ -36,21 +36,6 @@ function ruleBubble(main) {
   return main ? { k: '這一檔現在', say: [em(main.state), main.detail ? `。${main.detail}。` : '。'], mood: main.tone === 'alert' ? 'alert' : main.tone === 'warn' ? 'worry' : 'watch' } : { k: '這一檔現在', say: ['目前沒有持有。'], mood: 'idle' };
 }
 
-/**
- * 前提最近一次的檢查。示範模式的論點檔沒有審查紀錄（partial），但持股頁下面有示範的 AI 審查（d.ai）：
- * 從那次審查的前提結果補上，史萊姆才不會說「還沒有被 AI 審查過」（T39a）。
- */
-function premiseChecks(d) {
-  const checks = { ...(d.thesis?.premiseChecks ?? {}) };
-  const ai = d.ai?.premises ?? [];
-  for (const p of d.own?.premises ?? []) {
-    if (checks[p.id]?.status) continue;
-    const a = ai.find((x) => x.text && (x.text === p.text || p.text.startsWith(x.text) || x.text.startsWith(p.text)));
-    if (a && ['HOLDS', 'BROKEN', 'INSUFFICIENT'].includes(a.status)) checks[p.id] = { status: a.status, when: `${day(d.ai.date)}審查`, split: false };
-  }
-  return checks;
-}
-
 /** 自選股的那一句：先講論點（有沒有你的論點、前提最近一次檢查），再講慢規則。 */
 function ownBubble(d, main) {
   const o = d.own;
@@ -59,16 +44,11 @@ function ownBubble(d, main) {
   const mood = main?.tone === 'alert' ? 'alert' : main?.tone === 'warn' ? 'worry' : 'watch';
   if (o.pendingBreak) return { k: '這一檔現在', say: [`${o.pendingBreakName ?? '一則通知'}等你決定：`, em(`AI 審查認為前提${o.pendingBreak.premiseId ? ` ${o.pendingBreak.premiseId} ` : ''}不成立`), `。${rule}`], mood: 'alert' };
   if (o.kind === 'DEFAULT_ONLY') return { k: '這一檔現在', say: [em('還沒有你的論點'), `，AI 用系統預設前提做一般健康檢查。${rule}`], mood };
-  const broken = o.premises.filter((p) => checks[p.id]?.status === 'BROKEN').map((p) => p.id);
-  if (broken.length) return { k: '這一檔現在', say: [`前提 ${broken.join('、')} 最近一次檢查`, em('不成立'), `。${rule}`], mood: 'worry' };
-  // 信念（T60）不進審查，不算在「幾條成立、幾條還沒檢查」裡
-  const judged = o.premises.filter((p) => !p.belief);
-  if (!judged.length) return { k: '這一檔現在', say: [em(`你的 ${o.premises.length} 條前提都是信念`), `，審查不逐條檢查。${rule}`], mood };
-  const n = judged.length;
-  const cnt = (st) => judged.filter((p) => (checks[p.id]?.status ?? null) === st).length;
-  const [ok, insuf, none] = [cnt('HOLDS'), cnt('INSUFFICIENT'), cnt(null)];
-  const prem = none === n ? `你的 ${n} 條前提還沒有被 AI 審查過` : ok === n ? `你的 ${n} 條前提最近一次檢查都成立` : `你的 ${n} 條前提：${[ok ? `${ok} 條成立` : '', insuf ? `${insuf} 條證據不足` : '', none ? `${none} 條還沒檢查` : ''].filter(Boolean).join('、')}`;
-  return { k: '這一檔現在', say: [em(prem), `。${rule}`], mood };
+  // T61：照每條前提最近一次的結果數（證實／這次沒驗到／還沒檢查）；信念（T60）不進審查，不算在裡面
+  const sum = premiseSummary(o.premises, checks);
+  if (sum.broken.length) return { k: '這一檔現在', say: [`前提 ${sum.broken.join('、')} 最近一次審查`, em('被判不成立'), `。${rule}`], mood: 'worry' };
+  if (!sum.judged) return { k: '這一檔現在', say: [em(`你的 ${o.premises.length} 條前提都是信念`), `，審查不逐條檢查。${rule}`], mood };
+  return { k: '這一檔現在', say: [em(sum.text), `。${rule}`], mood };
 }
 
 // ---------------------------------------------------------------- 自選股
@@ -153,7 +133,10 @@ function prevBlock(p, open) {
     : h('details', { class: 'more prev-file-more' }, h('summary', null, head), h('div', { class: 'more-body prev-file-body' }, ...body));
 }
 
-/** 前提：編號、文字、誰寫的、最近一次 3 票一致的檢查；之後沒有一致結論、靜默中的各一行。 */
+/**
+ * 前提：編號、文字、誰寫的、最近一次的結果（T61 的四種寫法：證實／被判不成立／這次沒驗到／已經 N 次沒驗到）；
+ * 結果的理由（哪一次審查、三票怎麼判）緊接在下一行；信念、靜默中的各一行。
+ */
 function premiseList(o, t, checks) {
   return h(
     'ul',
@@ -173,10 +156,10 @@ function premiseList(o, t, checks) {
             { class: 'plist-meta' },
             h('span', { class: 'faint' }, p.origin),
             // 信念（T60，composite §2.3）：不進審查，不寫「還沒有檢查過」
-            p.belief ? null : c?.status ? [h('span', { class: 'st ' + c.status }, PREM[c.status]), h('span', { class: 'faint' }, c.when)] : t && !t.partial ? h('span', { class: 'faint' }, '還沒有檢查過') : null,
+            p.belief ? null : c?.kind ? h('span', { class: 'st ' + CHECK_TONE[c.kind] }, c.text) : t && !t.partial ? h('span', { class: 'faint' }, '還沒有檢查過') : null,
           ),
+          !p.belief && c?.kind && c.why ? h('p', { class: 'small faint plist-why' }, c.why) : null,
           p.belief ? h('p', { class: 'small prem-belief' }, `${BELIEF_TEXT}（不進審查的逐條判定）`) : null,
-          c?.split && !p.belief ? h('p', { class: 'small faint' }, '之後的審查對這一條沒有一致結論，先看上面這次。') : null,
           p.silenced ? h('p', { class: 'small plist-quiet' }, p.silenced) : null,
         ),
       );
