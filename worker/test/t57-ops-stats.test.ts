@@ -371,9 +371,10 @@ describe('T57 登記在報表裡', () => {
     await withDb(async (_db, env) => {
       const r = await report(env, '');
       // T61 在 premise_origin 後面加了一段 premise_prompt（前提的判定，依功能與 prompt 版本）
-      expect(r.sections.slice(14).map((s) => s.id)).toEqual(['premise_origin', 'premise_prompt', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'drafts', 'draft_failures']);
-      expect(OPS_SECTIONS).toHaveLength(22);
-      for (const s of r.sections.slice(14)) {
+      // T65 在最後加了一段 db_size（資料庫大小，現在的大小；空的資料庫也有一行，t65 的測試看它）
+      expect(r.sections.slice(14, 22).map((s) => s.id)).toEqual(['premise_origin', 'premise_prompt', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'drafts', 'draft_failures']);
+      expect(OPS_SECTIONS).toHaveLength(23);
+      for (const s of r.sections.slice(14, 22)) {
         expect(s.error, s.id).toBeUndefined();
         expect(s.rows, s.id).toEqual([]);
         expect(s.title.length).toBeGreaterThan(0);

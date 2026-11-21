@@ -14,6 +14,7 @@ import { packPremise } from '../ai/pack';
 import { confirmMode, namedWebDomains, webConfirmText, type OwnCondition } from '../ai/ownReview';
 import { DEFAULT_CONFIG, breaksOf, clone, isBelief, premiseKey, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Premise, type PremiseVerify, type RiskSeen, type Thesis, type Tier } from '../engine';
 import { concentrationHits, sizeText } from './concentration';
+import { loadRunupHits } from './runup';
 import type { ThesisLogInput } from './ledgerStore';
 import { XBRL_METRICS, type QuarterRow } from '../data/edgar';
 import type { Filing } from '../data/sources';
@@ -1562,8 +1563,10 @@ export async function monthOwnAttention(db: D1Database, acct: Account, view: Mar
       return [];
     }
   })();
+  // 漲太多的提示（T65，composite_layer_design §1.7）：要產業 ETF 兩年的價格，所以和集中度一樣在 OWN_ATTN 外面算；算不出來這個月不列
+  const runup = await loadRunupHits(db, acct, view.date).catch((e) => (console.error('漲太多的提示算不出來', e), []));
   const { due, shown } = dueAttention(
-    [...ownAttention(files, acct, view), ...conc],
+    [...ownAttention(files, acct, view), ...conc, ...runup],
     Object.fromEntries(Object.entries(acct.own).map(([t, m]) => [t, m.attnShown])),
     view.date,
   );
@@ -1584,5 +1587,6 @@ export async function holdingAttention(db: D1Database, acct: Account, view: Mark
       return [];
     }
   })();
-  return [...ownAttention([file], acct, view), ...conc].map(toAttention);
+  const runup = await loadRunupHits(db, acct, view.date, [ticker]).catch(() => []);
+  return [...ownAttention([file], acct, view), ...conc, ...runup].map(toAttention);
 }

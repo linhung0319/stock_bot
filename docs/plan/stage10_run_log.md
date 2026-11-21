@@ -71,6 +71,18 @@
 - `run.md` 沒改（本來就寫「功能的 prompt 指定的那個角色」）。加了 `POST /admin/ai/brief`（手動開暫定稿，不佔上限、不屬於任何事件），M7 才不用等真的觸發。
 - 留給 T65：同一次流程開的摘要趕不上同一次開的個股執行（證據包開執行時就定了），「當天有減半檢視就開一份當背景」只幫得到之後的執行與顯示。分給個股時用 `kind: 'note'`，`check.ts` 的正面引用核對與不成立判定都不認 note，「不能當前提不成立的依據」不用另寫程式；`latestBrief` 會讀到手動開的那一份。
 
+### T65（市場摘要分給個股、顯示、`RUNUP`、資料庫大小）
+
+- 手動開的摘要（`POST /admin/ai/brief`）不分給個股、不上首頁、不進 LINE，AI 紀錄照列並標「手動開的」：平靜的日子手動開一份也會寫「原因不明」，放首頁會讓人以為剛大幅波動。
+- 時間差照最小做法不改：個股執行讀開執行時已寫好的那一份（30 天內），沒有就不放；當天才開的只幫得到之後的執行、首頁與 LINE（減半通知若留到 01:30 才推，會帶上那一行）。沒有改成等摘要回來才開個股執行（會動到 `own_thesis` §3.5 的推播時間）。
+- 新眼光讀得到市場摘要那一份（§3 只排除前提、論點本文、歷次審查），但引用它的那條會被拿掉。
+- `own_draft_v2` 也直接改沒升版（同一條規則：這一階段才升、沒部署過）。
+- LINE 那一行：通知的訊號日等於某份摘要的訊號日才加，乙類通知也加，放在連結前面；字是「市場摘要（報導的說法，信心高）：<第一個原因>」或「市場摘要：原因不明」（`unknown` 為 true 時一律寫原因不明）。`market_brief_v1` 寫明第一條原因放報導支持最多、最相關的。
+- `RUNUP`：只看自選股（動能持股的部位不是你定的）；「兩年」用 500 個交易日（Yahoo 2y 日線約 501 根），不到 480 根不列；比核心 ETF；字多加產業 ETF 代號與兩邊的漲幅。示範模式看不到。
+- 資料庫大小用 D1 回傳的 `meta.size_after`（MB = 1,000,000 bytes，和 `wrangler d1 info` 一樣）；告警只在有掃逾時的流程跑，超過時每 30 天一次（設計沒寫頻率）。
+- 首頁那一行放在待辦下面、紀錄上面；「最近 10 個交易日」把摘要當天算第 1 天。
+- 範圍外沒做：崩盤規則檢視附市場摘要（§1.1 寫「可以」，不在 §1.6～§1.8）；運作統計裡市場摘要自己的一段。
+
 ## 要使用者親手做的事
 
 - T60：部署前 `git push`（雲端排程從 repo 讀 `own_draft_v2.md`）；沒有新 migration；`run.md`、`ping.md` 沒改。部署集中在 T66。
@@ -78,12 +90,14 @@
 - T62：`run.md` 改了「取文件」那一段，**部署後**要重新貼到 claude.ai 的排程（T66 一起做）。M8 時看運作統計 `web_runs` 的 `clause_slots` 與 `clause_asked`。
 - T63：新的 migration `0021_ai_runs_new_risks.sql`，**部署前**對遠端 D1 套用；`run.md` 又改了（取新眼光的那一份、送 `new_risks`），**先部署再貼**（舊 Worker 沒有 `/fresh`、不認得 `new_risks`，會把整份結果退回）。M8 時看紀錄頁「新眼光」那一塊：主代理有沒有取 `/fresh`、送 `new_risks`，被拿掉的比例。
 - T64：新的 migration `0022_market_briefs.sql`（部署前套用）；`run.md` 不用為 T64 重貼。**M7**：部署後 `POST /admin/ai/brief`（帶 `ADMIN_TOKEN`），再看 `/admin/ai/task/<taskId>` 的時間。**部署後用 `/admin/web/test?url=…` 重測**聯準會演講、利率決議聲明、BLS 的就業報告與 CPI。
+- T65：沒有新 migration、`run.md` 不用重貼。部署後看 `/admin/ops-report` 的 `db_size` 和 `wrangler d1 info` 對一次。真的大漲跌之後看：下一次個股執行的證據包有沒有 `brief:` 那一份、分析師還會不會搜「大盤為什麼跌」、首頁與當天 LINE 的那一行。
 
 ## 畫面截圖
 
 - `records/stage10/screens/T60/`：`edit-draft-*`（草稿回來）、`edit-draft-ticked-*`（勾了網站與信念各一條）、`edit-fields-*`（沒有草稿、預填收合）、`edit-belief-warn-*`（只剩 1 條查得到的提醒）、`holding-mu-*`（持股頁的信念）、`crop-*`（放大的局部）。草稿那一塊是用 CDP 換成假的 v2 草稿截的。
 - `records/stage10/screens/T61/`：`crop-premises-*`（持股頁前提的四種寫法加信念、還沒檢查過）、`crop-banner-*`（史萊姆那一句）、`holding-mu-*`、`ai-run-*`（審查紀錄頁的「引用逾期」「沒有指出正面的引用」）。資料用真的伺服器函式算、經 CDP 換進示範的 API。
 - `records/stage10/screens/T63/`：`crop-attention-*`（「要看的事」的三行）、`edit-risks-*`／`crop-risk-box-*`（編輯論點頁右欄上面那一塊）、`edit-risk-taken-*`（按了「帶進右欄」）、`edit-risk-reworded-*`／`crop-preview-*`（改字與預覽）、`crop-ai-run-risks-*`（紀錄頁）、`holding-mu-*`。同樣是真的函式算、CDP 換進示範 API。
+- `records/stage10/screens/T65/`：`home-*`／`crop-home-brief-*`（首頁那一行）、`history-ai-*`（AI 紀錄列表）、`ai-run-brief-*`（紀錄頁的市場摘要那一塊）、`holding-mu-*`／`crop-runup-*`（「要看的事」的 `RUNUP`）。LINE 那一行只有測試。
 
 ## 卡住的任務
 

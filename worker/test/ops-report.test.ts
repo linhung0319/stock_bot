@@ -302,9 +302,11 @@ describe('T16 運作統計：結構', () => {
   it('空的資料庫：每一段都有、列是空的、沒有錯誤', async () => {
     await withDb(async (_db, env) => {
       const r = await report(env);
-      expect(r.sections.map((s) => s.id)).toEqual(['notifications', 'choices', 'shadow', 'data_runs', 'flow_runs', 'alerts', 'pushes', 'ai_runs', 'ai_votes', 'ai_tasks', 'ai_rejections', 'checkpoints', 'crash_reviews', 'mom_entry', 'premise_origin', 'premise_prompt', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'drafts', 'draft_failures']); // T61 加了 premise_prompt
+      expect(r.sections.map((s) => s.id)).toEqual(['notifications', 'choices', 'shadow', 'data_runs', 'flow_runs', 'alerts', 'pushes', 'ai_runs', 'ai_votes', 'ai_tasks', 'ai_rejections', 'checkpoints', 'crash_reviews', 'mom_entry', 'premise_origin', 'premise_prompt', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'drafts', 'draft_failures', 'db_size']); // T61 加了 premise_prompt；T65 加了 db_size
       for (const s of r.sections) {
         expect(s.error, s.id).toBeUndefined();
+        // 資料庫大小（T65）是現在的大小，空的資料庫也有一行
+        if (s.id === 'db_size') continue;
         expect(s.rows, s.id).toEqual([]);
         expect(s.title.length).toBeGreaterThan(0);
       }

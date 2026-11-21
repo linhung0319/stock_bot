@@ -35,6 +35,8 @@ import { momHoldings, monthMomAttention } from './momNotes';
 import type { Env, Fetcher } from './env';
 import { ConflictError, loadAccount, patchAccount, requiredTickers, saveAccount, shadowTickers, thesisLogStmt } from './ledgerStore';
 import { alertText, lineConfigured, notifLink, notifText, pushLine, type AlertRow } from './line';
+import { briefLinesFor } from './marketBrief';
+import { dbSizeAlert } from './opsReport';
 import { PUSH_HELD_KEY, PUSH_WAITERS, parseHeld, pushWaiting, type PushFollowUp } from './pushHold';
 import { SCHEDULE, finalStarts, type Attempt } from './schedule';
 
@@ -297,6 +299,8 @@ export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: A
     const hold: number[] = [];
     const pushed: number[] = [];
     const ids = [...new Set([...fresh, ...failed, ...heldBefore])].sort((a, b) => a - b);
+    // 市場摘要那一行（T65，composite_layer_design §1.8）：通知的訊號日有寫好的摘要（不含手動開的）就加一行；讀不到不擋推播
+    const briefs = await briefLinesFor(db, ids.map((id) => acct.notifs.find((x) => x.id === id)?.date ?? '')).catch((e) => (console.error('市場摘要那一行', e), new Map<string, string>()));
     for (const id of ids) {
       const n: Notif | undefined = acct.notifs.find((x) => x.id === id);
       if (!n || (n.status !== 'PENDING' && !fresh.includes(id))) continue;
@@ -305,7 +309,7 @@ export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: A
         hold.push(id);
         continue;
       }
-      const text = notifText(acct, n, notifLink(env, n.id));
+      const text = notifText(acct, n, notifLink(env, n.id), briefs.get(n.date) ?? null);
       const r = await pushLine(env, fetcher, text);
       await recordPush(db, at, 'NOTIF', id, r.ok, r.status, r.error, text);
       if (r.ok) {
@@ -538,6 +542,9 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
       return 0;
     });
     if (purged) aiLog?.log.push(`清掉 ${purged} 份沒被用過、超過 180 天的網頁快照全文`);
+    // 資料庫大小（composite_layer_design §4.1，T65）：超過 300 MB 時告警，每 30 天一次；量不到不擋流程
+    const big = await dbSizeAlert(db, opt.now).catch((e) => (aiLog?.log.push(`量資料庫大小出錯：${errText(e)}`), null));
+    if (big) alerts.push(big);
   }
   await saveAlerts(db, at, session, alerts);
   res.alerts = alerts.map((a) => a.kind);

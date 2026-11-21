@@ -16,7 +16,11 @@ const details = (title, body, open = false) => h('details', { class: 'more', ope
 const REWRITE = 'OWN_CHECK';
 const useText = (d) => (d.fn === REWRITE ? '改寫好的出場條件列在持股頁，你勾選了才開始監測；不會列在通知或月報。' : '會列在通知或月報上，由你決定。');
 
+// 市場摘要（MARKET_BRIEF，T65）：一份、只說明大盤與族群，不是對某一檔的建議
+const BRIEF = 'MARKET_BRIEF';
+
 function bubbleOf(d) {
+  if (d.fn === BRIEF && d.brief?.state === 'READY') return { k: '市場摘要', say: ['大盤與族群為什麼大幅波動，', { t: '報導怎麼說', tone: 'em' }, '。只說明，不改變下單。'], mood: 'watch' };
   if (d.status === 'PENDING') return { k: 'AI 還在想', say: ['雲端排程還沒送回結果。', '回來之前照規則。'], mood: 'watch' };
   if (d.fn === REWRITE && d.status === 'AGREED') return { k: '改寫好了', say: [`${d.ticker ?? ''} 的出場條件`, { t: '改寫好了', tone: 'em' }, `。${useText(d)}`], mood: 'watch' };
   if (d.status === 'AGREED' && !d.followRule) return { k: 'AI 的建議', say: [`${d.samplesWanted} 票一致：`, { t: d.verdict, tone: 'em' }, `。${useText(d)}`], mood: 'alert' };
@@ -145,6 +149,46 @@ function risksBlock(r) {
   );
 }
 
+/**
+ * 「市場摘要」（T65，composite_layer_design §1.8）：期間、為什麼開、程式算的數字、報導的說法（每一條附引用的片段與出處）、
+ * 各來源一致不一致、和暫定稿不同的地方、被程式拿掉的。原因一律是「報導的說法」，原因不明也是合格的答案。
+ */
+export function briefBlock(b) {
+  if (!b) return null;
+  const head = (t) => h('h5', { style: 'margin-top:16px' }, t);
+  return glass(
+    'pad',
+    h('h2', { class: 'panel-h' }, `市場摘要（${b.stage}${b.manual ? '，手動開的' : ''}）`),
+    h('p', { class: b.state === 'FAILED' ? 'notice' : null }, b.line),
+    b.period ? h('p', { class: 'small dim', style: 'margin-top:6px' }, `涵蓋 ${day(b.period.from)}～${day(b.period.to)}`) : null,
+    b.triggers.length ? [head('為什麼開'), h('ul', { class: 'found-list small' }, b.triggers.map((t) => h('li', null, t)))] : null,
+    b.facts.length ? [head('程式算的數字'), h('ul', { class: 'found-list small' }, b.facts.map((f) => h('li', { class: 'num' }, f)))] : null,
+    b.state === 'READY'
+      ? [
+          head(b.causes.length ? `報導的說法（${b.causes.length} 條）` : '報導的說法'),
+          b.causes.length
+            ? b.causes.map((c) =>
+                h(
+                  'div',
+                  { class: 'cond found-doc' },
+                  h('div', { class: 'cond-h' }, h('b', { style: 'font-weight:500' }, c.text), h('span', { class: 'chip ' + (c.confidence === '高' ? 'ok' : c.confidence === '中' ? '' : 'warn') }, `信心${c.confidence}`)),
+                  h('p', { class: 'small dim', style: 'margin-top:2px' }, [c.where, c.kind, c.headline ? '只有新聞標題，沒有讀到全文：當成線索' : null].filter(Boolean).join('；')),
+                  c.lowered ? h('p', { class: 'small', style: 'margin-top:2px;color:var(--warn)' }, `信心被程式調低：${c.lowered}`) : null,
+                  c.quotes.map((q) => h('blockquote', { class: 'quote', style: 'margin-top:6px' }, `「${q.quote}」`, h('cite', null, `${q.title}，${q.date}`, q.url ? ['；', h('a', { href: q.url, target: '_blank', rel: 'noopener noreferrer' }, '原始網址')] : null))),
+                ),
+              )
+            : h('p', null, '原因不明：沒有找到說得通的原因。這是合格的答案，不是失敗。'),
+          b.unknown && b.causes.length ? h('p', { class: 'small', style: 'margin-top:6px' }, '整體來說原因不明；上面只是報導提到的說法。') : null,
+          h('p', { class: 'small', style: 'margin-top:10px' }, b.clarity),
+          b.changed ? [head('和暫定稿不同的地方'), h('p', null, b.changed)] : null,
+          h('p', { class: 'small faint', style: 'margin-top:8px' }, '引用逐字對得上只證明報導這樣寫，不證明因果。個股的審查會讀這份摘要當背景（只給大盤與那一檔族群的部分），但不能拿它判前提不成立。'),
+        ]
+      : null,
+    b.dropped.length ? details(`被程式拿掉的（${b.dropped.length} 條）`, h('ul', { class: 'found-list small' }, b.dropped.map((x) => h('li', null, `${x.what}「${x.text}」：${x.why}`)))) : null,
+    b.notes.length ? h('p', { class: 'small faint', style: 'margin-top:6px' }, b.notes.join('；')) : null,
+  );
+}
+
 export async function aiRunPage(ctx, id) {
   const d = await api.get('/ai/run/' + encodeURIComponent(id));
   const back = { href: '#/history', label: '紀錄' };
@@ -189,7 +233,7 @@ export async function aiRunPage(ctx, id) {
   );
   return page({
     view: 'page',
-    banner: { back, kicker: `${d.label} · 決策日 ${day(d.date)}`, title: actionText(`${d.ticker ? d.ticker + '：' : ''}${d.fn === REWRITE && d.status === 'AGREED' ? '出場條件改寫好了' : d.verdict}`), sub: [h('span', { class: 'chip ' + (TONE[d.status] ?? '') }, d.statusLabel), d.fn === REWRITE ? ' 改寫的結果要你在持股頁勾選才會監測。' : d.followRule ? ' 照規則，AI 的意見只記錄。' : ' AI 的建議可以採用，由你決定。'], bubble: bubbleOf(d) },
+    banner: { back, kicker: `${d.label} · 決策日 ${day(d.date)}`, title: actionText(`${d.ticker ? d.ticker + '：' : ''}${d.fn === REWRITE && d.status === 'AGREED' ? '出場條件改寫好了' : d.verdict}`), sub: [h('span', { class: 'chip ' + (TONE[d.status] ?? '') }, d.statusLabel), d.fn === REWRITE ? ' 改寫的結果要你在持股頁勾選才會監測。' : d.fn === BRIEF ? ' 只說明，不下單、不改任何狀態。' : d.followRule ? ' 照規則，AI 的意見只記錄。' : ' AI 的建議可以採用，由你決定。'], bubble: bubbleOf(d) },
     pane: h(
       'div',
       { class: 'stackv' },
@@ -220,6 +264,7 @@ export async function aiRunPage(ctx, id) {
             ),
           )
         : null,
+      briefBlock(d.brief),
       foundBlock(d.found),
       risksBlock(d.risks),
       d.samples.length ? [h('h2', { class: 'sec', style: 'margin:8px 0 0' }, '每一票'), ...d.samples.map((s) => sampleBlock(s, d))] : glass('empty', h('p', { class: 'dim' }, d.status === 'PENDING' ? '還沒有結果。' : '沒有任何一票：' + d.reason)),

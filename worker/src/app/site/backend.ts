@@ -4,6 +4,7 @@
 // 網站的程式只認這個介面，所以兩種模式走同一套畫面與操作。
 import { dismissDraft, draftForSave, draftStates, markDraftUsed, readyDraft, requestOwnDraft, type DraftRow, type DraftState, type DraftUse, type DraftView } from '../ownDraft';
 import { routineReady } from '../ownAi';
+import { homeBrief, type HomeBrief } from '../marketBrief';
 import type { DraftBroken } from '../../ai/ownDraft';
 import { bookShares, pendingSplits, type Account, type Attention, type LedgerEvent, type MarketView, type OwnWebSources, type ShadowRecord, type Snapshot, type StrategyReviewState, type WebSourceCheck } from '../../engine';
 import { probeWebSources } from '../webEvidence';
@@ -75,6 +76,8 @@ export interface SiteData {
   drafts?: Record<string, DraftState>;
   /** 雲端排程設定好了（新的自選「明天早上會自動草擬一次」的提示用）。示範模式沒有。 */
   aiReady?: boolean;
+  /** 首頁那一行市場摘要（T65，composite_layer_design §1.8：最近 10 個交易日內有寫好的摘要）。示範模式沒有。 */
+  brief?: HomeBrief | null;
 }
 
 export interface SiteBackend {
@@ -223,7 +226,9 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const strategy = acct ? await loadStrategyState(env.DB) : null;
       // 論點草稿的狀態（T56）：放在 listRuns 之後（逾時的執行先照規則結束，草稿才結算得到）；讀不到不擋網站
       const drafts: Record<string, DraftState> = acct && view ? await draftStates(env, acct, now, view.date).catch((e) => (console.error('論點草稿的狀態', e), {})) : {};
-      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), asOf: easternTime(now).date, warnings, undoable, strategy, drafts, aiReady: routineReady(env) };
+      // 首頁那一行市場摘要（T65）：也放在 listRuns 之後（逾時的那一次先結束）；讀不到不擋網站
+      const brief = acct && view ? await homeBrief(env.DB, axis).catch((e) => (console.error('市場摘要', e), null)) : null;
+      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), asOf: easternTime(now).date, warnings, undoable, strategy, drafts, aiReady: routineReady(env), brief };
     },
     async save(acct, cause, log = []) {
       // 論點檔紀錄和這一版帳戶同一筆交易寫（account_version = 這次存檔的 rev，復原快照時一起刪）

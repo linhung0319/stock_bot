@@ -3,7 +3,7 @@
 //
 //   定位（§1.1）：一個新的 AI 功能，只說明——不下單、不改任何狀態、不發要操作的通知。等級比照草稿（A2，一份，不是三票）。
 //     它回答個股層答不了、而且每一檔都會重複問的事：這幾天大盤或某個族群為什麼大幅波動。
-//     市場摘要不能當前提不成立的依據（設計第 6 章、G12）：它的引用只證明「報導這樣寫」。分給個股、顯示是 T65。
+//     市場摘要不能當前提不成立的依據（設計第 6 章、G12）：它的引用只證明「報導這樣寫」。分給個股、顯示（T65）：briefNoteDoc、briefLine。
 //   觸發（§1.2）：priceTriggers（大盤單日、族群單日、累積）＋當天有減半檢視或提前審查；歸到哪個事件 assignTriggers；開不開 planOpen。
 //   證據包（§1.3、§1.4）：briefFacts（程式算的數字，K 開頭）＋排程端準備的價格表、總經儀表板、新聞標題、目錄；marketBriefPack。
 //   輸出檢查（§1.5）：checkBrief。引用照 check.ts 的同一個逐字檢查（check.ts 沒有動）；這裡只檢查 payload 的固定欄位。
@@ -638,4 +638,42 @@ export function briefText(b: MarketBrief, opt: { group?: string | null } = {}): 
   L.push('', `各來源的說法：${b.clarity === 'HIGH' ? '一致' : '不一致，或來源不足'}`);
   if (b.changed_since_provisional) L.push('', `和暫定稿不同的地方：${b.changed_since_provisional}`);
   return L.join('\n');
+}
+
+// ---------------------------------------------------------------- 分給個股、顯示（T65，§1.6～§1.8）
+
+/** 個股證據包裡市場摘要那一份 note 的 source_id 開頭（§1.6：`brief:<訊號日>`）。 */
+export const BRIEF_DOC_PREFIX = 'brief:';
+/** 這一份是不是分給個股的市場摘要（新眼光拿得到、不能引用，src/ai/freshEyes.ts）。 */
+export const isBriefDoc = (d: Pick<PackDoc, 'kind' | 'source_id'>): boolean => d.kind === 'note' && d.source_id.startsWith(BRIEF_DOC_PREFIX);
+/** 個股證據包取最近幾個日曆天內的一份（§1.6）。 */
+export const BRIEF_PACK_DAYS = 30;
+/** 首頁：最近幾個交易日內有摘要時顯示一行（§1.8）。 */
+export const BRIEF_HOME_DAYS = 10;
+/** 分給個股的那一份 note 開頭的說明（prompt 也寫了同樣的意思）。 */
+export const BRIEF_NOTE_HEAD = '這一份是背景，不是證據：不能引用，也不能當成前提成立或不成立的依據（報導的說法只證明報導這樣寫，不證明因果）。';
+
+/**
+ * 分給個股的市場摘要（§1.6）：kind = note、source_id = brief:<訊號日>。只放 facts、大盤的原因，以及 group 等於這檔產業 ETF 的原因
+ * （briefText 的 group；這檔沒有對到產業 ETF 時是 null，只留大盤的）。和論點那一份 note 一樣不能當引用：
+ * check.ts 的正面引用核對、ownReview 的不成立與條件成立的引用都不認 note（沒有另外寫程式）。
+ */
+export function briefNoteDoc(b: MarketBrief, session: string, group: string | null): PackDoc {
+  const head = [BRIEF_NOTE_HEAD, `大盤${group ? `與這檔所屬的族群（${group}）` : ''}這段期間為什麼大幅波動，報導怎麼說已經整理在這裡；分析師的搜尋額度用在這檔自己的前提，不要再找大盤為什麼跌。`, ''];
+  return { id: 'MB', source_id: `${BRIEF_DOC_PREFIX}${session}`, kind: 'note', date: session, title: `市場摘要（${b.stage === 'FINAL' ? '定稿' : '暫定稿'}，${b.period.from}～${b.period.to}；背景，不是證據，不能引用）`, text: [...head, briefText(b, { group })].join('\n') };
+}
+
+/**
+ * 一句話的摘要（LINE 那一行、首頁那一行、AI 紀錄列表的說明；§1.8）：第一個原因（一律標「報導的說法」），沒有原因或整體原因不明時是「原因不明」。
+ */
+export function briefFirstCause(b: Pick<MarketBrief, 'causes' | 'unknown'>): { tag: string | null; text: string } {
+  const c = b.causes[0];
+  if (!c || b.unknown) return { tag: null, text: '原因不明' };
+  return { tag: `報導的說法，信心${CONFIDENCE_TEXT[c.confidence]}${c.headline_only ? '，只有新聞標題' : ''}`, text: c.text.replace(/[。．.]+$/, '') };
+}
+
+/** LINE：當天有其他通知時，通知裡加的那一行（§1.8；LINE 不另外推）：`市場摘要（報導的說法，信心高）：…`／`市場摘要：原因不明`。 */
+export function briefLine(b: Pick<MarketBrief, 'causes' | 'unknown'>): string {
+  const f = briefFirstCause(b);
+  return `市場摘要${f.tag ? `（${f.tag}）` : ''}：${f.text}`;
 }

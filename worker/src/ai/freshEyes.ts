@@ -8,6 +8,7 @@
 //   用途只有建議：列進「要看的事」（NEW_RISK，src/app/thesis.ts）、編輯論點頁可以帶進右欄。不影響三票、不影響檔位、不發通知。
 //   頻率（freshPlan）：減半檢視每次都跑；定期審查每檔每 90 個日曆天最多一次。使用者看過不採用的，同一件事 180 天內不再列。
 import { checkQuote, type EvidencePack, type PackDoc } from './check';
+import { isBriefDoc } from './marketBrief';
 import { likeText } from './ownDraft';
 
 /** 取文件的端點認的角色名稱（prompt 寫同樣的字）。 */
@@ -59,7 +60,13 @@ export function freshPlan(fn: string, asOf: string, opt: { defaultOnly: boolean;
 const FRESH_FACT = /^(?:[FASM]\d+|M\+)$/;
 /** 給新眼光看的文件種類：原文與標題。note（論點那一份、最近一次審查的摘要）與 rule 不給。 */
 const FRESH_DOC_KINDS: ReadonlySet<PackDoc['kind']> = new Set(['filing', 'xbrl', 'news', 'price', 'table', 'web']);
+/** 新眼光可以引用的文件：原文與標題（不含論點那一份、審查的摘要）。 */
 const freshDoc = (d: PackDoc): boolean => FRESH_DOC_KINDS.has(d.kind) && !/^(?:thesis|review):/.test(d.source_id);
+/**
+ * 給新眼光看的文件：可以引用的那幾種，加上市場摘要那一份（T65，composite_layer_design §1.6、§3：它是同一份證據包裡的背景，
+ * 不是前提、論點本文或歷次審查；只放大盤與這檔族群的部分）。市場摘要不能引用（checkNewRisks 用 freshDoc 擋）。
+ */
+const freshShown = (d: PackDoc): boolean => freshDoc(d) || isBriefDoc(d);
 
 export interface FreshView {
   run_id: string;
@@ -80,7 +87,7 @@ export interface FreshView {
 
 /**
  * 給新眼光的那一份（設計 §3：「拿不到前提、論點本文與歷次審查」）。pack：這次執行的證據包（已經含分析師取回的文件）。
- * 只留白名單裡的數字與原文；前提、題目（寫著要逐條檢查前提與提前審查的原因）、規則的動作與細節一律不帶。
+ * 只留白名單裡的數字與原文（加上市場摘要那一份背景，T65）；前提、題目（寫著要逐條檢查前提與提前審查的原因）、規則的動作與細節一律不帶。
  */
 export function freshView(pack: EvidencePack): FreshView {
   const plan = pack.fresh_eyes;
@@ -94,7 +101,7 @@ export function freshView(pack: EvidencePack): FreshView {
     max_risks: plan?.max_risks ?? NEW_RISKS_MAX,
     docs: plan?.docs ?? 0,
     facts: pack.facts.filter((f) => FRESH_FACT.test(f.id)),
-    documents: pack.documents.filter(freshDoc),
+    documents: pack.documents.filter(freshShown),
     data_quality: pack.data_quality,
     omitted: ['使用者的前提', '論點本文', '歷次審查的結論與使用者的回應', '條件與觀察項', '事件清單', '規則狀態與上一次審查的檔位'],
   };
@@ -170,7 +177,7 @@ export function checkNewRisks(pack: EvidencePack, raw: unknown): NewRisksRecord 
     const ev = checkQuote(pack, { id: `N${k + 1}`, source_id: o.source_id, date: o.date, quote: o.quote, claim: full });
     if (!ev.ok) return drop('QUOTE', ev.why ?? '引用沒有通過檢查');
     const doc = docs.get(ev.source_id)!;
-    if (!freshDoc(doc)) return drop('NOT_GIVEN', '引用的不是給新眼光的文件（論點那一份、審查的摘要不能引用）');
+    if (!freshDoc(doc)) return drop('NOT_GIVEN', isBriefDoc(doc) ? '引用的是市場摘要（背景，不能引用）' : '引用的不是給新眼光的文件（論點那一份、審查的摘要不能引用）');
     const hit = overlapsPremise(full, pack.premises);
     if (hit) return drop('OVERLAP', `和現有的前提 ${hit} 的字重疊高（已經有人看了）`, { premiseId: hit });
     if (kept.some((x) => likeText(x.text, full))) return drop('DUP', '和前面一條是同一件事');

@@ -32,6 +32,7 @@ import type { ApplyCtx, StartCtx } from './aiCtx';
 import { getRun, lastFreshReview, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { accOf, cikFor, fetchFilingChecks, handledStmt, loadEvents, sectorEtfs, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
+import { briefNote } from './marketBrief';
 import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
 import { EARLY_NOTE, EVIDENCE_TEXT, MAX_PROPOSED, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultFacts, externalNeeds, fileConditions, flaggedAccessions, fmtMetric, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
 
@@ -169,6 +170,7 @@ export async function gatherOwnEvidence(env: Env, fetcher: Fetcher, ticker: stri
 
 /**
  * F24 的證據包裡由論點檔組的部分（own_thesis §1.6）：T0、事件 V、只有預設前提的 D1～D3、論點那一份 note，
+ * 市場摘要那一份（T65，composite_layer_design §1.6；定期審查、提前審查、草稿都經過這裡），
  * 以及上次有結論的審查之後的 8-K 原文（最多 5 份，順序：最新的 2.02、有標記的、其餘；沒有上一次審查時取最近 120 天）。
  * 已經在證據裡的（財報新聞稿）不重抓，也算在 5 份裡。
  */
@@ -186,7 +188,10 @@ export async function reviewThesisEvidence(env: Env, fetcher: Fetcher, tf: Thesi
     }
   }
   const note = thesisNote(tf, asOf);
-  return { facts: [...thesisFacts(tf), ...defaultFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null, asOf)], filings, docs: note ? [note] : [], notes };
+  // 市場摘要（T65，composite_layer_design §1.6）：最近 30 天內的一份，只放大盤與這檔產業 ETF 的部分；背景，不能當引用
+  const brief = await briefNote(env.DB, tf.ticker, asOf);
+  if (brief.note) notes.push(brief.note);
+  return { facts: [...thesisFacts(tf), ...defaultFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null, asOf)], filings, docs: [note, brief.doc].filter((d): d is PackDoc => !!d), notes };
 }
 
 /**

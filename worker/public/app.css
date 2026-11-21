@@ -865,3 +865,9 @@ a.rv:hover { background: var(--wash); }
 /* 崩盤規則的檢視紀錄（T34）：手機寬度表頭不擠成直排，整張表在自己的框裡左右捲，不讓整頁左右捲 */
 .more-body > * { min-width: 0; }
 .crash-log th { white-space: nowrap; }
+
+/* 首頁的市場摘要那一行（T65，composite_layer_design §1.8）：待辦下面、紀錄上面；只說明，不用操作 */
+.brief-home { margin-top: 18px; padding: 14px 20px; }
+.brief-home .brief-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; }
+.brief-home .brief-h b { font-weight: 500; }
+.brief-home .brief-t { margin: 6px 0 4px; }

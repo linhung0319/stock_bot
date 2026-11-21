@@ -191,6 +191,7 @@ export type AlertKind =
   | 'CRASH_REVIEW_FAILED' // 崩盤規則檢視同一個月份＋方向連續 2 次、3 次沒有結論（core_ai §3.1）
   | 'DRAFT_FAILED' // 新的自選自動開的論點草稿試了 2 次都沒有成功，不再自動草擬（web_evidence_design §2.5，T55）
   | 'MACRO_MISSING' // 總經資料（FRED）可用的序列不到 6 個、01:30 重抓之後還是不足；每個月份一次（core_ai §3.5）
+  | 'DB_SIZE' // 資料庫超過 300 MB（D1 免費方案每個資料庫上限 500 MB）；超過時每 30 天一次（composite_layer_design §4.1，T65）
   | 'TEST'; // 手動測試告警的推播（/admin/alert/test）
 /** 只表示「今天沒有產生訊號」的告警：同一個交易日後來再試成功了，就不必推播。 */
 export const NO_SIGNAL_ALERTS: ReadonlySet<string> = new Set(['PRICE_MISSING', 'PRICE_STALE', 'INGEST_ERROR', 'FLOW_ERROR']);

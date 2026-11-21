@@ -45,6 +45,7 @@ import type { RunRow } from './aiViews';
 import { prevFileOf, type PrevFile } from '../thesis';
 import { draftStateOf, type DraftState } from '../ownDraft';
 import type { SiteData } from './backend';
+import type { HomeBrief } from '../marketBrief';
 import { accountBubble, todoBubble, type Bubble } from './bubble';
 import { coreLineWhy, crashReasonText, explainItem, findNote, liveCashflow, liveCrash, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
 import { labelOf, meter, place, scaleOf, type Meter } from './meter';
@@ -910,6 +911,8 @@ export interface StateView {
   thesisTodo: ThesisTodoRow[];
   /** 每檔自選的論點草稿狀態（T56；那張清單每一行的「請 stock bot 草擬」）。示範模式、沒有帳戶時是空的。 */
   drafts?: Record<string, DraftState>;
+  /** 首頁那一行市場摘要（T65，composite_layer_design §1.8）：最近 10 個交易日內有寫好的摘要時才有。示範模式、沒有帳戶時沒有。 */
+  brief?: HomeBrief | null;
 }
 
 export interface ThesisTodoRow {
@@ -975,7 +978,7 @@ export function stateView(d: SiteData): StateView {
   const first = todo[0];
   const firstN = first?.type === 'DECIDE' ? r.acct.notifs.find((n) => n.id === first.id) : undefined;
   const plan = firstN ? notifView(r, firstN) : null;
-  return { ...base, hasAccount: true, account, todo, recent, thesisTodo: thesisTodoOf(r.acct), drafts: d.drafts ?? {}, bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
+  return { ...base, hasAccount: true, account, todo, recent, thesisTodo: thesisTodoOf(r.acct), drafts: d.drafts ?? {}, brief: d.brief ?? null, bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
 }
 
 // ---------------------------------------------------------------- 紀錄

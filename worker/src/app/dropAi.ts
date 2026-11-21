@@ -5,6 +5,7 @@
 //       建議不動／建議出清／同意減半／沒有可用的結論，慢規則通知上 AI 的那一行跟著重算（§3.4）。使用者先回覆、結果才回來的照 §3.5。
 // T54：減半檢視的分析師可以另外找資料（web_evidence_design §1.7）：證據包多目錄（M）與清單內的網頁來源（S），ai_runs.doc_ctx 記可以取什麼；
 //       還是在觸發那天跑，減半通知的推播時間不變（own_thesis §3.5）。
+// T65：證據包多一份市場摘要（composite_layer_design §1.6；背景，不能當引用）。
 import { verdictText } from '../ai/functions';
 import type { PackDoc } from '../ai/check';
 import { attribution, highIndex, idioDrop, idioDropText } from '../ai/detect';
@@ -19,6 +20,7 @@ import type { ApplyCtx, StartCtx } from './aiCtx';
 import { startRun, type AiRun } from './aiRuns';
 import { insertHitStmts, sectorEtfs } from './filings';
 import { patchAccount } from './ledgerStore';
+import { briefNote } from './marketBrief';
 import { citedBasis, docOf, lastReview, newsDocOf } from './ownAi';
 import { buildDocMenu } from './webEvidence';
 import { condFacts, defaultFacts, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote } from './thesis';
@@ -85,6 +87,8 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
         }
       }
       const note = tf ? thesisNote(tf, session) : null;
+      // 市場摘要（T65，composite_layer_design §1.6）：和定期審查同一個函式；讓 cause_class 有東西可讀，歸類仍由三票判、程式用跌幅拆解核對
+      const brief = await briefNote(env.DB, t, session);
       // 你定的條件 C 與觀察項 W 只當背景：F7 不確認條件成不成立（own_thesis §3.3）
       const extraFacts = tf ? [...thesisFacts(tf), ...defaultFacts(tf, rows, session), ...condFacts(tf, rows).facts] : [];
       // 分析師可以另外找資料（T54，web_evidence_design §1.7、§1.8）：目錄（M）與清單內的網頁來源（S）和定期審查同一個函式；
@@ -102,8 +106,8 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
       const fresh = tf ? freshPlan(OWN_DROP, view.date, { defaultOnly: tf.kind === 'DEFAULT_ONLY', canFetch }) : undefined;
       const baseCtx = menu?.ctx ?? { menu: [], notBefore: view.date, domains: [], fileId: tf?.fileId ?? null, off: '目錄沒有組成：這次不能另外找資料' };
       const docCtx = fresh?.run && canFetch ? { ...baseCtx, fresh: { ...FRESH_RESERVE } } : baseCtx;
-      const { pack, notes } = ownDropPack({ acct, view, axis, ticker: t, runId: newRunId(session, OWN_DROP, t), attr, base: baseDoc(base, t), baseRunId: base?.runId ?? null, docs, urgent, dataQuality: { filings: 'ok', news: 'partial', ...(base ? {} : { review: 'partial' }) }, extraFacts: [...extraFacts, ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: note ? [note] : [], ...(fresh ? { freshEyes: fresh } : {}), now });
-      const run = await startRun(env, fetcher, pack, now, [...notes, ...(menu?.notes ?? [])], docCtx);
+      const { pack, notes } = ownDropPack({ acct, view, axis, ticker: t, runId: newRunId(session, OWN_DROP, t), attr, base: baseDoc(base, t), baseRunId: base?.runId ?? null, docs, urgent, dataQuality: { filings: 'ok', news: 'partial', ...(base ? {} : { review: 'partial' }) }, extraFacts: [...extraFacts, ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: [note, brief.doc].filter((x): x is PackDoc => !!x), ...(fresh ? { freshEyes: fresh } : {}), now });
+      const run = await startRun(env, fetcher, pack, now, [...notes, ...(menu?.notes ?? []), ...(brief.note ? [brief.note] : [])], docCtx);
       res.started.push(run.runId);
       // 雲端排程沒有觸發成功時，這次執行已經用「沒有結果」結束
       mark(t, r.session, run.runId, run.status === 'PENDING');

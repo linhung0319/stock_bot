@@ -6,6 +6,7 @@ import { consoleBox, glass, icon, longDay, menuList, page, tiles } from './layou
 import { HALF_START_TEXT, actParts, attentionList, bucketTag, chevron, headline, orderRows, refillText, whyBlock } from './parts.js';
 import { attnDraftAction, copyPackButton, newOwnBox } from './pages-thesis.js';
 import { say } from './slime.js';
+import { homeBriefText } from './brief-home.js';
 
 const errBox = (e) => h('p', { class: 'err', role: 'alert' }, e?.message ?? String(e));
 
@@ -169,10 +170,24 @@ export async function homePage(ctx, opt = {}) {
         { class: 'todo-area' },
         n ? st.todo.map((t) => todoCard(t, ctx)) : glass('empty', h('h3', null, '沒有要操作的事'), h('p', { class: 'dim small' }, '有事的時候才會出現在這裡：每月第一個交易日的月報、自選股的大變動、或你自己登記的入金出金。沒照清單做也沒關係，隨時可以填快照對帳。')),
       ),
+      homeBriefRow(st.brief),
       records(hist, opt.records ?? 0),
     ],
     rail: tiles(st),
   });
+}
+
+/** 首頁的市場摘要那一行（T65，composite_layer_design §1.8）；字在 brief-home.js。 */
+function homeBriefRow(b) {
+  const t = homeBriefText(b);
+  if (!t) return null;
+  return h(
+    'div',
+    { class: 'glass brief-home' },
+    h('p', { class: 'brief-h' }, h('span', { class: 'chip' }, '只說明'), h('b', null, t.head)),
+    h('p', { class: 'brief-t' }, t.text),
+    h('p', { class: 'small dim' }, t.note, ' ', h('a', { href: `#/ai/${encodeURIComponent(b.runId)}` }, '看整份摘要')),
+  );
 }
 
 function noAccount(ctx) {

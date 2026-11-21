@@ -61,12 +61,14 @@ export function notifLink(env: Env, id: number): string | null {
  * 一則通知的 LINE 文字：等級與標題、要下的單（合併後的股數）、網站連結。
  * 等級：月報（每月第一個交易日）／當天（月中的緊急通知）／提醒。紙上交易的帳戶每則前面標【紙上】。
  */
-export function notifText(acct: Account, n: Notif, link: string | null): string {
+/** brief：當天的市場摘要那一行（T65，composite_layer_design §1.8：LINE 不另外推，當天有其他通知時加一行）；沒有是 null。 */
+export function notifText(acct: Account, n: Notif, link: string | null, brief: string | null = null): string {
   const tag = n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY' ? '月報' : n.kind === 'URGENT' ? '當天' : '提醒';
   const out: string[] = [`${acct.paper ? '【紙上】' : ''}【${tag}】${n.title}`];
   if (n.text) out.push(n.text);
   // 乙類的當天通知（own_thesis §1.10）：標題、哪條前提、AI 建議（要不要做由你決定）、連結；預設不動，沒有要下的單
   if (isBreakNotice(n)) {
+    if (brief) out.push(brief);
     if (link) out.push(link);
     return out.join('\n');
   }
@@ -95,6 +97,7 @@ export function notifText(acct: Account, n: Notif, link: string | null): string 
   // 「要看的事」只加一行（own_thesis §3.6.6）：件數是自選股與動能持股合計；沒有就不加
   const attn = attentionLine(n);
   if (attn) out.push(attn);
+  if (brief) out.push(brief);
   if (merged.length || n.items.length) out.push('', '下單前先到網站確認每一張單（照規則／這次不做），做完回來填快照。');
   if (link) out.push(link);
   return out.join('\n');

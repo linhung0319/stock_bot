@@ -7,6 +7,7 @@ import { TIER_TEXT } from '../../data/webSources';
 import { CRASH_REVIEW } from '../../ai/crash';
 import { EVENT_SCAN, scanQualified } from '../../ai/events';
 import { fnInfo, verdictText } from '../../ai/functions';
+import { CAUSE_KIND_TEXT, CONFIDENCE_TEXT, MARKET_BRIEF, TRIGGER_TEXT, briefLine, briefResult, type BriefDetail } from '../../ai/marketBrief';
 import { ENTRY_CODE_TEXT } from '../../ai/momEntry';
 import { followUp, type PriceBook } from '../../ai/shadow';
 import type { AiRun } from '../aiRuns';
@@ -91,6 +92,63 @@ export interface RunDetail extends RunRow {
   found: FoundView | null;
   /** 新眼光：前提以外的風險（T63，composite_layer_design §3）；沒有新眼光的功能、T63 之前的執行是 null。 */
   risks: RisksView | null;
+  /** 市場摘要的內容（T65，composite_layer_design §1.8：AI 紀錄多一種）；不是市場摘要是 null。 */
+  brief: BriefRunView | null;
+}
+
+/**
+ * 紀錄頁的「市場摘要」（T65）：照程式檢查過的那一份（briefResult，和存進 market_briefs 的是同一個函式算的）。
+ * 原因一律標「報導的說法」（§1.5：引用逐字對得上只證明報導這樣寫，不證明因果）；原因不明是合格的答案。
+ */
+export interface BriefRunView {
+  state: 'PENDING' | 'READY' | 'FAILED';
+  /** 一行結論（白話）。 */
+  line: string;
+  stage: string;
+  manual: boolean;
+  period: { from: string; to: string } | null;
+  /** 這次為什麼開（每一次觸發一句）。 */
+  triggers: string[];
+  facts: string[];
+  causes: { where: string; kind: string; text: string; confidence: string; headline: boolean; lowered: string | null; quotes: { quote: string; title: string; date: string; url: string | null }[] }[];
+  unknown: boolean;
+  clarity: string | null;
+  changed: string | null;
+  dropped: { what: string; text: string; why: string }[];
+  notes: string[];
+}
+
+export function briefRunView(run: AiRun): BriefRunView | null {
+  if (run.fn !== MARKET_BRIEF) return null;
+  const d = (run.pack.rule.detail ?? {}) as Partial<BriefDetail>;
+  const stage = d.stage === 'FINAL' ? '定稿' : '暫定稿';
+  const base = { stage, manual: !!d.manual, period: d.period ?? null, triggers: (d.triggers ?? []).map((t) => (t.kind === 'MANUAL' ? '手動開的（量時間用，不分給個股、不上首頁與 LINE）' : `${TRIGGER_TEXT[t.kind] ?? t.kind}：${t.text}`)), facts: [], causes: [], unknown: false, clarity: null, changed: null, dropped: [], notes: [] };
+  if (run.status === 'PENDING' || !run.outcome) return { ...base, state: 'PENDING', line: '研究員與主筆還在寫，結果回來之前沒有摘要。' };
+  const r = briefResult(run.outcome, run.pack);
+  if (!r || !r.ok) return { ...base, state: 'FAILED', line: `這次沒有寫成摘要：${r ? r.why : run.outcome.reason}。個股的審查照常，只是沒有這一份背景。` };
+  const b = r.brief;
+  const ev = new Map(b.evidence.map((e) => [e.id, e]));
+  return {
+    ...base,
+    state: 'READY',
+    line: `${briefLine(b)}。只說明：不下單、不改任何狀態；分給個股的審查當背景，不能當前提不成立的依據。`,
+    period: b.period,
+    facts: b.facts,
+    causes: b.causes.map((c) => ({
+      where: c.scope === 'MARKET' ? '大盤' : `族群 ${c.group ?? ''}`,
+      kind: CAUSE_KIND_TEXT[c.kind] ?? c.kind,
+      text: c.text,
+      confidence: CONFIDENCE_TEXT[c.confidence] ?? c.confidence,
+      headline: c.headline_only,
+      lowered: c.lowered,
+      quotes: c.evidence_ids.map((id) => ev.get(id)).filter((e): e is NonNullable<typeof e> => !!e).map((e) => ({ quote: e.quote, title: e.title.replace(/^〔[^〕]*〕/, ''), date: e.date, url: e.url })),
+    })),
+    unknown: b.unknown,
+    clarity: b.clarity === 'HIGH' ? '各來源的說法一致' : '各來源的說法不一致，或來源不足',
+    changed: b.changed_since_provisional,
+    dropped: b.dropped.map((x) => ({ what: x.what === 'FACT' ? '數字' : '原因', text: x.text, why: x.why })),
+    notes: b.notes,
+  };
 }
 
 /**
@@ -237,6 +295,12 @@ export function foundView(run: AiRun): FoundView | null {
 function summaryOf(run: AiRun): string {
   const o = run.outcome;
   if (!o) return '雲端排程還在跑，結果回來之前照規則。';
+  // 市場摘要（T65）：列表上寫第一個原因（報導的說法）或原因不明
+  if (run.fn === MARKET_BRIEF) {
+    const r = briefResult(o, run.pack);
+    if (r?.ok) return briefLine(r.brief);
+    if (r) return `沒有寫成：${r.why}`.slice(0, 240);
+  }
   const first = pick(o)?.report?.split(/\n\s*\n/)[0]?.trim();
   return first ? first.slice(0, 240) : o.reason;
 }
@@ -266,7 +330,8 @@ export function runRow(run: AiRun): RunRow {
     label: isCrashMonthly(run) ? CRASH_MONTHLY_LABEL : fnInfo(run.fn).label,
     ticker: run.ticker,
     // 沒有一致的結論時，標題寫「照規則」，最多票的判斷只放在票數裡（避免被看成 AI 的結論）
-    verdict: !o ? '等結果中' : run.fn === EVENT_SCAN && !scanQualified(o) ? SCAN_FAILED_TEXT : o.status === 'AGREED' || keptState(o) ? verdictText(run.fn, o.verdict) : '照規則',
+    // 市場摘要（T65）：寫明是暫定稿還是定稿；沒寫成不寫「照規則」（它本來就不改變任何東西）
+    verdict: !o ? '等結果中' : run.fn === EVENT_SCAN && !scanQualified(o) ? SCAN_FAILED_TEXT : run.fn === MARKET_BRIEF ? `${(run.pack.rule.detail as Partial<BriefDetail> | undefined)?.stage === 'FINAL' ? '定稿' : '暫定稿'}${o.status === 'AGREED' ? '寫好了' : '沒有寫成'}` : o.status === 'AGREED' || keptState(o) ? verdictText(run.fn, o.verdict) : '照規則',
     status,
     statusLabel: o ? outcomeLabel(o) : OUTCOME_LABEL.PENDING,
     followRule: o ? o.followRule : true,
@@ -364,6 +429,7 @@ export function runDetail(run: AiRun, followUp: Record<string, { ret: number; be
       : [],
     found: foundView(run),
     risks: risksView(run),
+    brief: briefRunView(run),
   };
 }
 

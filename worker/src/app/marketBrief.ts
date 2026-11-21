@@ -9,11 +9,13 @@
 //     總經儀表板（當場重算一份，不存：macro_snapshots 是崩盤規則檢視照月份讀的，這裡不動它）、大盤與各族群的新聞標題、
 //     目錄（標題裡連結在清單內的文章）與清單內的網頁來源。研究員可以照現有的步驟向 Worker 取文件（src/app/webEvidence.ts）。
 //   結果：送回時當場結算（settleBriefs），逾時的在每日流程套用時結算（applyMarketBrief）→ market_briefs 的 READY 或 FAILED。
-//     只說明：不動帳戶、不發通知。分給個股、顯示、LINE 那一行是 T65（讀 latestBrief／loadBriefs）。
+//     只說明：不動帳戶、不發通知。
+//   分給個股、顯示（T65，§1.6～§1.8）：briefNote（個股證據包的 brief:<訊號日>）、briefLinesFor（LINE 那一行）、homeBrief（首頁那一行）；
+//     AI 紀錄頁的內容在 src/app/site/aiViews.ts 的 briefRunView。手動開的那一份三者都不用。
 import type { DocCtx, MenuEntry } from '../ai/added';
 import type { EvidencePack, PackDoc } from '../ai/check';
 import { macroQuality, macroUsable } from '../ai/crash';
-import { BRIEF, MARKET_BRIEF, TRIGGER_TEXT, aiRunTrigger, assignTriggers, briefFacts, briefPeriod, briefResult, marketBriefPack, planOpen, priceTriggers, type BriefEvent, type BriefGroup, type BriefOpen, type BriefRowLite, type BriefStage, type BriefTrigger, type BriefTriggerKind, type MarketBrief, type TradingGap } from '../ai/marketBrief';
+import { BRIEF, BRIEF_HOME_DAYS, BRIEF_PACK_DAYS, MARKET_BRIEF, TRIGGER_TEXT, aiRunTrigger, briefFirstCause, briefLine, briefNoteDoc, assignTriggers, briefFacts, briefPeriod, briefResult, marketBriefPack, planOpen, priceTriggers, type BriefEvent, type BriefGroup, type BriefOpen, type BriefRowLite, type BriefStage, type BriefTrigger, type BriefTriggerKind, type MarketBrief, type TradingGap } from '../ai/marketBrief';
 import { newRunId, priceDoc } from '../ai/pack';
 import { addDays, tradingDaysBetween } from '../data/calendar';
 import { fetchHeadlineFeed, type Headline } from '../data/edgar';
@@ -159,13 +161,72 @@ export async function loadBriefs(db: D1Database, opt: { limit?: number; status?:
  * 最近一份寫好的市場摘要（§1.6：取最近一份、30 個日曆天內；同一個訊號日有定稿用定稿）。asOf 之後寫的不算（不偷看未來）。沒有 → null。
  * T65 分給個股時讀這個：brief.facts、brief.causes（scope = MARKET 的，與 group 等於這檔產業 ETF 的）。
  */
-export async function latestBrief(db: D1Database, asOf: string, days = 30): Promise<{ row: BriefRow; brief: MarketBrief } | null> {
-  const rows = (await db.prepare("SELECT * FROM market_briefs WHERE status = 'READY' AND session <= ? AND session >= ? ORDER BY session DESC, (stage = 'FINAL') DESC, id DESC LIMIT 5").bind(asOf, addDays(asOf, -days)).all<BriefRow>()).results;
+export async function latestBrief(db: D1Database, asOf: string, days = 30, opt: { scheduledOnly?: boolean } = {}): Promise<{ row: BriefRow; brief: MarketBrief } | null> {
+  const manual = opt.scheduledOnly ? ' AND manual = 0' : '';
+  const rows = (await db.prepare(`SELECT * FROM market_briefs WHERE status = 'READY'${manual} AND session <= ? AND session >= ? ORDER BY session DESC, (stage = 'FINAL') DESC, id DESC LIMIT 5`).bind(asOf, addDays(asOf, -days)).all<BriefRow>()).results;
   for (const row of rows) {
     const brief = parseBrief(row.payload);
     if (brief) return { row, brief };
   }
   return null;
+}
+
+// ---------------------------------------------------------------- 分給個股、顯示（T65，§1.6～§1.8）
+//   手動開的那一份（POST /admin/ai/brief，M7 量時間用）不分給個股、不上首頁、不進 LINE：它不是事件觸發的，
+//   平靜的日子手動開一份也會寫「原因不明」，放在首頁或通知裡會讓人以為市場剛大幅波動。AI 紀錄照樣列（標「手動開的」）。
+
+/**
+ * 個股證據包（定期審查、提前審查、減半檢視、草稿）的市場摘要那一份（§1.6）：最近 30 個日曆天內的一份、有定稿用定稿，
+ * 只放大盤與這檔產業 ETF 的部分。沒有 → doc 是 null。讀不到不擋那次執行（呼叫的地方照樣開，note 寫進組證據包的紀錄）。
+ * 同一次流程開的摘要趕不上同一次流程開的個股執行（證據包開執行時就定了）：那一次讀到的是之前的一份或沒有。
+ */
+export async function briefNote(db: D1Database, ticker: string, asOf: string): Promise<{ doc: PackDoc | null; note: string | null }> {
+  try {
+    const got = await latestBrief(db, asOf, BRIEF_PACK_DAYS, { scheduledOnly: true });
+    if (!got) return { doc: null, note: null };
+    const group = (await sectorEtfs(db, [ticker]))[ticker] ?? null;
+    return { doc: briefNoteDoc(got.brief, got.row.session, group), note: `附上 ${got.row.session} 的市場摘要（${got.row.stage === 'FINAL' ? '定稿' : '暫定稿'}${group ? `；大盤與 ${group} 的部分` : '；只有大盤的部分，這檔沒有對到產業 ETF'}）` };
+  } catch (e) {
+    return { doc: null, note: `市場摘要讀不到，這次沒有附：${errText(e)}` };
+  }
+}
+
+/** LINE 那一行（§1.8）：每個訊號日寫好的那一份（有定稿用定稿；不含手動開的）→ 那一行的字。通知的日期對到哪一天就加哪一天的。 */
+export async function briefLinesFor(db: D1Database, sessions: readonly string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const days = [...new Set(sessions)].filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+  if (!days.length) return out;
+  const rows = (await db.prepare(`SELECT * FROM market_briefs WHERE status = 'READY' AND manual = 0 AND session IN (${days.map(() => '?').join(',')}) ORDER BY session, (stage = 'FINAL') DESC, id DESC`).bind(...days).all<BriefRow>()).results;
+  for (const row of rows) {
+    if (out.has(row.session)) continue;
+    const b = parseBrief(row.payload);
+    if (b) out.set(row.session, briefLine(b));
+  }
+  return out;
+}
+
+/** 首頁那一行（§1.8）。 */
+export interface HomeBrief {
+  runId: string;
+  session: string;
+  stage: BriefStage;
+  period: { from: string; to: string };
+  /** 「報導的說法，信心高」；原因不明是 null。 */
+  tag: string | null;
+  text: string;
+}
+
+/**
+ * 首頁：最近 10 個交易日內有寫好的摘要（不含手動開的）時顯示一行與連結（§1.8）。axis：交易日（最後一個是現在的訊號日）。沒有 → null。
+ */
+export async function homeBrief(db: D1Database, axis: readonly string[]): Promise<HomeBrief | null> {
+  const today = axis.at(-1);
+  if (!today) return null;
+  const from = axis[Math.max(0, axis.length - BRIEF_HOME_DAYS)];
+  const got = await latestBrief(db, today, Math.max(0, Math.round((Date.parse(today) - Date.parse(from)) / 86_400_000)), { scheduledOnly: true });
+  if (!got || got.row.session < from) return null;
+  const f = briefFirstCause(got.brief);
+  return { runId: got.row.run_id, session: got.row.session, stage: got.row.stage, period: got.brief.period, tag: f.tag, text: f.text };
 }
 
 // ---------------------------------------------------------------- 證據包（§1.3、§1.4）

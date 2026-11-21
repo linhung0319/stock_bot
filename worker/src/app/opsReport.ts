@@ -6,6 +6,7 @@
 // 比例是 0～1 的小數（四捨五入到小數三位）；分母是 0 時是 null。
 // T57（web_evidence_design §2.4 第 7 點、§1.3、第 3 章）加了七段：前提的審查結果（依前提的來源）、每次執行取了多少網頁、被拒絕的原因、被略過與抓不到的網域、草稿的成功率與失敗原因。
 // T61（composite_layer_design §2.1）：前提的審查結果多一欄 stale（逾期）；加一段「前提的判定，依功能與 prompt 版本」（HOLDS 收緊前後對照）。
+// T65（composite_layer_design §4.1）：加一段「資料庫大小」（現在的大小，不看期間）；超過 300 MB 的告警由每日流程呼叫 dbSizeAlert。
 import { liveShadow, type ShadowRecord } from '../engine';
 import { DOC_FNS } from '../ai/added';
 import { WEB_DOC_PER_SITE } from '../data/webDoc';
@@ -874,8 +875,47 @@ export const draftFailuresSection: SectionFn = async (db, p) => {
   return { id: 'draft_failures', title: '草稿失敗的原因（依觸發）', rows: withTotal(out, { trigger: '合計', reason: null }, ['n']) };
 };
 
-/** 報表的各段，照這個順序輸出。要加段就在這裡加一個函式（T31a 加了月底檢查點、T33b 加了崩盤規則、T32d 加了動能進場審查、T57 加了前提結果、網頁與草稿七段、T61 加了前提的判定依 prompt 版本）。 */
-export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, momEntrySection, premiseOriginSection, premisePromptSection, webRunsSection, webRefusedSection, webSkippedSection, webFailedSection, draftsSection, draftFailuresSection];
+// ---------------------------------------------------------------- 資料庫大小（T65，composite_layer_design §4.1）
+
+/** 告警線與 D1 免費方案的上限（MB = 1,000,000 bytes，和 wrangler d1 info 一樣）。 */
+export const DB_SIZE = { alertMb: 300, freeLimitMb: 500, alertEveryDays: 30 } as const;
+/** flow_state：上次推資料庫大小告警的時間（ISO）。 */
+export const DB_ALERT_KEY = 'db:sizeAlerted';
+
+/** 資料庫現在多大（bytes）：D1 每個查詢的 meta.size_after。拿不到是 null。 */
+export async function dbSizeBytes(db: D1Database): Promise<number | null> {
+  const r = await db.prepare('SELECT 1 AS x').all();
+  const n = (r.meta as { size_after?: unknown } | undefined)?.size_after;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : null;
+}
+const toMb = (bytes: number) => Math.round(bytes / 1e5) / 10;
+
+/** 資料庫大小：一行（現在的大小；不看期間）。over_alert = 1 表示超過告警線。 */
+export const dbSizeSection: SectionFn = async (db) => {
+  const bytes = await dbSizeBytes(db);
+  const mb = bytes === null ? null : toMb(bytes);
+  return { id: 'db_size', title: `資料庫大小（現在的大小，不看期間；超過 ${DB_SIZE.alertMb} MB 告警，D1 免費方案上限 ${DB_SIZE.freeLimitMb} MB）`, rows: [{ bytes, mb, alert_mb: DB_SIZE.alertMb, free_limit_mb: DB_SIZE.freeLimitMb, used_ratio: mb === null ? null : ratio(mb, DB_SIZE.freeLimitMb), over_alert: mb === null ? null : mb >= DB_SIZE.alertMb ? 1 : 0 }] };
+};
+
+/**
+ * 資料庫超過告警線時的告警（每日流程掃逾時的那一段呼叫）：超過時每 30 天一次（不然每天推一次）。沒超過或量不到 → null。
+ * 現在不加刪除機制（設計 §4.1）：告警寫明最先能清的是什麼，由使用者決定。
+ */
+export async function dbSizeAlert(db: D1Database, now: Date): Promise<{ kind: 'DB_SIZE'; message: string } | null> {
+  const bytes = await dbSizeBytes(db);
+  if (bytes === null || bytes / 1e6 < DB_SIZE.alertMb) return null;
+  const last = (await db.prepare('SELECT value FROM flow_state WHERE key = ?').bind(DB_ALERT_KEY).first<{ value: string }>())?.value ?? null;
+  if (last && now.getTime() - Date.parse(last) < DB_SIZE.alertEveryDays * 86_400_000) return null;
+  const at = now.toISOString();
+  await db.prepare('INSERT INTO flow_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at').bind(DB_ALERT_KEY, at, at).run();
+  return {
+    kind: 'DB_SIZE',
+    message: `資料庫已經 ${toMb(bytes)} MB，超過 ${DB_SIZE.alertMb} MB 的告警線（D1 免費方案每個資料庫上限 ${DB_SIZE.freeLimitMb} MB）。現在沒有自動刪除；最先能清的是一年以上的 AI 任務原始結果裡、和 AI 紀錄重複的那兩欄（不影響任何功能，清之前先跑一次本機匯出）。降回 ${DB_SIZE.alertMb} MB 以下之前，每 ${DB_SIZE.alertEveryDays} 天提醒一次。`,
+  };
+}
+
+/** 報表的各段，照這個順序輸出。要加段就在這裡加一個函式（T31a 加了月底檢查點、T33b 加了崩盤規則、T32d 加了動能進場審查、T57 加了前提結果、網頁與草稿七段、T61 加了前提的判定依 prompt 版本、T65 加了資料庫大小）。 */
+export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, momEntrySection, premiseOriginSection, premisePromptSection, webRunsSection, webRefusedSection, webSkippedSection, webFailedSection, draftsSection, draftFailuresSection, dbSizeSection];
 
 export interface OpsReport {
   generated_at: string;
