@@ -33,10 +33,19 @@
 - 運作統計新段 `premise_prompt`（依功能與 prompt 版本列成立、不成立、證據不足、不一致、逾期、沒指出正面引用），用來對照收緊前後；內容是執行中定的。
 - 沒動的（範圍外）：討論包、論點 note、`PREMISE_NO_DATA`、`WEB_DUE` 的字樣仍用舊的「成立（日期 審查）」；`own_check_v5`、`own_draft_v2`、`run.md` 的例子仍指到 `own_review_v3.md`（舊檔還在、讀得到）。
 
+### T62（找資料的三條規則）
+
+- 主持者定：`own_draft_v2`、`own_review_v4`、`own_drop_v4` 是這一階段剛升、還沒部署也沒跑過的，直接改、不再升版號；檔頭各加一段說明。
+- 原本分析師的問題上限 6 個和逐句問題衝突（5 條 × 3 句 = 15）：逐句的不設上限，其他（條件、前提整體）仍最多 6 個；審查紀錄頁「超過規定的 N 個」改用 `questionsCap`。
+- 「找不到相反的，找過什麼」寫在分析師交給後面角色的摘要（審查第五段、減半檢視最後一段、草稿「這次另外找的資料」），`wanted[].why` 開頭寫「相反：」或「支持：」；沒有新增 `lookups` 欄位。
+- 順序規則也寫進 `run.md`：Worker 照 `want` 的順序處理，同網站第 5 篇起回 `LIMIT`，所以順序決定被擋的是哪幾篇。
+- 便宜的核對只當紀錄：運作統計 `web_runs` 多 `clause_runs`、`clause_slots`、`clause_asked`，`clause_asked` 比 `clause_slots` 少表示分析師沒逐句問。「至少留 2 份給相反方向」程式看不出方向，只靠 prompt，M8 看紀錄。
+
 ## 要使用者親手做的事
 
 - T60：部署前 `git push`（雲端排程從 repo 讀 `own_draft_v2.md`）；沒有新 migration；`run.md`、`ping.md` 沒改。部署集中在 T66。
 - T61：`git push` 後雲端排程才讀得到 `own_review_v4.md`、`own_drop_v4.md`；M8 重跑時看運作統計 `premise_prompt` 的 `no_confirm`，高表示模型沒照新格式寫。
+- T62：`run.md` 改了「取文件」那一段，**部署後**要重新貼到 claude.ai 的排程（T66 一起做）。M8 時看運作統計 `web_runs` 的 `clause_slots` 與 `clause_asked`。
 
 ## 畫面截圖
 

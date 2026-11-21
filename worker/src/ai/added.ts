@@ -174,7 +174,22 @@ export async function addedHash(docs: readonly AddedDoc[]): Promise<string | nul
 /** 要查的問題最多幾個、搜尋最多幾次（§1.5；prompt 也寫同樣的數字）。超過的照樣存，網站寫明超過。 */
 export const LOOKUP_QUESTIONS = 6;
 export const LOOKUP_QUERIES = 6;
-const LOOKUP_KEEP = { questions: 12, queries: 20, wanted: 40 } as const;
+/**
+ * T62（composite_layer_design §2.4 第 3 條）：審查與減半檢視的分析師對每一條前提的每一句 breaksIf 各列一個問題（沒有 breaksIf 的前提列一個），
+ * 不佔上面的 6 個；所以這兩個功能的問題上限是 LOOKUP_QUESTIONS 加上證據包裡所有前提的句數（最多 5 條 × 3 句），存的時候最多留 6 + 15 + 3。
+ */
+export const LOOKUP_CLAUSE_FNS = ['OWN_REVIEW', 'OWN_DROP'] as const;
+const LOOKUP_KEEP = { questions: 24, queries: 20, wanted: 40 } as const;
+
+/** 證據包的前提各要列幾個「逐句」的問題：每一句 breaksIf 一個，沒有的列一個。信念不在審查的證據包裡。 */
+export function clauseSlots(premises: { breaksIf?: string[] }[] | undefined | null): number {
+  return (premises ?? []).reduce((s, p) => s + Math.max(1, Array.isArray(p.breaksIf) ? p.breaksIf.length : 0), 0);
+}
+
+/** 這個功能的分析師最多可以列幾個問題。 */
+export function questionsCap(fn: string, premises: { breaksIf?: string[] }[] | undefined | null): number {
+  return LOOKUP_QUESTIONS + ((LOOKUP_CLAUSE_FNS as readonly string[]).includes(fn) ? clauseSlots(premises) : 0);
+}
 
 /**
  * 送回的結果裡的 lookups（存進 ai_runs.lookups）：分析師列的問題、搜尋的字、想取的每一份與結果。

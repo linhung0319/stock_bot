@@ -877,7 +877,7 @@ describe('T53：分析師找資料的紀錄（§1.5 的 lookups、G22）', () =>
     expect(cleanLookups(null)).toBeNull();
     expect(cleanLookups([1, 2])).toBeNull();
     expect(cleanLookups({ questions: 'x', queries: [1, '', '  q  '], wanted: [{ why: '沒有網址' }, { url: ' https://a.example/x ', for: 'p2', got: 5 }] })).toEqual({ questions: [], queries: ['q'], wanted: [{ url: 'https://a.example/x', menu: null, for: null, why: null, got: null }] });
-    expect(cleanLookups({ questions: Array.from({ length: 30 }, (_, k) => `q${k}`) })!.questions).toHaveLength(12);
+    expect(cleanLookups({ questions: Array.from({ length: 30 }, (_, k) => `q${k}`) })!.questions).toHaveLength(24); // T62：6 個其他 + 最多 15 句逐句的問題 + 餘裕（原本 12）
     expect(cleanLookups({ questions: [{ for: 'C12', question: 'x'.repeat(900) }] })!.questions[0]).toMatchObject({ for: 'C12', ask: 'x'.repeat(500) });
     const sample = { verdict: 'HOLD', evidence: [] };
     expect(VALIDATORS.RUN({ task_id: 't', kind: 'RUN', run_id: 'r', samples: [sample], lookups: { questions: [] } }, { run_id: 'r' })).toBeNull();

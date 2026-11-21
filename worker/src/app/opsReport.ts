@@ -640,6 +640,8 @@ export const premisePromptSection: SectionFn = async (db, p) => {
  *   sites_at_cap     同一個網站已經抓滿 WEB_DOC_PER_SITE 篇的（執行、網站）數
  *   refused          被拒絕的總數（含 LIMIT）
  *   lookups_reported、questions、queries、wanted   分析師自己回報的找資料紀錄（AI 寫的，只當參考；取到幾份以 docs 為準）：回報的執行數、要查的問題數、搜尋次數、想取的份數
+ *   clause_runs、clause_slots、clause_asked   T62：審查與減半檢視、回報了 lookups 而且可以找資料的執行數；證據包的前提共有幾句 breaksIf（沒有的前提算一句）；其中有問題（for 是那一條前提）的有幾句。
+ *     clause_asked 比 clause_slots 少 = 分析師沒有照「每一句各列一個問題」做；只是紀錄，不影響那次執行
  */
 export const webRunsSection: SectionFn = async (db, p) => {
   const c = atCond(p, 'r.created_at');
@@ -648,6 +650,10 @@ export const webRunsSection: SectionFn = async (db, p) => {
   const chars = "COALESCE(json_extract(r.added_docs, '$.chars'), 0)";
   const off = "(COALESCE(json_extract(r.doc_ctx, '$.off'), '') != '')";
   const kind = (k: string) => `COALESCE(SUM((SELECT COUNT(*) FROM json_each(r.added_docs, '$.docs') d WHERE json_extract(d.value, '$.kind') = '${k}')), 0)`;
+  // T62：審查與減半檢視的分析師回報了 lookups、而且這次可以找資料的，證據包每一條前提的每一句 breaksIf（沒有的算一句）有沒有各一個問題（for 是那一條前提）。只是紀錄，不影響任何一次執行。
+  const clauseRun = `r.fn IN ('OWN_REVIEW', 'OWN_DROP') AND r.lookups IS NOT NULL AND NOT ${off}`;
+  const need = "MAX(1, COALESCE(json_array_length(p.value, '$.breaksIf'), 0))";
+  const asked = "(SELECT COUNT(*) FROM json_each(r.lookups, '$.questions') q WHERE json_extract(q.value, '$.for') = json_extract(p.value, '$.id'))";
   const rows = await query(
     db,
     `SELECT r.fn AS fn, COUNT(*) AS runs,
@@ -669,12 +675,15 @@ export const webRunsSection: SectionFn = async (db, p) => {
        COALESCE(SUM(r.lookups IS NOT NULL), 0) AS lookups_reported,
        COALESCE(SUM(json_array_length(r.lookups, '$.questions')), 0) AS questions,
        COALESCE(SUM(json_array_length(r.lookups, '$.queries')), 0) AS queries,
-       COALESCE(SUM(json_array_length(r.lookups, '$.wanted')), 0) AS wanted
+       COALESCE(SUM(json_array_length(r.lookups, '$.wanted')), 0) AS wanted,
+       COALESCE(SUM(CASE WHEN ${clauseRun} THEN 1 ELSE 0 END), 0) AS clause_runs,
+       COALESCE(SUM(CASE WHEN ${clauseRun} THEN (SELECT COALESCE(SUM(${need}), 0) FROM json_each(r.pack, '$.premises') p) ELSE 0 END), 0) AS clause_slots,
+       COALESCE(SUM(CASE WHEN ${clauseRun} THEN (SELECT COALESCE(SUM(MIN(${need}, ${asked})), 0) FROM json_each(r.pack, '$.premises') p) ELSE 0 END), 0) AS clause_asked
      FROM ai_runs r WHERE r.fn IN (${FN_LIST}) AND ${c.sql} GROUP BY r.fn ORDER BY r.fn`,
     c.args,
   );
   const avg = (r: Row): Row => ({ ...r, avg_docs: n(r.looked) ? Math.round((n(r.docs) / n(r.looked)) * 10) / 10 : null, avg_chars: n(r.looked) ? Math.round(n(r.chars) / n(r.looked)) : null });
-  const keys = ['runs', 'off', 'not_looking', 'looked', 'got_none', 'got_some', 'calls', 'docs', 'web_docs', 'filing_docs', 'chars', 'truncated_docs', 'sites_at_cap', 'refused', 'lookups_reported', 'questions', 'queries', 'wanted'];
+  const keys = ['runs', 'off', 'not_looking', 'looked', 'got_none', 'got_some', 'calls', 'docs', 'web_docs', 'filing_docs', 'chars', 'truncated_docs', 'sites_at_cap', 'refused', 'lookups_reported', 'questions', 'queries', 'wanted', 'clause_runs', 'clause_slots', 'clause_asked'];
   const out = withTotal(rows.map(avg), { fn: '合計' }, keys, (t) => {
     t.max_docs = Math.max(...rows.map((r) => n(r.max_docs)));
     t.max_chars = Math.max(...rows.map((r) => n(r.max_chars)));

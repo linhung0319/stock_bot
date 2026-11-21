@@ -1,6 +1,6 @@
 // 網站的 AI 紀錄（T9；design_v2 §6.6）：每一次 AI 執行一頁（輸入、每一票、檢查、結論、過程），「匯出 md 拿去問 AI」，
 // 以及把 AI 紀錄轉成建議單上的 AI 說明（AiNote）。
-import { DOC_FNS, LOOKUP_QUERIES, LOOKUP_QUESTIONS, type RefuseReason } from '../../ai/added';
+import { DOC_FNS, LOOKUP_QUERIES, questionsCap, type RefuseReason } from '../../ai/added';
 import { keptByChoice, type CheckedPremise, type CheckedSample, type Outcome } from '../../ai/check';
 import { TIER_TEXT } from '../../data/webSources';
 import { CRASH_REVIEW } from '../../ai/crash';
@@ -165,7 +165,8 @@ export function foundView(run: AiRun): FoundView | null {
   const got = docs.length;
   const asked = added.calls ? got + added.refusedTotal : (lk?.wanted.length ?? 0);
   const notes: string[] = [];
-  if (lk && lk.questions.length > LOOKUP_QUESTIONS) notes.push(`分析師列了 ${lk.questions.length} 個問題，超過規定的 ${LOOKUP_QUESTIONS} 個。`);
+  const cap = questionsCap(run.fn, run.pack?.premises);
+  if (lk && lk.questions.length > cap) notes.push(`分析師列了 ${lk.questions.length} 個問題，超過規定的 ${cap} 個。`);
   if (lk && lk.queries.length > LOOKUP_QUERIES) notes.push(`分析師搜尋了 ${lk.queries.length} 次，超過規定的 ${LOOKUP_QUERIES} 次。`);
   if (added.calls && !lk) notes.push('分析師沒有回報要查的問題與搜尋的字；下面取回與沒取到的是程式記的。');
   let state: FoundView['state'];
