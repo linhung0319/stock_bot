@@ -1214,7 +1214,7 @@ function openOrdersOf(acct: Account, ticker: string): HoldingDetail['open'] {
   return out;
 }
 
-const ORIGIN: Record<string, string> = { USER: '你寫的', AI_DRAFT_ACCEPTED: 'AI 草擬、你勾選的', SYSTEM_DEFAULT: '系統預設' };
+const ORIGIN: Record<string, string> = { USER: '你寫的', AI_DRAFT_ACCEPTED: 'AI 草擬、你採用的', SYSTEM_DEFAULT: '系統預設' };
 /** 論點本文是怎麼來的（持股頁那一行；DRAFT 是 T56 的：用了 stock bot 草稿的論點、一字沒改）。 */
 export const THESIS_SOURCE: Record<string, string> = { TYPED: '在網站手寫', DISCUSSION: '討論後貼回', DRAFT: '用了 stock bot 的草稿' };
 

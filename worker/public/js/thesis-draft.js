@@ -1,4 +1,5 @@
-// stock bot 的論點草稿（T56，web_evidence_design §2.3、§2.5、§2.6）：不碰 DOM 的部分（文字、預設不勾、按鈕狀態），測試直接 import。
+// stock bot 的論點草稿（T56，web_evidence_design §2.5、§2.6）：不碰 DOM 的部分（文字、按鈕狀態），測試直接 import。
+// T70（confirm_audit_design §2）：逐條勾選改成一鍵採用——草稿那一塊只顯示，「採用這份草稿」整份照草稿存；採用前的對照與採用後的那幾行也在這裡。
 // 畫面在 pages-thesis.js（編輯論點頁的草稿那一塊、各入口的「請 stock bot 草擬」）。
 
 /** 2026-12-20 → 12/20；ISO 時間照台北時間的日期。 */
@@ -28,22 +29,47 @@ export const NOT_CHECKABLE = 'stock bot 監測不了這一條';
 export { BELIEF_TEXT };
 
 /**
- * 草稿的每一項（前提、出場條件、同業、網站）：預設都不勾（§2.3：勾了才填進「新的」，沒勾的不存在）。
- * 網站只有「新的來源」可以勾；已經在清單裡、不列入的只顯示。
+ * 草稿的每一項（前提、出場條件、同業；T69 以前的舊草稿另外有網站）整理成畫面要的形狀。T70 起只顯示，沒有勾選框。
  * 前提（T60）：breaksIf 是句子的陣列、confirmsIf、verify（by = NONE 是信念 belief）；T55 的舊草稿照樣讀得出來。
+ * 出場條件帶 kind、check（怎麼監測，exitMonitorText）。網站（舊草稿才有）不能加，只留給讀舊草稿。
  */
 export function draftItems(payload) {
   const p = payload ?? {};
   return {
     premises: (p.premises ?? []).map((x, k) => {
       const f = draftPremiseFields(x);
-      return { k, checked: false, text: x.text, ...f, belief: f.verify?.by === 'NONE', keepId: x.keep_id ?? null, checkable: f.verify?.by ?? null, sourceHint: f.verify?.source ?? null, likeBroken: !!x.like_broken, evidence: x.evidence_ids ?? [] };
+      return { k, text: x.text, ...f, belief: f.verify?.by === 'NONE', keepId: x.keep_id ?? null, checkable: f.verify?.by ?? null, sourceHint: f.verify?.source ?? null, likeBroken: !!x.like_broken, evidence: x.evidence_ids ?? [] };
     }),
-    exits: (p.exits ?? []).map((x, k) => ({ k, checked: false, text: x.text, action: x.action, threshold: !!x.threshold, premiseIndex: x.premise_index ?? null, evidence: x.evidence_ids ?? [] })),
-    peers: (p.sources?.peers ?? []).map((x, k) => ({ k, checked: false, name: x.name, edgar: x.edgar ?? null, yahoo: x.yahoo ?? null })),
-    domains: (p.sources?.domains ?? []).map((x, k) => ({ k, checked: false, domain: x.domain, state: x.state, note: x.note, checkable: false })),
+    exits: (p.exits ?? []).map((x, k) => ({ k, text: x.text, action: x.action, threshold: !!x.threshold, kind: x.kind ?? null, check: x.check ?? null, premiseIndex: x.premise_index ?? null, evidence: x.evidence_ids ?? [] })),
+    peers: (p.sources?.peers ?? []).map((x, k) => ({ k, name: x.name, edgar: x.edgar ?? null, yahoo: x.yahoo ?? null })),
+    domains: (p.sources?.domains ?? []).map((x, k) => ({ k, domain: x.domain, state: x.state, note: x.note, checkable: false })),
   };
 }
+
+/** 確認來源的白話（事件條件的 confirm_by）。 */
+const CONFIRM_TEXT = { '8-K': '8-K', '10-Q': '10-Q', '10-K': '10-K', SEC: 'SEC 申報', earnings_call: '法說會', major_news: '重大新聞' };
+const FILING_BY = ['8-K', '10-Q', '10-K', 'SEC'];
+
+/**
+ * 草稿的一條出場條件採用後怎麼監測（T70，§2.2：採用就生效，不再送改寫與確認）：
+ *   財報門檻 → 新財報出來時程式比對；事件條件有申報類的確認來源 → 新申報出來時由 AI 確認；只有法說會、新聞、網頁 → 只在定期審查時檢查；
+ *   價格條件 → 只記錄；舊格式（事件條件沒寫用什麼確認）→ 採用後送 AI 改寫，回來後在持股頁確認。tone：ok／warn／dim。
+ */
+export function exitMonitorText(x) {
+  const by = Array.isArray(x?.check?.confirm_by) ? x.check.confirm_by : null;
+  if (x?.kind === 'XBRL' && x.check) return { tone: 'ok', text: x.threshold ? '財報數字門檻：採用後新財報出來時由程式比對' : '財報條件：指標程式算不出來，採用後只記錄' };
+  if (x?.kind === 'PRICE') return { tone: 'dim', text: '價格條件：採用後只記錄，不會通知' };
+  if (x?.kind === 'EVENT' && by?.length) {
+    const names = by.map((b) => (String(b).startsWith('web:') ? `${String(b).slice(4)} 的網頁` : (CONFIRM_TEXT[b] ?? b)));
+    return by.some((b) => FILING_BY.includes(b)) ? { tone: 'ok', text: `採用後監測中：新申報出來時由 AI 確認（${names.join('、')}）` } : { tone: 'ok', text: `採用後只在定期審查時檢查（${names.join('、')}）` };
+  }
+  return { tone: 'warn', text: '舊格式的草稿沒有寫用什麼確認：採用後這一條送 AI 改寫，回來後在持股頁確認才開始監測' };
+}
+
+/** 按鈕旁那一行（§2.1：不需要專業知識，只問意願）。 */
+export const ADOPT_HINT = '採用之前看一眼最上面的反方三點：還願意抱著這檔嗎？';
+/** 採用後持股頁那一行（§2.1）。 */
+export const adoptedNote = (at) => `已採用 ${md(at)} 的草稿；要改字在這一頁改`;
 
 /**
  * 一條前提「怎麼驗證」：{ ok, text, belief }。查得到 → 來源與多久有新的一份；信念（T60）→「信念：這一條查不到，是你選擇相信的」
@@ -66,56 +92,75 @@ export function draftNotices(draft) {
   const out = [];
   if (draft.broken) {
     out.push({ tone: 'hot', text: `${draft.broken.notice}。` });
-    out.push({ tone: 'hot', text: `這份草稿不能沿用 ${draft.broken.premiseId}；用了這份草稿存檔，算一次「失效後修改」${draft.broken.open ? '。那則通知還等你決定：可以在下面勾「這是對通知的回應」，或回通知選一項' : ''}。` });
+    out.push({ tone: 'hot', text: `這份草稿不能沿用 ${draft.broken.premiseId}；採用這份草稿算一次「失效後修改」${draft.broken.open ? '。那則通知還等你決定：可以先勾下面的「這是對通知的回應」再採用，或回通知選一項' : ''}。` });
   }
   if (draft.stale) {
-    out.push({ tone: 'warn', text: draft.basedOn ? `這份草稿是照第 ${draft.basedOn} 版論點寫的，之後你改過論點（現在第 ${draft.version} 版）。左邊「現在的」才是你現在的論點，勾之前對照一下。` : `這份草稿是在你還沒有論點的時候寫的，之後你自己存了論點（現在第 ${draft.version} 版）。勾之前對照左邊「現在的」。` });
+    out.push({ tone: 'warn', text: draft.basedOn ? `這份草稿是照第 ${draft.basedOn} 版論點寫的，之後你改過論點（現在第 ${draft.version} 版）。左邊「現在的」才是你現在的論點；按「採用」之後會先列出哪幾條會被換掉。` : `這份草稿是在你還沒有論點的時候寫的，之後你自己存了論點（現在第 ${draft.version} 版）。按「採用」之後會先列出哪幾條會被換掉。` });
   }
-  out.push({ tone: 'dim', text: `${draft.trigger === 'AUTO' ? '新加進自選時自動草擬的' : `你在 ${md(draft.createdAt)} 請 stock bot 草擬的`}；${md(draft.until)} 之後不再列（30 天沒處理就過期）。每一條都要你勾了才會填進「新的」，沒勾的不會存。` });
+  out.push({ tone: 'dim', text: `${draft.trigger === 'AUTO' ? '新加進自選時自動草擬的' : `你在 ${md(draft.createdAt)} 請 stock bot 草擬的`}；${md(draft.until)} 之後不再列（30 天沒處理就過期）。採用就是整份照草稿存（論點、前提、出場條件、同業），出場條件採用後直接生效；之後要改字，在這一頁照平常的方式改。` });
   return out;
 }
 
-/** 草稿沒有提到的你現在的前提（草稿只沿用一字沒改的；其他的「新的」裡照舊留著，要拿掉自己拿）。 */
-export function untouchedPremises(payload, current) {
-  const kept = new Set((payload?.premises ?? []).map((p) => p.keep_id).filter(Boolean));
-  return (current ?? []).filter((p) => !p.system && !kept.has(p.id)).map((p) => p.id);
-}
+const ACT = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查' };
+const STATUS_TEXT = { ACTIVE: '監測中', REVIEW_ONLY: '只在定期審查時檢查', MANUAL: '只記錄' };
+const peerText = (p) => `${p.name}（${[p.edgar && `EDGAR ${p.edgar}`, p.yahoo && `Yahoo ${p.yahoo}`].filter(Boolean).join('、')}）`;
 
 /**
- * 預覽裡「草稿」那一段（存檔前；pd 是伺服器回的 preview.draft）：
- *   一條都沒用（忘了勾）→ 草稿照舊留著；用了一部分（只勾一半）→ 列出沒勾的幾條，存檔後草稿標成用過、不再列；
- *   這份草稿是在前提被判不成立之後寫的 → 算一次「失效後修改」（第幾次）。
+ * 採用前的對照（§2.1：現有論點和草稿不同時；pv 是伺服器 dry 回的 preview）。回傳一段一段：{ h: 標題, rows: [{ tone, text }] }。
+ * 前提：哪幾條會被換掉（撤下）、沿用哪幾條（編號不變）、新的幾條；出場條件：新增（採用後就監測）、沿用、撤下、送改寫的；同業；失效後修改。
  */
-export function draftPreviewLines(pd) {
-  if (!pd) return [];
+export function adoptCompare(pv) {
+  const dr = pv?.draft;
+  if (!dr) return [];
   const out = [];
-  if (!pd.used) {
-    out.push({ tone: 'warn', text: `草稿一條都還沒勾：這次存檔不會用到草稿，草稿照舊留著，${md(pd.until ?? '')}${pd.until ? ' 之前' : ''}都可以回來勾。` });
-    return out;
-  }
-  const parts = [];
-  if (pd.thesis) parts.push(pd.thesis === 'SAME' ? '論點本文（一字沒改）' : '論點本文（改過字）');
-  const pr = pd.premises;
-  if (pr.same) parts.push(`前提 ${pr.same} 條原樣（記成「AI 草擬、你勾選的」）`);
-  if (pr.edited) parts.push(`前提 ${pr.edited} 條改過字（記成你寫的）`);
-  if (pr.kept) parts.push(`草稿沿用你現在的前提 ${pr.kept} 條`);
-  if (pd.exits) parts.push(`出場條件 ${pd.exits} 條`);
-  if (pd.peers) parts.push(`同業 ${pd.peers} 家`);
-  if (pd.domains) parts.push(`網站 ${pd.domains} 個`);
-  out.push({ tone: 'core', text: `從草稿用了：${parts.join('、')}。` });
-  const un = pd.unused;
-  const left = [un.premises ? `前提 ${un.premises} 條` : '', un.exits ? `出場條件 ${un.exits} 條` : '', un.sources ? `同業與網站 ${un.sources} 項` : ''].filter(Boolean);
-  out.push({ tone: left.length ? 'warn' : 'dim', text: left.length ? `沒勾的：${left.join('、')}。存檔後這份草稿標成用過、不再列，沒勾的不會存；之後想要，要自己寫進來。` : '草稿的每一項都勾了。存檔後這份草稿標成用過。' });
-  if (pd.afterBreakNo) out.push({ tone: 'hot', text: `這份草稿是在前提 ${pd.premiseId} 被判不成立之後寫的：存檔算一次「失效後修改」（第 ${pd.afterBreakNo} 次）${pd.brokenOpen ? '；那則通知仍要你決定（勾下面的「這是對通知的回應」，或回通知選一項）' : ''}。` });
-  if (pd.status === 'EXPIRED') out.push({ tone: 'warn', text: '這份草稿已經過期（30 天沒處理，或之後有新的草稿）；存檔照樣用你勾的這些。' });
-  if (pd.status === 'USED' || pd.status === 'DISMISSED') out.push({ tone: 'dim', text: `這份草稿已經${pd.status === 'USED' ? '用過' : '標成不用'}了（可能在另一個分頁）；存檔照樣用你勾的這些。` });
+  const mine = (pv.retired ?? []).filter((x) => x.origin !== 'SYSTEM_DEFAULT');
+  const sys = (pv.retired ?? []).filter((x) => x.origin === 'SYSTEM_DEFAULT');
+  const prem = [
+    ...(dr.thesisBefore ? [{ tone: 'warn', text: '論點本文：換成草稿的那一段（現在的那段不留）' }] : []),
+    ...mine.map((x) => ({ tone: 'hot', text: `換掉 ${x.id}：${x.text}` })),
+    ...(sys.length ? [{ tone: 'dim', text: `系統預設的 ${sys.length} 條前提換成草稿的` }] : []),
+    ...(pv.kept ?? []).map((x) => ({ tone: 'core', text: `沿用 ${x.id}：${x.text}（編號不變，之前的檢查結果接著算）` })),
+    ...(pv.added ?? []).map((x) => ({ tone: 'dim', text: `新的 ${x.id}：${x.text}` })),
+  ];
+  out.push({ h: '論點與前提', rows: prem });
+  const ep = dr.exitPlan ?? { add: [], keep: [], retire: [], rewrite: [] };
+  const ex = [
+    ...ep.retire.map((x) => ({ tone: 'hot', text: `撤下：${x.text}` })),
+    ...ep.keep.map((x) => ({ tone: 'core', text: `沿用：${x.text}${x.was && x.was !== x.action ? `（成立時 ${ACT[x.was]} → ${ACT[x.action]}）` : ''}` })),
+    ...ep.add.map((x) => ({ tone: 'dim', text: `新增：${x.text}（成立時${ACT[x.action] ?? x.action}；採用後${STATUS_TEXT[x.status] ?? x.status}）` })),
+    ...ep.rewrite.map((x) => ({ tone: 'warn', text: `送 AI 改寫、回來後在持股頁確認：${x.text}（${x.why}）` })),
+  ];
+  if (ex.length) out.push({ h: '出場條件', rows: ex });
+  const pp = dr.peerPlan ?? { save: [], skip: [], before: [] };
+  const key = (p) => `${p.edgar ?? ''}|${p.yahoo ?? ''}`;
+  const now = new Set(pp.save.map(key));
+  const peers = [
+    ...pp.before.filter((p) => !now.has(key(p))).map((p) => ({ tone: 'hot', text: `拿掉：${peerText(p)}` })),
+    ...pp.save.map((p) => ({ tone: 'dim', text: `${pp.before.some((b) => key(b) === key(p)) ? '沿用' : '加上'}：${peerText(p)}` })),
+    ...pp.skip.map((t) => ({ tone: 'warn', text: t })),
+  ];
+  if (peers.length) out.push({ h: '同業', rows: peers });
+  if (dr.afterBreakNo) out.push({ h: '另外', rows: [{ tone: 'hot', text: `這份草稿是在前提 ${dr.premiseId} 被判不成立之後寫的：採用算一次「失效後修改」（第 ${dr.afterBreakNo} 次）${dr.brokenOpen ? '；那則通知仍要你決定（勾下面的「這是對通知的回應」，或回通知選一項）' : ''}。` }] });
   return out;
 }
 
-/** 右邊那一條是從草稿勾來的：原樣 → 記成「AI 草擬、你勾選的」；改過字 → 記成你寫的。 */
-export function originHint(draftText, text) {
-  const n = (t) => String(t ?? '').normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
-  return n(draftText) === n(text) ? '從草稿原樣勾來：存成「AI 草擬、你勾選的」' : '從草稿勾來、你改過字：存成你寫的前提';
+/** 採用之後持股頁那一塊的幾行（r 是伺服器的回應；at 是草稿回來的時間）：那一行、出場條件與同業、同業沒存的原因、送改寫的、寫條件失敗、失效後修改、通知結案。 */
+export function adoptResultLines(r, at) {
+  const dr = r?.preview?.draft;
+  const out = [{ tone: 'core', text: adoptedNote(at) }];
+  const bits = [];
+  if (dr?.exits) bits.push(`出場條件 ${dr.exits} 條採用後就生效`);
+  if (dr?.exitsKept) bits.push(`${dr.exitsKept} 條和原本的一樣，沿用`);
+  if (r?.conds?.retired?.length) bits.push(`撤下原本的 ${r.conds.retired.length} 條`);
+  if (dr?.peers) bits.push(`同業 ${dr.peers} 家`);
+  if (bits.length) out.push({ tone: 'dim', text: `${bits.join('；')}。` });
+  if (r?.rewrite?.status === 'SENT') out.push({ tone: 'warn', text: `${r.exits.length} 條舊格式的出場條件送去 AI 改寫，回來後在這一頁確認才開始監測。` });
+  if (r?.rewrite?.status === 'FAILED') out.push({ tone: 'warn', text: `${r.exits.length} 條舊格式的出場條件還沒送去改寫（${r.rewrite.error}）：在這一頁的出場條件那一塊可以重送。` });
+  for (const t of r?.peersSkipped ?? []) out.push({ tone: 'warn', text: t });
+  for (const t of r?.conds?.errors ?? []) out.push({ tone: 'hot', text: t });
+  if (dr?.afterBreakNo) out.push({ tone: 'hot', text: `這次算一次「失效後修改」（第 ${dr.afterBreakNo} 次）。` });
+  if (r?.revised) out.push({ tone: 'dim', text: `${r.revisedName ?? '那則通知'}已結案（修正論點，部位不動）。` });
+  return out;
 }
 
 /**

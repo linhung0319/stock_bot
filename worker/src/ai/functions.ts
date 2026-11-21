@@ -38,7 +38,7 @@ export const FUNCTIONS: Record<string, FnInfo> = {
   STRATEGY_REVIEW: { label: '策略檢討說明', note: null, verdicts: { DONE: '已列出正反證據', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK + '\n請特別檢查：正反兩邊的證據是不是一樣認真；有沒有暗示該停用或該繼續。' },
   OWN_CHECK: { label: '出場條件改寫', note: null, verdicts: { DONE: '完成', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK + '\n請檢查：改寫的出場條件有沒有忠於我原本的意思、成立時的動作有沒有照我選的；數字門檻有沒有對應證據包裡的數字；有沒有和我既有的條件重複。' },
   OWN_EARNINGS: { label: '財報數字擷取', note: null, verdicts: { EXTRACTED: '已擷取', INSUFFICIENT: '沒有擷取到' }, askPrompt: GENERIC_ASK + '\n另外請檢查：抄的是不是 GAAP 的單季數字（不是調整後、不是年初至今的累計），單位有沒有抄錯，去年同季有沒有抄成別的欄。' },
-  // 論點草稿（T55，web_evidence_design §2.2）：一份、只說明；每一條都要使用者勾選才生效
+  // 論點草稿（T55，web_evidence_design §2.2）：一份、只說明；使用者按「採用」才整份生效（T70）
   OWN_DRAFT: { label: '論點草稿', note: null, verdicts: { DONE: '草稿寫好了', INSUFFICIENT: '沒有寫成草稿' }, askPrompt: GENERIC_ASK + '\n另外請檢查：每一條前提是不是寫成查得到、可以被推翻的事；反方的三點是不是真的會讓持有者後悔，還是寫給正方好反駁的；出場條件是不是太寬鬆、永遠不會成立。' },
   // 市場摘要（T64，composite_layer_design 第 1 章）：一份、只說明；原因一律是「報導的說法」，不明也是合格的答案
   MARKET_BRIEF: { label: '市場摘要', note: null, verdicts: { DONE: '寫好了', INSUFFICIENT: '沒有寫成' }, askPrompt: GENERIC_ASK + '\n另外請檢查：每一個原因是不是真的有報導這樣寫（引用對得上只證明報導這樣寫，不證明因果）；有沒有把當天事後配的說法寫得太肯定；「原因不明」是不是其實比列出來的說法更誠實。' },

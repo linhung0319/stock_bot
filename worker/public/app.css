@@ -738,7 +738,7 @@ select option { background: #14162a; }
 .tt-prev { color: var(--ink-2); }
 .prev-fill { margin-top: 10px; padding: 10px 14px; border-left: 2px solid var(--line-hi); }
 @media (min-width: 640px) { .todo-thesis > li { grid-template-columns: minmax(0, 1fr) auto; } }
-/* T56：stock bot 的論點草稿（編輯論點頁右邊「新的」上面）：反方 → 論點 → 前提 → 出場條件 → 來源；每一條左邊一個勾選框，預設不勾 */
+/* T56：stock bot 的論點草稿（編輯論點頁右邊「新的」上面）：反方 → 論點 → 前提 → 出場條件 → 同業。T70 起只顯示（沒有勾選框），最下面是「採用這份草稿」 */
 .thesis-next { min-width: 0; }
 .draft-box .panel-top { margin-bottom: 4px; }
 .dr-run { margin-left: auto; color: var(--ink-2); text-underline-offset: 3px; }
@@ -761,6 +761,16 @@ select option { background: #14162a; }
 .dr-ev-list { display: grid; gap: 8px; }
 .dr-ev-list blockquote { margin: 2px 0 0; padding-left: 10px; border-left: 2px solid var(--line-hi); color: var(--ink-2); overflow-wrap: anywhere; }
 .dr-plain { display: grid; gap: 4px; margin: 4px 0 0 1.2em; list-style: disc; }
+/* T70：草稿只顯示；按鈕旁那一行；採用前的對照（哪幾條會被換掉）；採用後持股頁的那一塊 */
+.dr-item.dr-show { grid-template-columns: minmax(0, 1fr); }
+.tone-ok { color: var(--ink-2); }
+.adopt-bar { display: grid; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line-2); }
+.adopt-hint { color: var(--ink-2); overflow-wrap: anywhere; }
+.adopt-cmp { display: grid; gap: 6px; margin-top: 12px; padding: 10px 14px; border-left: 2px solid var(--line-hi); }
+.adopt-h { margin-top: 4px; color: var(--ink-3); }
+.adopt-list li { display: block; overflow-wrap: anywhere; }
+.adopt-flash p { overflow-wrap: anywhere; }
+.adopt-flash p + p { margin-top: 4px; }
 /* 審查提到、你的前提沒有涵蓋的事（T63）：一件一塊，下面是依據、引用與兩個按鈕 */
 .risk-list { display: grid; margin-top: 6px; }
 .risk-item { padding: 12px 0; border-top: 1px solid var(--line-2); }

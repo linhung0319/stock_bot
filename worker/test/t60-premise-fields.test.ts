@@ -22,7 +22,7 @@ import { runFlow } from '../src/app/flow';
 import { LINE_PUSH_URL } from '../src/app/line';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
 import { startOwnReview } from '../src/app/ownAi';
-import { draftPremiseFields, draftSave, type DraftView } from '../src/app/ownDraft';
+import { draftAdoptPlan, draftPremiseFields } from '../src/app/ownDraft';
 import { STALE_DAYS, UNVERIFIED_AFTER, UNVERIFIED_TEXT, externalNeeds, filePremises, newEvidence, ownAttention, unverifiedStreak, type ThesisFile, type ThesisPremise, type ThesisReview } from '../src/app/thesis';
 import type { HoldingDetail } from '../src/app/site/views';
 import { XBRL_METRICS, type CompanyFacts, type QuarterRow, type XbrlFact } from '../src/data/edgar';
@@ -380,15 +380,15 @@ describe('T60 子句能不能用財報表比對（src/ai/xbrlClause.ts）', () =
 
 // ---------------------------------------------------------------- 存檔時怎麼用草稿（draftSave；新舊兩種草稿）
 
-describe('T60 勾了草稿的前提：三個欄位照草稿的，送了就用送的；T55 的舊草稿照樣讀', () => {
+// T70 改（confirm_audit_design §2）：逐條勾選換成整份採用（draftSave → draftAdoptPlan）；右邊改過的用改過的那一半不再有
+describe('T60 採用草稿的前提：三個欄位照草稿的；T55 的舊草稿照樣讀', () => {
   const okDraft = (run(good()) as { draft: OwnDraft }).draft;
-  const viewOf = (d: OwnDraft): DraftView => ({ id: 9, runId: 'd60', trigger: 'MANUAL', createdAt: '2026-11-21T01:00:00Z', at: '2026-11-21T01:10:00Z', until: '2026-12-21', basedOn: 1, version: 1, stale: false, broken: null, payload: d });
-  it('原樣勾選：怎樣算證實、子句、怎麼驗證都帶上；信念帶 verify NONE；右邊改過的用改過的', () => {
-    const r = draftSave(viewOf(okDraft), { thesis: '', thesisPressed: false, premises: [{ id: null, text: okDraft.premises[0].text, draft: 0 }, { id: null, text: okDraft.premises[2].text, draft: 2 }, { id: null, text: okDraft.premises[1].text, confirmsIf: '我自己的證實', verify: { by: 'FILING', every: 91 }, breaksIf: ['我自己的一句'], draft: 1 }], exits: [], peers: [], domains: [] }, 2);
+  it('原樣採用：怎樣算證實、子句、怎麼驗證都帶上；信念帶 verify NONE', () => {
+    const r = draftAdoptPlan(okDraft, []);
     expect(r.premises).toEqual([
       { id: null, text: okDraft.premises[0].text, origin: 'AI_DRAFT_ACCEPTED', breaksIf: okDraft.premises[0].breaks_if, confirmsIf: okDraft.premises[0].confirms_if, verify: { by: 'WEB', source: 'trendforce.com', every: 90 } },
+      { id: null, text: okDraft.premises[1].text, origin: 'AI_DRAFT_ACCEPTED', ...draftPremiseFields(okDraft.premises[1]) },
       { id: null, text: okDraft.premises[2].text, origin: 'AI_DRAFT_ACCEPTED', breaksIf: okDraft.premises[2].breaks_if, confirmsIf: '', verify: { by: 'NONE' } },
-      { id: null, text: okDraft.premises[1].text, origin: 'AI_DRAFT_ACCEPTED', breaksIf: ['我自己的一句'], confirmsIf: '我自己的證實', verify: { by: 'FILING', every: 91 } },
     ]);
   });
   it('T55 的舊草稿（breaks_if 一段字、checkable_by、source_hint）：一段字當成一句、checkable_by 當成怎麼查', () => {

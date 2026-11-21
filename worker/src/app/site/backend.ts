@@ -25,7 +25,7 @@ import { loadSnapshot, type MacroSnapshot } from '../crashAi';
 import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
 import { loadReviews, loadVetoReviews, type MomReview } from '../momAi';
 import { loadStrategyState } from '../strategyAi';
-import { acceptOwnConditions, confirmDropAll, exitSetOf, monitorView, ownCheckView, resendOwnCheck, rewriteView, startOwnCheck, type ConfirmResult, type ExitSetRef, type OwnCheckView, type RewriteView } from '../ownCheckAi';
+import { acceptOwnConditions, adoptDraftExits, confirmDropAll, exitSetOf, monitorView, ownCheckView, resendOwnCheck, rewriteView, startOwnCheck, type ConfirmResult, type ExitSetRef, type OwnCheckView, type RewriteView } from '../ownCheckAi';
 import type { ExitLine } from '../../ai/ownCheck';
 import type { DiscussionMode } from '../../ai/discussion';
 import { realDiscussion } from '../discussion';
@@ -113,8 +113,10 @@ export interface SiteAi {
   readyDraft(ticker: string, acct: Account): Promise<DraftView | null>;
   /** 存檔時用到的那一份草稿（T56；這檔的，是不是這份論點檔的由存檔那邊對）。 */
   draftForSave(ticker: string, id: number): Promise<DraftRow | null>;
-  /** 存檔用了草稿 → USED（T56）。 */
+  /** 採用了草稿 → USED（T56；T70 起是整份採用）。 */
   markDraftUsed(ticker: string, use: DraftUse): Promise<boolean>;
+  /** 採用草稿時，草稿的出場條件直接寫進條件、撤下草稿沒有的、改沿用那幾條的動作（T70，confirm_audit_design §2.2）。 */
+  adoptExits(ticker: string, inp: Parameters<typeof adoptDraftExits>[2]): Promise<ConfirmResult>;
   /** 「不用這份草稿」→ DISMISSED（T56）。 */
   dismissDraft(ticker: string, id: number): Promise<boolean>;
   /** 重送最近一次出場條件有改動的那一版（T42；version 不是最新的 → StaleExitsError）。 */
@@ -289,6 +291,7 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       readyDraft: (ticker, acct) => readyDraft(env.DB, acct, ticker),
       draftForSave: (ticker, id) => draftForSave(env.DB, ticker, id),
       markDraftUsed: (ticker, use) => markDraftUsed(env.DB, ticker, use, now),
+      adoptExits: async (ticker, inp) => adoptDraftExits(env, ticker, inp, now, lastCompletedSession(now, await loadCalendarOverrides(env.DB))),
       dismissDraft: (ticker, id) => dismissDraft(env.DB, ticker, id, now),
       async resendExits(ticker, version) {
         const d = await self.load([ticker]);

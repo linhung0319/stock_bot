@@ -1,7 +1,8 @@
 // 網站的 API（T8）。/api/* 是真實帳本，/demo/api/* 是示範資料；兩邊是同一組端點。
 // 每個會改帳戶的端點都是：讀帳戶與市場 → 呼叫引擎的純函式 → 替新通知寫下理由 → 存檔。
-import { DraftError, draftSave, draftUsed, draftViewOf, type DraftPremiseIn, type DraftUse } from '../ownDraft';
-import { DRAFT_LIMITS } from '../../ai/ownDraft';
+import { DraftError, adoptPeers, draftAdoptPlan, draftViewOf, peerSkipText, type AdoptPlan, type DraftRow, type DraftUse } from '../ownDraft';
+import { DRAFT_LIMITS, type OwnDraft } from '../../ai/ownDraft';
+import type { AdoptCondition } from '../ownCheckAi';
 import {
   SLOW,
   SYSTEM_DEFAULT_PREMISES,
@@ -43,6 +44,8 @@ import {
   type MarketView,
   type Notif,
   type OwnWebSources,
+  type WebSourceCheck,
+  premiseKey,
   type Premise,
   type PremiseInput,
   type PremiseVerify,
@@ -442,6 +445,14 @@ async function dismissRisk(backend: SiteBackend, b: Record<string, unknown>): Pr
   return json({ ok: true, days: RISK_SEEN_DAYS });
 }
 
+/** 採用草稿（T70）時帶進 saveThesis 的：那一列草稿、怎麼存（前提、出場條件）、同業怎麼存與核對的結果。 */
+interface AdoptIn {
+  row: DraftRow;
+  plan: AdoptPlan;
+  peers: ReturnType<typeof adoptPeers>;
+  checks: WebSourceCheck[] | null;
+}
+
 /**
  * POST /api/ops/own-thesis：{ ticker, thesis, premises: [{ id?, text }], exitConditions: [{ text, action }], source, replyTo?, dry? }
  *   1. 論點與前提立刻存進帳戶狀態（version 加 1），log 寫 THESIS
@@ -456,26 +467,28 @@ async function dismissRisk(backend: SiteBackend, b: Record<string, unknown>): Pr
  * replyTo：這是對乙類通知 #N 的回應（修正論點，own_thesis §1.10）：那一項結案、afterBreak 加 1、log 寫 RESPONSE（REVISE）；
  *   新的前提原封不動留著被判不成立的那一條 → 當成不同意（DISAGREE，進靜默期）；同一個編號但字改了 → REVISE，不進靜默期（T46）。
  *   通知已經回覆過、或不是這檔的乙類 → 409。
+ * adopt（T70，confirm_audit_design §2；只有 POST /api/ops/own-draft/adopt 會帶）：整份照 stock bot 的草稿存——
+ *   論點本文（來源 DRAFT）、全部前提（keep_id 沿用；其他記 AI_DRAFT_ACCEPTED）、同業（EDGAR 對得到的）；送來的論點、前提、出場條件不看。
+ *   出場條件：直接寫進條件（不送改寫、不到持股頁確認）；字和監測中的一樣的沿用；草稿沒有的撤下；
+ *   舊格式草稿裡監測不了的（事件條件沒有確認來源）才送改寫。草稿標 USED；前提剛被判不成立之後寫的草稿算一次「失效後修改」。
+ * T70：逐條勾選的草稿（body 帶 draft）拿掉了；舊的頁面送來 → 409，請重新整理。
  */
-async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
+async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adopt: AdoptIn | null = null): Promise<Response> {
   const tk = ticker(b.ticker);
-  const thesisText = text(b.thesis, '論點', THESIS_LIMITS.thesis, false);
-  const rawPs = Array.isArray(b.premises) ? b.premises : [];
+  if (!adopt && b.draft !== undefined && b.draft !== null) throw new SiteError(409, backend.ai ? '草稿現在是整份採用：重新整理頁面，在草稿那一塊按「採用這份草稿」。' : '示範模式沒有草稿。');
+  const dp = adopt ? (JSON.parse(adopt.row.payload ?? 'null') as OwnDraft) : null;
+  const thesisText = dp ? dp.thesis.trim().slice(0, THESIS_LIMITS.thesis) : text(b.thesis, '論點', THESIS_LIMITS.thesis, false);
+  const rawPs = adopt ? [] : Array.isArray(b.premises) ? b.premises : [];
   if (rawPs.length > THESIS_LIMITS.premises) throw new SiteError(422, `前提最多 ${THESIS_LIMITS.premises} 條`);
-  // T56：從草稿勾來的前提帶 draft（草稿的第幾條）；右邊有「怎樣算不成立」欄位的帶 breaksIf
   // T60：breaksIf 可以是最多 3 句的陣列（一段字當成一句），另外帶 confirmsIf（怎樣算證實）與 verify（怎麼驗證；by = NONE 是信念）
-  const idx = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 20 ? v : null);
-  const premisesIn: DraftPremiseIn[] = rawPs
-    .map((p, k) => {
-      const o = (p ?? {}) as Record<string, unknown>;
-      return {
-        id: typeof o.id === 'string' && /^P\d{1,4}$/.test(o.id) ? o.id : null,
-        text: text(o.text, '前提', THESIS_LIMITS.premise, false),
-        ...premiseFieldsOf(o, k),
-        draft: idx(o.draft),
-      };
-    })
-    .filter((p) => p.text);
+  const premisesIn: PremiseInput[] = adopt
+    ? adopt.plan.premises
+    : rawPs
+        .map((p, k) => {
+          const o = (p ?? {}) as Record<string, unknown>;
+          return { id: typeof o.id === 'string' && /^P\d{1,4}$/.test(o.id) ? o.id : null, text: text(o.text, '前提', THESIS_LIMITS.premise, false), ...premiseFieldsOf(o, k) };
+        })
+        .filter((p) => p.text);
   // T63（composite_layer_design §3）：從「審查提到的前提以外的風險」帶進右欄的前提帶 risk（哪一次執行的第幾條）；
   // 存檔後那幾件記成已經帶進論點（ADOPTED），180 天內同一件事不再列進「要看的事」
   const riskRefs = rawPs
@@ -483,23 +496,26 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     .filter((o) => String(o.text ?? '').trim())
     .map((o) => riskRefOf(o.risk))
     .filter((x): x is { runId: string; k: number } => !!x);
-  const exitsIn = exitsOf(b.exitConditions);
-  const exitDrafts = (Array.isArray(b.exitConditions) ? b.exitConditions : []).map((x) => (String((x as Record<string, unknown>)?.text ?? '').trim() ? idx((x as Record<string, unknown>)?.draft) : null)).filter((k): k is number => k !== null);
-  const source0 = b.source === 'DISCUSSION' ? 'DISCUSSION' : 'TYPED';
-  // stock bot 的草稿（T56，web_evidence_design §2.3）：{ id, thesis（按了「用這段」）, peers, domains（勾了的同業與網站，草稿裡的第幾項） }
-  const dIn = b.draft && typeof b.draft === 'object' ? (b.draft as Record<string, unknown>) : null;
-  const ids = (v: unknown) => (Array.isArray(v) ? v.map(idx).filter((k): k is number => k !== null) : []);
-  const draftRow = dIn && Number.isInteger(dIn.id) && backend.ai ? await backend.ai.draftForSave(tk, Number(dIn.id)) : null;
-  if (dIn && !draftRow) throw new SiteError(409, backend.ai ? '找不到這份草稿（可能已經換了一份論點檔），重新整理再勾一次' : '示範模式沒有草稿。');
+  const exitsIn = adopt ? [] : exitsOf(b.exitConditions);
+  const source0 = adopt ? 'DRAFT' : b.source === 'DISCUSSION' ? 'DISCUSSION' : 'TYPED';
   const replyTo = b.replyTo === undefined || b.replyTo === null || b.replyTo === '' ? null : Number(b.replyTo);
   const dry = b.dry === true;
-  // 網頁證據的來源（T52）：有送才改；真的存檔前先試抓（示範模式不對外連線）
-  const wsIn = b.webSources === undefined ? undefined : sourcesOf(b.webSources, tk);
-  const wsChecked = wsIn && !dry ? { at: new Date().toISOString(), items: backend.probeSources ? await backend.probeSources(wsIn) : demoProbe(wsIn) } : null;
+  // 網頁證據的來源（T52）：有送才改；真的存檔前先試抓（示範模式不對外連線）。採用草稿（T70）：草稿的同業，核對過的才存
+  const wsIn = adopt || b.webSources === undefined ? undefined : sourcesOf(b.webSources, tk);
+  const wsChecked = adopt ? (adopt.checks ? { at: new Date().toISOString(), items: adopt.checks } : null) : wsIn && !dry ? { at: new Date().toISOString(), items: backend.probeSources ? await backend.probeSources(wsIn) : demoProbe(wsIn) } : null;
   // 出場條件整組取代（T42）：和監測中的比，有沒有改動
   const live = await liveConditions(backend, tk);
   const plan = planExits(exitsIn, live);
-  const exits: ExitLine[] = plan.changed ? exitsIn : [];
+  // 採用草稿（T70）：出場條件直接寫進條件，只有監測不了格式的才送改寫；字和監測中的一樣的沿用，動作不同的直接改
+  const ap = adopt?.plan ?? null;
+  const exitsChanged = ap ? ap.add.length + ap.rewrite.length + ap.retire.length > 0 : plan.changed;
+  const exits: ExitLine[] = ap ? ap.rewrite.map((x) => ({ text: x.text, action: x.action })) : plan.changed ? exitsIn : [];
+  const actionChanged: { id: number; text: string; action: CondAction; was: CondAction | null }[] = ap
+    ? ap.keep.flatMap((k) => (k.was && k.was !== k.action ? [{ id: k.id, text: k.text, action: k.action, was: k.was }] : []))
+    : plan.changed
+      ? []
+      : plan.actionChanged.map((a) => ({ id: a.id, text: a.text, action: a.action, was: a.was }));
+  const sameByText: Record<string, number> = ap ? {} : Object.fromEntries(Object.entries(plan.sameByText).map(([k, id]) => [`U${Number(k) + 1}`, id]));
   // 之前那一版存的出場條件改動還沒確認（這次有改動的話，那一版的改寫結果就不再列）
   const prevSet = backend.ai ? await backend.ai.exitSet(tk) : null;
   const pendingVersion = prevSet && !prevSet.confirmed ? prevSet.version : null;
@@ -507,7 +523,10 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
   const openNow = riskRefs.length && backend.ai ? await openRisksOf(backend, tk) : [];
   const adopted = riskRefs.map((ref) => openNow.find((r) => r.runId === ref.runId && r.k === ref.k)).filter((r): r is RiskView => !!r);
   let savedVersion = 0;
-  const r = await mutate(backend, `${tk} 編輯論點`, [], (d) => {
+  // 採用草稿（T70）：存好之後要寫進條件的那幾條（帶存檔後對應的前提編號）、用了什麼
+  let adoptAdd: AdoptCondition[] = [];
+  let adoptUse: DraftUse | null = null;
+  const r = await mutate(backend, adopt ? `${tk} 採用草稿` : `${tk} 編輯論點`, [], (d) => {
     if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
     // 對乙類通知的回應（修正論點，own_thesis §1.10）：那則通知要還沒回覆、而且有這檔的乙類項目
     if (replyTo !== null) {
@@ -516,27 +535,27 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     }
     // 這檔有還沒回覆、帶「AI 建議出清」那一行的慢規則通知時存論點：一樣算「失效後修改」（§3.4；通知本身仍要回去選一項）
     const ruleExit = !dry && d.acct.notifs.some((n) => n.status === 'PENDING' && n.items.some((i) => i.ticker === tk && !i.cancelled && i.brk?.type === 'B' && !!i.brk.withRule));
-    // 草稿（T56）：要是這份論點檔的；前提的來源與「怎樣算不成立」、論點的來源、用了哪些、這份草稿是在前提被判不成立之後寫的 → 算一次「失效後修改」
-    const dView = draftRow ? draftViewOf(draftRow, d.acct, tk) : null;
-    if (draftRow && (!dView || (draftRow.file_id ?? null) !== (d.acct.own[tk].fileId ?? null))) throw new SiteError(409, '這份草稿是上一份論點檔的（賣光又買回之前），不能用在這一份。重新整理看看');
-    const ds = dView ? draftSave(dView, { thesis: thesisText, thesisPressed: dIn?.thesis === true, premises: premisesIn, exits: exitDrafts, peers: ids(dIn?.peers), domains: ids(dIn?.domains), webSources: wsIn }, (d.acct.own[tk].thesis?.version ?? 0) + 1) : null;
-    const premises: PremiseInput[] = ds
-      ? ds.premises
-      : premisesIn.map((p) => ({ id: p.id, text: p.text, ...(p.breaksIf !== undefined ? { breaksIf: p.breaksIf } : {}), ...(p.confirmsIf !== undefined ? { confirmsIf: p.confirmsIf } : {}), ...(p.verify !== undefined ? { verify: p.verify } : {}) }));
-    const source = ds?.source ?? source0;
-    const draftBreak = !!ds?.use.afterBreak;
+    // 草稿（T56／T70）：要是這份論點檔的；這份草稿是在前提被判不成立之後寫的 → 採用算一次「失效後修改」
+    const dView = adopt ? draftViewOf(adopt.row, d.acct, tk) : null;
+    if (adopt && (!dView || (adopt.row.file_id ?? null) !== (d.acct.own[tk].fileId ?? null))) throw new SiteError(409, '這份草稿是上一份論點檔的（賣光又買回之前），不能用在這一份。重新整理看看');
+    const draftBreak = !!dView?.broken;
     let out: ReturnType<typeof setThesis>;
     try {
-      out = setThesis(d.acct, tk, { text: thesisText, source, premises, date: d.view.date, afterBreak: replyTo !== null || ruleExit || (draftBreak && !dry) });
+      out = setThesis(d.acct, tk, { text: thesisText, source: source0, premises: premisesIn, date: d.view.date, afterBreak: replyTo !== null || ruleExit || (draftBreak && !dry) });
     } catch (e) {
       throw new SiteError(422, errText(e));
     }
+    // 前提剛被判不成立之後寫的草稿不能沿用那一條（§2.4 第 6 點；keep_id 在草稿檢查時就擋了，這裡擋字一模一樣、被對回那一條的）
+    const brokenId = dView?.broken?.premiseId ?? null;
+    if (brokenId && out.mapping.kept.includes(brokenId)) throw new SiteError(422, `草稿裡有一條和剛被判不成立的 ${brokenId} 一字不差，採用會把 ${brokenId} 留下來，這份草稿不能採用。按「不用這份草稿」，或在「新的」自己改寫。`);
     // 通知結案；新的前提原封不動留著那一條 → 當成不同意（靜默期）；同一個編號但字改了 → 照修正論點，不進靜默期（T46）
     const rv = replyTo !== null && !dry ? reviseBreak(out.acct, d.view, replyTo, tk, out.mapping.edited.map((e) => e.id)) : null;
     if (rv?.ok) out = { ...out, acct: rv.acct };
     const wsBefore = out.acct.own[tk].webSources ?? null;
-    const wsChanged = wsIn !== undefined && !sameWebSources(wsBefore, wsIn);
-    if (wsIn !== undefined) out.acct.own[tk].webSources = wsIn ? { ...wsIn, checked: wsChecked } : null;
+    // 採用草稿（T70，§2.3）：同業整組換成草稿的（EDGAR 對得到的才存）；之前存的網站（T68 起不讀）原樣留著
+    const wsNew: OwnWebSources | null | undefined = adopt ? (adopt.peers.save.length || wsBefore?.domains.length ? { peers: adopt.peers.save, domains: wsBefore?.domains ?? [] } : null) : wsIn;
+    const wsChanged = wsNew !== undefined && !sameWebSources(wsBefore, wsNew);
+    if (wsNew !== undefined && (!adopt || wsChanged)) out.acct.own[tk].webSources = wsNew ? { ...wsNew, checked: wsChecked } : null;
     if (adopted.length) out.acct.own[tk].riskSeen = withRiskSeen(out.acct.own[tk].riskSeen, adopted.map((r) => ({ text: r.text, at: d.view.date, runId: r.runId, k: r.k, outcome: 'ADOPTED' as const })), d.view.date);
     const meta = out.acct.own[tk];
     // 信念（T60）在 log 標出來：之後回頭看得到哪幾條當時是使用者選擇相信、不進審查的
@@ -544,9 +563,17 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     const mine = meta.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT');
     const version = meta.thesis!.version;
     savedVersion = version;
+    let use: DraftUse | null = null;
+    if (adopt && dp) {
+      // 草稿的第幾條前提 → 存檔後的編號（出場條件的 premise_index 用）
+      const idOf = (k: number | null) => (k !== null && dp.premises[k] ? (meta.premises.find((p) => premiseKey(p.text) === premiseKey(dp.premises[k].text))?.id ?? null) : null);
+      adoptAdd = adopt.plan.add.map((x) => ({ ticker: tk, runId: adopt.row.run_id, condId: `D${x.k + 1}`, direction: 'DOWN' as const, kind: x.kind, text: x.text, check: x.check, tierIfMet: x.action === 'REVIEW' ? null : x.action, manual: false, action: x.action, premiseId: idOf(x.premiseIndex) }));
+      use = { id: adopt.row.id, runId: adopt.row.run_id, version, thesis: 'SAME', premises: { same: out.mapping.added.length, edited: 0, kept: out.mapping.kept.length }, exits: adopt.plan.add.length, exitsKept: adopt.plan.keep.length, exitsRewrite: adopt.plan.rewrite.length, peers: adopt.peers.save.length, peersSkipped: adopt.peers.skip, afterBreak: draftBreak };
+      adoptUse = use;
+    }
     const result = {
       preview: {
-        // origin（T56）：新的一條是你寫的（USER）還是原樣勾選的草稿（AI_DRAFT_ACCEPTED）
+        // origin（T56）：新的一條是你寫的（USER）還是原樣採用的草稿（AI_DRAFT_ACCEPTED）
         kept: out.mapping.premises.filter((p) => out.mapping.kept.includes(p.id)).map((p) => ({ id: p.id, text: p.text, origin: p.origin })),
         added: out.mapping.premises.filter((p) => out.mapping.added.includes(p.id)).map((p) => ({ id: p.id, text: p.text, origin: p.origin })),
         retired: out.mapping.retired.map((p) => ({ id: p.id, text: p.text, origin: p.origin })),
@@ -562,19 +589,38 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
         // 前提有變動、但 30 天內已經開過論點變動後的審查（T45，T41 第 9 條）：上次開的日子；隔天不會再審，留到月底檢查點
         reviewHeld: out.changed ? thesisReviewHeld(d.acct.own[tk], nextTradingDay(d.view.date)) : null,
         version,
-        // 出場條件（T42）：有沒有改動、監測中幾條、只改動作的（沒改動時直接改）、之前還沒確認的那一版
+        // 出場條件（T42）：有沒有改動、監測中幾條、只改動作的（沒改動時直接改；採用草稿時沿用的那幾條直接改）、之前還沒確認的那一版
         exits: {
-          changed: plan.changed,
+          changed: exitsChanged,
           live: live.length,
-          actionChanged: plan.changed ? [] : plan.actionChanged.map((a) => ({ id: a.id, text: a.text, action: a.action, was: a.was })),
-          pendingVersion: plan.changed ? pendingVersion : null,
+          actionChanged,
+          pendingVersion: exitsChanged ? pendingVersion : null,
         },
         // 網頁證據的來源（T52）：有沒有改動；存檔時試抓的結果（預覽沒有試抓）
-        sources: { sent: wsIn !== undefined, changed: wsChanged, cleared: wsIn === null && !!wsBefore, checked: wsChecked?.items ?? null },
-        // stock bot 的草稿（T56）：用了哪些、沒勾的幾條（一條都沒用 → 草稿照舊等你看）、算不算一次「失效後修改」（第幾次）、草稿現在的狀態
-        draft: ds && dView
-          ? { ...ds.use, used: draftUsed(ds.use), status: draftRow!.status, stale: dView.stale, basedOn: dView.basedOn, brokenOpen: !!dView.broken?.open, premiseId: dView.broken?.premiseId ?? null, afterBreakNo: draftBreak ? (d.acct.own[tk].thesis?.afterBreak ?? 0) + 1 : null }
-          : null,
+        sources: { sent: wsNew !== undefined, changed: wsChanged, cleared: wsNew === null && !!wsBefore, checked: wsChecked?.items ?? null },
+        // 採用 stock bot 的草稿（T70）：用了什麼、算不算一次「失效後修改」（第幾次）、採用前的對照
+        draft:
+          adopt && dView && use
+            ? {
+                ...use,
+                status: adopt.row.status,
+                stale: dView.stale,
+                basedOn: dView.basedOn,
+                brokenOpen: !!dView.broken?.open,
+                premiseId: brokenId,
+                afterBreakNo: draftBreak ? (d.acct.own[tk].thesis?.afterBreak ?? 0) + 1 : null,
+                // 對照（§2.1）：現在有論點、你的前提、監測中的條件或同業 → 採用前先給你看哪幾條會被換掉
+                differs: !!out.before.text || out.before.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT') || live.length > 0 || !!wsBefore?.peers.length,
+                thesisBefore: out.before.text,
+                exitPlan: {
+                  add: adopt.plan.add.map((x) => ({ text: x.text, action: x.action, kind: x.kind, status: x.status })),
+                  keep: adopt.plan.keep.map((x) => ({ id: x.id, text: x.text, action: x.action, was: x.was })),
+                  retire: adopt.plan.retire.map((c) => ({ id: c.id, text: c.text })),
+                  rewrite: adopt.plan.rewrite.map((x) => ({ text: x.text, action: x.action, why: x.why })),
+                },
+                peerPlan: { save: adopt.peers.save, skip: adopt.peers.skip.map(peerSkipText), before: wsBefore?.peers ?? [] },
+              }
+            : null,
         // 從審查提到的風險帶進來的（T63）：存檔後這幾件不再列進「要看的事」
         risks: adopted.map((r) => ({ runId: r.runId, k: r.k, text: r.text })),
       },
@@ -588,22 +634,24 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
             kind: 'THESIS',
             body: {
               version,
-              source,
+              source: source0,
               before: { text: out.before.text, premises: brief(out.before.premises) },
               after: { text: meta.thesis!.text, premises: brief(meta.premises) },
               retired: out.mapping.retired.map((p) => p.id),
               afterBreak: !!rv?.ok || ruleExit || draftBreak,
               replyTo,
-              // 用了 stock bot 的草稿（T56）：哪一份、用了哪些
-              ...(ds && draftUsed(ds.use) ? { draft: ds.use } : {}),
+              // 採用了 stock bot 的草稿（T70）：哪一份、用了什麼
+              ...(use ? { draft: use } : {}),
               // 出場條件（T42）：有改動 → 這一版要的全部出場條件（空的 = 全部拿掉）、存檔時監測中的條件、文字相同的；沒改動 → 空的
-              exitsChanged: plan.changed,
+              // 採用草稿（T70）：exitLines 只有要送改寫的那幾條；其他直接寫進條件（exitsAdopted），不用確認時再撤下什麼（exitsLive 空的）
+              exitsChanged,
               exitLines: exits.map((e) => e.text),
               exitActions: exits.map((e) => e.action),
-              ...(plan.changed ? { exitsLive: live.map((c) => c.id), exitSame: Object.fromEntries(Object.entries(plan.sameByText).map(([k, id]) => [`U${Number(k) + 1}`, id])) } : {}),
-              ...(!plan.changed && plan.actionChanged.length ? { exitActionChanged: plan.actionChanged.map((a) => a.id) } : {}),
+              ...(exitsChanged ? { exitsLive: ap ? [] : live.map((c) => c.id), exitSame: sameByText } : {}),
+              ...(ap && exitsChanged ? { exitsAdopted: { add: ap.add.map((x) => x.text), keep: ap.keep.map((x) => x.id), retire: ap.retire.map((c) => c.id) } } : {}),
+              ...(!ap && !exitsChanged && actionChanged.length ? { exitActionChanged: actionChanged.map((a) => a.id) } : {}),
               ...(out.silenceEnded.length ? { silenceEnded: out.silenceEnded } : {}),
-              ...(wsChanged ? { webSources: wsIn ? { peers: wsIn.peers, domains: wsIn.domains } : null } : {}),
+              ...(wsChanged ? { webSources: wsNew ? { peers: wsNew.peers, domains: wsNew.domains } : null } : {}),
             },
           },
           // 乙類的回應：修正論點（REVISE）；原封不動保留了那條前提 → 當成不同意（DISAGREE，理由固定）
@@ -616,13 +664,22 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     return { acct: out.acct, dry, result: { ...result, revised: rv?.ok ? { notif: replyTo, kept: rv.kept, premiseId: rv.premiseId } : null, revisedName: rv?.ok && rn ? notifName(rn) : null }, log };
   });
   if (dry) return json({ ok: true, ...r.result });
-  // 用了草稿 → USED（T56）；一條都沒用的照舊等你看。和帳戶不是同一筆，沒改成也不影響已經存好的論點
-  const dr = (r.result.preview as { draft?: (DraftUse & { used: boolean }) | null } | undefined)?.draft;
-  if (dr?.used && backend.ai) await backend.ai.markDraftUsed(tk, dr).catch((e) => console.error('草稿標成用過', e));
-  // 出場條件沒改動、只有成立時的動作不同：直接改動作（沿用 T40 的 ACTION_CHANGED）
-  const conds: { actionChanged: number[]; errors: string[] } = { actionChanged: [], errors: [] };
-  if (backend.ai && !plan.changed) {
-    for (const k of plan.actionChanged) {
+  // 採用草稿（T70）另外帶 added、retired（寫進條件幾條、撤下哪幾條）
+  const conds: { actionChanged: number[]; errors: string[]; added?: number; retired?: number[] } = adopt ? { actionChanged: [], retired: [], added: 0, errors: [] } : { actionChanged: [], errors: [] };
+  const version = savedVersion;
+  if (adopt && adoptUse && backend.ai) {
+    // 採用草稿（T70，§2.2）：出場條件直接寫進條件、撤下草稿沒有的、沿用的那幾條改動作；沒有要送改寫的 → 這一版不用再確認
+    try {
+      const res = await backend.ai.adoptExits(tk, { runId: adopt.row.run_id, version, add: adoptAdd, actionChanges: actionChanged.map((a) => ({ id: a.id, action: a.action })), retire: adopt.plan.retire.map((c) => c.id), confirm: exitsChanged && !exits.length });
+      Object.assign(conds, { actionChanged: res.actionChanged, retired: res.retired, added: res.added });
+    } catch (e) {
+      conds.errors.push(`草稿的出場條件沒有寫進去：${errText(e)}。論點與前提已經存好，可以在編輯論點頁重新存一次出場條件。`);
+    }
+    // 草稿 → USED。和帳戶不是同一筆，沒改成也不影響已經存好的論點
+    await backend.ai.markDraftUsed(tk, adoptUse).catch((e) => console.error('草稿標成用過', e));
+  } else if (backend.ai && !plan.changed) {
+    // 出場條件沒改動、只有成立時的動作不同：直接改動作（沿用 T40 的 ACTION_CHANGED）
+    for (const k of actionChanged) {
       try {
         await backend.ai.condition(tk, k.id, 'action', k.action);
         conds.actionChanged.push(k.id);
@@ -632,19 +689,45 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     }
   }
   // 出場條件有改動：整組連同監測中的條件送去改寫；失敗要明白告訴使用者（N9），之後持股頁也會一直提示到重送為止
+  // 採用草稿（T70）：只送監測不了格式的那幾條（舊草稿的事件條件沒有確認來源），其他已經直接寫進條件
   let rewrite: { status: 'SENT' | 'FAILED' | 'NONE'; runId?: string; error?: string } = { status: 'NONE' };
-  const version = savedVersion;
   if (exits.length) {
     if (!backend.ai) rewrite = { status: 'FAILED', error: '示範模式沒有真的 AI，出場條件沒有送去改寫。' };
     else
       try {
-        const sameByText = Object.fromEntries(Object.entries(plan.sameByText).map(([k, id]) => [`U${Number(k) + 1}`, id]));
-        rewrite = { status: 'SENT', runId: (await backend.ai.ownCheck(tk, exits, { version, live: live.map((c) => c.id), sameByText })).runId };
+        rewrite = { status: 'SENT', runId: (await backend.ai.ownCheck(tk, exits, { version, live: ap ? [] : live.map((c) => c.id), sameByText })).runId };
       } catch (e) {
         rewrite = { status: 'FAILED', error: errText(e) };
       }
   }
-  return json({ ok: true, ...r.result, rewrite, exits, conds });
+  return json({ ok: true, ...r.result, rewrite, exits, conds, ...(adopt ? { peersSkipped: adopt.peers.skip.map(peerSkipText) } : {}) });
+}
+
+/**
+ * POST /api/ops/own-draft/adopt：{ ticker, id, dry?, replyTo? } → 整份採用 stock bot 的草稿（T70，confirm_audit_design §2）。
+ *   只有還在等你看的（READY）、這份論點檔的草稿可以採用（其他 → 409）。存檔照 saveThesis（帶 adopt）。
+ *   同業：有 EDGAR 代號的先核對對得到 CIK（預覽也核對，對照裡才看得到哪幾家不會存）；對不到的不存，結果寫一行原因。
+ *   dry：只回對照（哪幾條前提會被換掉、沿用哪幾條；出場條件會新增、沿用、撤下、送改寫的；同業），不存。
+ *   replyTo：同 own-thesis（這是對乙類通知的回應：修正論點）。
+ */
+async function adoptDraft(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
+  if (!backend.ai) throw new SiteError(400, '示範模式沒有草稿。');
+  const tk = ticker(b.ticker);
+  const id = Number(b.id);
+  if (!Number.isInteger(id)) throw new SiteError(422, '沒有指定是哪一份草稿');
+  const row = await backend.ai.draftForSave(tk, id);
+  if (!row) throw new SiteError(409, '找不到這份草稿（可能已經換了一份論點檔），重新整理看看');
+  const gone: Record<string, string> = { USED: '採用過了', DISMISSED: '標成不用了', EXPIRED: '過期了（30 天沒處理，或之後有新的草稿）' };
+  if (row.status !== 'READY') throw new SiteError(409, `這份草稿${gone[row.status] ?? '不在等你看的狀態'}，重新整理看看`);
+  const d = ready(await backend.load());
+  if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
+  const view = draftViewOf(row, d.acct, tk);
+  if (!view) throw new SiteError(409, '這份草稿讀不出來，重新整理看看');
+  const plan = draftAdoptPlan(view.payload, await liveConditions(backend, tk));
+  const peers = view.payload.sources?.peers ?? [];
+  const ws: OwnWebSources = { peers: peers.map((p) => ({ name: p.name, ...(p.edgar ? { edgar: p.edgar } : {}), ...(p.yahoo ? { yahoo: p.yahoo } : {}) })), domains: [] };
+  const checks = peers.some((p) => p.edgar) ? (backend.probeSources ? await backend.probeSources(ws) : demoProbe(ws)) : null;
+  return saveThesis(backend, { ticker: tk, replyTo: b.replyTo, dry: b.dry === true }, { row, plan, peers: adoptPeers(peers, checks), checks });
 }
 
 // ---------------------------------------------------------------- 路由
@@ -788,6 +871,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     return json({ draft: await backend.ai.readyDraft(tk, d.acct), state: d.drafts?.[tk] ?? null });
   }
   // 「不用這份草稿」（T56）：{ ticker, id } → DISMISSED。已經用過、不用、過期的 → 409
+  // 整份採用這份草稿（T70，confirm_audit_design §2）：{ ticker, id, dry?, replyTo? }
+  if (rest === 'ops/own-draft/adopt' && post) return adoptDraft(backend, await body(req));
   if (rest === 'ops/own-draft/dismiss' && post) {
     if (!backend.ai) throw new SiteError(400, '示範模式沒有草稿。');
     const b = await body(req);

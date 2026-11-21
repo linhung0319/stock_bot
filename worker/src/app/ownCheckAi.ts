@@ -2,6 +2,8 @@
 //   「編輯論點」頁存檔、出場條件有改動時，把使用者要的完整出場條件連同監測中的條件送去改寫與對照（T42：整組取代）
 //   → 持股頁列出最新一版的改寫結果（30 天內）、使用者確認：勾選的新條件開始監測，被取代的與這次沒提到的撤下。
 //   使用者確認的出場條件 → own_conditions（origin = USER、有勾選時間與成立時的動作，是「你定的條件」；審查換不掉），由 F25 監測。
+// T70（confirm_audit_design §2.2）：採用 stock bot 的草稿時，草稿的出場條件直接寫進條件（adoptDraftExits，origin = AI_DRAFT_ACCEPTED），
+//   不走改寫與確認；之後你親手改出場條件的字，照舊走改寫與持股頁確認。
 import type { PackDoc } from '../ai/check';
 import { OWN_CHECK, ownCheckPack, ownCheckResult, type ExitLine, type OwnCheckResult } from '../ai/ownCheck';
 import { newRunId, ownPremises, priceDoc, priceFacts } from '../ai/pack';
@@ -14,7 +16,7 @@ import { loadAccount, thesisLogStmt } from './ledgerStore';
 import { gatherOwnEvidence, insertConditionStmts, routineReady } from './ownAi';
 import { CONC, corr1y } from './concentration';
 import { SUPERSEDABLE, checkCap, supersedeStmts } from './ownConds';
-import { namedWebDomains } from '../ai/ownReview';
+import { namedWebDomains, type ConditionDraft } from '../ai/ownReview';
 import { sourceFacts } from './webEvidence';
 import { loadRatings } from './webRatings';
 import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, REWRITE_DAYS, acceptStatus, condFacts, confirmText, defaultAction, fileConditions, fileKind, fmtMetric, isOwned, latestExitSet, ownerText, progressText, runOfSet, thesisFile, type CondAction, type ExitSet, type FileCondition } from './thesis';
@@ -363,6 +365,47 @@ export async function confirmDropAll(env: Env, ticker: string, version: number, 
   if (fileId) stmts.push(thesisLogStmt(env.DB, { ticker, fileId, session: ses, kind: 'EXITS_CONFIRMED', ref: `v${version}`, body: { runId: null, version, accepted: [], retired: retire.map((c) => c.id), actionChanged: [] } }, null, at));
   if (stmts.length) await env.DB.batch(stmts);
   return { added: 0, retired: retire.map((c) => c.id), actionChanged: [] };
+}
+
+/** 採用草稿時撤下的那一條的說明（T70）。 */
+const adoptRetireNote = (date: string, version: number) => `你在 ${date} 採用 stock bot 的草稿（第 ${version} 版論點）時撤下（草稿的出場條件沒有這一條）`;
+
+/** 採用草稿時寫進條件的一條（ownDraft.ts 的 AdoptExit 換成條件的形狀；premiseId 是存檔後對應的前提編號）。 */
+export type AdoptCondition = ConditionDraft & { action: CondAction; premiseId: string | null };
+
+/**
+ * 採用 stock bot 的草稿時，草稿的出場條件直接寫進條件（T70，confirm_audit_design §2.2）：不送改寫、不到持股頁確認。
+ *   add → own_conditions（origin = AI_DRAFT_ACCEPTED、accepted_at = 採用的時間、成立時的動作照草稿；狀態照確認方式：
+ *         財報門檻與申報確認的事件條件監測中、只有法說會／新聞／網頁的只在審查時檢查、價格只記錄）。log 寫 CONDITION（by DRAFT）。
+ *   actionChanges → 和監測中的一條字一樣、沿用那一條，動作改成草稿的。
+ *   retire → 監測中、草稿裡沒有的（T42 整組取代：草稿就是存檔後要的全部出場條件）撤下，log 寫原因。
+ *   confirm → 這一版不用再確認（沒有要送改寫的）：log 寫 EXITS_CONFIRMED，持股頁不會列「還沒送去改寫」。
+ * runId：草稿那一次執行（寫進條件的 run_id）；version：存成第幾版論點。
+ */
+export async function adoptDraftExits(env: Env, ticker: string, inp: { runId: string; version: number; add: AdoptCondition[]; actionChanges: { id: number; action: CondAction }[]; retire: number[]; confirm: boolean }, now: Date, session?: string): Promise<ConfirmResult> {
+  const acct = (await loadAccount(env.DB))?.acct;
+  if (!acct?.own[ticker]) throw new Error(`${ticker} 不是自選股`);
+  const fileId = acct.own[ticker].fileId ?? null;
+  const at = now.toISOString();
+  const ses = session ?? at.slice(0, 10);
+  const log = (kind: 'CONDITION' | 'EXITS_CONFIRMED', ref: string, body: Record<string, unknown>) => (fileId ? [thesisLogStmt(env.DB, { ticker, fileId, session: ses, kind, ref, body }, null, at)] : []);
+  const res = inp.add.length ? await env.DB.batch(insertConditionStmts(env.DB, ticker, inp.runId, inp.add, at, 'AI_DRAFT_ACCEPTED', fileId)) : [];
+  const accepted = res.map((r) => r.meta.last_row_id);
+  const after: D1PreparedStatement[] = [];
+  accepted.forEach((id, k) => after.push(...log('CONDITION', String(id), { id, change: 'ACCEPTED', action: inp.add[k].action, by: 'DRAFT', runId: inp.runId })));
+  const retired: number[] = [];
+  for (const id of inp.retire) {
+    after.push(env.DB.prepare("UPDATE own_conditions SET status = 'RETIRED', note = ? WHERE id = ? AND status IN ('ACTIVE', 'REVIEW_ONLY', 'MANUAL')").bind(adoptRetireNote(ses, inp.version), id));
+    after.push(...log('CONDITION', String(id), { id, change: 'RETIRED', by: 'USER', reason: 'DRAFT_ADOPTED', version: inp.version }));
+    retired.push(id);
+  }
+  for (const a of inp.actionChanges) {
+    after.push(env.DB.prepare('UPDATE own_conditions SET action = ? WHERE id = ?').bind(a.action, a.id));
+    after.push(...log('CONDITION', String(a.id), { id: a.id, change: 'ACTION_CHANGED', action: a.action, by: 'DRAFT' }));
+  }
+  if (inp.confirm) after.push(...log('EXITS_CONFIRMED', inp.runId, { runId: null, draftRunId: inp.runId, by: 'DRAFT', version: inp.version, accepted, retired, actionChanged: inp.actionChanges.map((a) => a.id) }));
+  if (after.length) await env.DB.batch(after);
+  return { added: accepted.length, retired, actionChanged: inp.actionChanges.map((a) => a.id) };
 }
 
 export interface MonitorRow {

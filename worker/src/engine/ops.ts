@@ -1068,7 +1068,7 @@ export function removeOwn(acct0: Account, view: MarketView, ticker: string): { a
 
 /**
  * 幫一檔自選加前提（持股頁，2026-11-15 起取代新增自選頁的前提欄）。
- * 原本只有系統預設前提時，換成新寫的（三層備案：你寫的 → 勾選的 AI 草稿 → 系統預設）；否則接在後面。
+ * 原本只有系統預設前提時，換成新寫的（三層備案：你寫的 → 採用的 AI 草稿 → 系統預設）；否則接在後面。
  * 新的前提從 premiseSeq 接著編號；既有的編號不變、拿掉的編號不再用（own_thesis §1.2，修 N7）。date：加入的訊號日。
  */
 export function addPremises(acct0: Account, ticker: string, premises: Omit<Premise, 'id'>[], date: string): Account {
@@ -1107,8 +1107,8 @@ export interface PremiseMapping {
  *   其他 → 新的，從 premiseSeq 接著編號（編號不重用、不重排）；
  *   現行有、新的沒對到 → 撤下。
  * 新的一條都沒有：原本只有系統預設 → 預設留著；原本有你的前提 → 丟錯（至少留一條）。
- * 草稿（T56，web_evidence_design §2.3）：新的一條帶 origin（原樣勾選的草稿是 AI_DRAFT_ACCEPTED，其他 USER）與 breaksIf（怎樣算不成立）；
- *   沿用的一條照舊保留原本的來源，帶了 breaksIf 就換成新的（空字串 = 拿掉）。原樣勾選的草稿前提之後被你改了字 → 來源改成 USER（字是你的了）。
+ * 草稿（T56，web_evidence_design §2.3）：新的一條帶 origin（原樣採用的草稿是 AI_DRAFT_ACCEPTED，其他 USER；T70 起是整份採用）與 breaksIf（怎樣算不成立）；
+ *   沿用的一條照舊保留原本的來源，帶了 breaksIf 就換成新的（空字串 = 拿掉）。原樣採用的草稿前提之後被你改了字 → 來源改成 USER（字是你的了）。
  * T60（composite_layer_design §2.2、§2.3）：breaksIf 存成子句的陣列（最多 3 句）；confirmsIf、verify 和 breaksIf 同一個規則（送了就換、空的拿掉、沒送照舊）。
  *   只改這三個欄位不算論點變動（edited 只看前提的字）。
  */
@@ -1186,7 +1186,7 @@ function premiseFieldsIn(p: PremiseInput): { breaksIf?: string[]; confirmsIf?: s
 export interface PremiseInput {
   id?: string | null;
   text: string;
-  /** 新的一條的來源：原樣勾選的草稿是 AI_DRAFT_ACCEPTED；沒給是 USER。沿用的一條不看這個。 */
+  /** 新的一條的來源：原樣採用的草稿是 AI_DRAFT_ACCEPTED；沒給是 USER。沿用的一條不看這個。 */
   origin?: 'USER' | 'AI_DRAFT_ACCEPTED';
   /** 怎樣算不成立（進審查的證據包；最多 3 句）。undefined = 不改（沿用的照舊）；空陣列、空字串或 null = 拿掉。一段字當成一句。 */
   breaksIf?: string[] | string | null;

@@ -1,8 +1,7 @@
 // T56：草稿的畫面與同意流程（web_evidence_design §2.3、§2.5、§2.6）。
 // 完成條件：
-//   預設都不勾（草稿的每一項 checked = false；一條都沒勾就存檔 → 草稿照舊等你看、沒有 AI_DRAFT_ACCEPTED 的前提）
-//   原樣勾選記 AI_DRAFT_ACCEPTED、改字記 USER；breaks_if 存進 breaksIf；論點一字沒改記 DRAFT
-//   出場條件仍然要在持股頁再確認（勾了只會送去改寫，條件不會直接開始監測）
+//   （T70，confirm_audit_design §2 改掉：逐條勾選、預設不勾、出場條件過兩關 → 一鍵採用，測試在 t70-draft-adopt.test.ts；
+//    這裡關於勾選與存檔的測試拿掉或改成採用）
 //   草稿過期與版本不同的提示
 //   DRAFT_READY（要看的事）、LINE 一行（使用者按的才推）
 //   USED／DISMISSED 的寫入、「失效後修改」計次、按鈕防連按（同一檔同時只能有一列 PENDING）、各入口的按鈕狀態
@@ -17,12 +16,12 @@ import type { Env, Fetcher } from '../src/app/env';
 import { pushPending, runFlow } from '../src/app/flow';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
 import { LINE_PUSH_URL } from '../src/app/line';
-import { DRAFT_GAP_DAYS, DraftError, draftLineText, draftSave, draftStateOf, draftUsed, expireDrafts, loadDrafts, pushDraftLines, requestOwnDraft, startOwnDraft, type DraftRow, type DraftView } from '../src/app/ownDraft';
+import { DRAFT_GAP_DAYS, DraftError, draftLineText, draftStateOf, expireDrafts, loadDrafts, pushDraftLines, requestOwnDraft, startOwnDraft, type DraftRow, type DraftView } from '../src/app/ownDraft';
 import { OWN_ATTN, thesisNote, type ThesisFile } from '../src/app/thesis';
 import { XBRL_METRICS, type CompanyFacts, type XbrlFact } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
-import { SYSTEM_DEFAULT_PREMISES, createAccount, mapPremises, routeReview, setThesis, type Account, type MarketView, type Premise } from '../src/engine';
+import { SYSTEM_DEFAULT_PREMISES, createAccount, mapPremises, setThesis, type Account, type MarketView, type Premise } from '../src/engine';
 import { handle } from '../src/index';
 import { freshDb } from './helpers/d1';
 import { cronTime, fakeFetcher, newWorld, type World } from './helpers/fakeSources';
@@ -30,7 +29,7 @@ import { cronTime, fakeFetcher, newWorld, type World } from './helpers/fakeSourc
 const METRICS = new Set(Object.keys(XBRL_METRICS));
 
 // 前端的 thesis-draft.js 不碰 DOM，直接 import（同 t39b、t44 的寫法：瀏覽器直接載入的 JS 沒有型別宣告）
-type Item = { k: number; checked: boolean; [x: string]: unknown };
+type Item = { k: number; [x: string]: unknown };
 interface DraftJs {
   ACTION_TEXT: Record<string, string>;
   NOT_CHECKABLE: string;
@@ -39,11 +38,8 @@ interface DraftJs {
   draftButtonState(state: unknown, now?: Date): { mode: string; button: string | null; text: string | null };
   draftItems(p: unknown): { premises: Item[]; exits: Item[]; peers: Item[]; domains: Item[] };
   draftNotices(d: unknown): { tone: string; text: string }[];
-  draftPreviewLines(pd: unknown): { tone: string; text: string }[];
-  originHint(draftText: string, text: string): string;
-  untouchedPremises(p: unknown, current: unknown[]): string[];
 }
-const { ACTION_TEXT, BELIEF_TEXT, checkLine, draftButtonState, draftItems, draftNotices, draftPreviewLines, originHint, untouchedPremises } = (await import('../public/js/thesis-draft.js' as string)) as DraftJs;
+const { ACTION_TEXT, BELIEF_TEXT, checkLine, draftButtonState, draftItems, draftNotices } = (await import('../public/js/thesis-draft.js' as string)) as DraftJs;
 
 // ---------------------------------------------------------------- 原文與一份會通過檢查的草稿（同 T55）
 
@@ -104,8 +100,9 @@ const viewOf = (d: OwnDraft, o: Partial<DraftView> = {}): DraftView => ({ id: 7,
 
 // ---------------------------------------------------------------- 純函式：畫面上的文字與預設
 
-describe('T56 草稿的每一項預設都不勾（§2.3）', () => {
-  it('前提、出場條件、同業、網站全部 checked = false；網站都不能勾（T68：每檔的網站不再讀，confirm_audit_design §1.7）', () => {
+// T70 改（confirm_audit_design §2.1）：草稿只顯示，沒有勾選框（原本是「每一項預設都不勾」）
+describe('T56 草稿的每一項（T70 起只顯示）', () => {
+  it('前提、出場條件、同業、網站都讀得出來、沒有勾選的狀態；網站都不能加（T68：每檔的網站不再讀，confirm_audit_design §1.7）', () => {
     // T69：新的草稿不再有 domains（§2.3）；這裡模擬 T69 以前存的舊草稿（有 domains），畫面照樣讀得出來
     const old = okDraft();
     old.sources.domains = [
@@ -116,7 +113,7 @@ describe('T56 草稿的每一項預設都不勾（§2.3）', () => {
     const items = draftItems(old);
     const all = [...items.premises, ...items.exits, ...items.peers, ...items.domains];
     expect(all.length).toBe(3 + 2 + 1 + 2);
-    expect(all.every((x) => x.checked === false)).toBe(true);
+    expect(all.every((x) => !('checked' in x))).toBe(true);
     expect(items.domains.map((x) => [x.domain, x.state, x.checkable])).toEqual([
       ['www.micron.com', 'NEW', false],
       ['fool.com', 'EXCLUDED', false],
@@ -133,41 +130,24 @@ describe('T56 草稿的每一項預設都不勾（§2.3）', () => {
     expect(items.exits[0].threshold).toBe(true);
   });
 
-  it('勾來的那一條：原樣 → 存成「AI 草擬、你勾選的」；改過字（只改標點不算）→ 存成你寫的', () => {
-    expect(originHint(P0, `${P0}。`)).toContain('AI 草擬、你勾選的');
-    expect(originHint(P0, '資料中心營收連續三季年增超過 30%')).toContain('你改過字：存成你寫的前提');
-  });
-
-  it('草稿沒有沿用的你現在的前提列出來（「新的」裡照舊留著）', () => {
-    const d = okDraft({ ...goodPayload(), premises: [{ text: '資料中心需求延續到 2027', keep_id: 'P1', confirms_if: C0, breaks_if: ['連兩季營收年增率低於 15%'], verify: { by: 'XBRL' }, evidence_ids: ['E2'] }, ...(goodPayload().premises as unknown[]).slice(1)] });
-    expect(untouchedPremises(d, [{ id: 'P1', system: false }, { id: 'P2', system: false }])).toEqual(['P2']);
-  });
 });
 
 describe('T56 草稿的提示：過期日、版本不同、剛被判不成立（§2.3、§2.4 第 6 點）', () => {
   it('照的論點版本和現在不同 → 「這份草稿是照第 N 版寫的，之後你改過論點」；還沒有論點時寫的另一種說法', () => {
     const d = okDraft();
-    expect(draftNotices(viewOf(d, { basedOn: 2, version: 3, stale: true })).map((x) => x.text)).toContain('這份草稿是照第 2 版論點寫的，之後你改過論點（現在第 3 版）。左邊「現在的」才是你現在的論點，勾之前對照一下。');
-    expect(draftNotices(viewOf(d, { basedOn: 0, version: 1, stale: true }))[0].text).toBe('這份草稿是在你還沒有論點的時候寫的，之後你自己存了論點（現在第 1 版）。勾之前對照左邊「現在的」。');
+    expect(draftNotices(viewOf(d, { basedOn: 2, version: 3, stale: true })).map((x) => x.text)).toContain('這份草稿是照第 2 版論點寫的，之後你改過論點（現在第 3 版）。左邊「現在的」才是你現在的論點；按「採用」之後會先列出哪幾條會被換掉。');
+    expect(draftNotices(viewOf(d, { basedOn: 0, version: 1, stale: true }))[0].text).toBe('這份草稿是在你還沒有論點的時候寫的，之後你自己存了論點（現在第 1 版）。按「採用」之後會先列出哪幾條會被換掉。');
     const plain = draftNotices(viewOf(d));
     expect(plain).toHaveLength(1);
-    expect(plain[0].text).toBe('你在 11/20 請 stock bot 草擬的；12/20 之後不再列（30 天沒處理就過期）。每一條都要你勾了才會填進「新的」，沒勾的不會存。');
+    expect(plain[0].text).toBe('你在 11/20 請 stock bot 草擬的；12/20 之後不再列（30 天沒處理就過期）。採用就是整份照草稿存（論點、前提、出場條件、同業），出場條件採用後直接生效；之後要改字，在這一頁照平常的方式改。');
   });
 
-  it('剛被判不成立 → 最上面固定那句話（紅字），寫明不能沿用、存檔算一次失效後修改；那則通知還沒回覆時提醒回去', () => {
+  it('剛被判不成立 → 最上面固定那句話（紅字），寫明不能沿用、採用算一次失效後修改；那則通知還沒回覆時提醒回去', () => {
     const n = draftNotices(viewOf(okDraft(), { broken: { premiseId: 'P2', text: 'HBM 供給持續吃緊', notif: 3, notice: brokenNotice('P2'), open: true } }));
     expect(n[0]).toEqual({ tone: 'hot', text: '前提 P2 剛被判不成立。在這之後改論點，很容易只是替繼續持有找新理由。' });
-    expect(n[1].text).toContain('這份草稿不能沿用 P2；用了這份草稿存檔，算一次「失效後修改」。那則通知還等你決定');
+    expect(n[1].text).toContain('這份草稿不能沿用 P2；採用這份草稿算一次「失效後修改」。那則通知還等你決定');
   });
 
-  it('預覽：一條都沒勾 → 草稿照舊留著；勾了一半 → 列出沒勾的幾條、存檔後不再列；過期的草稿照樣用', () => {
-    expect(draftPreviewLines({ used: false, until: '2026-12-20' })[0].text).toBe('草稿一條都還沒勾：這次存檔不會用到草稿，草稿照舊留著，12/20 之前都可以回來勾。');
-    const half = draftPreviewLines({ used: true, thesis: 'SAME', premises: { same: 1, edited: 1, kept: 0 }, exits: 1, peers: 0, domains: 0, unused: { premises: 1, exits: 1, sources: 2 }, status: 'READY', afterBreakNo: null });
-    expect(half.map((x) => x.text)).toEqual(['從草稿用了：論點本文（一字沒改）、前提 1 條原樣（記成「AI 草擬、你勾選的」）、前提 1 條改過字（記成你寫的）、出場條件 1 條。', '沒勾的：前提 1 條、出場條件 1 條、同業與網站 2 項。存檔後這份草稿標成用過、不再列，沒勾的不會存；之後想要，要自己寫進來。']);
-    const late = draftPreviewLines({ used: true, thesis: null, premises: { same: 1, edited: 0, kept: 0 }, exits: 0, peers: 0, domains: 0, unused: { premises: 2, exits: 2, sources: 0 }, status: 'EXPIRED', afterBreakNo: 2, premiseId: 'P2', brokenOpen: false });
-    expect(late.map((x) => x.text)).toContain('這份草稿是在前提 P2 被判不成立之後寫的：存檔算一次「失效後修改」（第 2 次）。');
-    expect(late.map((x) => x.text)).toContain('這份草稿已經過期（30 天沒處理，或之後有新的草稿）；存檔照樣用你勾的這些。');
-  });
 });
 
 describe('T56 各入口的「請 stock bot 草擬」按鈕狀態（§2.5、§2.6）', () => {
@@ -207,49 +187,8 @@ describe('T56 前提的來源與 breaksIf（引擎 mapPremises）', () => {
   });
 });
 
-describe('T56 存檔時怎麼用這份草稿（draftSave）', () => {
-  // T69：新的草稿沒有 domains（confirm_audit_design §2.3）；這裡用 T69 以前存的舊草稿（有 domains）照舊算勾了幾個網站
-  const d: OwnDraft = {
-    ...okDraft(),
-    sources: {
-      peers: okDraft().sources.peers,
-      domains: [
-        { domain: 'www.micron.com', state: 'NEW', note: '新的來源，存檔前會先試抓' },
-        { domain: 'fool.com', state: 'EXCLUDED', note: '不列入的網站（評論、預測、社群）：加不進來' },
-      ],
-    },
-  };
-  const ws = { peers: [{ name: 'SK hynix', yahoo: '000660.KS' }], domains: ['www.micron.com'] };
-  it('原樣勾選 → AI_DRAFT_ACCEPTED；改字 → USER；breaks_if 預設用草稿的、你改了用你的；論點一字沒改 → DRAFT；沒勾的有幾條', () => {
-    const r = draftSave(viewOf(d), { thesis: DRAFT_THESIS, thesisPressed: true, premises: [{ id: null, text: P0, draft: 0 }, { id: null, text: 'HBM 的合約價到 2027 年仍然上漲', breaksIf: ['合約價連兩季下跌'], draft: 1 }, { id: 'P1', text: '資料中心需求延續到 2027', draft: null }], exits: [0], peers: [0], domains: [0, 1], webSources: ws }, 3);
-    // T60：怎樣算證實、怎麼驗證也照草稿的（送了就用送的）
-    expect(r.premises).toEqual([
-      { id: null, text: P0, origin: 'AI_DRAFT_ACCEPTED', breaksIf: ['連兩季營收年增率低於 15%'], confirmsIf: C0, verify: { by: 'XBRL' } },
-      { id: null, text: 'HBM 的合約價到 2027 年仍然上漲', origin: 'USER', breaksIf: ['合約價連兩季下跌'], confirmsIf: C1, verify: { by: 'WEB', source: 'trendforce.com' } },
-      { id: 'P1', text: '資料中心需求延續到 2027' },
-    ]);
-    expect(r.source).toBe('DRAFT');
-    // 不列入的網站（fool.com）勾了也不算
-    expect(r.use).toMatchObject({ id: 7, version: 3, thesis: 'SAME', premises: { same: 1, edited: 1, kept: 0 }, exits: 1, peers: 1, domains: 1, unused: { premises: 1, exits: 1, sources: 0 }, afterBreak: false });
-    expect(draftUsed(r.use)).toBe(true);
-  });
-  it('按了「用這段」又改了字 → 來源照舊（不是 DRAFT），記 EDITED；什麼都沒勾 → 沒有用到（草稿留著）', () => {
-    const r = draftSave(viewOf(d), { thesis: `${DRAFT_THESIS}我自己再補一句。`, thesisPressed: true, premises: [], exits: [], peers: [], domains: [], webSources: undefined }, 2);
-    expect(r.source).toBeNull();
-    expect(r.use.thesis).toBe('EDITED');
-    const none = draftSave(viewOf(d), { thesis: '我自己寫的', thesisPressed: false, premises: [{ id: null, text: '我自己的前提', draft: null }], exits: [], peers: [], domains: [], webSources: undefined }, 2);
-    expect(draftUsed(none.use)).toBe(false);
-    expect(none.premises).toEqual([{ id: null, text: '我自己的前提' }]);
-  });
-  it('剛被判不成立之後寫的草稿：用了才算一次「失效後修改」', () => {
-    const broken = { premiseId: 'P2', text: 'HBM 供給持續吃緊', notif: 3, notice: brokenNotice('P2'), open: true };
-    expect(draftSave(viewOf(d, { broken }), { thesis: '', thesisPressed: false, premises: [{ id: null, text: P0, draft: 0 }], exits: [], peers: [], domains: [] }, 2).use.afterBreak).toBe(true);
-    expect(draftSave(viewOf(d, { broken }), { thesis: '', thesisPressed: false, premises: [], exits: [], peers: [], domains: [] }, 2).use.afterBreak).toBe(false);
-  });
-});
-
 describe('T56 判的人看不到出題的過程（§2.4 第 4 點）', () => {
-  it('證據包裡原樣勾選的草稿前提寫成 USER，系統預設照舊；論點那一份 note 不寫 DRAFT 的來源', () => {
+  it('證據包裡原樣採用的草稿前提寫成 USER，系統預設照舊；論點那一份 note 不寫 DRAFT 的來源', () => {
     expect(packOrigin('AI_DRAFT_ACCEPTED')).toBe('USER');
     expect(packOrigin('SYSTEM_DEFAULT')).toBe('SYSTEM_DEFAULT');
     const tf = { ticker: 'NVDA', fileId: 'NVDA@2026-11-19', openedAt: '2026-11-19', origin: 'INITIAL', kind: 'THESIS', status: 'OPEN', thesis: { text: DRAFT_THESIS, setAt: '2026-11-21', source: 'DRAFT', version: 2, afterBreak: 0, lastAfterBreakAt: null }, premises: [], conditions: [], events: [], reviews: [], disputes: [], flags: [], lastReview: null, newSince: '2026-07-01', log: [] } as unknown as ThesisFile;
@@ -269,7 +208,7 @@ describe('T56 草稿回來了：DRAFT_READY 與 LINE 一行（§2.5）', () => {
   });
   it('LINE：回來了一行加編輯論點頁的連結；沒有成功寫原因與「再試一次」', () => {
     const row = { ticker: 'MU', status: 'READY' as const, error: null, settled_at: '2026-11-20T01:10:00Z', created_at: '2026-11-20T01:00:00Z' };
-    expect(draftLineText(row, true, 'https://bot.example')).toBe('【紙上】MU 的論點草稿好了：先看反方，再逐條勾你同意的，沒勾的不會生效（12/20 之後不再列）\nhttps://bot.example/?openExternalBrowser=1#/h/MU/thesis');
+    expect(draftLineText(row, true, 'https://bot.example')).toBe('【紙上】MU 的論點草稿好了：先看反方的三點，再決定要不要整份採用（12/20 之後不再列）\nhttps://bot.example/?openExternalBrowser=1#/h/MU/thesis');
     expect(draftLineText({ ...row, status: 'FAILED', error: '程式檢查沒過：反方要 3 點（送回 2 點）' }, false, 'https://bot.example').split('\n')).toEqual(['MU 的論點草稿沒有成功（程式檢查沒過：反方要 3 點（送回 2 點）），可以到網站再試一次', 'https://bot.example/?openExternalBrowser=1#/h/MU/thesis']);
   });
 });
@@ -429,76 +368,8 @@ describe('T56 草稿回來、網站讀得到（讀草稿的 API、持股頁、�
   });
 });
 
-describe('T56 勾選與存檔（§2.3）', () => {
-  it('一條都沒勾就存檔（忘了勾）→ 草稿照舊等你看；前提沒有 AI_DRAFT_ACCEPTED', async () => {
-    await withWorld(async (c) => {
-      const row = await readyDraft(c);
-      const r = await save(c, { thesis: '我自己的論點', premises: [{ text: '我自己的前提' }], draft: { id: row.id, thesis: false, peers: [], domains: [] } });
-      expect(r.status).toBe(200);
-      expect(r.body.preview.draft).toMatchObject({ used: false });
-      expect((await draftsOf(c.db))[0].status).toBe('READY');
-      const a = await acctOf(c.db);
-      expect(a.own.NVDA.premises.map((p) => p.origin)).toEqual(['USER']);
-      expect(a.own.NVDA.thesis?.source).toBe('TYPED');
-    });
-  });
-
-  it('原樣勾選記 AI_DRAFT_ACCEPTED、改字記 USER；breaks_if 存進 breaksIf；論點一字沒改記 DRAFT；草稿標 USED、log 記用了哪些；只勾一半的預覽列出沒勾的', async () => {
-    await withWorld(async (c) => {
-      const row = await readyDraft(c);
-      const body = {
-        thesis: DRAFT_THESIS,
-        premises: [
-          { text: P0, breaksIf: '連兩季營收年增率低於 15%', draft: 0 },
-          { text: 'HBM 的合約價到 2027 年仍然上漲', breaksIf: 'TrendForce 的新聞稿報 HBM 合約價季跌', draft: 1 },
-        ],
-        draft: { id: row.id, thesis: true, peers: [], domains: [] },
-      };
-      const dry = await save(c, { ...body, dry: true });
-      expect(dry.body.preview.added.map((x) => x.origin)).toEqual(['AI_DRAFT_ACCEPTED', 'USER']);
-      expect(dry.body.preview.draft).toMatchObject({ used: true, thesis: 'SAME', premises: { same: 1, edited: 1, kept: 0 }, exits: 0, unused: { premises: 1, exits: 2 }, status: 'READY' });
-      expect((await draftsOf(c.db))[0].status).toBe('READY');
-      const r = await save(c, body);
-      expect(r.status).toBe(200);
-      const a = await acctOf(c.db);
-      expect(a.own.NVDA.premises).toEqual([
-        // T60：子句的陣列；怎樣算證實、怎麼驗證照草稿的
-        { id: 'P4', text: P0, origin: 'AI_DRAFT_ACCEPTED', breaksIf: ['連兩季營收年增率低於 15%'], confirmsIf: C0, verify: { by: 'XBRL' }, addedAt: '2026-11-19' },
-        { id: 'P5', text: 'HBM 的合約價到 2027 年仍然上漲', origin: 'USER', breaksIf: ['TrendForce 的新聞稿報 HBM 合約價季跌'], confirmsIf: C1, verify: { by: 'WEB', source: 'trendforce.com' }, addedAt: '2026-11-19' },
-      ]);
-      expect(a.own.NVDA.thesis).toMatchObject({ text: DRAFT_THESIS, source: 'DRAFT', version: 1, afterBreak: 0 });
-      const after = (await draftsOf(c.db))[0];
-      expect(after.status).toBe('USED');
-      expect(JSON.parse(after.used_json!)).toMatchObject({ id: row.id, version: 1, thesis: 'SAME', premises: { same: 1, edited: 1, kept: 0 } });
-      const log = (await c.db.prepare("SELECT body FROM own_thesis_log WHERE kind = 'THESIS'").all<{ body: string }>()).results.map((x) => JSON.parse(x.body));
-      expect(log.at(-1)).toMatchObject({ source: 'DRAFT', draft: { id: row.id, thesis: 'SAME' } });
-      // 用過的草稿不再列在要看的事、編輯論點頁讀不到
-      const hd = await c.call<{ attention: { kind: string }[]; own: { thesis: { source: string } } }>('GET', '/api/holding/NVDA', undefined, at(T0, 0, 30));
-      expect(hd.body.attention.some((x) => x.kind === 'DRAFT_READY')).toBe(false);
-      expect(hd.body.own.thesis.source).toBe('用了 stock bot 的草稿');
-      expect((await c.call<{ draft: unknown }>('GET', '/api/own/NVDA/draft', undefined, at(T0, 0, 30))).body.draft).toBeNull();
-      // 審查的證據包看不到題目是誰出的：前提寫成 USER
-      const { ownPremises } = await import('../src/ai/pack');
-      expect(ownPremises(a, 'NVDA').map((p) => p.origin)).toEqual(['USER', 'USER']);
-    });
-  });
-
-  it('出場條件勾了也不會直接監測：存檔後送去改寫（一票），沒有任何條件開始監測，要回持股頁確認', async () => {
-    await withWorld(async (c) => {
-      const row = await readyDraft(c);
-      const r = await save(c, { thesis: '', premises: [{ text: P0, draft: 0 }], exitConditions: [{ text: X0, action: 'HALF', draft: 0 }], draft: { id: row.id, thesis: false, peers: [0], domains: [] }, webSources: { peers: [{ name: 'SK hynix', yahoo: '000660.KS' }], domains: [] } });
-      expect(r.status).toBe(200);
-      expect(r.body.preview.exits.changed).toBe(true);
-      expect(r.body.rewrite.status).toBe('SENT');
-      const run = (await getRun(c.db, r.body.rewrite.runId!))!;
-      expect(run.fn).toBe('OWN_CHECK');
-      expect(JSON.stringify(run.pack)).toContain(X0);
-      expect((await c.db.prepare("SELECT COUNT(*) AS n FROM own_conditions WHERE ticker = 'NVDA' AND status IN ('ACTIVE', 'REVIEW_ONLY', 'MANUAL')").first<{ n: number }>())!.n).toBe(0);
-      expect(JSON.parse((await draftsOf(c.db))[0].used_json!)).toMatchObject({ exits: 1, peers: 1 });
-      expect((await acctOf(c.db)).own.NVDA.webSources?.peers).toEqual([{ name: 'SK hynix', yahoo: '000660.KS' }]);
-    });
-  });
-
+// T70 改：勾選與存檔換成一鍵採用（POST /api/ops/own-draft/adopt）；勾選的三個測試拿掉，採用的測試在 t70-draft-adopt.test.ts
+describe('T56 存檔與草稿的狀態（§2.3）', () => {
   it('「不用這份草稿」→ DISMISSED；再按一次 409；不再列在要看的事', async () => {
     await withWorld(async (c) => {
       const row = await readyDraft(c);
@@ -511,7 +382,7 @@ describe('T56 勾選與存檔（§2.3）', () => {
     });
   });
 
-  it('草稿回來前自己先寫了論點 → 草稿標「照第 0 版寫的」；勾了照樣存', async () => {
+  it('草稿回來前自己先寫了論點 → 草稿標「照第 0 版寫的」；採用照樣存（整份換成草稿的，你寫的那條撤下）', async () => {
     await withWorld(async (c) => {
       const r = await c.call<{ runId: string }>('POST', '/api/ops/own-draft', { ticker: 'NVDA' }, T0);
       expect((await save(c, { thesis: '我等不及自己先寫了', premises: [{ text: '我自己的前提' }] }, at(T0, 0, 5))).status).toBe(200);
@@ -519,16 +390,18 @@ describe('T56 勾選與存檔（§2.3）', () => {
       const g = await c.call<{ draft: DraftView }>('GET', '/api/own/NVDA/draft', undefined, at(T0, 0, 15));
       expect(g.body.draft).toMatchObject({ basedOn: 0, version: 1, stale: true });
       expect(draftNotices(g.body.draft)[0].text).toContain('這份草稿是在你還沒有論點的時候寫的，之後你自己存了論點（現在第 1 版）');
-      const s = await save(c, { thesis: '我等不及自己先寫了', premises: [{ id: 'P4', text: '我自己的前提' }, { text: P0, draft: 0 }], draft: { id: g.body.draft.id, thesis: false, peers: [], domains: [] } }, at(T0, 0, 20));
+      const s = await c.call<{ preview: { retired: { id: string }[] } }>('POST', '/api/ops/own-draft/adopt', { ticker: 'NVDA', id: g.body.draft.id }, at(T0, 0, 20));
       expect(s.status).toBe(200);
+      expect(s.body.preview.retired.map((x) => x.id)).toEqual(['P4']);
       expect((await acctOf(c.db)).own.NVDA.premises.map((p) => [p.id, p.origin])).toEqual([
-        ['P4', 'USER'],
         ['P5', 'AI_DRAFT_ACCEPTED'],
+        ['P6', 'AI_DRAFT_ACCEPTED'],
+        ['P7', 'AI_DRAFT_ACCEPTED'],
       ]);
     });
   });
 
-  it('草稿過期（30 天沒處理）→ 編輯論點頁讀不到、狀態寫過期；頁面開著時過期了，存檔照樣用勾的、標成 USED', async () => {
+  it('草稿過期（30 天沒處理）→ 編輯論點頁讀不到、狀態寫過期；頁面開著時過期了，採用 → 409（T70：只有還在等你看的可以採用）', async () => {
     await withWorld(async (c) => {
       const row = await readyDraft(c);
       expect(await expireDrafts(c.db, at(T0, 31))).toBe(1);
@@ -536,10 +409,11 @@ describe('T56 勾選與存檔（§2.3）', () => {
       expect(g.body.draft).toBeNull();
       expect(g.body.state.last.status).toBe('EXPIRED');
       expect(draftButtonState(g.body.state as never, at(T0, 31)).text).toBe('上一份草稿（11/20）30 天沒處理，已經過期');
-      const s = await save(c, { thesis: '', premises: [{ text: P0, draft: 0 }], draft: { id: row.id, thesis: false, peers: [], domains: [] } }, at(T0, 31, 5));
-      expect(s.body.preview.draft).toMatchObject({ used: true, status: 'EXPIRED' });
-      expect((await draftsOf(c.db))[0].status).toBe('USED');
-      expect((await acctOf(c.db)).own.NVDA.premises[0].origin).toBe('AI_DRAFT_ACCEPTED');
+      const s = await c.call<{ error: string }>('POST', '/api/ops/own-draft/adopt', { ticker: 'NVDA', id: row.id }, at(T0, 31, 5));
+      expect(s.status).toBe(409);
+      expect(s.body.error).toContain('過期了');
+      expect((await draftsOf(c.db))[0].status).toBe('EXPIRED');
+      expect((await acctOf(c.db)).own.NVDA.premises.every((p) => p.origin === 'SYSTEM_DEFAULT')).toBe(true);
     });
   });
 
@@ -547,60 +421,19 @@ describe('T56 勾選與存檔（§2.3）', () => {
     await withWorld(async (c) => {
       const row = await readyDraft(c);
       await c.db.prepare('UPDATE own_drafts SET file_id = ? WHERE id = ?').bind('NVDA@2026-10-01', row.id).run();
-      expect((await save(c, { thesis: '', premises: [{ text: P0, draft: 0 }], draft: { id: row.id, thesis: false, peers: [], domains: [] } })).status).toBe(409);
+      expect((await c.call('POST', '/api/ops/own-draft/adopt', { ticker: 'NVDA', id: row.id }, at(T0, 0, 20))).status).toBe(409);
       expect((await c.call<{ draft: unknown }>('GET', '/api/own/NVDA/draft', undefined, at(T0, 0, 20))).body.draft).toBeNull();
     });
   });
 });
 
-describe('T56 剛被判不成立之後的草稿：「失效後修改」計次（§2.4 第 6 點）', () => {
-  it('用了這份草稿存檔 → 失效後修改加 1（沒勾回應時那則通知仍等你決定）；一條都沒用 → 不算；勾了回應也只算一次', async () => {
-    await withWorld(
-      async (c) => {
-        await mutate(c.db, (a) => routeReview(a, c.view, 'NVDA', { tier: 'HALF', suggest: true, consensus: true, premiseId: 'P2', trigger: 'EARNINGS', date: '2026-11-19' }).acct);
-        const row = await readyDraft(c);
-        const g = await c.call<{ draft: DraftView }>('GET', '/api/own/NVDA/draft', undefined, at(T0, 0, 15));
-        expect(g.body.draft.broken).toMatchObject({ premiseId: 'P2', open: true });
-        const notif = g.body.draft.broken!.notif;
-        // 沒用到草稿：不算
-        await save(c, { thesis: '先改一個字', premises: [{ id: 'P1', text: '資料中心需求延續到 2027' }, { id: 'P2', text: 'HBM 供給持續吃緊' }], draft: { id: row.id, thesis: false, peers: [], domains: [] } });
-        expect((await acctOf(c.db)).own.NVDA.thesis?.afterBreak).toBe(0);
-        // 用了：算一次，通知還在
-        const dry = await save(c, { thesis: '先改一個字', premises: [{ id: 'P1', text: '資料中心需求延續到 2027' }, { text: P0, draft: 0 }], draft: { id: row.id, thesis: false, peers: [], domains: [] }, dry: true }, at(T0, 0, 25));
-        expect(dry.body.preview.draft).toMatchObject({ afterBreak: true, afterBreakNo: 1, premiseId: 'P2', brokenOpen: true });
-        await save(c, { thesis: '先改一個字', premises: [{ id: 'P1', text: '資料中心需求延續到 2027' }, { text: P0, draft: 0 }], draft: { id: row.id, thesis: false, peers: [], domains: [] } }, at(T0, 0, 26));
-        const a = await acctOf(c.db);
-        expect(a.own.NVDA.thesis).toMatchObject({ afterBreak: 1, lastAfterBreakAt: '2026-11-19' });
-        expect(a.notifs.find((n) => n.id === notif)?.status).toBe('PENDING');
-        const log = (await c.db.prepare("SELECT body FROM own_thesis_log WHERE kind = 'THESIS' ORDER BY id").all<{ body: string }>()).results.map((x) => JSON.parse(x.body));
-        expect(log.at(-1)).toMatchObject({ afterBreak: true, draft: { afterBreak: true } });
-      },
-      { premises: USER_PREMISES },
-    );
-  });
-
-  it('同時勾著「這是對通知的回應」→ 修正論點結案，失效後修改只加 1', async () => {
-    await withWorld(
-      async (c) => {
-        await mutate(c.db, (a) => routeReview(a, c.view, 'NVDA', { tier: 'HALF', suggest: true, consensus: true, premiseId: 'P2', trigger: 'EARNINGS', date: '2026-11-19' }).acct);
-        const row = await readyDraft(c);
-        const notif = JSON.parse(row.broken!).notif as number;
-        const r = await save(c, { thesis: '', premises: [{ id: 'P1', text: '資料中心需求延續到 2027' }, { text: P0, draft: 0 }], replyTo: notif, draft: { id: row.id, thesis: false, peers: [], domains: [] } });
-        expect(r.status).toBe(200);
-        const a = await acctOf(c.db);
-        expect(a.own.NVDA.thesis?.afterBreak).toBe(1);
-        expect(a.notifs.find((n) => n.id === notif)?.status).toBe('DONE');
-      },
-      { premises: USER_PREMISES },
-    );
-  });
-});
+// T70：剛被判不成立之後的草稿「失效後修改」計次改成採用時算，測試在 t70-draft-adopt.test.ts（原本這裡是勾選存檔的兩個測試）
 
 describe('T56 LINE 一行（§2.5）：使用者按的才推、只推一次', () => {
   it('使用者按的草稿回來 → 推一則（一行加連結）；再結算、每日流程推播都不會重推', async () => {
     await withWorld(async (c) => {
       await readyDraft(c);
-      expect(draftLines(c.net)).toEqual(['【紙上】NVDA 的論點草稿好了：先看反方，再逐條勾你同意的，沒勾的不會生效（12/20 之後不再列）\nhttps://bot.example/?openExternalBrowser=1#/h/NVDA/thesis']);
+      expect(draftLines(c.net)).toEqual(['【紙上】NVDA 的論點草稿好了：先看反方的三點，再決定要不要整份採用（12/20 之後不再列）\nhttps://bot.example/?openExternalBrowser=1#/h/NVDA/thesis']);
       await pushDraftLines(c.env, c.fetcher, at(T0, 0, 30));
       await pushPending(c.env, c.fetcher, at(T0, 0, 40), await acctOf(c.db), [], false);
       expect(draftLines(c.net)).toHaveLength(1);

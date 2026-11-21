@@ -1,7 +1,8 @@
 // 論點（T27，own_thesis §1.7、§1.8）：「複製討論包」與「編輯論點」頁。
 // 論點在 claude.ai 討論；這裡只做頭（複製討論包）和尾（貼回 → 預覽 → 確認 → 出場條件送去改寫）。只求能用，版面在 T34 整理。
-// T56（web_evidence_design §2.3、§2.6）：stock bot 的草稿——編輯論點頁右邊多一塊草稿（反方 → 論點 → 前提 → 出場條件 → 來源 → 監測不了的），
-// 每一條預設不勾，勾了才填進「新的」，之後照原本的預覽與存檔；各入口的「請 stock bot 草擬」（draftAction）。不碰 DOM 的部分在 thesis-draft.js。
+// T56（web_evidence_design §2.6）：stock bot 的草稿——編輯論點頁右邊多一塊草稿（反方 → 論點 → 前提 → 出場條件 → 同業 → 監測不了的）；
+// 各入口的「請 stock bot 草擬」（draftAction）。T70（confirm_audit_design §2.1）：草稿那一塊只顯示，「採用這份草稿」整份照草稿存
+// （現在有論點時先列對照、按「確定採用」），存完回持股頁。不碰 DOM 的部分在 thesis-draft.js。
 // T63（composite_layer_design §3）：審查提到、你的前提沒有涵蓋的事——右欄上面多一塊，每一件可以「帶進右欄」再改字，或「看過了，不加」。
 // 不碰 DOM 的部分在 thesis-risks.js。
 import { api } from './api.js';
@@ -13,7 +14,7 @@ import { say } from './slime.js';
 import { replyOption } from './thesis-reply.js';
 import { prevFill } from './thesis-prev.js';
 import { sourcesEditor, sourcesNow } from './thesis-sources.js';
-import { ACTION_TEXT as DRAFT_ACTION, ANSWER_TEXT, checkLine, draftButtonState, draftItems, draftNotices, draftPreviewLines, md, originHint, untouchedPremises } from './thesis-draft.js';
+import { ACTION_TEXT as DRAFT_ACTION, ADOPT_HINT, ANSWER_TEXT, adoptCompare, adoptResultLines, checkLine, draftButtonState, draftItems, draftNotices, exitMonitorText, md } from './thesis-draft.js';
 import { BELIEF_NOTE, EVERY_DEFAULT, LIMITS as FIELD_LIMITS, MAX_CLAUSES, VERIFY_OPTIONS, checkableWarn, fieldsSummary, hasFields, premiseFieldsOf, verifyText } from './thesis-fields.js';
 import { RISK_INTRO, RISK_ROW_HINT, RISK_TITLE, riskButtons, riskDismissed, riskMeta, riskPreviewLine } from './thesis-risks.js';
 
@@ -23,6 +24,17 @@ const ACTIONS = [
   ['REVIEW', '重新審查'],
 ];
 const LIMITS = { thesis: 600, premises: 5, premise: 200, exits: 6, exit: 300 };
+
+/**
+ * 採用草稿之後要在持股頁寫的那幾行（T70，§2.1「存完回到持股頁，畫面寫『已採用 M/D 的草稿；要改字在這一頁改』」）：
+ * 代號 → adoptResultLines 的結果。持股頁讀了就拿掉（takeAdoptFlash），重新整理之後不再出現。
+ */
+export const adoptFlash = new Map();
+export function takeAdoptFlash(ticker) {
+  const x = adoptFlash.get(ticker) ?? null;
+  adoptFlash.delete(ticker);
+  return x;
+}
 
 /** 原本只有系統預設、這次也沒有自己的前提（T45，T41 第 2 條）：預覽與存檔結果同一句。 */
 export const DEFAULT_ONLY_TEXT = '沒有寫前提：AI 照樣用系統預設的三條前提檢查，這檔仍算還沒有論點。';
@@ -61,7 +73,7 @@ const rowStyle = 'display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;
 
 /**
  * 右邊一條前提的「怎麼驗證」（T60，composite_layer_design §2.2、§2.3）：用什麼查（選了「查不到」就是信念）、來源、多久有新的一份、
- * 怎樣算證實、怎樣算不成立（最多 3 句，一句一件事）。收合時一行摘要；從草稿勾來的預設攤開（看得到填了什麼），
+ * 怎樣算證實、怎樣算不成立（最多 3 句，一句一件事）。收合時一行摘要；帶進來的（審查提到的風險）預設攤開（看得到填了什麼），
  * 現在的前提、貼回沿用的預設收合（左邊「現在的」看得到全文）。手寫的前提都可以不填。
  * 回傳 { el, get, set }：get() = { breaksIf, confirmsIf, verify }（送出的形狀；verify 沒選是 null）；
  * set(f, show) 換成 f（null = 清空；show 要不要攤開，沒給 = 有寫任何一欄就攤開）。
@@ -167,8 +179,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   const noEnter = (el) => el.addEventListener('keydown', (ev) => ev.key === 'Enter' && ev.preventDefault());
   /**
    * 右邊的一條前提。每一條都有「怎麼驗證」那一塊（T60：用什麼查、來源、多久有新的一份、怎樣算證實、怎樣算不成立最多 3 句；
-   * 可以不填）；p.fields 是預填的值（現在的前提、草稿勾來的）。p.draft 是草稿的第幾條（T56），
-   * 下面一行寫「原樣」或「改過字」（存成哪一種來源）。p.onRemove：按「拿掉」時（草稿那邊取消勾選）。
+   * 可以不填）；p.fields 是預填的值（現在的前提、貼回沿用的）。p.onRemove：按「拿掉」時。
    * p.risk（T63）：從「審查提到的前提以外的風險」帶來的（哪一次執行的第幾條）；下面一行提醒把它改寫成要繼續成立的事。
    */
   const addPrem = (p = { id: null, text: '' }) => {
@@ -182,25 +193,13 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     const extras = h('div', { class: 'prem-extra' });
     const fe = premFieldsEditor(p.fields ?? null, () => changed(), p.open ?? hasFields(p.fields));
     extras.append(fe.el);
-    const r = { id: p.id, input, draft: p.draft ?? null, risk: p.risk ?? null, hint: null, onRemove: p.onRemove ?? null };
+    const r = { id: p.id, input, draft: null, risk: p.risk ?? null, onRemove: p.onRemove ?? null };
     // 提醒放在那一句的正下方、「怎麼驗證」的上面：先改字，再填怎樣算不成立
     if (r.risk) extras.insertBefore(h('p', { class: 'small prem-from prem-risk' }, RISK_ROW_HINT), fe.el);
     r.getFields = fe.get;
     r.setFields = fe.set;
-    r.setHint = (draftText) => {
-      r.hint?.remove();
-      r.hint = null;
-      if (draftText === null || draftText === undefined) return;
-      r.hint = h('p', { class: 'small prem-from' });
-      r.hintText = draftText;
-      const upd = () => r.hint && (r.hint.textContent = r.keepNote ?? originHint(r.hintText, input.value));
-      input.addEventListener('input', upd);
-      upd();
-      extras.append(r.hint);
-    };
     const el = h('div', { class: 'prem-row' }, h('div', { style: rowStyle }, input, removeBtn(() => { prems.splice(prems.indexOf(r), 1); el.remove(); r.onRemove?.(); changed(); })), extras);
     r.el = el;
-    if (p.draftText !== undefined) r.setHint(p.draftText);
     input.addEventListener('input', changed);
     prems.push(r);
     premList.append(el);
@@ -215,7 +214,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     const input = h('textarea', { class: 'prem-in', rows: 1, maxlength: LIMITS.exit, value: x.text, placeholder: '查得到的事，例如：毛利率連兩季低於 70%', 'aria-label': '出場條件' });
     noEnter(input);
     const sel = h('select', { style: 'width:auto', 'aria-label': '成立時' }, ACTIONS.map(([v, t]) => h('option', { value: v, selected: v === x.action }, t)));
-    const r = { input, sel, guessed: !!x.guessed, draft: x.draft ?? null, onRemove: x.onRemove ?? null };
+    const r = { input, sel, guessed: !!x.guessed, onRemove: x.onRemove ?? null };
     input.addEventListener('input', changed);
     sel.addEventListener('change', changed);
     const el = h(
@@ -223,7 +222,6 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       { class: 'exit-row' },
       h('div', { style: rowStyle.replace('margin-top:8px', 'margin-top:0') }, input, removeBtn(() => { exits.splice(exits.indexOf(r), 1); el.remove(); r.onRemove?.(); changed(); })),
       h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, '成立時'), sel, x.guessed ? h('span', { class: 'chip warn' }, '動作沒寫或不認得，先當成重新審查') : null),
-      r.draft !== null ? h('p', { class: 'small prem-from' }, '從草稿勾來：存檔後 AI 改寫成查得到的格式，再到持股頁確認才開始監測') : null,
     );
     r.el = el;
     exits.push(r);
@@ -233,7 +231,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   const fill = (p) => {
     thesisIn.value = p.thesis;
     thesisIn.dispatchEvent(new Event('input'));
-    // 貼回的整組換掉右邊：從草稿勾來的那幾條也拿掉（草稿那邊取消勾選，T56）
+    // 貼回的整組換掉右邊
     prems.splice(0).forEach((r) => (r.el.remove(), r.onRemove?.()));
     exits.splice(0).forEach((r) => r.onRemove?.());
     exitList.replaceChildren();
@@ -285,18 +283,17 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   // ---- 存檔前的變動（前提的對應：沿用、新的、會撤下；程式算）
   const diff = h('div', { class: 'small', style: 'margin-top:10px' });
   const exitDiff = h('div', { class: 'small', style: 'margin-top:14px' });
-  // 草稿（T56）：從草稿勾來的前提、出場條件帶 draft（草稿的第幾條）；勾了的同業與網站、有沒有按「用這段」另外送
+  // T70：草稿改成整份採用（另一個按鈕、另一個端點），這裡只送右邊寫的
   const payload = () => ({
     ticker: d.ticker,
     thesis: thesisIn.value.trim(),
     // 每一條都送「怎麼驗證」（T60）：右邊預填了現在的值，空的就是拿掉
     // 從審查提到的風險帶來的那一條帶 risk（T63）：存檔後那一件不再列在「要看的事」
-    premises: prems.map((r) => ({ id: r.id, text: r.input.value.trim(), ...r.getFields(), ...(r.draft !== null ? { draft: r.draft } : {}), ...(r.risk ? { risk: r.risk } : {}) })).filter((p) => p.text),
-    exitConditions: exits.map((r) => ({ text: r.input.value.trim(), action: r.sel.value, ...(r.draft !== null ? { draft: r.draft } : {}) })).filter((x) => x.text),
+    premises: prems.map((r) => ({ id: r.id, text: r.input.value.trim(), ...r.getFields(), ...(r.risk ? { risk: r.risk } : {}) })).filter((p) => p.text),
+    exitConditions: exits.map((r) => ({ text: r.input.value.trim(), action: r.sel.value })).filter((x) => x.text),
     source,
     replyTo: reply && reply.checked ? replyNotif : null,
     ...(srcEd.changed() ? { webSources: srcEd.value() } : {}),
-    ...(draftUi ? { draft: draftUi.value() } : {}),
   });
   /** 沿用編號、但字改了（T40）：左邊舊的、右邊新的；「當成新的一條」取消對應（這一條發新編號，舊的撤下）。 */
   const editedList = (xs, held) =>
@@ -356,12 +353,11 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
         const r = await api.post('/ops/own-thesis', { ...payload(), dry: true });
         const p = r.preview;
         // 一條一行（T34 整理：原本用分號接成一段）
-        // 新的一條是原樣勾選的草稿 → 後面寫「AI 草擬、你勾選的」（T56）
-        const line = (label, xs, warn) => (xs.length ? h('div', { style: 'margin-top:6px' }, h('b', { style: warn ? 'color:var(--hot)' : null }, label), h('ul', { class: 'diff-list' }, xs.map((x) => h('li', null, h('span', { class: 'st' }, x.id), h('span', null, x.text, x.origin === 'AI_DRAFT_ACCEPTED' && !warn ? h('span', { class: 'faint' }, '（AI 草擬、你勾選的）') : null))))) : null);
+        // 沿用的一條是原樣採用的草稿 → 後面寫「AI 草擬、你採用的」（T56；T70 起整份採用）
+        const line = (label, xs, warn) => (xs.length ? h('div', { style: 'margin-top:6px' }, h('b', { style: warn ? 'color:var(--hot)' : null }, label), h('ul', { class: 'diff-list' }, xs.map((x) => h('li', null, h('span', { class: 'st' }, x.id), h('span', null, x.text, x.origin === 'AI_DRAFT_ACCEPTED' && !warn ? h('span', { class: 'faint' }, '（AI 草擬、你採用的）') : null))))) : null);
         const edited = p.edited ?? [];
         put(
           diff,
-          draftPrev(p.draft),
           riskPrev(p.risks),
           h('b', null, '存檔後的前提'),
           line('沿用：', p.kept.filter((x) => !edited.some((e) => e.id === x.id)), false),
@@ -384,12 +380,6 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     }, 350);
   }
   thesisIn.addEventListener('input', changed);
-  /** 預覽裡「stock bot 的草稿」那一段（T56）：用了哪些、沒勾的幾條、一條都沒勾的話草稿留著、算不算一次失效後修改。 */
-  const draftPrev = (pd) => {
-    const xs = draftPreviewLines(pd ? { ...pd, until: draft?.until } : null);
-    if (!xs.length) return null;
-    return h('div', { class: 'draft-prev' }, h('b', null, 'stock bot 的草稿'), xs.map((x) => h('p', { class: `tone-${x.tone}` }, x.text)));
-  };
   /** 預覽裡「審查提到的風險」那一段（T63）：帶進來幾條、存檔後不再列。 */
   const riskPrev = (xs) => {
     const t = riskPreviewLine(xs);
@@ -452,32 +442,22 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       const srcBad = (r.preview.sources?.checked ?? []).filter((c) => c.ok === false).length;
       const sc = r.preview.sources?.changed ? `；網頁證據的來源已存${srcBad ? `（${srcBad} 項目前抓不到）` : ''}` : '';
       const ex = r.rewrite.status === 'SENT' ? '論點已存；出場條件送去 AI 對照與改寫，回來後在持股頁確認（確認之前舊的照舊監測）' : r.preview.exits?.changed ? '論點已存；出場條件全部拿掉，到持股頁確認才撤下' : '論點已存';
-      // 草稿（T56）：用了 → 標成用過；一條都沒勾 → 草稿照舊留著
-      const dr = r.preview.draft ? (r.preview.draft.used ? `；草稿標成用過${r.preview.draft.afterBreakNo ? `（失效後修改第 ${r.preview.draft.afterBreakNo} 次）` : ''}` : '；草稿一條都沒勾，照舊留著') : '';
       // 從審查提到的風險帶進來的（T63）
       const rk = r.preview.risks?.length ? `；審查提到的 ${r.preview.risks.length} 件風險已經帶進論點，不再列在「要看的事」` : '';
-      toast([ex + rv + cd + sc + dr + rk, ...(r.preview.defaultOnly ? [DEFAULT_ONLY_TEXT.replace(/。$/, '')] : []), ...(r.conds?.errors ?? [])].join('；'));
+      toast([ex + rv + cd + sc + rk, ...(r.preview.defaultOnly ? [DEFAULT_ONLY_TEXT.replace(/。$/, '')] : []), ...(r.conds?.errors ?? [])].join('；'));
       ctx.go(back.href);
     } catch (e) {
       msg.replaceChildren(errBox(e));
     }
   });
 
-  // ---- stock bot 的草稿（T56，web_evidence_design §2.3）：每一條預設不勾；勾了才填進「新的」，取消勾選就拿掉；之後照原本的預覽與存檔
+  // ---- stock bot 的草稿（T70，confirm_audit_design §2.1）：只顯示（反方 → 論點 → 前提 → 出場條件 → 同業 → 監測不了的），
+  // 「採用這份草稿」整份照草稿存；現在有論點、前提、條件或同業時先列對照，再按「確定採用」。之後要改字就用下面原本的編輯流程
   const draftUi = draft ? buildDraftUi() : null;
   function buildDraftUi() {
     const P = draft.payload;
     const items = draftItems(P);
     const evMap = new Map((P.evidence ?? []).map((e) => [e.id, e]));
-    const boxes = new Map();
-    const linked = new Map();
-    let thesisPressed = false;
-    const key = (kind, k) => `${kind}:${k}`;
-    const uncheck = (kind, k) => {
-      const cb = boxes.get(key(kind, k));
-      if (cb) cb.checked = false;
-      linked.delete(key(kind, k));
-    };
     const evList = (ids) => {
       const xs = (ids ?? []).map((id) => evMap.get(id)).filter(Boolean);
       if (!xs.length) return null;
@@ -488,145 +468,62 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
         h('ul', { class: 'more-body dr-ev-list' }, xs.map((e) => h('li', null, h('p', { class: 'small faint' }, e.url ? h('a', { href: e.url, target: '_blank', rel: 'noopener' }, e.title ?? e.source_id) : e.title ?? e.source_id, e.date ? `（${e.date}）` : ''), h('blockquote', { class: 'small' }, `「${e.quote}」`)))),
       );
     };
-    const dropEmpty = (rows) => rows.filter((r) => !r.input.value.trim() && r.draft === null && !r.id).forEach((r) => (rows.splice(rows.indexOf(r), 1), r.el.remove()));
-    // 前提：勾了加進「新的」（草稿沿用你現在的那一條：「新的」裡已經有，就只帶上草稿寫的怎樣算證實、不成立與怎麼驗證；取消勾選換回原本的）
-    const draftFields = (it) => ({ breaksIf: it.breaksIf, confirmsIf: it.confirmsIf, verify: it.verify });
-    const tickPremise = (it, on) => {
-      const kk = key('p', it.k);
-      if (on) {
-        const mine = it.keepId ? prems.find((r) => r.id === it.keepId) : null;
-        if (mine) {
-          mine.draft = it.k;
-          mine.prevFields = mine.getFields();
-          mine.setFields(draftFields(it));
-          mine.keepNote = `草稿沿用你現在的 ${it.keepId}（一字沒改），帶上草稿寫的怎樣算證實、不成立與怎麼驗證`;
-          mine.setHint(it.text);
-          linked.set(kk, { row: mine, attached: true });
-        } else {
-          dropEmpty(prems);
-          const r = addPrem({ id: it.keepId, text: it.text, fields: draftFields(it), draft: it.k, draftText: it.text, onRemove: () => uncheck('p', it.k) });
-          if (!r) {
-            if (!prems.length) addPrem();
-            return false;
-          }
-          linked.set(kk, { row: r, attached: false });
-        }
-      } else {
-        const l = linked.get(kk);
-        linked.delete(kk);
-        if (l?.attached) {
-          l.row.draft = null;
-          l.row.keepNote = null;
-          l.row.setHint(null);
-          l.row.setFields(l.row.prevFields ?? null, false);
-        } else if (l) {
-          prems.splice(prems.indexOf(l.row), 1);
-          l.row.el.remove();
-          if (!prems.length) addPrem();
-        }
-      }
-      changed();
-      return true;
-    };
-    const tickExit = (it, on) => {
-      const kk = key('x', it.k);
-      if (on) {
-        dropEmpty(exits);
-        const r = addExit({ text: it.text, action: it.action, draft: it.k, onRemove: () => uncheck('x', it.k) });
-        if (!r) {
-          if (!exits.length) addExit();
-          return false;
-        }
-        linked.set(kk, { row: r });
-      } else {
-        const l = linked.get(kk);
-        linked.delete(kk);
-        if (l) {
-          exits.splice(exits.indexOf(l.row), 1);
-          l.row.el.remove();
-          if (!exits.length) addExit();
-        }
-      }
-      changed();
-      return true;
-    };
-    const tickPeer = (it, on) => {
-      const p = { name: it.name, ...(it.edgar ? { edgar: it.edgar } : {}), ...(it.yahoo ? { yahoo: it.yahoo } : {}) };
-      if (on && !srcEd.addPeer(p)) return (toast('同業最多 4 家：先在下面的來源拿掉一家'), false);
-      if (!on) srcEd.removePeer(p);
-      changed();
-      return true;
-    };
-    const tickDom = (it, on) => {
-      if (on && !srcEd.addDom(it.domain)) return (toast('這檔的網站最多 6 個：先在下面的來源拿掉一個'), false);
-      if (!on) srcEd.removeDom(it.domain);
-      changed();
-      return true;
-    };
-    /** 一項可以勾的：勾選框、內容；預設不勾。 */
-    const pickRow = (kind, it, body, fn) => {
-      const cb = h('input', { type: 'checkbox', 'aria-label': `勾了填進「新的」：${it.text ?? it.name ?? it.domain}` });
-      cb.addEventListener('change', () => {
-        if (!fn(it, cb.checked)) cb.checked = false;
-      });
-      boxes.set(key(kind, it.k), cb);
-      return h('li', { class: 'dr-item' }, h('label', { class: 'dr-pick' }, cb), h('div', { class: 'dr-body' }, body));
-    };
+    const showRow = (body) => h('li', { class: 'dr-item dr-show' }, h('div', { class: 'dr-body' }, body));
     // 怎麼驗證（T60）：查得到 → 來源與多久有新的一份；信念 → 提醒的顏色（是你可以選的路，不是錯）
     const premCheck = (it) => {
       const c = checkLine(it);
       return h('p', { class: 'small', style: c.belief ? 'color:var(--warn)' : c.ok ? 'color:var(--ink-2)' : 'color:var(--hot)' }, c.text);
     };
     const notices = draftNotices(draft);
-    const missed = untouchedPremises(P, own.kind === 'THESIS' ? own.premises : []);
-    const thesisMsg = h('div');
-    const useThesis = h(
-      'button',
-      {
-        class: 'btn',
-        type: 'button',
-        onclick: () => {
-          const before = thesisIn.value;
-          thesisIn.value = P.thesis;
-          thesisIn.dispatchEvent(new Event('input'));
-          thesisPressed = true;
-          put(
-            thesisMsg,
-            h(
-              'p',
-              { class: 'small', style: 'margin-top:6px;color:var(--core)' },
-              '已填進「新的」的論點，可以再改。',
-              before.trim() && before.trim() !== P.thesis
-                ? h(
-                    'button',
-                    {
-                      class: 'linkbtn',
-                      type: 'button',
-                      style: 'margin-left:8px',
-                      onclick: () => {
-                        thesisIn.value = before;
-                        thesisIn.dispatchEvent(new Event('input'));
-                        thesisPressed = false;
-                        put(thesisMsg, h('p', { class: 'small faint', style: 'margin-top:6px' }, '換回原本的字了。'));
-                      },
-                    },
-                    '換回原本的字',
-                  )
-                : null,
-            ),
-          );
-        },
-      },
-      '用這段',
-    );
+    const body = { ticker: d.ticker, id: draft.id };
+    const replyTo = () => (reply && reply.checked ? replyNotif : null);
+    const compareBox = h('div');
     const dismissBox = h('div');
+    /** 真的採用：存好之後回持股頁，那裡寫「已採用 M/D 的草稿；要改字在這一頁改」。 */
+    const doAdopt = async () => {
+      const r = await api.post('/ops/own-draft/adopt', { ...body, replyTo: replyTo() });
+      adoptFlash.set(d.ticker, adoptResultLines(r, draft.at));
+      ctx.go(back.href);
+    };
+    /** 對照（§2.1）：哪幾條前提會被換掉、沿用哪幾條；出場條件、同業；這一步不勾，只多一個「確定採用」。 */
+    const showCompare = (pv) => {
+      const secs = adoptCompare(pv);
+      put(
+        compareBox,
+        h(
+          'div',
+          { class: 'adopt-cmp' },
+          h('b', null, '採用之後會這樣換'),
+          secs.map((s) => h('div', { class: 'adopt-sec' }, h('p', { class: 'small adopt-h' }, s.h), h('ul', { class: 'diff-list adopt-list' }, s.rows.map((x) => h('li', { class: `small tone-${x.tone}` }, x.text))))),
+          h('div', { class: 'btn-row', style: 'margin-top:10px' }, actionButton('確定採用', 'primary', async () => {
+            try {
+              await doAdopt();
+            } catch (e) {
+              put(compareBox, errBox(e));
+            }
+          }), h('button', { class: 'linkbtn', type: 'button', onclick: () => put(compareBox) }, '先不要')),
+        ),
+      );
+      compareBox.scrollIntoView({ block: 'nearest' });
+    };
+    const adopt = actionButton('採用這份草稿', 'primary', async () => {
+      put(dismissBox);
+      try {
+        const pv = await api.post('/ops/own-draft/adopt', { ...body, replyTo: replyTo(), dry: true });
+        if (pv.preview?.draft?.differs) return showCompare(pv.preview);
+        await doAdopt();
+      } catch (e) {
+        put(compareBox, errBox(e));
+      }
+    });
     const dismiss = actionButton('不用這份草稿', 'quiet', async () => {
+      put(compareBox);
       put(
         dismissBox,
         h(
           'div',
           { class: 'btn-row', style: 'margin-top:8px;align-items:center' },
-          h('span', { class: 'small' }, '確定不用？草稿會收起來，不再列在「要看的事」；右邊已經填進去的字不會拿掉。'),
+          h('span', { class: 'small' }, '確定不用？草稿會收起來，不再列在「要看的事」；你現在的論點不會變。'),
           actionButton('確定不用', '', async () => {
             try {
               await api.post('/ops/own-draft/dismiss', { ticker: d.ticker, id: draft.id });
@@ -640,12 +537,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
         ),
       );
     });
-    const peersDoms = [
-      ...items.peers.map((it) => pickRow('peer', it, [h('p', null, `同業：${it.name}`), h('p', { class: 'small faint' }, [it.edgar ? `EDGAR ${it.edgar}（申報）` : null, it.yahoo ? `Yahoo ${it.yahoo}（新聞連結）` : null].filter(Boolean).join('、'))], tickPeer)),
-      ...items.domains.map((it) =>
-        it.checkable ? pickRow('dom', it, [h('p', null, `網站：${it.domain}`), h('p', { class: 'small faint' }, it.note)], tickDom) : h('li', { class: 'dr-item dr-off' }, h('span', { class: 'dr-pick' }), h('div', { class: 'dr-body' }, h('p', null, `網站：${it.domain}`), h('p', { class: 'small faint' }, it.state === 'EXCLUDED' ? '不列入的網站（評論、預測、社群），加不進來' : '網站不用加：AI 取得到這個網站，能不能當證據由來源評級決定'))),
-      ),
-    ];
+    const peerRows = items.peers.map((it) => showRow([h('p', null, `同業：${it.name}`), h('p', { class: 'small faint' }, [it.edgar ? `EDGAR ${it.edgar}（申報；採用時核對代號，對不到的不存）` : null, it.yahoo ? `Yahoo ${it.yahoo}（新聞連結）` : null].filter(Boolean).join('、'))]));
     const el = glass(
       'pad draft-box',
       h('div', { class: 'panel-top' }, h('h2', { class: 'panel-h' }, `stock bot 的草稿（${md(draft.at)}）`), h('span', { class: 'chip' }, draft.trigger === 'AUTO' ? '自動草擬' : '你請的'), h('a', { class: 'small dr-run', href: `#/ai/${encodeURIComponent(draft.runId)}` }, '完整紀錄')),
@@ -655,67 +547,48 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       h('p', { class: 'dr-buy' }, h('span', { class: 'faint' }, '今天沒有持股的話，用這個價格會不會買：'), h('b', null, ANSWER_TEXT[P.would_buy_today.answer] ?? P.would_buy_today.answer), h('span', null, `。${P.would_buy_today.why}`)),
       h('h5', { class: 'dr-h' }, '論點'),
       h('p', { class: 'th-text dr-thesis' }, P.thesis),
-      h('div', { class: 'btn-row', style: 'margin-top:8px' }, useThesis),
-      thesisMsg,
-      h('h5', { class: 'dr-h' }, `前提（${items.premises.length} 條；預設都不勾，勾了才填進「新的」）`),
+      h('h5', { class: 'dr-h' }, `前提（${items.premises.length} 條）`),
       h(
         'ul',
         { class: 'dr-list' },
         items.premises.map((it) =>
-          pickRow(
-            'p',
-            it,
-            [
-              h('p', null, it.text),
-              it.keepId ? h('p', { class: 'small', style: 'color:var(--ink-2)' }, `就是你現在的 ${it.keepId}（一字沒改）`) : null,
-              it.likeBroken && draft.broken ? h('p', { class: 'small', style: 'color:var(--hot)' }, `和剛被判不成立的 ${draft.broken.premiseId} 很像：勾之前想一想是不是換個說法留著它`) : null,
-              it.confirmsIf ? h('p', { class: 'small' }, h('span', { class: 'faint' }, '怎樣算證實：'), it.confirmsIf) : null,
-              !it.breaksIf.length
-                ? null
-                : it.breaksIf.length === 1
+          showRow([
+            h('p', null, it.text),
+            it.keepId ? h('p', { class: 'small', style: 'color:var(--ink-2)' }, `就是你現在的 ${it.keepId}（一字沒改，採用後編號不變）`) : null,
+            it.likeBroken && draft.broken ? h('p', { class: 'small', style: 'color:var(--hot)' }, `和剛被判不成立的 ${draft.broken.premiseId} 很像：想一想是不是換個說法留著它`) : null,
+            it.confirmsIf ? h('p', { class: 'small' }, h('span', { class: 'faint' }, '怎樣算證實：'), it.confirmsIf) : null,
+            !it.breaksIf.length
+              ? null
+              : it.breaksIf.length === 1
                 ? h('p', { class: 'small' }, h('span', { class: 'faint' }, '怎樣算不成立：'), it.breaksIf[0])
                 : h('div', { class: 'small' }, h('span', { class: 'faint' }, `怎樣算不成立（任一句成立就算，${it.breaksIf.length} 句）：`), h('ul', { class: 'dr-plain' }, it.breaksIf.map((b) => h('li', null, b)))),
-              premCheck(it),
-              evList(it.evidence),
-            ],
-            tickPremise,
-          ),
+            premCheck(it),
+            evList(it.evidence),
+          ]),
         ),
       ),
-      missed.length ? h('p', { class: 'small faint', style: 'margin-top:6px' }, `草稿沒有沿用你現在的 ${missed.join('、')}：「新的」裡照舊留著，要拿掉就在那裡按「拿掉」。`) : null,
-      h('h5', { class: 'dr-h' }, `出場條件（${items.exits.length} 條；預設都不勾）`),
+      h('h5', { class: 'dr-h' }, `出場條件（${items.exits.length} 條）`),
       h(
         'ul',
         { class: 'dr-list' },
-        items.exits.map((it) =>
-          pickRow(
-            'x',
-            it,
-            [
-              h('p', null, it.text),
-              h('p', { class: 'small' }, h('span', { class: 'faint' }, '成立時：'), DRAFT_ACTION[it.action] ?? it.action, it.threshold ? h('span', { class: 'chip ok', style: 'margin-left:8px' }, '財報數字門檻，由程式比對') : null, it.premiseIndex !== null && P.premises[it.premiseIndex] ? h('span', { class: 'faint' }, `；對應第 ${it.premiseIndex + 1} 條前提`) : null),
-              evList(it.evidence),
-            ],
-            tickExit,
-          ),
-        ),
+        items.exits.map((it) => {
+          const m = exitMonitorText(it);
+          return showRow([
+            h('p', null, it.text),
+            h('p', { class: 'small' }, h('span', { class: 'faint' }, '成立時：'), DRAFT_ACTION[it.action] ?? it.action, it.premiseIndex !== null && P.premises[it.premiseIndex] ? h('span', { class: 'faint' }, `；對應第 ${it.premiseIndex + 1} 條前提`) : null),
+            h('p', { class: `small tone-${m.tone}` }, m.text),
+            evList(it.evidence),
+          ]);
+        }),
       ),
-      h('p', { class: 'small faint', style: 'margin-top:6px' }, '出場條件要過兩關：勾了、存檔後 AI 改寫成查得到的格式，回來後在持股頁再確認一次才開始監測；動作可以在「新的」裡改。'),
-      peersDoms.length ? [h('h5', { class: 'dr-h' }, '同業與網站（審查時 AI 可以另外讀的來源）'), h('ul', { class: 'dr-list' }, peersDoms)] : null,
+      peerRows.length ? [h('h5', { class: 'dr-h' }, '同業（審查時 AI 可以另外讀的申報與新聞）'), h('ul', { class: 'dr-list' }, peerRows)] : null,
       P.not_checkable?.length ? [h('h5', { class: 'dr-h' }, 'stock bot 監測不了、要你自己留意的'), h('ul', { class: 'dr-plain' }, P.not_checkable.map((x) => h('li', { class: 'small' }, x)))] : null,
       P.report ? h('details', { class: 'more', style: 'margin-top:12px' }, h('summary', null, '主筆的說明'), h('p', { class: 'more-body small', style: 'white-space:pre-wrap' }, P.report)) : null,
-      h('div', { class: 'btn-row', style: 'margin-top:14px' }, dismiss),
+      h('div', { class: 'adopt-bar' }, h('p', { class: 'small adopt-hint' }, ADOPT_HINT), h('div', { class: 'btn-row' }, adopt, dismiss)),
+      compareBox,
       dismissBox,
     );
-    return {
-      el,
-      value: () => ({
-        id: draft.id,
-        thesis: thesisPressed,
-        peers: items.peers.filter((it) => boxes.get(key('peer', it.k))?.checked).map((it) => it.k),
-        domains: items.domains.filter((it) => boxes.get(key('dom', it.k))?.checked).map((it) => it.k),
-      }),
-    };
+    return { el };
   }
   // ---- 審查提到、你的前提沒有涵蓋的事（T63，composite_layer_design §3）：每一件可以帶進右欄再改字，或「看過了，不加」。
   // 只當建議：帶進來的要你改寫、存檔才算；不帶的不會自己變成前提
@@ -776,7 +649,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     : glass(
         'pad draft-box',
         h('h2', { class: 'panel-h' }, '請 stock bot 草擬'),
-        h('p', { class: 'small dim', style: 'margin-top:4px' }, 'stock bot 讀這家公司的申報、財報與清單內的網站，先寫反方，再寫論點、前提與出場條件。回來後在這裡逐條勾你同意的，沒勾的不會生效。'),
+        h('p', { class: 'small dim', style: 'margin-top:4px' }, 'stock bot 讀這家公司的申報、財報與網站，先寫反方，再寫論點、前提與出場條件。回來後在這裡先看反方，再決定要不要整份採用。'),
         own.pendingBreak ? h('p', { class: 'small', style: 'margin-top:6px;color:var(--hot)' }, `前提 ${own.pendingBreak.premiseId ?? ''} 剛被 AI 判不成立：這時候請 stock bot 草擬，草稿最上面會提醒你別只是替繼續持有找新理由，也不能沿用那一條。`) : null,
         h('div', { style: 'margin-top:10px' }, draftAction(d.ticker, draftState, { onEdit: true })),
       );
@@ -895,15 +768,15 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       back,
       kicker: own.thesis ? `第 ${own.thesis.version} 版，${day(own.thesis.setAt)} 定` : '還沒有論點本文',
       title: `編輯論點：${d.ticker}`,
-      sub: draft ? 'stock bot 的草稿回來了：在右邊先看反方，再逐條勾你同意的（勾了才填進「新的」），也可以照舊貼上 claude.ai 討論的結果或手寫。確認之後論點與前提馬上存好，出場條件有改動才送 AI 對照與改寫。' : '貼上 claude.ai 討論的結果、請 stock bot 草擬，或直接手寫。左邊是現在的、右邊是新的；確認之後論點與前提馬上存好，出場條件有改動才送 AI 對照與改寫。',
-      bubble: draft ? { k: '草稿', say: ['先看', { t: '反方的三點', tone: 'em' }, '，再勾你同意的；沒勾的不會生效。'], mood: 'watch' } : { k: '編輯論點', say: ['左右對照看一遍再確認。', { t: '出場條件', tone: 'em' }, '改了的話，要你在持股頁確認才會換上新的。'], mood: 'watch' },
+      sub: draft ? 'stock bot 的草稿回來了：在右邊先看反方的三點，還願意抱著就按「採用這份草稿」，整份照草稿存（出場條件採用後就生效）。不想用可以照舊貼上 claude.ai 討論的結果或手寫。' : '貼上 claude.ai 討論的結果、請 stock bot 草擬，或直接手寫。左邊是現在的、右邊是新的；確認之後論點與前提馬上存好，出場條件有改動才送 AI 對照與改寫。',
+      bubble: draft ? { k: '草稿', say: ['先看', { t: '反方的三點', tone: 'em' }, '，還願意抱著再按「採用這份草稿」。'], mood: 'watch' } : { k: '編輯論點', say: ['左右對照看一遍再確認。', { t: '出場條件', tone: 'em' }, '改了的話，要你在持股頁確認才會換上新的。'], mood: 'watch' },
     },
     pane: formBox,
     rail: glass(
       'pad',
       h('h2', { class: 'panel-h' }, '怎麼用'),
       h('p', { class: 'small', style: 'margin-top:8px' }, h('b', null, '用 stock bot 的草稿')),
-      h('ol', { class: 'small', style: 'margin:4px 0 0;display:grid;gap:6px' }, h('li', null, '1. 按「請 stock bot 草擬」，好了推 LINE。'), h('li', null, '2. 先看反方的三點，再逐條勾你同意的；勾了的填進「新的」，可以再改。'), h('li', null, '3. 看下面的預覽（用了哪些、沒勾的幾條），按「確認」。')),
+      h('ol', { class: 'small', style: 'margin:4px 0 0;display:grid;gap:6px' }, h('li', null, '1. 按「請 stock bot 草擬」，好了推 LINE。'), h('li', null, '2. 先看反方的三點，還願意抱著這檔就按「採用這份草稿」。'), h('li', null, '3. 現在有論點的話，會先列出哪幾條會被換掉，按「確定採用」；之後要改字在這一頁改。')),
       h('p', { class: 'small', style: 'margin-top:12px' }, h('b', null, '在 claude.ai 討論')),
       h('ol', { class: 'small', style: 'margin:4px 0 0;display:grid;gap:6px' }, h('li', null, '1. 按「複製討論包」，貼到 claude.ai 的新對話。'), h('li', null, '2. 和它討論；它會站在反方問你。'), h('li', null, '3. 說「收尾」，把輸出的區塊貼回這裡、按「解析」。'), h('li', null, '4. 看左右對照，需要的話改，按「確認」。')),
       h('p', { class: 'small faint', style: 'margin-top:10px' }, '討論包與草稿的證據包都只有比重，沒有金額與股數。「這次的結論」只顯示，不會自動下單。'),
@@ -974,7 +847,7 @@ export function thesisTodoPage(ctx) {
   });
   const body = rows.length
     ? [
-        h('p', null, '這些自選股還沒有你的論點，目前用系統預設前提做一般健康檢查。按「請 stock bot 草擬」讓 stock bot 先寫一份草稿（反方先寫），你在「編輯論點」逐條勾你同意的；或按「複製討論包」貼到 claude.ai 討論，說「收尾」後把結果貼回「編輯論點」。'),
+        h('p', null, '這些自選股還沒有你的論點，目前用系統預設前提做一般健康檢查。按「請 stock bot 草擬」讓 stock bot 先寫一份草稿（反方先寫），你在「編輯論點」看過反方再決定要不要採用；或按「複製討論包」貼到 claude.ai 討論，說「收尾」後把結果貼回「編輯論點」。'),
         h('p', { class: 'small dim', style: 'margin-top:6px' }, '不寫也可以：不擋上線，也不擋月報。買進時寫的那一句只當討論的開場，不是前提。'),
         h('div', { style: 'margin-top:14px' }, thesisTodoList(rows, ctx.state.drafts ?? {})),
         h('div', { class: 'btn-row', style: 'margin-top:16px' }, h('a', { class: 'btn primary', href: after.href }, '先跳過，之後再做'), dismiss),

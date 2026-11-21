@@ -152,7 +152,7 @@ export function lazyChart(ticker) {
 // ---------------------------------------------------------------- AI 的說明
 
 const PREM = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
-const ORIGIN = { USER: '你寫的', AI_DRAFT_ACCEPTED: 'AI 草擬、你勾選', SYSTEM_DEFAULT: '系統預設' };
+const ORIGIN = { USER: '你寫的', AI_DRAFT_ACCEPTED: 'AI 草擬、你採用', SYSTEM_DEFAULT: '系統預設' };
 
 export function aiBlock(note) {
   if (!note) return null;

@@ -1,6 +1,8 @@
 // T55：論點草稿任務（OWN_DRAFT，web_evidence_design §2.2、§2.4 第 6 點、§2.5）。證據包的組法、時機與上限、own_drafts 表。
 // T56：草稿的畫面與同意流程用到的部分也在這裡——每檔的草稿狀態（網站的按鈕）、讀草稿、用過（USED）／不用（DISMISSED）、
-//   使用者按的草稿回來或失敗時推 LINE 一行（pushDraftLines）。勾選之後的存檔照現有的論點存檔（src/app/site/api.ts 的 saveThesis）。
+//   使用者按的草稿回來或失敗時推 LINE 一行（pushDraftLines）。
+// T70（confirm_audit_design §2）：逐條勾選改成一鍵採用——整份照草稿存（draftAdoptPlan：前提、出場條件；adoptPeers：同業），
+//   存檔照現有的論點存檔（src/app/site/api.ts 的 saveThesis，帶採用的資料）；出場條件直接寫進條件（ownCheckAi.ts 的 adoptDraftExits）。
 //
 //   時機（§2.5）：
 //     新的自選（新的 fileId）→ 每日第一次流程自動開一次（每份論點檔只自動一次；失敗時下一次流程自動重試一次，G22）。
@@ -12,21 +14,22 @@
 //     新的 READY 回來時同一檔舊的 READY 標 EXPIRED；READY 30 天沒處理 → EXPIRED。
 //     自動開的連續 2 次失敗 → 告警 DRAFT_FAILED（G22）；使用者按的：回來（READY）或失敗推 LINE 一行，網站的按鈕旁邊寫原因與「再試一次」（T56）。
 //   還在跑的不重開要原子（T56）：開執行之前先佔一列 PENDING，同一檔同時只能有一列（migration 0020 的部分唯一索引），兩個分頁同時按第二個會 409。
-import { OWN_DRAFT, draftResult, ownDraftPack, type DraftBroken, type DraftPremise, type OwnDraft, brokenNotice } from '../ai/ownDraft';
+import { OWN_DRAFT, draftEventCheck, draftResult, ownDraftPack, type DraftBroken, type DraftPeer, type DraftPremise, type OwnDraft, brokenNotice } from '../ai/ownDraft';
 import { normalizeText, type EvidencePack, type PackDoc } from '../ai/check';
-import { discussionNumbers } from '../ai/discussion';
+import { discussionNumbers, planExits, type LiveCondition } from '../ai/discussion';
+import type { ExitLine } from '../ai/ownCheck';
 import { FRESH_FNS, parseNewRisks } from '../ai/freshEyes';
 import { newRunId, ownPremises, priceDoc, priceFacts } from '../ai/pack';
 import { XBRL_METRICS } from '../data/edgar';
 import { errText } from '../data/util';
-import { breaksOf, normVerify, ownHeld, premiseKey, type Account, type MarketView, type PremiseInput, type PremiseVerify } from '../engine';
+import { breaksOf, normVerify, ownHeld, type Account, type MarketView, type PremiseInput, type PremiseVerify, type WebPeer, type WebSourceCheck } from '../engine';
 import { loadAccount } from './ledgerStore';
 import { lineConfigured, lineUrl, pushLine } from './line';
 import type { ApplyCtx, StartCtx } from './aiCtx';
 import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { gatherOwnEvidence, reviewThesisEvidence, routineReady } from './ownAi';
-import { DRAFT_EXPIRE_DAYS, condFacts, draftUntil, fileKind, loadPrevFile, thesisFile, type PrevFile } from './thesis';
+import { DRAFT_EXPIRE_DAYS, acceptStatus, condFacts, draftUntil, fileKind, loadPrevFile, thesisFile, type CondAction, type PrevFile } from './thesis';
 import { buildDocMenu, sourceFacts } from './webEvidence';
 import type { DocCtx } from '../ai/added';
 
@@ -536,26 +539,31 @@ export async function draftForSave(db: D1Database, ticker: string, id: number): 
   return (await db.prepare('SELECT * FROM own_drafts WHERE id = ? AND ticker = ?').bind(id, ticker).first<DraftRow>()) ?? null;
 }
 
-/** 存檔時用了這份草稿的哪些（own_drafts.used_json；論點檔 log 的 THESIS 也帶一份）。 */
+/**
+ * 採用這份草稿時用了什麼（own_drafts.used_json；論點檔 log 的 THESIS 也帶一份）。T70（confirm_audit_design §2）起是整份採用，
+ * 沒有「沒勾的」；T56 的舊紀錄有 unused、domains、premises.edited，讀的地方（運作統計）當成可能沒有。
+ */
 export interface DraftUse {
   id: number;
   runId: string;
   /** 存成第幾版論點。 */
   version: number;
-  /** 論點本文：SAME 一字沒改／EDITED 用了再改／null 沒用。 */
-  thesis: 'SAME' | 'EDITED' | null;
-  /** 前提：原樣勾選幾條（AI_DRAFT_ACCEPTED）、勾了又改字幾條（USER）、草稿沿用你現在的前提幾條（keep_id）。 */
-  premises: { same: number; edited: number; kept: number };
+  /** 論點本文：整份照草稿，一律 SAME（T56 的舊紀錄可能是 EDITED 或 null）。 */
+  thesis: 'SAME';
+  /** 前提：原樣採用幾條（AI_DRAFT_ACCEPTED）、沿用你現在的前提幾條（keep_id，或字一樣）。edited 固定 0（T56 的舊紀錄是勾了又改字的條數）。 */
+  premises: { same: number; edited: 0; kept: number };
+  /** 出場條件：採用時直接寫進條件的條數（監測中、只在審查時檢查或只記錄）。 */
   exits: number;
+  /** 和現在監測中的一條字一樣、沿用那一條的條數。 */
+  exitsKept: number;
+  /** 改走改寫與持股頁確認的條數（T55／T60 的舊草稿：事件條件沒有確認來源）。 */
+  exitsRewrite: number;
+  /** 存進來的同業幾家；EDGAR 代號對不到、沒有存的那幾家與原因。 */
   peers: number;
-  domains: number;
-  /** 沒勾的：前提、出場條件、同業與網站各幾項（不列入或已經在清單裡的網站不算）。 */
-  unused: { premises: number; exits: number; sources: number };
-  /** 這份草稿是在前提被判不成立之後寫的（§2.4 第 6 點）：存檔算一次「失效後修改」。 */
+  peersSkipped: { name: string; edgar: string; why: string; yahooKept?: true }[];
+  /** 這份草稿是在前提被判不成立之後寫的（§2.4 第 6 點）：採用算一次「失效後修改」。 */
   afterBreak: boolean;
 }
-/** 有沒有用到草稿的任何一項（沒有 → 草稿照舊等你看，不標 USED）。 */
-export const draftUsed = (u: Pick<DraftUse, 'thesis' | 'premises' | 'exits' | 'peers' | 'domains'>): boolean => !!u.thesis || u.premises.same + u.premises.edited + u.premises.kept + u.exits + u.peers + u.domains > 0;
 
 /** 存檔用了這份草稿 → USED（還在等你看、或剛好過期的才改；已經用過或不用的不動）。回傳有沒有改。 */
 export async function markDraftUsed(db: D1Database, ticker: string, use: DraftUse, now: Date): Promise<boolean> {
@@ -581,7 +589,7 @@ export function draftLineText(row: Pick<DraftRow, 'ticker' | 'status' | 'error' 
   const until = draftUntil(row.settled_at ?? row.created_at);
   const line =
     row.status === 'READY'
-      ? `${tag}${row.ticker} 的論點草稿好了：先看反方，再逐條勾你同意的，沒勾的不會生效（${Number(until.slice(5, 7))}/${Number(until.slice(8, 10))} 之後不再列）`
+      ? `${tag}${row.ticker} 的論點草稿好了：先看反方的三點，再決定要不要整份採用（${Number(until.slice(5, 7))}/${Number(until.slice(8, 10))} 之後不再列）`
       : `${tag}${row.ticker} 的論點草稿沒有成功（${clipWhy(row.error)}），可以到網站再試一次`;
   return link ? `${line}\n${link}` : line;
 }
@@ -620,19 +628,6 @@ export async function pushDraftLines(env: Env, fetcher: Fetcher, now: Date): Pro
   return out;
 }
 
-/** 編輯論點頁送來的一條前提（T56）：draft = 從草稿的第幾條勾來的（0 起；不是從草稿來的是 null）。 */
-export interface DraftPremiseIn {
-  id: string | null;
-  text: string;
-  /** 怎樣算不成立（右邊那一條的欄位；T60 起最多 3 句）；undefined = 沒送（照舊）。 */
-  breaksIf?: string[];
-  /** 怎樣算證實（T60）；undefined = 沒送。 */
-  confirmsIf?: string;
-  /** 怎麼驗證（T60；null = 拿掉）；undefined = 沒送。 */
-  verify?: PremiseVerify | null;
-  draft: number | null;
-}
-
 /**
  * 草稿裡一條前提的三個欄位，整理成帳戶狀態的形狀（T60）。T55 的舊草稿（own_draft_v1）是 breaks_if 一段字、checkable_by、source_hint，
  * 一樣收：checkable_by 當成 verify.by、source_hint 當成來源，沒有怎樣算證實。
@@ -644,66 +639,105 @@ export function draftPremiseFields(dp: DraftPremise | (Partial<DraftPremise> & R
   return { breaksIf: breaksOf({ breaksIf: o.breaks_if as string[] | string | undefined }), confirmsIf: typeof o.confirms_if === 'string' ? o.confirms_if.trim() : '', verify };
 }
 
-/**
- * 存檔時怎麼用這份草稿（純函式；src/app/site/api.ts 的 saveThesis）：
- *   前提的來源：從草稿勾來、字沒改（去掉空白與標點後比）→ AI_DRAFT_ACCEPTED；改過字 → USER（§2.3）。
- *     breaks_if 存進 breaksIf：那一條有送就用送的（你可以改），沒送用草稿寫的。草稿沿用你現在的前提（keep_id）的，照舊是你的前提。
- *     T60：confirms_if、verify 也一樣（有送用送的，沒送用草稿的）。
- *   論點本文：和草稿一字沒改 → 來源 DRAFT；按了「用這段」又改了字 → 照舊（在網站手寫），記 EDITED。
- *   用了哪些、沒勾的有幾條（預覽的「勾了一半」與 own_drafts.used_json）；這份草稿是在前提被判不成立之後寫的 → 算一次「失效後修改」。
- * exits：右邊的出場條件裡從草稿勾來的是第幾條（0 起）；peers、domains：勾了的同業與網站（草稿裡的第幾項），只算存檔時還在來源裡的。
- */
-export function draftSave(
-  view: Pick<DraftView, 'id' | 'runId' | 'broken' | 'payload'>,
-  inp: { thesis: string; thesisPressed: boolean; premises: DraftPremiseIn[]; exits: number[]; peers: number[]; domains: number[]; webSources?: { peers: { name: string; edgar?: string; yahoo?: string }[]; domains: string[] } | null },
-  version: number,
-): { premises: PremiseInput[]; use: DraftUse; source: 'DRAFT' | null } {
-  const d = view.payload;
-  const same = { same: 0, edited: 0, kept: 0 };
-  const usedPremises = new Set<number>();
-  const premises: PremiseInput[] = inp.premises.map((p) => {
-    const dp = p.draft !== null ? d.premises[p.draft] : undefined;
-    const sent = { ...(p.breaksIf !== undefined ? { breaksIf: p.breaksIf } : {}), ...(p.confirmsIf !== undefined ? { confirmsIf: p.confirmsIf } : {}), ...(p.verify !== undefined ? { verify: p.verify } : {}) };
-    if (!dp) return { id: p.id, text: p.text, ...sent };
-    usedPremises.add(p.draft!);
-    const f = draftPremiseFields(dp);
-    const fields = { breaksIf: f.breaksIf, confirmsIf: f.confirmsIf, verify: f.verify, ...sent };
-    if (dp.keep_id && p.id === dp.keep_id) {
-      same.kept++;
-      return { id: p.id, text: p.text, ...fields };
-    }
-    const verbatim = premiseKey(p.text) === premiseKey(dp.text);
-    if (verbatim) same.same++;
-    else same.edited++;
-    return { id: p.id, text: p.text, origin: verbatim ? 'AI_DRAFT_ACCEPTED' : 'USER', ...fields };
-  });
-  const exits = new Set(inp.exits.filter((k) => Number.isInteger(k) && k >= 0 && k < d.exits.length)).size;
-  const ws = inp.webSources;
-  const peerOk = (k: number) => {
-    const dp = d.sources.peers[k];
-    return !!dp && !!ws && ws.peers.some((x) => (!!dp.edgar && x.edgar === dp.edgar) || (!!dp.yahoo && x.yahoo === dp.yahoo));
-  };
-  const domOk = (k: number) => {
-    const dd = (d.sources.domains ?? [])[k];
-    return !!dd && dd.state === 'NEW' && !!ws && ws.domains.some((x) => x.replace(/^https?:\/\//, '').replace(/\/.*$/, '').toLowerCase() === dd.domain);
-  };
-  const peers = new Set(inp.peers.filter(peerOk)).size;
-  const domains = new Set(inp.domains.filter(domOk)).size;
-  const thesisSame = !!inp.thesis && premiseKey(inp.thesis) === premiseKey(d.thesis);
-  const thesis: DraftUse['thesis'] = thesisSame ? 'SAME' : inp.thesisPressed ? 'EDITED' : null;
-  const sources = (d.sources.peers ?? []).length + (d.sources.domains ?? []).filter((x) => x.state === 'NEW').length;
-  const use: DraftUse = {
-    id: view.id,
-    runId: view.runId,
-    version,
-    thesis,
-    premises: same,
-    exits,
-    peers,
-    domains,
-    unused: { premises: d.premises.length - usedPremises.size, exits: d.exits.length - exits, sources: Math.max(0, sources - peers - domains) },
-    afterBreak: false,
-  };
-  use.afterBreak = !!view.broken && draftUsed(use);
-  return { premises, use, source: thesisSame ? 'DRAFT' : null };
+// ---------------------------------------------------------------- T70：一鍵採用（confirm_audit_design §2）
+
+/** 採用時直接寫進條件的一條出場條件（k：草稿的第幾條）。status：寫進去之後的狀態（照 acceptStatus 的規則）。 */
+export interface AdoptExit {
+  k: number;
+  text: string;
+  action: CondAction;
+  kind: 'XBRL' | 'EVENT' | 'PRICE';
+  check: Record<string, unknown>;
+  /** 對應草稿的第幾條前提（0 起；沒有是 null）。存檔後換成那一條的編號。 */
+  premiseIndex: number | null;
+  status: 'ACTIVE' | 'REVIEW_ONLY' | 'MANUAL';
 }
+
+/** 採用一份草稿會做什麼（純函式 draftAdoptPlan；網站的對照與存檔都用它）。 */
+export interface AdoptPlan {
+  /** 整份照草稿的前提：沿用你現在的那一條（keep_id）帶它的編號，其他是新的一條、來源 AI_DRAFT_ACCEPTED。 */
+  premises: PremiseInput[];
+  /** 直接寫進條件的（財報門檻、有確認來源的事件條件、價格條件），不送改寫、不到持股頁確認（§2.2）。 */
+  add: AdoptExit[];
+  /**
+   * 改走改寫與持股頁確認的：T55／T60 的舊草稿（own_draft_v1、v2）的事件條件沒有確認來源（confirm_by），
+   * 或更舊的沒有 kind、財報條件沒有門檻格式的——程式監測不了，照原本使用者寫的出場條件那樣送去改寫。
+   */
+  rewrite: (ExitLine & { k: number; why: string })[];
+  /** 和現在監測中的一條字一樣（去空白標點後比）：不新增、沿用那一條；成立時的動作不同就改成草稿的（was 是原本的）。 */
+  keep: { k: number; id: number; text: string; action: CondAction; was: CondAction | null }[];
+  /** 現在監測中、草稿裡沒有的你定的條件：採用時撤下（T42 整組取代，草稿就是存檔後要的全部出場條件）。 */
+  retire: LiveCondition[];
+}
+
+/** 條件寫進去之後的狀態（同 ownAi.ts insertConditionStmts 的算法：價格、指標程式算不出來的財報條件只記錄）。 */
+function adoptStatus(kind: AdoptExit['kind'], check: Record<string, unknown>): AdoptExit['status'] {
+  const auto = kind !== 'PRICE' && (kind !== 'XBRL' || String(check.metric) in XBRL_METRICS);
+  return acceptStatus({ kind, check, auto, status: 'PROPOSED' });
+}
+
+/**
+ * 整份採用一份草稿（純函式，§2.1、§2.2）：前提、出場條件怎麼存。live：這檔現在監測中的你定的條件（T42 整組取代的範圍）。
+ *   前提：草稿的全部前提照原樣；keep_id 帶那個編號（沿用，來源照舊），其他來源記 AI_DRAFT_ACCEPTED；三個欄位照草稿的。
+ *   出場條件：字和監測中的一條一樣 → 沿用（keep）；財報門檻（XBRL，check 照草稿）、有確認來源的事件條件（EVENT，check 再過一次
+ *     和改寫同一個格式檢查）、價格條件（只記錄）→ 直接寫進條件（add）；監測不了格式的（舊草稿的事件條件沒有 confirm_by 等）→ 送改寫（rewrite）；
+ *     監測中、草稿沒有的 → 撤下（retire）。
+ */
+export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits'>, live: LiveCondition[]): AdoptPlan {
+  const premises: PremiseInput[] = d.premises.map((dp) => {
+    const f = draftPremiseFields(dp);
+    return dp.keep_id ? { id: dp.keep_id, text: dp.text, ...f } : { id: null, text: dp.text, origin: 'AI_DRAFT_ACCEPTED' as const, ...f };
+  });
+  const exits = d.exits.map((x) => ({ text: x.text, action: (['EXIT', 'HALF', 'REVIEW'] as const).includes(x.action) ? x.action : ('REVIEW' as CondAction) }));
+  const plan = planExits(exits, live);
+  const keep: AdoptPlan['keep'] = [];
+  const add: AdoptExit[] = [];
+  const rewrite: AdoptPlan['rewrite'] = [];
+  d.exits.forEach((x, k) => {
+    const action = exits[k].action;
+    const same = plan.sameByText[k];
+    if (same !== undefined) {
+      const c = live.find((l) => l.id === same)!;
+      return void keep.push({ k, id: same, text: c.text, action, was: c.action ?? null });
+    }
+    const pi = typeof x.premise_index === 'number' ? x.premise_index : null;
+    const kind = x.kind;
+    const check = x.check && typeof x.check === 'object' ? x.check : null;
+    if (kind === 'XBRL' && check) return void add.push({ k, text: x.text, action, kind, check, premiseIndex: pi, status: adoptStatus(kind, check) });
+    if (kind === 'PRICE') return void add.push({ k, text: x.text, action, kind, check: check ?? {}, premiseIndex: pi, status: adoptStatus(kind, check ?? {}) });
+    if (kind === 'EVENT' && check) {
+      const ev = draftEventCheck(check, METRICS);
+      if (ev.check) return void add.push({ k, text: x.text, action, kind, check: ev.check, premiseIndex: pi, status: adoptStatus(kind, ev.check) });
+    }
+    const why = kind === 'EVENT' ? '舊格式的草稿：事件條件沒有寫用什麼確認' : kind === 'XBRL' ? '財報條件沒有門檻的格式' : '舊格式的草稿：沒有監測的格式';
+    rewrite.push({ k, text: x.text, action, why });
+  });
+  const kept = new Set(keep.map((x) => x.id));
+  return { premises, add, rewrite, keep, retire: live.filter((c) => !kept.has(c.id)) };
+}
+
+/**
+ * 草稿的同業怎麼存（§2.3）：有 EDGAR 代號的要核對得到 CIK（checks：probeWebSources 的結果，key 是 edgar:<代號>）才存；
+ * 對不到、沒有核對成的：有 Yahoo 代號的只存 Yahoo 代號，沒有的整家不存；都回原因。只有 Yahoo 代號的沒有東西要核對，照存。
+ */
+export function adoptPeers(peers: DraftPeer[], checks: WebSourceCheck[] | null): { save: WebPeer[]; skip: DraftUse['peersSkipped'] } {
+  const save: WebPeer[] = [];
+  const skip: DraftUse['peersSkipped'] = [];
+  for (const p of peers) {
+    if (!p.edgar) {
+      save.push({ name: p.name, ...(p.yahoo ? { yahoo: p.yahoo } : {}) });
+      continue;
+    }
+    const c = checks?.find((x) => x.key === `edgar:${p.edgar}`);
+    if (c?.ok === true) save.push({ name: p.name, edgar: p.edgar, ...(p.yahoo ? { yahoo: p.yahoo } : {}) });
+    else {
+      // EDGAR 對不到、但有 Yahoo 代號的：只拿掉 EDGAR 代號，新聞連結照存（主持者驗收 T70 時改：不在美國申報的同業多半如此）
+      if (p.yahoo) save.push({ name: p.name, yahoo: p.yahoo });
+      skip.push({ name: p.name, edgar: p.edgar, why: c?.why ?? '沒有核對 EDGAR 代號', ...(p.yahoo ? { yahooKept: true } : {}) });
+    }
+  }
+  return { save, skip };
+}
+
+/** 採用結果的那一行原因（存檔結果與預覽用）：「SK hynix（EDGAR HXSCL）沒有存：EDGAR 找不到這個代號…」。 */
+export const peerSkipText = (s: DraftUse['peersSkipped'][number]): string => `同業 ${s.name}（EDGAR ${s.edgar}）${s.yahooKept ? '只存了 Yahoo 代號，EDGAR 代號沒有存' : '沒有存'}：${s.why}`;

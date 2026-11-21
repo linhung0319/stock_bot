@@ -481,7 +481,7 @@ async function accountPremises(db: D1Database, ticker: string, at: string): Prom
 }
 
 const PREMISE_ORIGINS = ['USER', 'AI_DRAFT_ACCEPTED', 'SYSTEM_DEFAULT'];
-const PREMISE_ORIGIN_TITLE = '定期審查的前提結果，依前提的來源（USER 你寫的、AI_DRAFT_ACCEPTED 原樣勾選的草稿、SYSTEM_DEFAULT 系統預設）：成立、不成立、證據不足、票數不一致的次數';
+const PREMISE_ORIGIN_TITLE = '定期審查的前提結果，依前提的來源（USER 你寫的、AI_DRAFT_ACCEPTED 原樣採用的草稿、SYSTEM_DEFAULT 系統預設）：成立、不成立、證據不足、票數不一致的次數';
 
 /**
  * 自選定期審查的前提結果，依前提的來源分開（web_evidence_design §2.4 第 7 點）。
@@ -489,7 +489,8 @@ const PREMISE_ORIGIN_TITLE = '定期審查的前提結果，依前提的來源�
  * 一次審查裡的一條前提算一次檢查（同一條前提每個月都會再被檢查，所以次數不是「幾條前提」）。
  * 一條前提在這次審查的結果：格式合格的票至少 3 張而且判斷都一樣 → 那個判斷（holds 成立／broken 不成立／insufficient 證據不足；
  * 判成立或不成立但引用沒通過檢查的票，check.ts 已經改成證據不足）；票數不到 3 張或判斷不一樣 → split。沒有任何一票提到的前提不算檢查。
- * 來源（origin）：USER 你寫的（含勾了草稿又改字的）、AI_DRAFT_ACCEPTED 原樣勾選的草稿、SYSTEM_DEFAULT 系統預設；
+ * 來源（origin）：USER 你寫的（含採用草稿之後又改字的，T56 的舊資料含勾了草稿又改字的）、AI_DRAFT_ACCEPTED 原樣採用的草稿（T70 起整份採用；
+ *   T56 的舊資料是原樣勾選的）、SYSTEM_DEFAULT 系統預設；
  * UNKNOWN = 證據包寫 USER、但找不到當時帳戶裡「編號與字都相同」的前提（例如帳戶紀錄被清過）。
  * 草稿的前提判成立的比例 ≥ LOOSE_HOLDS_RATIO（至少 LOOSE_MIN_CHECKS 次）、而你寫的比它低 → AI_DRAFT_ACCEPTED 那一列的 note 提示出題可能偏鬆。
  * 合計列的 reviews 是不重複的審查次數（一次審查可以同時有好幾種來源的前提，各列的 reviews 加起來會比較大）。
@@ -821,9 +822,10 @@ export const webFailedSection: SectionFn = async (db, p) => {
  * 草稿（own_drafts，建立時間在期間內；依 AUTO 新自選自動開的、MANUAL 使用者按的）。每一列是一次草擬（自動失敗後重試的算另一次）。
  *   pending 還在跑；ready／used／dismissed／expired／failed 各狀態的次數；
  *   finished = drafts − pending；ok = ready ＋ used ＋ dismissed ＋ expired（通過程式檢查、使用者看得到的草稿）；
- *   success_ratio = ok ÷ finished（失敗的原因在 draft_failures）；used_ratio = used ÷ ok（存檔用了至少一項）；avg_minutes = 通過檢查的草稿從建立到結算平均幾分鐘；
- *   存檔用了的草稿（used_json）：premises_same 原樣勾選的前提、premises_edited 勾了又改字、premises_kept 沿用現有的、premises_unused 沒勾的；
- *   premises_taken_ratio = (same ＋ edited) ÷ (same ＋ edited ＋ unused)；exits_used／exits_unused 出場條件勾了與沒勾的條數。
+ *   success_ratio = ok ÷ finished（失敗的原因在 draft_failures）；used_ratio = used ÷ ok（採用了；T56 的舊紀錄是存檔用了至少一項）；avg_minutes = 通過檢查的草稿從建立到結算平均幾分鐘；
+ *   採用的草稿（used_json）：premises_same 原樣採用的前提、premises_kept 沿用現有的、exits_used 直接寫進條件的出場條件。
+ *   T70 起整份採用，沒有「沒勾的」：premises_edited、premises_unused、exits_unused 只有 T56 的舊紀錄（勾了又改字、沒勾的）才有數字；
+ *   premises_taken_ratio = (same ＋ edited) ÷ (same ＋ edited ＋ unused)。
  */
 export const draftsSection: SectionFn = async (db, p) => {
   const c = atCond(p, 'created_at');

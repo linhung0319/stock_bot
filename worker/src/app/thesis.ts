@@ -65,7 +65,8 @@ export interface CondProgress {
 }
 export type FileCondition = OwnCondition & {
   id: number;
-  origin: 'AI' | 'USER';
+  /** AI 審查建議的、USER 你寫的（改寫後確認）、AI_DRAFT_ACCEPTED 採用 stock bot 草稿時寫進來的（T70）。 */
+  origin: 'AI' | 'USER' | 'AI_DRAFT_ACCEPTED';
   fileId: string | null;
   /** 你勾選的時間：有值就是「你定的條件」（舊列沒有）。 */
   acceptedAt: string | null;
@@ -101,7 +102,7 @@ const toCond = (r: CondRow): FileCondition => ({
   createdAt: r.created_at,
   metAt: r.met_at,
   note: r.note,
-  origin: r.origin === 'USER' ? 'USER' : 'AI',
+  origin: r.origin === 'USER' || r.origin === 'AI_DRAFT_ACCEPTED' ? r.origin : 'AI',
   fileId: r.file_id ?? null,
   acceptedAt: r.accepted_at ?? null,
   action: COND_ACTIONS.includes(r.action as CondAction) ? (r.action as CondAction) : null,
@@ -945,9 +946,13 @@ export function progressText(c: Pick<FileCondition, 'progress' | 'check'>): stri
   return `最新一季 ${fmtMetric(metric, p.values[0] ?? null)}（${p.period}，門檻 ${fmtMetric(metric, p.level)}）；已連續 ${p.streak}／${p.need} 季`;
 }
 
-/** 誰定的、哪一天（§1.5）：「你寫的，11/20 定」「AI 建議，你在 11/20 勾選」「AI 建議，11/20 的審查寫的」。 */
+/**
+ * 誰定的、哪一天（§1.5）：「你寫的，11/20 定」「AI 建議，你在 11/20 勾選」「AI 建議，11/20 的審查寫的」；
+ * 採用草稿寫進來的（T70）：「stock bot 草稿，你在 11/21 採用」。
+ */
 export function ownerText(c: Pick<FileCondition, 'origin' | 'acceptedAt' | 'createdAt'>): string {
   if (c.origin === 'USER') return `你寫的，${md(c.acceptedAt ?? c.createdAt)} 定`;
+  if (c.origin === 'AI_DRAFT_ACCEPTED') return `stock bot 草稿，你在 ${md(c.acceptedAt ?? c.createdAt)} 採用`;
   return c.acceptedAt ? `AI 建議，你在 ${md(c.acceptedAt)} 勾選` : `AI 建議，${md(c.createdAt)} 的審查寫的`;
 }
 

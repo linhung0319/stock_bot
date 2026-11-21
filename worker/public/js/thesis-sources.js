@@ -104,13 +104,5 @@ export function sourcesEditor(ticker, ws, onChange) {
     h('div', { class: 'btn-row', style: 'margin-top:6px' }, probe),
     probeMsg,
   );
-  // 草稿勾來的同業（T56）：勾了加一列、取消勾選拿掉那一列（照代號找）；滿了回 false。草稿的網站不再能加（T68：addDom 一律 false）
-  const samePeer = (r, p) => (!!p.edgar && r.edgar.value.trim().toUpperCase() === p.edgar) || (!!p.yahoo && r.yahoo.value.trim().toUpperCase() === p.yahoo);
-  const pick = {
-    addPeer: (p) => peers.some((r) => samePeer(r, p)) || addPeer(p),
-    removePeer: (p) => peers.filter((r) => samePeer(r, p)).forEach((r) => (peers.splice(peers.indexOf(r), 1), r.el.remove())),
-    addDom: () => false,
-    removeDom: () => undefined,
-  };
-  return { el, value, changed: () => norm(value()) !== norm(ws), ...pick };
+  return { el, value, changed: () => norm(value()) !== norm(ws) };
 }

@@ -147,7 +147,7 @@ export function ownRuleFacts(acct: Account, view: MarketView, ticker: string): E
 }
 
 /**
- * 證據包裡前提的來源：原樣勾選的 stock bot 草稿（AI_DRAFT_ACCEPTED）寫成 USER——判前提的 AI 看不到題目是誰出的
+ * 證據包裡前提的來源：原樣採用的 stock bot 草稿（AI_DRAFT_ACCEPTED）寫成 USER——判前提的 AI 看不到題目是誰出的
  * （web_evidence_design §2.4 第 4 點，T56）。系統預設照舊分得出來（審查要知道 P1～P3 是一般健康檢查）。
  */
 export const packOrigin = (o: string): string => (o === 'AI_DRAFT_ACCEPTED' ? 'USER' : o);
@@ -169,7 +169,7 @@ export function packPremise(p: Pick<Premise, 'id' | 'text' | 'origin' | 'breaksI
 }
 
 /**
- * 自選股的前提（使用者寫的、勾選的 AI 草稿，或系統預設）。
+ * 自選股的前提（使用者寫的、採用的 AI 草稿，或系統預設）。
  * 信念（verify.by = NONE，composite §2.3）不進審查的逐條判定：預設不放；opt.beliefs = true 才放（草稿要看得到全部現行的前提、
  * 出場條件的改寫要對得到前提）。
  */

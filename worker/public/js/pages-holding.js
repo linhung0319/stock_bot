@@ -7,7 +7,7 @@ import { glass, meterEl, page, tiles } from './layout.js';
 import { aiBlock, attentionList, chart, refillText } from './parts.js';
 import { actionButton, errBox } from './pages-notif.js';
 import { ownMonitor } from './pages-ai.js';
-import { attnDraftAction, copyPackButton, draftAction } from './pages-thesis.js';
+import { attnDraftAction, copyPackButton, draftAction, takeAdoptFlash } from './pages-thesis.js';
 import { BELIEF_TEXT } from './thesis-fields.js';
 import { CHECK_TONE, premiseChecks, premiseSummary } from './premise-check.js';
 
@@ -54,7 +54,7 @@ function ownBubble(d, main) {
 // ---------------------------------------------------------------- 自選股
 
 function ownPanels(ctx, d, main) {
-  return [openBox(d), thesisPanel(d), attentionPanel(d), condPanel(ctx, d), eventPanel(d), reviewPanel(d), rulePanel(ctx, d, main), d.mom ? momPanel(d.mom) : null, historyBlock(d)];
+  return [adoptedBox(d), openBox(d), thesisPanel(d), attentionPanel(d), condPanel(ctx, d), eventPanel(d), reviewPanel(d), rulePanel(ctx, d, main), d.mom ? momPanel(d.mom) : null, historyBlock(d)];
 }
 
 /** 論點、前提與最近一次檢查、編輯與討論的入口。 */
@@ -97,8 +97,8 @@ function thesisPanel(d) {
       'p',
       { class: 'small faint', style: 'margin-top:8px' },
       def
-        ? `按「請 stock bot 草擬」，stock bot 讀申報、財報與清單內的網站寫一份草稿（反方先寫），你在「編輯論點」逐條勾你同意的才會生效。想自己和 AI 討論，按「複製討論包」貼到 claude.ai 的新對話，它會${o.prev ? '從上次為什麼賣、這次為什麼買回問起' : o.buyNote ? '從你買進時寫的那一句問起' : '先問你為什麼買'}；討論完說「收尾」，把結果貼回「編輯論點」。`
-        : '「請 stock bot 草擬」寫一份新的草稿給你對照（每檔 7 天一次，勾了的才會換上）；「複製討論包」把論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論，說「收尾」後把結果貼回「編輯論點」。',
+        ? `按「請 stock bot 草擬」，stock bot 讀申報、財報與網站寫一份草稿（反方先寫），你在「編輯論點」看過反方、按「採用這份草稿」才會生效。想自己和 AI 討論，按「複製討論包」貼到 claude.ai 的新對話，它會${o.prev ? '從上次為什麼賣、這次為什麼買回問起' : o.buyNote ? '從你買進時寫的那一句問起' : '先問你為什麼買'}；討論完說「收尾」，把結果貼回「編輯論點」。`
+        : '「請 stock bot 草擬」寫一份新的草稿給你對照（每檔 7 天一次，按「採用這份草稿」才會整份換上）；「複製討論包」把論點、前提、條件、事件和數字整理成一段文字（不含金額與股數），貼到 claude.ai 討論，說「收尾」後把結果貼回「編輯論點」。',
     ),
     // 這一次已經有論點：上一次的收起來放在最下面，還是找得到（T44）
     !def && o.prev ? prevBlock(o.prev, false) : null,
@@ -313,6 +313,23 @@ function stdWeightEdit(ctx, d) {
 }
 
 /** 還沒成交的清單上這一檔的單（T39a：動能這個月超過目標 ±50% 要賣，持股頁原本沒提）。 */
+/**
+ * 剛採用 stock bot 的草稿、從編輯論點頁回來（T70，confirm_audit_design §2.1）：最上面寫「已採用 M/D 的草稿；要改字在這一頁改」
+ * （「這一頁」連到編輯論點頁），下面是出場條件與同業怎麼存的、沒存的同業的原因。只出現這一次（重新整理就不見）。
+ */
+function adoptedBox(d) {
+  const xs = takeAdoptFlash(d.ticker);
+  if (!xs?.length) return null;
+  const [first, ...rest] = xs;
+  const edit = `#/h/${encodeURIComponent(d.ticker)}/thesis`;
+  const [pre, post] = first.text.split('這一頁');
+  return glass(
+    'pad adopt-flash',
+    h('p', { class: `tone-${first.tone}` }, pre, post !== undefined ? [h('a', { href: edit }, '這一頁'), post] : null),
+    rest.map((x) => h('p', { class: `small tone-${x.tone}` }, x.text)),
+  );
+}
+
 function openBox(d) {
   if (!d.open?.length) return null;
   return h(

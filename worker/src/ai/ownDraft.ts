@@ -1,7 +1,7 @@
 // T55：論點草稿（OWN_DRAFT，web_evidence_design §2.2、§2.4 第 6 點）。純函式：證據包、送回的草稿逐欄檢查、檢查過的草稿。
 // 資料抓取、時機與上限、own_drafts 表在 src/app/ownDraft.ts。
 //
-//   權限 A2（只說明；使用者逐條勾選才有效果），一份（samples = 1），不是三票。
+//   權限 A2（只說明；使用者按「採用這份草稿」才整份生效，T70），一份（samples = 1），不是三票。
 //   流程（own_draft_v2）：研究員讀證據包、可以找資料（和審查同一套取文件，§1.5）→ 反方先寫 → 正方回應 → 主筆寫草稿。
 //   程式檢查（§2.2）不過的整份退回（這一票改成 INSUFFICIENT、原因寫進 issues），不給使用者半份草稿：
 //     外殼與 evidence 照 check.ts（引用逐字出自證據包）；前提 3～5 條、出場條件 2～6 條、字數上限同 parseThesisBlock；
@@ -188,10 +188,10 @@ export function ownDraftPack(inp: OwnDraftInput) {
       `（每條寫怎樣算證實、怎樣算不成立〔最多 ${DRAFT_LIMITS.breaksClauses} 句〕、用什麼來源驗證與多久有新的一份；查不到的配一個查得到的替代指標，配不出來的標成信念，至少 ${DRAFT_LIMITS.checkableMin} 條不是信念）、` +
       `${DRAFT_LIMITS.exitsMin}～${DRAFT_LIMITS.exitsMax} 條出場條件（至少一條是出清或減半的財報數字門檻）。` +
       '反方先寫：這家公司最可能讓持有者後悔的三件事（各附證據），以及「如果現在沒有持股，今天用這個價格會不會買」的反方答案；正方要回應反方的三件事。' +
-      '每一條前提都要查得到哪些證據顯示它成立、哪些顯示它不成立。這是草稿：每一條都要使用者勾選才會生效。不要評論該不該買或賣、不要寫股數或價位。',
+      '每一條前提都要查得到哪些證據顯示它成立、哪些顯示它不成立。這是草稿：使用者看過反方、按「採用」才會整份生效（論點、前提、出場條件、同業一起存），出場條件採用後直接開始監測，所以要寫成程式或申報查得到的格式。不要評論該不該買或賣、不要寫股數或價位。',
     policy: { level: 'A2', verdicts: ['DONE', 'INSUFFICIENT'], abstain: 'INSUFFICIENT', min_evidence: 0, samples: 1 },
     rule: {
-      action: '只說明（草稿：使用者逐條勾選才生效）',
+      action: '只說明（草稿：使用者按「採用」才整份生效）',
       detail: {
         trigger: inp.trigger,
         thesisVersion: inp.thesisVersion,
