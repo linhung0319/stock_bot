@@ -29,7 +29,7 @@ import { BRIEF_SCANNED_KEY, applyMarketBrief, briefGroups, briefHoldings, latest
 import { tradingDaysBetween } from '../src/data/calendar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries, saveRanking } from '../src/data/store';
-import { extractPage, fetchWebDoc, findPublishedInText, findReleaseDate, reflowPre, urlDate } from '../src/data/webDoc';
+import { extractPage, fetchWebDoc, findPublishedInText, findReleaseDate, reflowPre, urlDate, WEB_BOT_UA } from '../src/data/webDoc';
 import { probeWebPage } from '../src/data/webProbe';
 import { WEB_SOURCES, matchWebSource } from '../src/data/webSources';
 import { htmlToText } from '../src/data/edgar';
@@ -225,6 +225,26 @@ describe('T64 官方來源的擷取與日期（§5.1）', () => {
     // 內文之後的不算；沒有星期幾的不算（那是一般規則的事）
     expect(findReleaseDate(`Title\n${long}\n8:30 a.m. (ET) Thursday, November 12, 2026`)).toBeNull();
     expect(findReleaseDate(`Next release is scheduled for sometime in December 2026\n${long}`)).toBeNull();
+    // CPI 新聞稿：同一行後面接著新聞稿編號（2026-11-21 真的頁面）
+    expect(findReleaseDate(`Transmission of material in this release is embargoed until\n8:30 a.m. (ET) Tuesday, November 10, 2026      USDL-26-1685\n\nCONSUMER PRICE INDEX - OCTOBER 2026\n${long}`)).toBe('2026-11-10');
+  });
+
+  it('勞工統計局擋瀏覽器的 User-Agent：抓它的時候改用寫明是程式的（不含聯絡資料），其他網站照舊', async () => {
+    const seen: Record<string, string> = {};
+    const f: Fetcher = async (u, init) => {
+      const ua = new Headers(init?.headers).get('User-Agent') ?? '';
+      seen[new URL(u).hostname] = ua;
+      if (u === BLS_URL) return ua === WEB_BOT_UA ? html(BLS) : new Response('denied', { status: 403 });
+      return u === FED_SPEECH_URL ? html(FED_SPEECH) : new Response('nf', { status: 404 });
+    };
+    expect(await fetchWebDoc(f, BLS_URL, NOW)).toMatchObject({ status: 'OK', published: '2026-11-06' });
+    expect(await fetchWebDoc(f, FED_SPEECH_URL, NOW)).toMatchObject({ status: 'OK' });
+    expect(seen['www.bls.gov']).toBe(WEB_BOT_UA);
+    expect(seen['www.federalreserve.gov']).toMatch(/^Mozilla\//);
+    expect(WEB_BOT_UA).not.toMatch(/@|mailto|https?:/);
+    seen['www.bls.gov'] = '';
+    expect(await probeWebPage(f, BLS_URL)).toMatchObject({ ok: true, published: '2026-11-06' });
+    expect(seen['www.bls.gov']).toBe(WEB_BOT_UA);
   });
 
   it('沒有寫擷取方式的來源照舊：<pre> 不接、門檻 1,500 字、不看網址與發布時間那一行', async () => {

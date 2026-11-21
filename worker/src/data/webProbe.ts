@@ -2,7 +2,7 @@
 // 只量、不存資料、不進任何流程（設計 docs/design/web_evidence_design_2026-11-20.md；/admin/web/test）。
 import { htmlToText, parseRss } from './edgar';
 import type { Fetcher } from './sources';
-import { extractPage, findPublished, safeWebUrl } from './webDoc';
+import { extractPage, findPublished, safeWebUrl, webHeaders } from './webDoc';
 import { matchWebSource } from './webSources';
 
 // safeWebUrl、findPublished 搬到 webDoc.ts（T51），這裡照舊匯出給既有的呼叫者。
@@ -39,7 +39,9 @@ export async function probeWebPage(fetcher: Fetcher, raw: string): Promise<WebPr
   if (!u) return { url: raw, ok: false, error: '只收 https 的公開網址' };
   const t0 = Date.now();
   try {
-    const res = await fetcher(u.toString(), { headers: HEADERS, redirect: 'follow', signal: AbortSignal.timeout(15_000) });
+    // 和 fetchWebDoc 同一套 User-Agent：寫了 selfIdentify 的網站（勞工統計局）用寫明是程式的
+    const first = matchWebSource(u);
+    const res = await fetcher(u.toString(), { headers: webHeaders('miss' in first ? undefined : first.extract, HEADERS), redirect: 'follow', signal: AbortSignal.timeout(15_000) });
     const contentType = res.headers.get('content-type') ?? '';
     const buf = new Uint8Array(await res.arrayBuffer());
     const base = { url: raw, status: res.status, finalUrl: res.url || u.toString(), contentType, bytes: buf.length, ms: Date.now() - t0 };

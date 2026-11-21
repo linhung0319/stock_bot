@@ -21,6 +21,10 @@ export const WEB_DOC_KEEP_UNUSED_DAYS = 180;
 const MAX_REDIRECTS = 5;
 
 const HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36', Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9' };
+/** 清單上寫了 selfIdentify 的網站用的 User-Agent：寫明是程式，不含聯絡資料。 */
+export const WEB_BOT_UA = 'stock-bot (personal research)';
+/** 抓一頁要帶的 header：一般用瀏覽器的 User-Agent，寫了 selfIdentify 的網站改用 WEB_BOT_UA。 */
+export const webHeaders = (ex?: WebExtract, base: Record<string, string> = HEADERS): Record<string, string> => (ex?.selfIdentify ? { ...base, 'User-Agent': WEB_BOT_UA } : base);
 
 export type WebDocStatus = 'OK' | 'THIN' | 'BLOCKED' | 'UNSUPPORTED' | 'NOT_LISTED' | 'NO_DATE' | 'TOO_OLD' | 'ERROR';
 export type WebDocVia = 'MENU' | 'SEARCH' | 'MANUAL';
@@ -190,7 +194,7 @@ const RELEASE_LINES_BACK = 25;
 
 /**
  * 內文之前「…星期幾, 月 日, 年」結尾的那一行（勞工統計局新聞稿開頭的 `8:30 a.m. (ET) Friday, September 5, 2025`）→ YYYY-MM-DD。
- * 只在來源寫了 extract.releaseLine 時用；只看第一段內文之前、不算空行的 25 行內，一行最多 120 字。
+ * 行尾的新聞稿編號（`USDL-26-1685`）先拿掉。只在來源寫了 extract.releaseLine 時用；只看第一段內文之前、不算空行的 25 行內，一行最多 120 字。
  */
 export function findReleaseDate(text: string): string | null {
   const lines = text.split('\n').map((l) => l.trim());
@@ -201,7 +205,8 @@ export function findReleaseDate(text: string): string | null {
     if (!lines[i]) continue;
     seen++;
     if (lines[i].length > 120) continue;
-    const m = WEEKDAY.exec(lines[i]);
+    // CPI 那種：同一行後面接著新聞稿編號（`8:30 a.m. (ET) Tuesday, November 10, 2026      USDL-26-1685`）
+    const m = WEEKDAY.exec(lines[i].replace(/\s+USDL-\d{2}-\d+$/i, ''));
     const d = m && dateLine(m[1]);
     if (d) return d;
   }
@@ -342,7 +347,7 @@ export async function fetchWebDoc(fetcher: Fetcher, raw: string, now: Date, opt:
     let cur = new URL(url);
     let res: Response | null = null;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      res = await fetcher(cur.toString(), { headers: HEADERS, redirect: 'manual', signal: AbortSignal.timeout(WEB_DOC_TIMEOUT_MS) });
+      res = await fetcher(cur.toString(), { headers: webHeaders(src.extract), redirect: 'manual', signal: AbortSignal.timeout(WEB_DOC_TIMEOUT_MS) });
       if (res.status < 300 || res.status >= 400) break;
       const loc = res.headers.get('location');
       if (!loc) break;

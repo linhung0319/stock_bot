@@ -31,6 +31,11 @@ export interface WebExtract {
   urlDate?: boolean;
   /** 認不出發布日時的備案：內文之前「…星期幾, 月 日, 年」結尾的發布時間那一行（勞工統計局的 `8:30 a.m. (ET) Friday, September 5, 2025`）。 */
   releaseLine?: boolean;
+  /**
+   * 這個網站擋看起來像瀏覽器的請求：改用老實寫明是程式的 User-Agent（`WEB_BOT_UA`，不含聯絡資料）。
+   * 勞工統計局：瀏覽器的 User-Agent 和 curl 的都回 403，寫明是程式的回 200（2026-11-21 從 Cloudflare 與本機實測）。
+   */
+  selfIdentify?: boolean;
 }
 
 export const WEB_SOURCES: readonly WebSource[] = [
@@ -60,9 +65,9 @@ export const WEB_SOURCES: readonly WebSource[] = [
     domain: 'bls.gov',
     tier: 'PRIMARY',
     label: '美國勞工統計局（BLS）',
-    note: '只收新聞稿（/news.release/：就業報告、CPI…）。內文放在 <pre>、固定寬度斷行，先接回成段落；發布日是開頭「8:30 a.m. (ET) Friday, …」那一行。2026-11-21 實測從 Cloudflare 抓得到（本機是 403）',
+    note: '只收新聞稿（/news.release/：就業報告、CPI…）。內文放在 <pre>、固定寬度斷行，先接回成段落；發布日是開頭「8:30 a.m. (ET) Friday, …」那一行。瀏覽器的 User-Agent 從 Cloudflare 與本機都是 403，改用寫明是程式的（selfIdentify）就抓得到；發布時間那一行後面可能接著新聞稿編號（USDL-…）（2026-11-21 實測就業報告與 CPI）',
     paths: ['/news.release/'],
-    extract: { minBody: 800, pre: true, releaseLine: true },
+    extract: { minBody: 800, pre: true, releaseLine: true, selfIdentify: true },
   },
 ];
 
