@@ -5,6 +5,48 @@
 
 開始：2026-11-21，commit `ed6cf0e`。基準：`npm test` 968 通過、1 略過；typecheck、lint 通過；`worker/fixtures/replay/` 存在。
 
+## 給使用者的三張清單（2026-11-21）
+
+階段十的 T60～T65 全部做完，都 commit 在 main（還沒 push、還沒部署）。最後的狀態：`npm test` 1139 通過、1 略過（開始時 968），typecheck、lint 通過，重放驗收 4 個通過、數字不變。規則引擎的參數與狀態機（慢規則、崩盤規則）、`check.ts` 的逐字引用檢查、`backtest/`、`web_evidence` §2.4 第 4 點都沒有動。`VERSION` 升成 0.16.0。卡住的任務：沒有。
+
+### 一、要看的畫面
+
+都在 `records/stage10/screens/`（不進 git），主持者每個任務都打開看過桌機與手機。建議的順序：
+
+1. `T61/crop-premises-*`：持股頁每條前提的四種寫法（證實、被判不成立、這次沒驗到、已經 3 次沒驗到）加信念。
+2. `T60/edit-draft-ticked-*`、`edit-belief-warn-*`：編輯論點頁每條前提的「怎麼驗證」、標成信念、只剩 1 條查得到的提醒。
+3. `T63/crop-attention-*`、`edit-risk-taken-*`：新眼光提到的風險在「要看的事」與編輯論點頁。
+4. `T65/crop-home-brief-*`、`ai-run-brief-*`、`crop-runup-*`：首頁的市場摘要那一行、紀錄頁的市場摘要、漲太多的提示。
+
+### 二、執行中做的決定（挑出值得看的；全部在下面「執行中做的決定」）
+
+- **Y2 的副作用**（T64）：四個媒體與聯準會、BLS 加在共用清單，所以自選審查也看得到。`web_evidence` §1.6「媒體要兩個不同網域才算」從實際上成立不了變成湊得到；聯準會、BLS 是一手，可以單獨判前提不成立。我判斷在 Y2 的範圍內沒有擋；若你要媒體只給市場摘要用，說一聲。
+- **判成立要指出正面的引用**（T61）：沒寫 `confirm_ids` 就降成證據不足（方向安全）；真的模型照不照寫要看 M8。
+- **預設 100 天的驗證頻率**（T61）：曆年制公司 11 月的 10-Q 到 2 月底的 10-K 可能超過 100 天，這段期間只引用舊 10-Q 的成立會被標逾期。上線後看 `stale` 再調。
+- **新眼光不上網**（T63）：只能從目錄指定 1 份，維持「只有分析師可以用 WebSearch」。
+- **手動開的市場摘要**（T65）：不分給個股、不上首頁、不進 LINE，只在 AI 紀錄。
+- **同一天的時間差**（T65）：同一次流程開的摘要趕不上同一次的個股執行；個股讀開執行時已寫好的那一份，沒有改推播時間。
+- **還沒部署的 prompt 直接改不升版**（T62 起）：`own_draft_v2`、`own_review_v4`、`own_drop_v4`、`market_brief_v1` 都是這一階段才有、沒跑過。
+- 網站手寫不強制「至少 2 條不是信念」，只在預覽提醒（T60）；帶進右欄的風險不改字也能存，只有提醒（T63）。
+
+### 三、要親手做的事（照順序；步驟也寫在 `worker/SETUP.md` 最後一節，即 T66）
+
+1. **`git push`**。
+2. **遠端資料庫**：`npx wrangler d1 migrations apply stock-bot --remote`（`0021`、`0022`）。**要在部署之前**。
+3. **部署**：`npx wrangler deploy`；`GET /health` 應該是 `0.16.0`。
+4. **部署之後**重新貼 `ai/prompts/run.md`「## 排程的 prompt」以下整段到 claude.ai 的排程。
+5. **官方來源重測**：`/admin/web/test` 測聯準會演講、利率決議聲明、BLS 就業報告與 CPI。
+6. **M7**：`POST /admin/ai/brief`，看多久、寫得怎樣。
+7. **M8**：`POST /admin/ai/review?ticker=MU`，看 `confirm_ids`、逐句問題、新眼光；運作統計的 `no_confirm`、`clause_slots`／`clause_asked`。
+8. `db_size` 和 `wrangler d1 info` 對一次。
+9. 看上面的畫面與決定，不同意的提出來。
+
+### 沒驗證過的
+
+- 真的模型會不會照新 prompt 寫 `confirm_ids`、逐句列問題、只給新眼光 `fresh.json`、把市場摘要只當背景（都只有 prompt 內容與假回覆的測試）。
+- BLS 頁面的擷取（沒對過真頁面）。
+- 市場摘要真的觸發一次的全流程（只有假的價格與回覆）。
+
 ## 執行中做的決定
 
 ### T60（前提的新欄位）
@@ -98,6 +140,10 @@
 - `records/stage10/screens/T61/`：`crop-premises-*`（持股頁前提的四種寫法加信念、還沒檢查過）、`crop-banner-*`（史萊姆那一句）、`holding-mu-*`、`ai-run-*`（審查紀錄頁的「引用逾期」「沒有指出正面的引用」）。資料用真的伺服器函式算、經 CDP 換進示範的 API。
 - `records/stage10/screens/T63/`：`crop-attention-*`（「要看的事」的三行）、`edit-risks-*`／`crop-risk-box-*`（編輯論點頁右欄上面那一塊）、`edit-risk-taken-*`（按了「帶進右欄」）、`edit-risk-reworded-*`／`crop-preview-*`（改字與預覽）、`crop-ai-run-risks-*`（紀錄頁）、`holding-mu-*`。同樣是真的函式算、CDP 換進示範 API。
 - `records/stage10/screens/T65/`：`home-*`／`crop-home-brief-*`（首頁那一行）、`history-ai-*`（AI 紀錄列表）、`ai-run-brief-*`（紀錄頁的市場摘要那一塊）、`holding-mu-*`／`crop-runup-*`（「要看的事」的 `RUNUP`）。LINE 那一行只有測試。
+
+## 收尾（主持者）
+
+- `VERSION` 升 0.16.0；`worker/SETUP.md` 加「階段十」部署步驟（T66）。
 
 ## 卡住的任務
 

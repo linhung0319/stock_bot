@@ -248,3 +248,16 @@ npx wrangler deploy
 5. 排程的 connector 清單維持空的（設計 M5）。
 6. 實測 M3：手動觸發一次有自己論點的股票的審查（例如在持股頁改一條前提，隔天的流程會開；或等月底），再在持股頁按一次「請 stock bot 草擬」。看審查紀錄頁「AI 這次另外找了什麼」：分析師問了什麼、搜尋幾次、想取幾份、取到幾份；子代理裡 WebSearch 能不能用；執行多久。
 7. 一個月後（M4）：看 claude.ai 的用量頁，並跑 `uv run python scripts/export_records.py`，看 `records/reports/ops_<日期>.json` 的 `premise_origin`、`web_runs`、`web_refused`、`web_skipped`、`web_failed`、`drafts`、`draft_failures`，決定網域清單（`worker/src/data/webSources.ts`）要不要調、要不要做設計 §1.11 的第二階段。
+
+## 階段十（2026-11-21）：綜合層與審查判定的部署（計畫 T66）
+
+階段十（`docs/plan/thesis_plan_2026-11-15.md`、設計 `docs/design/composite_layer_design_2026-11-21.md`）加了兩個 migration、新眼光的端點 `/ai/task/<編號>/fresh`、市場摘要與新的 prompt。**順序不能反**：舊的 Worker 沒有 `/fresh`、不認得 `new_risks`，會把整份結果退回；沒套 migration 就部署，結果端點寫 `ai_runs.new_risks`、每日流程讀寫 `market_briefs` 會出錯。
+
+1. `git push`：雲端排程從 repo 讀 prompt（`own_review_v4`、`own_drop_v4`、`own_draft_v2`、`market_brief_v1`）。
+2. 資料表：`npx wrangler d1 migrations apply stock-bot --remote`（新增 `0021_ai_runs_new_risks`、`0022_market_briefs`）。
+3. `npx wrangler deploy`，之後 `GET /health` 應該是 `0.16.0`。
+4. 部署之後，把 `ai/prompts/run.md` 裡「## 排程的 prompt」標題以下到檔案結尾整段，重新貼到 claude.ai 雲端排程的 Instructions（T62 改了取文件的規則、T63 加了新眼光；`ping.md` 沒改）。connector 清單維持空的。
+5. 官方來源重測（T64；本機抓 bls.gov 是 403，BLS 的擷取沒對過真頁面）：`/admin/web/test?url=…` 測聯準會的一篇演講、一份利率決議聲明，BLS 的就業報告與 CPI 新聞稿。看內文字數與發布日；不對就改 `worker/src/data/webDoc.ts` 的 `reflowPre`／`findReleaseDate`。
+6. 實測 M7（市場摘要一次多久）：`curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/ai/brief`，再看 `/admin/ai/task/<taskId>` 的時間與 AI 紀錄頁的市場摘要那一塊（手動開的不上首頁、不分給個股）。
+7. 實測 M8（MU 那次審查用新 prompt 重跑）：`POST /admin/ai/review?ticker=MU`。看審查紀錄頁：每一票有沒有寫 `confirm_ids`（被降成證據不足的原因「沒有指出正面的引用」多不多）、分析師有沒有逐句列問題、「新眼光」那一塊有沒有東西；跑 `uv run python scripts/export_records.py` 看運作統計 `premise_prompt` 的 `no_confirm`、`web_runs` 的 `clause_slots` 與 `clause_asked`。
+8. 運作統計的 `db_size` 和 `npx wrangler d1 info stock-bot` 對一次。
