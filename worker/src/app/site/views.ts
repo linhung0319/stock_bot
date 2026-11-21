@@ -34,6 +34,9 @@ import {
   type Snapshot,
   cashflowKind,
   notifName,
+  breaksOf,
+  isBelief,
+  type PremiseVerify,
 } from '../../engine';
 import { CRASH_REVIEW } from '../../ai/crash';
 import { HORIZONS, indexOn, type PriceBook } from '../../ai/shadow';
@@ -1155,7 +1158,11 @@ export interface HoldingDetail {
     scaled: boolean;
     /** id：前提的編號；system：系統預設前提。 */
     /** silenced：這條前提在靜默期內的那一句（own_thesis §1.10；不在是 null）。 */
-    premises: { id: string; text: string; origin: string; system: boolean; silenced: string | null; breaksIf?: string | null }[];
+    /**
+     * breaksIf：怎樣算不成立的子句（T60 起最多 3 句；舊資料的一段字當成一句；沒有是空陣列）；confirmsIf：怎樣算證實；
+     * verify：怎麼驗證（沒有是 null）；belief：信念（verify.by = NONE，composite §2.3：查不到，是你選擇相信的，不進審查）。
+     */
+    premises: { id: string; text: string; origin: string; system: boolean; silenced: string | null; breaksIf: string[]; confirmsIf: string | null; verify: PremiseVerify | null; belief: boolean }[];
     lastReview: string | null;
     /** 月底檢查點沒有新證據、沒審的那一句（own_thesis §3.7）；之後有新的審查就不顯示。 */
     reviewSkip: string | null;
@@ -1327,8 +1334,22 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
             half: rule.applied === 'HALF',
             fill: ownDepositFill(acct.rule, acct.cfg, ticker) ?? 0,
             scaled: ownDepositScale(acct.rule, acct.cfg.ratio.own) < 1,
-            // breaksIf 另外給一份（T56：編輯論點頁要能看、能改「怎樣算不成立」；text 照舊接在後面給持股頁顯示）
-            premises: meta.premises.map((p) => ({ id: p.id, text: p.text + (p.breaksIf ? `（不成立的訊號：${p.breaksIf}）` : ''), origin: ORIGIN[p.origin] ?? p.origin, system: p.origin === 'SYSTEM_DEFAULT', silenced: silencedText(meta, p.id, view.date), breaksIf: p.breaksIf ?? null })),
+            // breaksIf 另外給一份（T56：編輯論點頁要能看、能改「怎樣算不成立」；text 照舊接在後面給持股頁顯示，T60 起多句用「；」接）
+            // T60：怎樣算證實、怎麼驗證、是不是信念另外給（編輯論點頁要能改；持股頁標明信念）
+            premises: meta.premises.map((p) => {
+              const breaks = breaksOf(p);
+              return {
+                id: p.id,
+                text: p.text + (breaks.length ? `（不成立的訊號：${breaks.join('；')}）` : ''),
+                origin: ORIGIN[p.origin] ?? p.origin,
+                system: p.origin === 'SYSTEM_DEFAULT',
+                silenced: silencedText(meta, p.id, view.date),
+                breaksIf: breaks,
+                confirmsIf: p.confirmsIf ?? null,
+                verify: p.verify ?? null,
+                belief: isBelief(p),
+              };
+            }),
             lastReview: meta.aiTier ? `${meta.aiTier.date}：${TIER_NAME[meta.aiTier.tier]}` : null,
             reviewSkip: reviewSkipOf(meta, view.date),
             thesis: meta.thesis?.text ? { text: meta.thesis.text, setAt: meta.thesis.setAt, source: THESIS_SOURCE[meta.thesis.source] ?? '在網站手寫', version: meta.thesis.version, afterBreak: meta.thesis.afterBreak } : null,

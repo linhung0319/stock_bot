@@ -12,6 +12,7 @@ import { replyOption } from './thesis-reply.js';
 import { prevFill } from './thesis-prev.js';
 import { sourcesEditor, sourcesNow } from './thesis-sources.js';
 import { ACTION_TEXT as DRAFT_ACTION, ANSWER_TEXT, checkLine, draftButtonState, draftItems, draftNotices, draftPreviewLines, md, originHint, untouchedPremises } from './thesis-draft.js';
+import { BELIEF_NOTE, EVERY_DEFAULT, LIMITS as FIELD_LIMITS, MAX_CLAUSES, VERIFY_OPTIONS, checkableWarn, fieldsSummary, hasFields, premiseFieldsOf, verifyText } from './thesis-fields.js';
 
 const ACTIONS = [
   ['EXIT', '出清'],
@@ -54,6 +55,75 @@ export function copyPackButton(ticker, notif = null, label = '複製討論包', 
 // ---------------------------------------------------------------- 編輯論點頁
 
 const rowStyle = 'display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-top:8px';
+
+/**
+ * 右邊一條前提的「怎麼驗證」（T60，composite_layer_design §2.2、§2.3）：用什麼查（選了「查不到」就是信念）、來源、多久有新的一份、
+ * 怎樣算證實、怎樣算不成立（最多 3 句，一句一件事）。收合時一行摘要；從草稿勾來的預設攤開（看得到填了什麼），
+ * 現在的前提、貼回沿用的預設收合（左邊「現在的」看得到全文）。手寫的前提都可以不填。
+ * 回傳 { el, get, set }：get() = { breaksIf, confirmsIf, verify }（送出的形狀；verify 沒選是 null）；
+ * set(f, show) 換成 f（null = 清空；show 要不要攤開，沒給 = 有寫任何一欄就攤開）。
+ */
+function premFieldsEditor(init, onChange, open = hasFields(init)) {
+  const noEnter = (el) => el.addEventListener('keydown', (ev) => ev.key === 'Enter' && ev.preventDefault());
+  const sel = h('select', { 'aria-label': '用什麼查' }, VERIFY_OPTIONS.map(([v, t]) => h('option', { value: v }, t)));
+  const src = h('input', { type: 'text', maxlength: FIELD_LIMITS.source, placeholder: '例如 trendforce.com、10-Q 的事業單位營收', 'aria-label': '來源' });
+  const every = h('input', { type: 'text', inputmode: 'numeric', maxlength: 3, placeholder: String(EVERY_DEFAULT), 'aria-label': '多久有新的一份（天）' });
+  const conf = h('textarea', { class: 'prem-in', rows: 1, maxlength: FIELD_LIMITS.confirmsIf, placeholder: '什麼樣的原文算證實（寫成看得到的事，「沒看到壞消息」不算）', 'aria-label': '怎樣算證實' });
+  const bis = Array.from({ length: MAX_CLAUSES }, (_, j) => h('textarea', { class: 'prem-in', rows: 1, maxlength: FIELD_LIMITS.clause, placeholder: j === 0 ? '什麼情況算不成立（寫成查得到的事）' : `第 ${j + 1} 句（可以不填；一句寫一件事）`, 'aria-label': `怎樣算不成立第 ${j + 1} 句` }));
+  [conf, ...bis].forEach(noEnter);
+  const sum = h('summary', null);
+  const beliefNote = h('p', { class: 'small prem-belief' }, BELIEF_NOTE);
+  const srcRow = h('div', { class: 'prem-src' }, h('label', { class: 'prem-f' }, h('span', { class: 'small faint' }, '來源'), src), h('label', { class: 'prem-f prem-every' }, h('span', { class: 'small faint' }, '多久有新的一份（天）'), every));
+  const everyHint = h('p', { class: 'small faint prem-hint' }, `不知道多久有新的一份就留空，用 ${EVERY_DEFAULT} 天。`);
+  const confRow = h('label', { class: 'prem-f' }, h('span', { class: 'small faint' }, '怎樣算證實'), conf);
+  const el = h(
+    'details',
+    { class: 'prem-more' },
+    sum,
+    h(
+      'div',
+      { class: 'prem-more-body' },
+      h('label', { class: 'prem-f' }, h('span', { class: 'small faint' }, '用什麼查'), sel),
+      beliefNote,
+      srcRow,
+      confRow,
+      h('div', { class: 'prem-f' }, h('span', { class: 'small faint' }, `怎樣算不成立（最多 ${MAX_CLAUSES} 句，審查會逐句看）`), ...bis),
+      everyHint,
+    ),
+  );
+  const get = () => {
+    const by = sel.value;
+    const s = src.value.trim();
+    const e = every.value.trim();
+    return {
+      breaksIf: bis.map((x) => x.value.trim()).filter(Boolean),
+      confirmsIf: conf.value.trim(),
+      verify: by ? { by, ...(by !== 'NONE' && s ? { source: s } : {}), ...(by !== 'NONE' && e ? { every: Number(e) } : {}) } : null,
+    };
+  };
+  const sync = () => {
+    const belief = sel.value === 'NONE';
+    beliefNote.hidden = !belief;
+    srcRow.hidden = belief;
+    everyHint.hidden = belief;
+    sum.textContent = fieldsSummary(get());
+  };
+  const set = (f, show = hasFields(f)) => {
+    const v = f?.verify ?? null;
+    sel.value = v?.by ?? '';
+    src.value = v?.source ?? '';
+    every.value = v?.every ? String(v.every) : '';
+    conf.value = f?.confirmsIf ?? '';
+    const bs = f?.breaksIf ?? [];
+    bis.forEach((x, j) => (x.value = bs[j] ?? ''));
+    el.open = show;
+    sync();
+  };
+  for (const x of [src, every, conf, ...bis]) x.addEventListener('input', () => (sync(), onChange()));
+  sel.addEventListener('change', () => (sync(), onChange()));
+  set(init, open);
+  return { el, get, set };
+}
 const removeBtn = (fn) => h('button', { class: 'btn quiet', type: 'button', 'aria-label': '拿掉這一條', onclick: fn }, '拿掉');
 const counter = (el, max) => {
   const c = h('small', { class: 'faint' });
@@ -93,7 +163,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   const exits = [];
   const noEnter = (el) => el.addEventListener('keydown', (ev) => ev.key === 'Enter' && ev.preventDefault());
   /**
-   * 右邊的一條前提。p.breaksIf 有值（草稿勾來的、或之前存過「怎樣算不成立」的）就多一欄可以改；p.draft 是草稿的第幾條（T56），
+   * 右邊的一條前提。每一條都有「怎麼驗證」那一塊（T60：用什麼查、來源、多久有新的一份、怎樣算證實、怎樣算不成立最多 3 句；
+   * 可以不填）；p.fields 是預填的值（現在的前提、草稿勾來的）。p.draft 是草稿的第幾條（T56），
    * 下面一行寫「原樣」或「改過字」（存成哪一種來源）。p.onRemove：按「拿掉」時（草稿那邊取消勾選）。
    */
   const addPrem = (p = { id: null, text: '' }) => {
@@ -105,21 +176,11 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     const input = h('textarea', { class: 'prem-in', rows: 2, maxlength: LIMITS.premise, value: p.text, placeholder: '要繼續成立的事', 'aria-label': '前提' });
     noEnter(input);
     const extras = h('div', { class: 'prem-extra' });
-    const r = { id: p.id, input, draft: p.draft ?? null, bi: null, hint: null, onRemove: p.onRemove ?? null };
-    r.setBi = (v) => {
-      if (v === null || v === undefined) {
-        r.bi?.closest('.prem-bi')?.remove();
-        r.bi = null;
-        return;
-      }
-      if (!r.bi) {
-        r.bi = h('textarea', { class: 'prem-in', rows: 1, maxlength: 300, placeholder: '怎樣算不成立（寫成查得到的事）', 'aria-label': '怎樣算不成立' });
-        noEnter(r.bi);
-        r.bi.addEventListener('input', changed);
-        extras.prepend(h('label', { class: 'prem-bi' }, h('span', { class: 'small faint' }, '怎樣算不成立'), r.bi));
-      }
-      r.bi.value = v;
-    };
+    const fe = premFieldsEditor(p.fields ?? null, () => changed(), p.open ?? hasFields(p.fields));
+    extras.append(fe.el);
+    const r = { id: p.id, input, draft: p.draft ?? null, hint: null, onRemove: p.onRemove ?? null };
+    r.getFields = fe.get;
+    r.setFields = fe.set;
     r.setHint = (draftText) => {
       r.hint?.remove();
       r.hint = null;
@@ -133,7 +194,6 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     };
     const el = h('div', { class: 'prem-row' }, h('div', { style: rowStyle }, input, removeBtn(() => { prems.splice(prems.indexOf(r), 1); el.remove(); r.onRemove?.(); changed(); })), extras);
     r.el = el;
-    if (p.breaksIf !== undefined && p.breaksIf !== null) r.setBi(p.breaksIf);
     if (p.draftText !== undefined) r.setHint(p.draftText);
     input.addEventListener('input', changed);
     prems.push(r);
@@ -172,18 +232,20 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     exits.splice(0).forEach((r) => r.onRemove?.());
     exitList.replaceChildren();
     // 貼回的 [P2]（T40）是現行的一條 → 帶那個編號；沒寫編號、文字和現行的相同 → 帶上原本的編號（存檔時程式會再對一次）
+    // 沿用的那一條帶上現在的「怎麼驗證」（T60：貼回的區塊沒有這幾欄，不帶的話存檔會把它們清掉）
     p.premises.forEach((t, k) => {
       const tag = p.premiseIds?.[k];
       const byTag = tag ? own.premises.find((x) => !x.system && x.id === tag) : null;
-      addPrem({ id: byTag?.id ?? own.premises.find((x) => !x.system && norm(x.text) === norm(t))?.id ?? null, text: t });
+      const hit = byTag ?? own.premises.find((x) => !x.system && norm(baseText(x)) === norm(t)) ?? null;
+      addPrem({ id: hit?.id ?? null, text: t, fields: hit ? premiseFieldsOf(hit) : null, open: false });
     });
     if (!p.premises.length) addPrem();
     for (const x of p.exits) addExit(x);
     if (!p.exits.length) addExit();
     changed();
   };
-  // 之前存過「怎樣算不成立」的前提（例如勾過的草稿）多一欄可以改（T56）
-  if (own.kind === 'THESIS') for (const p of own.premises) addPrem({ id: p.id, text: p.text.replace(/（不成立的訊號：.*）$/, ''), breaksIf: p.breaksIf ?? undefined });
+  // 現在的前提連同「怎麼驗證」（T56 的怎樣算不成立；T60 的怎樣算證實、來源、信念）預填進右邊，可以改
+  if (own.kind === 'THESIS') for (const p of own.premises) addPrem({ id: p.id, text: baseText(p), fields: premiseFieldsOf(p), open: false });
   if (!prems.length) addPrem();
   // 出場條件預填目前監測中的（T42）：右邊就是存檔後要的完整清單，沒動就是沒改動
   for (const c of live) addExit({ text: c.text, action: c.action ?? 'REVIEW' });
@@ -221,7 +283,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   const payload = () => ({
     ticker: d.ticker,
     thesis: thesisIn.value.trim(),
-    premises: prems.map((r) => ({ id: r.id, text: r.input.value.trim(), ...(r.bi ? { breaksIf: r.bi.value.trim() } : {}), ...(r.draft !== null ? { draft: r.draft } : {}) })).filter((p) => p.text),
+    // 每一條都送「怎麼驗證」（T60）：右邊預填了現在的值，空的就是拿掉
+    premises: prems.map((r) => ({ id: r.id, text: r.input.value.trim(), ...r.getFields(), ...(r.draft !== null ? { draft: r.draft } : {}) })).filter((p) => p.text),
     exitConditions: exits.map((r) => ({ text: r.input.value.trim(), action: r.sel.value, ...(r.draft !== null ? { draft: r.draft } : {}) })).filter((x) => x.text),
     source,
     replyTo: reply && reply.checked ? replyNotif : null,
@@ -301,6 +364,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
             ? h('div', { class: 'default-only', style: 'margin-top:4px;color:var(--warn)' }, DEFAULT_ONLY_TEXT)
             : h('div', { class: p.reviewHeld ? null : 'faint', style: `margin-top:4px${p.reviewHeld ? ';color:var(--warn)' : ''}` }, p.changed ? reviewLine(p) : '前提沒有增減：不另外開審查。'),
           p.silenceEnded?.length ? h('div', { style: 'margin-top:4px;color:var(--warn)' }, `${p.silenceEnded.join('、')} 正在靜默期，字改了：存檔後靜默期結束，AI 判斷新的字不成立時會照常通知你。`) : null,
+          // 信念與查得到的前提（T60，composite §2.3）：少於 2 條查得到時提醒
+          ((w) => (w ? h('div', { class: `belief-warn tone-${w.tone}`, style: 'margin-top:4px' }, w.text) : null))(checkableWarn(p)),
           keptWarn(p),
           srcPreview(p.sources),
         );
@@ -409,21 +474,22 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       );
     };
     const dropEmpty = (rows) => rows.filter((r) => !r.input.value.trim() && r.draft === null && !r.id).forEach((r) => (rows.splice(rows.indexOf(r), 1), r.el.remove()));
-    // 前提：勾了加進「新的」（草稿沿用你現在的那一條：「新的」裡已經有，就只帶上草稿寫的「怎樣算不成立」）
+    // 前提：勾了加進「新的」（草稿沿用你現在的那一條：「新的」裡已經有，就只帶上草稿寫的怎樣算證實、不成立與怎麼驗證；取消勾選換回原本的）
+    const draftFields = (it) => ({ breaksIf: it.breaksIf, confirmsIf: it.confirmsIf, verify: it.verify });
     const tickPremise = (it, on) => {
       const kk = key('p', it.k);
       if (on) {
         const mine = it.keepId ? prems.find((r) => r.id === it.keepId) : null;
         if (mine) {
           mine.draft = it.k;
-          mine.prevBi = mine.bi ? mine.bi.value : null;
-          mine.setBi(it.breaksIf);
-          mine.keepNote = `草稿沿用你現在的 ${it.keepId}（一字沒改），帶上草稿寫的「怎樣算不成立」`;
+          mine.prevFields = mine.getFields();
+          mine.setFields(draftFields(it));
+          mine.keepNote = `草稿沿用你現在的 ${it.keepId}（一字沒改），帶上草稿寫的怎樣算證實、不成立與怎麼驗證`;
           mine.setHint(it.text);
           linked.set(kk, { row: mine, attached: true });
         } else {
           dropEmpty(prems);
-          const r = addPrem({ id: it.keepId, text: it.text, breaksIf: it.breaksIf, draft: it.k, draftText: it.text, onRemove: () => uncheck('p', it.k) });
+          const r = addPrem({ id: it.keepId, text: it.text, fields: draftFields(it), draft: it.k, draftText: it.text, onRemove: () => uncheck('p', it.k) });
           if (!r) {
             if (!prems.length) addPrem();
             return false;
@@ -437,7 +503,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
           l.row.draft = null;
           l.row.keepNote = null;
           l.row.setHint(null);
-          l.row.setBi(l.row.prevBi);
+          l.row.setFields(l.row.prevFields ?? null, false);
         } else if (l) {
           prems.splice(prems.indexOf(l.row), 1);
           l.row.el.remove();
@@ -491,9 +557,10 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       boxes.set(key(kind, it.k), cb);
       return h('li', { class: 'dr-item' }, h('label', { class: 'dr-pick' }, cb), h('div', { class: 'dr-body' }, body));
     };
+    // 怎麼驗證（T60）：查得到 → 來源與多久有新的一份；信念 → 提醒的顏色（是你可以選的路，不是錯）
     const premCheck = (it) => {
       const c = checkLine(it);
-      return h('p', { class: 'small', style: c.ok ? 'color:var(--ink-2)' : 'color:var(--hot)' }, c.text);
+      return h('p', { class: 'small', style: c.belief ? 'color:var(--warn)' : c.ok ? 'color:var(--ink-2)' : 'color:var(--hot)' }, c.text);
     };
     const notices = draftNotices(draft);
     const missed = untouchedPremises(P, own.kind === 'THESIS' ? own.premises : []);
@@ -587,7 +654,12 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
               h('p', null, it.text),
               it.keepId ? h('p', { class: 'small', style: 'color:var(--ink-2)' }, `就是你現在的 ${it.keepId}（一字沒改）`) : null,
               it.likeBroken && draft.broken ? h('p', { class: 'small', style: 'color:var(--hot)' }, `和剛被判不成立的 ${draft.broken.premiseId} 很像：勾之前想一想是不是換個說法留著它`) : null,
-              h('p', { class: 'small' }, h('span', { class: 'faint' }, '怎樣算不成立：'), it.breaksIf),
+              it.confirmsIf ? h('p', { class: 'small' }, h('span', { class: 'faint' }, '怎樣算證實：'), it.confirmsIf) : null,
+              !it.breaksIf.length
+                ? null
+                : it.breaksIf.length === 1
+                ? h('p', { class: 'small' }, h('span', { class: 'faint' }, '怎樣算不成立：'), it.breaksIf[0])
+                : h('div', { class: 'small' }, h('span', { class: 'faint' }, `怎樣算不成立（任一句成立就算，${it.breaksIf.length} 句）：`), h('ul', { class: 'dr-plain' }, it.breaksIf.map((b) => h('li', null, b)))),
               premCheck(it),
               evList(it.evidence),
             ],
@@ -647,7 +719,21 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     h('h5', { style: 'margin-top:10px' }, '論點'),
     own.thesis ? h('p', { class: 'small', style: 'white-space:pre-wrap;margin-top:4px' }, own.thesis.text) : h('p', { class: 'small faint', style: 'margin-top:4px' }, '還沒有'),
     h('h5', { style: 'margin-top:12px' }, own.kind === 'DEFAULT_ONLY' ? '前提（系統預設）' : '前提'),
-    h('ul', { class: 'prem' }, own.premises.map((p) => h('li', null, h('span', { class: 'st' }, p.id), h('span', { class: 'small' }, p.text)))),
+    // 每一條下面一行（T60）：怎樣算證實與怎麼驗證；信念寫「這一條查不到，是你選擇相信的」
+    h(
+      'ul',
+      { class: 'prem' },
+      own.premises.map((p) =>
+        h(
+          'li',
+          null,
+          h('span', { class: 'st' }, p.id),
+          h('span', { class: 'small' }, p.text),
+          p.confirmsIf ? h('small', null, `怎樣算證實：${p.confirmsIf}`) : null,
+          verifyText(p.verify) ? h('small', { class: p.belief ? 'prem-belief' : null }, verifyText(p.verify)) : null,
+        ),
+      ),
+    ),
     h('h5', { style: 'margin-top:12px' }, '你定的條件'),
     owned.length ? h('ul', { class: 'small', style: 'margin:6px 0 0 1.2em' }, owned.map((c) => h('li', null, `${c.text} → ${c.actionText ?? '只記錄'}（${c.status}）`))) : h('p', { class: 'small faint', style: 'margin-top:4px' }, '還沒有'),
     h('h5', { style: 'margin-top:12px' }, '網頁證據的來源'),
@@ -692,7 +778,13 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     h('h2', { class: 'panel-h' }, '新的（可以直接改）'),
     prevBox,
     h('label', { class: 'field', style: 'margin-top:10px' }, h('span', null, '論點'), thesisIn, counter(thesisIn, LIMITS.thesis)),
-    h('div', { class: 'field' }, h('span', null, `前提（最多 ${LIMITS.premises} 條）`), own.kind === 'DEFAULT_ONLY' ? h('small', null, '目前用系統預設前提。寫了自己的前提，存檔時就取代預設。') : h('small', null, '和現在的文字相同的沿用原本的編號；拿掉的會撤下。'), premList, h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addPrem(); changed(); } }, '再加一條前提'))),
+    h(
+      'div',
+      { class: 'field' },
+      h('span', null, `前提（最多 ${LIMITS.premises} 條）`),
+      own.kind === 'DEFAULT_ONLY' ? h('small', null, '目前用系統預設前提。寫了自己的前提，存檔時就取代預設。') : h('small', null, '和現在的文字相同的沿用原本的編號；拿掉的會撤下。'),
+      h('small', null, '每一條下面的「怎麼驗證」可以不填：寫了怎樣算證實、不成立與來源，審查判得比較準；外人查不到的事選「查不到：標成信念」，它不進審查。'),
+      premList, h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addPrem(); changed(); } }, '再加一條前提'))),
     h(
       'div',
       { class: 'field', style: 'margin-bottom:0' },
@@ -751,6 +843,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
 }
 
 const norm = (t) => String(t).normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+/** 伺服器給的前提文字後面接著「（不成立的訊號：…）」給持股頁看；編輯時只要前提本身。 */
+const baseText = (p) => String(p.text).replace(/（不成立的訊號：.*）$/, '');
 
 // ---------------------------------------------------------------- 還沒有論點的自選（T40，own_thesis §1.8「存完之後的引導」）
 
@@ -892,6 +986,8 @@ export const DRAFT_ATTN = ['THESIS_OLD', 'PREMISE_NO_DATA', 'NO_CONSENSUS'];
 export function attnDraftAction(x, state = null) {
   if ((x.src ?? 'own') !== 'own') return null;
   if (x.kind === 'DRAFT_READY') return h('a', { class: 'linkbtn', href: `#/h/${encodeURIComponent(x.ticker)}/thesis` }, '看草稿');
+  // 前提一直沒驗到（T60，composite §2.3）：改寫、配一個查得到的指標，或改標成信念，都在編輯論點頁做
+  if (x.kind === 'PREMISE_UNVERIFIED') return h('a', { class: 'linkbtn', href: `#/h/${encodeURIComponent(x.ticker)}/thesis` }, '編輯論點');
   if (DRAFT_ATTN.includes(x.kind)) return draftAction(x.ticker, state, { link: true });
   return null;
 }

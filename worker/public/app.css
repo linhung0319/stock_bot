@@ -761,6 +761,15 @@ select option { background: #14162a; }
 .prem-row .prem-extra { display: grid; gap: 4px; margin-top: 4px; }
 .prem-bi { display: grid; gap: 2px; }
 .prem-from { color: var(--ink-3); }
+/* T60：右邊一條前提的「怎麼驗證」（收合時一行摘要；用什麼查、來源、多久有新的一份、怎樣算證實、怎樣算不成立最多 3 句） */
+.prem-more > summary { font-size: 13px; color: var(--ink-3); cursor: pointer; overflow-wrap: anywhere; }
+.prem-more > summary:hover { color: var(--ink); }
+.prem-more-body { display: grid; gap: 8px; margin: 6px 0 4px; padding-left: 10px; border-left: 2px solid var(--line-2); }
+.prem-f { display: grid; gap: 2px; min-width: 0; }
+.prem-src { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) 10.5em; }
+.prem-src[hidden], .prem-belief[hidden], .prem-hint[hidden] { display: none; }
+.prem-belief { color: var(--warn); overflow-wrap: anywhere; }
+.prem li small.prem-belief { color: var(--warn); }
 .draft-prev { display: grid; gap: 4px; margin-bottom: 14px; padding: 10px 14px; border-left: 2px solid var(--line-hi); }
 .draft-prev p { overflow-wrap: anywhere; }
 .tone-hot { color: #ff9a90; }

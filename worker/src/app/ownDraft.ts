@@ -12,13 +12,13 @@
 //     新的 READY 回來時同一檔舊的 READY 標 EXPIRED；READY 30 天沒處理 → EXPIRED。
 //     自動開的連續 2 次失敗 → 告警 DRAFT_FAILED（G22）；使用者按的：回來（READY）或失敗推 LINE 一行，網站的按鈕旁邊寫原因與「再試一次」（T56）。
 //   還在跑的不重開要原子（T56）：開執行之前先佔一列 PENDING，同一檔同時只能有一列（migration 0020 的部分唯一索引），兩個分頁同時按第二個會 409。
-import { OWN_DRAFT, draftResult, ownDraftPack, type DraftBroken, type OwnDraft, brokenNotice } from '../ai/ownDraft';
+import { OWN_DRAFT, draftResult, ownDraftPack, type DraftBroken, type DraftPremise, type OwnDraft, brokenNotice } from '../ai/ownDraft';
 import type { EvidencePack, PackDoc } from '../ai/check';
 import { discussionNumbers } from '../ai/discussion';
 import { newRunId, ownPremises, priceDoc, priceFacts } from '../ai/pack';
 import { XBRL_METRICS } from '../data/edgar';
 import { errText } from '../data/util';
-import { ownHeld, premiseKey, type Account, type MarketView, type PremiseInput } from '../engine';
+import { breaksOf, normVerify, ownHeld, premiseKey, type Account, type MarketView, type PremiseInput, type PremiseVerify } from '../engine';
 import { loadAccount } from './ledgerStore';
 import { lineConfigured, lineUrl, pushLine } from './line';
 import type { ApplyCtx, StartCtx } from './aiCtx';
@@ -187,7 +187,7 @@ async function startDraftRun(env: Env, fetcher: Fetcher, acct: Account, view: Ma
     ticker,
     trigger,
     held: ownHeld(acct, ticker),
-    premises: ownPremises(acct, ticker),
+    premises: ownPremises(acct, ticker, { beliefs: true }),
     facts,
     docs,
     dataQuality: ev.dataQuality,
@@ -195,6 +195,8 @@ async function startDraftRun(env: Env, fetcher: Fetcher, acct: Account, view: Ma
     fileId: meta.fileId ?? null,
     broken,
     webDomains: sources.domains,
+    // T60：程式檢查第 1 條比對「怎樣算不成立」是不是已經成立用（同一份 XBRL；抓不到就不比）
+    quarters: rows,
     now,
   });
   const run = await startRun(env, fetcher, pack, now, [...notes, ...packNotes], ctx);
@@ -544,15 +546,31 @@ export async function pushDraftLines(env: Env, fetcher: Fetcher, now: Date): Pro
 export interface DraftPremiseIn {
   id: string | null;
   text: string;
-  /** 怎樣算不成立（右邊那一條的欄位）；undefined = 那一條沒有這個欄位（照舊）。 */
-  breaksIf?: string;
+  /** 怎樣算不成立（右邊那一條的欄位；T60 起最多 3 句）；undefined = 沒送（照舊）。 */
+  breaksIf?: string[];
+  /** 怎樣算證實（T60）；undefined = 沒送。 */
+  confirmsIf?: string;
+  /** 怎麼驗證（T60；null = 拿掉）；undefined = 沒送。 */
+  verify?: PremiseVerify | null;
   draft: number | null;
+}
+
+/**
+ * 草稿裡一條前提的三個欄位，整理成帳戶狀態的形狀（T60）。T55 的舊草稿（own_draft_v1）是 breaks_if 一段字、checkable_by、source_hint，
+ * 一樣收：checkable_by 當成 verify.by、source_hint 當成來源，沒有怎樣算證實。
+ */
+export function draftPremiseFields(dp: DraftPremise | (Partial<DraftPremise> & Record<string, unknown>)): { breaksIf: string[]; confirmsIf: string; verify: PremiseVerify | null } {
+  const o = dp as Record<string, unknown>;
+  const v = o.verify && typeof o.verify === 'object' ? (o.verify as Record<string, unknown>) : o.checkable_by ? { by: o.checkable_by, source: o.source_hint ?? undefined } : null;
+  const verify = v ? normVerify({ by: v.by, source: v.source ?? undefined, every: v.every ?? undefined }) : null;
+  return { breaksIf: breaksOf({ breaksIf: o.breaks_if as string[] | string | undefined }), confirmsIf: typeof o.confirms_if === 'string' ? o.confirms_if.trim() : '', verify };
 }
 
 /**
  * 存檔時怎麼用這份草稿（純函式；src/app/site/api.ts 的 saveThesis）：
  *   前提的來源：從草稿勾來、字沒改（去掉空白與標點後比）→ AI_DRAFT_ACCEPTED；改過字 → USER（§2.3）。
  *     breaks_if 存進 breaksIf：那一條有送就用送的（你可以改），沒送用草稿寫的。草稿沿用你現在的前提（keep_id）的，照舊是你的前提。
+ *     T60：confirms_if、verify 也一樣（有送用送的，沒送用草稿的）。
  *   論點本文：和草稿一字沒改 → 來源 DRAFT；按了「用這段」又改了字 → 照舊（在網站手寫），記 EDITED。
  *   用了哪些、沒勾的有幾條（預覽的「勾了一半」與 own_drafts.used_json）；這份草稿是在前提被判不成立之後寫的 → 算一次「失效後修改」。
  * exits：右邊的出場條件裡從草稿勾來的是第幾條（0 起）；peers、domains：勾了的同業與網站（草稿裡的第幾項），只算存檔時還在來源裡的。
@@ -567,17 +585,19 @@ export function draftSave(
   const usedPremises = new Set<number>();
   const premises: PremiseInput[] = inp.premises.map((p) => {
     const dp = p.draft !== null ? d.premises[p.draft] : undefined;
-    if (!dp) return { id: p.id, text: p.text, ...(p.breaksIf !== undefined ? { breaksIf: p.breaksIf } : {}) };
+    const sent = { ...(p.breaksIf !== undefined ? { breaksIf: p.breaksIf } : {}), ...(p.confirmsIf !== undefined ? { confirmsIf: p.confirmsIf } : {}), ...(p.verify !== undefined ? { verify: p.verify } : {}) };
+    if (!dp) return { id: p.id, text: p.text, ...sent };
     usedPremises.add(p.draft!);
-    const breaksIf = p.breaksIf !== undefined ? p.breaksIf : dp.breaks_if;
+    const f = draftPremiseFields(dp);
+    const fields = { breaksIf: f.breaksIf, confirmsIf: f.confirmsIf, verify: f.verify, ...sent };
     if (dp.keep_id && p.id === dp.keep_id) {
       same.kept++;
-      return { id: p.id, text: p.text, breaksIf };
+      return { id: p.id, text: p.text, ...fields };
     }
     const verbatim = premiseKey(p.text) === premiseKey(dp.text);
     if (verbatim) same.same++;
     else same.edited++;
-    return { id: p.id, text: p.text, origin: verbatim ? 'AI_DRAFT_ACCEPTED' : 'USER', breaksIf };
+    return { id: p.id, text: p.text, origin: verbatim ? 'AI_DRAFT_ACCEPTED' : 'USER', ...fields };
   });
   const exits = new Set(inp.exits.filter((k) => Number.isInteger(k) && k >= 0 && k < d.exits.length)).size;
   const ws = inp.webSources;

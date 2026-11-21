@@ -14,31 +14,46 @@ export function hm(iso) {
   return `${md(t)} ${t.slice(11, 16)}`;
 }
 
+import { BELIEF_TEXT, VERIFY_TEXT, draftPremiseFields, verifyText } from './thesis-fields.js';
+
 export const ACTION_TEXT = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查' };
 export const ANSWER_TEXT = { YES: '會買', NO: '不會買', UNSURE: '說不準' };
-/** 前提查得到的來源（checkable_by）→ 白話；NONE 是 null（畫面寫紅字「stock bot 監測不了這一條」）。 */
-export const CHECK_TEXT = { XBRL: '財報數字（程式比對）', FILING: '這家公司的申報原文', PEER_FILING: '同業的申報', WEB: '清單內的網站', NONE: null };
+/** 前提查得到的來源（verify.by；T55 叫 checkable_by）→ 白話；NONE 是信念（T60）。 */
+export const CHECK_TEXT = VERIFY_TEXT;
+/**
+ * T55 的寫法（紅字「stock bot 監測不了這一條」）。T60 起 NONE 是信念（composite_layer_design §2.3：「這一條查不到，是你選擇相信的」），
+ * 畫面改寫 BELIEF_TEXT；這個字串留著給還沒指定來源的舊草稿。
+ */
 export const NOT_CHECKABLE = 'stock bot 監測不了這一條';
+export { BELIEF_TEXT };
 
 /**
  * 草稿的每一項（前提、出場條件、同業、網站）：預設都不勾（§2.3：勾了才填進「新的」，沒勾的不存在）。
  * 網站只有「新的來源」可以勾；已經在清單裡、不列入的只顯示。
+ * 前提（T60）：breaksIf 是句子的陣列、confirmsIf、verify（by = NONE 是信念 belief）；T55 的舊草稿照樣讀得出來。
  */
 export function draftItems(payload) {
   const p = payload ?? {};
   return {
-    premises: (p.premises ?? []).map((x, k) => ({ k, checked: false, text: x.text, breaksIf: x.breaks_if ?? '', keepId: x.keep_id ?? null, checkable: x.checkable_by, sourceHint: x.source_hint ?? null, likeBroken: !!x.like_broken, evidence: x.evidence_ids ?? [] })),
+    premises: (p.premises ?? []).map((x, k) => {
+      const f = draftPremiseFields(x);
+      return { k, checked: false, text: x.text, ...f, belief: f.verify?.by === 'NONE', keepId: x.keep_id ?? null, checkable: f.verify?.by ?? null, sourceHint: f.verify?.source ?? null, likeBroken: !!x.like_broken, evidence: x.evidence_ids ?? [] };
+    }),
     exits: (p.exits ?? []).map((x, k) => ({ k, checked: false, text: x.text, action: x.action, threshold: !!x.threshold, premiseIndex: x.premise_index ?? null, evidence: x.evidence_ids ?? [] })),
     peers: (p.sources?.peers ?? []).map((x, k) => ({ k, checked: false, name: x.name, edgar: x.edgar ?? null, yahoo: x.yahoo ?? null })),
     domains: (p.sources?.domains ?? []).map((x, k) => ({ k, checked: false, domain: x.domain, state: x.state, note: x.note, checkable: x.state === 'NEW' })),
   };
 }
 
-/** 一條前提「查得到的來源」：{ ok, text }。 */
+/**
+ * 一條前提「怎麼驗證」：{ ok, text, belief }。查得到 → 來源與多久有新的一份；信念（T60）→「信念：這一條查不到，是你選擇相信的」
+ * （不是錯，是使用者可以選的路，畫面用提醒的顏色）；沒有指定來源的（只有很舊的草稿）→ 紅字「stock bot 監測不了這一條」。
+ */
 export function checkLine(item) {
-  const what = CHECK_TEXT[item.checkable];
-  if (!what) return { ok: false, text: NOT_CHECKABLE };
-  return { ok: true, text: `查得到：${what}${item.sourceHint ? `（${item.sourceHint}）` : ''}` };
+  if (item.verify?.by === 'NONE') return { ok: true, belief: true, text: BELIEF_TEXT };
+  const t = verifyText(item.verify);
+  if (!t) return { ok: false, belief: false, text: NOT_CHECKABLE };
+  return { ok: true, belief: false, text: t };
 }
 
 /**

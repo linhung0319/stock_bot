@@ -14,9 +14,67 @@ export interface Premise {
   id: string;
   text: string;
   origin: 'USER' | 'AI_DRAFT_ACCEPTED' | 'SYSTEM_DEFAULT';
-  breaksIf?: string;
+  /**
+   * 怎樣算不成立：最多 3 個分開的子句（composite_layer_design §2.2，T60；審查逐句回答）。
+   * T60 之前存的是一段字（string），新增自選的舊入口也還寫一段字；讀的時候一律經過 breaksOf()。
+   */
+  breaksIf?: string[] | string;
+  /** 怎樣算證實：什麼樣的原文算這條前提成立（和 breaksIf 對稱；composite §2.2）。手寫的前提可以不填。 */
+  confirmsIf?: string;
+  /**
+   * 怎麼驗證（composite §2.2）：by 用什麼查、source 哪個來源、every 多久會有新的一份（天；沒填用 VERIFY_EVERY_DEFAULT）。
+   * by = NONE 是「信念」（§2.3）：留在論點裡、持股頁標明查不到，不進審查的逐條判定、不計入成績、不觸發 WEB_DUE。
+   * 沒有這個欄位（手寫沒填、T60 之前的前提）= 照舊進審查。
+   */
+  verify?: PremiseVerify;
   /** 加入的訊號日（own_thesis §1.2；T25 之前的前提沒有這個欄位）。 */
   addedAt?: string;
+}
+
+/** 前提用什麼查（composite §2.2；和草稿的 verify.by 同一組）：財報數字／這家公司的申報／同業的申報／清單內的網站／查不到（信念）。 */
+export const VERIFY_BY = ['XBRL', 'FILING', 'PEER_FILING', 'WEB', 'NONE'] as const;
+export type VerifyBy = (typeof VERIFY_BY)[number];
+export interface PremiseVerify {
+  by: VerifyBy;
+  /** 來源（例如 trendforce.com、SK 海力士的財報新聞稿）；沒寫是 undefined。 */
+  source?: string;
+  /** 多久會有新的一份（天）；沒寫用 VERIFY_EVERY_DEFAULT。 */
+  every?: number;
+}
+
+/**
+ * 前提新欄位的上限（composite §2.2、§2.3；網站存檔與草稿的程式檢查共用）。
+ * everyDefault 和月底檢查點的 STALE_DAYS（src/app/thesis.ts）是同一個數字（設計寫明；測試確認兩邊一樣）。
+ */
+export const PREMISE_FIELD_LIMITS = { breaksClauses: 3, clause: 300, confirmsIf: 300, source: 200, everyMin: 7, everyMax: 400, everyDefault: 100, minCheckable: 2 } as const;
+export const VERIFY_EVERY_DEFAULT = PREMISE_FIELD_LIMITS.everyDefault;
+
+/** 怎樣算不成立的子句（舊資料的一段字當成一句；空的拿掉）。 */
+export function breaksOf(p: Pick<Premise, 'breaksIf'>): string[] {
+  const b = p.breaksIf;
+  if (typeof b === 'string') return b.trim() ? [b.trim()] : [];
+  return Array.isArray(b) ? b.filter((x): x is string => typeof x === 'string' && !!x.trim()).map((x) => x.trim()) : [];
+}
+/** 信念（composite §2.3）：verify.by = NONE。 */
+export const isBelief = (p: Pick<Premise, 'verify'>): boolean => p.verify?.by === 'NONE';
+/** 多久會有新的一份（天）：沒填用 100。 */
+export const verifyEvery = (p: Pick<Premise, 'verify'>): number => p.verify?.every ?? VERIFY_EVERY_DEFAULT;
+
+/**
+ * 送來的 verify（網站或草稿）整理成存檔的形狀；不認得的 by → null（當成沒有指定）。
+ * source 去頭尾空白、截到上限；every 要是 7～400 的整數，不是的話不存（用預設的 100）。信念（NONE）不存 source、every。
+ */
+export function normVerify(v: unknown): PremiseVerify | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const by = String(o.by ?? '').trim().toUpperCase();
+  if (!(VERIFY_BY as readonly string[]).includes(by)) return null;
+  if (by === 'NONE') return { by: 'NONE' };
+  const L = PREMISE_FIELD_LIMITS;
+  const source = typeof o.source === 'string' ? o.source.trim().slice(0, L.source) : '';
+  const n = typeof o.every === 'number' ? o.every : typeof o.every === 'string' && o.every.trim() ? Number(o.every) : NaN;
+  const every = Number.isInteger(n) && n >= L.everyMin && n <= L.everyMax ? n : null;
+  return { by: by as VerifyBy, ...(source ? { source } : {}), ...(every !== null ? { every } : {}) };
 }
 
 /** 系統預設前提（own_thesis §1.12；2026-11-15 起三條，拿掉原本的第四條「慢規則本身」）。證據包另附程式算好的 D1～D3。 */

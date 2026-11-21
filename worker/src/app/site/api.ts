@@ -45,6 +45,10 @@ import {
   type OwnWebSources,
   type Premise,
   type PremiseInput,
+  type PremiseVerify,
+  PREMISE_FIELD_LIMITS,
+  isBelief,
+  normVerify,
   type Snapshot,
   notifName,
 } from '../../engine';
@@ -191,6 +195,41 @@ function premisesOf(v: unknown): Premise[] {
     const origin = o.origin === 'AI_DRAFT_ACCEPTED' ? 'AI_DRAFT_ACCEPTED' : 'USER';
     const breaksIf = text(o.breaksIf, '不成立的訊號', 300, false);
     out.push({ id: `P${out.length + 1}`, text: t, origin, ...(breaksIf ? { breaksIf } : {}) });
+  }
+  return out;
+}
+
+/**
+ * 編輯論點時一條前提的新欄位（T60，composite_layer_design §2.2、§2.3）。沒送（undefined 或 null）= 照舊。
+ *   breaksIf：一段字（T56 的寫法）或最多 3 句的陣列；空的拿掉（空陣列 = 拿掉這個欄位）。
+ *   confirmsIf：怎樣算證實；空字串 = 拿掉。
+ *   verify：{ by, source, every }；null 或 by 不認得（例如「不指定」送空的）= 拿掉。every 寫了就要是 7～400 的整數。
+ */
+function premiseFieldsOf(o: Record<string, unknown>, k: number): { breaksIf?: string[]; confirmsIf?: string; verify?: PremiseVerify | null } {
+  const L = PREMISE_FIELD_LIMITS;
+  const n = `第 ${k + 1} 條前提`;
+  const out: { breaksIf?: string[]; confirmsIf?: string; verify?: PremiseVerify | null } = {};
+  if (o.breaksIf !== undefined && o.breaksIf !== null) {
+    if (Array.isArray(o.breaksIf)) {
+      const xs = o.breaksIf.map((x, j) => text(x, `${n}「怎樣算不成立」第 ${j + 1} 句`, L.clause, false)).filter(Boolean);
+      if (xs.length > L.breaksClauses) throw new SiteError(422, `${n}「怎樣算不成立」最多 ${L.breaksClauses} 句（一句寫一件事）`);
+      out.breaksIf = xs;
+    } else {
+      const s = text(o.breaksIf, '怎樣算不成立', DRAFT_LIMITS.breaksIf, false);
+      out.breaksIf = s ? [s] : [];
+    }
+  }
+  if (o.confirmsIf !== undefined && o.confirmsIf !== null) out.confirmsIf = text(o.confirmsIf, `${n}「怎樣算證實」`, L.confirmsIf, false);
+  if (o.verify === null) out.verify = null;
+  else if (o.verify !== undefined) {
+    const v = (typeof o.verify === 'object' ? o.verify : {}) as Record<string, unknown>;
+    const ev = v.every;
+    if (ev !== undefined && ev !== null && ev !== '') {
+      const e = Number(ev);
+      if (!Number.isInteger(e) || e < L.everyMin || e > L.everyMax) throw new SiteError(422, `${n}「多久有新的一份」要是 ${L.everyMin}～${L.everyMax} 的整數（天）；不知道就留空，用 ${L.everyDefault} 天`);
+    }
+    if (typeof v.source === 'string' && v.source.trim().length > L.source) throw new SiteError(422, `${n}的來源最多 ${L.source} 個字`);
+    out.verify = normVerify(v);
   }
   return out;
 }
@@ -386,14 +425,15 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
   const rawPs = Array.isArray(b.premises) ? b.premises : [];
   if (rawPs.length > THESIS_LIMITS.premises) throw new SiteError(422, `前提最多 ${THESIS_LIMITS.premises} 條`);
   // T56：從草稿勾來的前提帶 draft（草稿的第幾條）；右邊有「怎樣算不成立」欄位的帶 breaksIf
+  // T60：breaksIf 可以是最多 3 句的陣列（一段字當成一句），另外帶 confirmsIf（怎樣算證實）與 verify（怎麼驗證；by = NONE 是信念）
   const idx = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 20 ? v : null);
   const premisesIn: DraftPremiseIn[] = rawPs
-    .map((p) => {
+    .map((p, k) => {
       const o = (p ?? {}) as Record<string, unknown>;
       return {
         id: typeof o.id === 'string' && /^P\d{1,4}$/.test(o.id) ? o.id : null,
         text: text(o.text, '前提', THESIS_LIMITS.premise, false),
-        ...(o.breaksIf === undefined || o.breaksIf === null ? {} : { breaksIf: text(o.breaksIf, '怎樣算不成立', DRAFT_LIMITS.breaksIf, false) }),
+        ...premiseFieldsOf(o, k),
         draft: idx(o.draft),
       };
     })
@@ -432,7 +472,9 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     const dView = draftRow ? draftViewOf(draftRow, d.acct, tk) : null;
     if (draftRow && (!dView || (draftRow.file_id ?? null) !== (d.acct.own[tk].fileId ?? null))) throw new SiteError(409, '這份草稿是上一份論點檔的（賣光又買回之前），不能用在這一份。重新整理看看');
     const ds = dView ? draftSave(dView, { thesis: thesisText, thesisPressed: dIn?.thesis === true, premises: premisesIn, exits: exitDrafts, peers: ids(dIn?.peers), domains: ids(dIn?.domains), webSources: wsIn }, (d.acct.own[tk].thesis?.version ?? 0) + 1) : null;
-    const premises: PremiseInput[] = ds ? ds.premises : premisesIn.map((p) => ({ id: p.id, text: p.text, ...(p.breaksIf !== undefined ? { breaksIf: p.breaksIf } : {}) }));
+    const premises: PremiseInput[] = ds
+      ? ds.premises
+      : premisesIn.map((p) => ({ id: p.id, text: p.text, ...(p.breaksIf !== undefined ? { breaksIf: p.breaksIf } : {}), ...(p.confirmsIf !== undefined ? { confirmsIf: p.confirmsIf } : {}), ...(p.verify !== undefined ? { verify: p.verify } : {}) }));
     const source = ds?.source ?? source0;
     const draftBreak = !!ds?.use.afterBreak;
     let out: ReturnType<typeof setThesis>;
@@ -448,7 +490,9 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     const wsChanged = wsIn !== undefined && !sameWebSources(wsBefore, wsIn);
     if (wsIn !== undefined) out.acct.own[tk].webSources = wsIn ? { ...wsIn, checked: wsChecked } : null;
     const meta = out.acct.own[tk];
-    const brief = (ps: Premise[]) => ps.map((p) => ({ id: p.id, text: p.text, origin: p.origin }));
+    // 信念（T60）在 log 標出來：之後回頭看得到哪幾條當時是使用者選擇相信、不進審查的
+    const brief = (ps: Premise[]) => ps.map((p) => ({ id: p.id, text: p.text, origin: p.origin, ...(isBelief(p) ? { belief: true } : {}) }));
+    const mine = meta.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT');
     const version = meta.thesis!.version;
     savedVersion = version;
     const result = {
@@ -463,6 +507,9 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
         changed: out.changed,
         // 原本只有系統預設、這次也沒有自己的前提（T45，T41 第 2 條）：AI 照樣用預設的三條檢查，這檔仍算還沒有論點
         defaultOnly: out.before.premises.every((p) => p.origin === 'SYSTEM_DEFAULT') && meta.premises.every((p) => p.origin === 'SYSTEM_DEFAULT'),
+        // 信念（T60，composite §2.3）：存檔後哪幾條是信念（不進審查的逐條判定）、查得到的有幾條（少於 2 條時頁面提醒；只有預設前提是 null）
+        beliefs: mine.filter(isBelief).map((p) => p.id),
+        checkable: mine.length ? mine.filter((p) => !isBelief(p)).length : null,
         // 前提有變動、但 30 天內已經開過論點變動後的審查（T45，T41 第 9 條）：上次開的日子；隔天不會再審，留到月底檢查點
         reviewHeld: out.changed ? thesisReviewHeld(d.acct.own[tk], nextTradingDay(d.view.date)) : null,
         version,

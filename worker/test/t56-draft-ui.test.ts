@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { judge, type PackDoc } from '../src/ai/check';
 import { PAYLOAD_HOOKS } from '../src/ai/hooks';
 import { OWN_DRAFT, draftResult, ownDraftPack, brokenNotice, type OwnDraft } from '../src/ai/ownDraft';
-import { packOrigin } from '../src/ai/pack';
+import { packOrigin, packPremise } from '../src/ai/pack';
 import { getRun } from '../src/app/aiRuns';
 import type { Env, Fetcher } from '../src/app/env';
 import { pushPending, runFlow } from '../src/app/flow';
@@ -34,7 +34,8 @@ type Item = { k: number; checked: boolean; [x: string]: unknown };
 interface DraftJs {
   ACTION_TEXT: Record<string, string>;
   NOT_CHECKABLE: string;
-  checkLine(it: Item): { ok: boolean; text: string };
+  BELIEF_TEXT: string;
+  checkLine(it: Item): { ok: boolean; belief: boolean; text: string };
   draftButtonState(state: unknown, now?: Date): { mode: string; button: string | null; text: string | null };
   draftItems(p: unknown): { premises: Item[]; exits: Item[]; peers: Item[]; domains: Item[] };
   draftNotices(d: unknown): { tone: string; text: string }[];
@@ -42,7 +43,7 @@ interface DraftJs {
   originHint(draftText: string, text: string): string;
   untouchedPremises(p: unknown, current: unknown[]): string[];
 }
-const { ACTION_TEXT, NOT_CHECKABLE, checkLine, draftButtonState, draftItems, draftNotices, draftPreviewLines, originHint, untouchedPremises } = (await import('../public/js/thesis-draft.js' as string)) as DraftJs;
+const { ACTION_TEXT, BELIEF_TEXT, checkLine, draftButtonState, draftItems, draftNotices, draftPreviewLines, originHint, untouchedPremises } = (await import('../public/js/thesis-draft.js' as string)) as DraftJs;
 
 // ---------------------------------------------------------------- 原文與一份會通過檢查的草稿（同 T55）
 
@@ -64,13 +65,16 @@ const DRAFT_THESIS = '資料中心的 GPU 需求帶動營收與毛利，持有�
 const P0 = '資料中心營收連續四季年增超過 30%';
 const P1 = 'HBM 的合約價到 2027 年上半年仍然逐季上漲';
 const X0 = '毛利率連兩季低於 55%（最新一季 60%）';
+const C0 = '10-Q 的營收年增率仍高於 30%';
+const C1 = 'TrendForce 最新一季的 HBM 合約價預估仍是季漲';
 function goodPayload(): Record<string, unknown> {
   return {
     thesis: DRAFT_THESIS,
     premises: [
-      { text: P0, keep_id: null, breaks_if: '連兩季營收年增率低於 15%', checkable_by: 'XBRL', source_hint: null, evidence_ids: ['E2'] },
-      { text: P1, keep_id: null, breaks_if: 'TrendForce 的新聞稿報 HBM 合約價季跌', checkable_by: 'WEB', source_hint: 'trendforce.com', evidence_ids: [] },
-      { text: '毛利率維持在 55% 以上', keep_id: null, breaks_if: '毛利率連兩季低於 55%', checkable_by: 'NONE', source_hint: null, evidence_ids: ['E1'] },
+      // T60（composite_layer_design §2.2、§2.3）：前提多 confirms_if、verify，breaks_if 是 1～3 句；第 3 條是信念（verify.by = NONE）
+      { text: P0, keep_id: null, confirms_if: C0, breaks_if: ['連兩季營收年增率低於 15%'], verify: { by: 'XBRL' }, evidence_ids: ['E2'] },
+      { text: P1, keep_id: null, confirms_if: C1, breaks_if: ['TrendForce 的新聞稿報 HBM 合約價季跌'], verify: { by: 'WEB', source: 'trendforce.com' }, evidence_ids: [] },
+      { text: '毛利率維持在 55% 以上', keep_id: null, confirms_if: null, breaks_if: ['毛利率連兩季低於 55%'], verify: { by: 'NONE' }, evidence_ids: ['E1'] },
     ],
     exits: [
       { text: X0, action: 'HALF', kind: 'XBRL', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55, quarters: 2 }, premise_index: 2, evidence_ids: ['E1'] },
@@ -90,7 +94,7 @@ function goodPayload(): Record<string, unknown> {
 /** 純函式用：一份檢查過的草稿（OwnDraft）。 */
 function okDraft(payload: Record<string, unknown> = goodPayload(), premises: Premise[] = USER_PREMISES): OwnDraft {
   const doc: PackDoc = { id: 'D1', source_id: 'edgar:q', kind: 'filing', date: '2026-10-30', title: '10-Q', text: TENQ_TEXT };
-  const pack = ownDraftPack({ runId: 'r', asOf: '2026-11-19', ticker: 'NVDA', trigger: 'MANUAL', held: true, premises, facts: [], docs: [doc], dataQuality: {}, thesisVersion: 1, fileId: 'NVDA@2026-11-19', broken: null, webDomains: ['trendforce.com'], now: new Date('2026-11-20T01:00:00Z') }).pack;
+  const pack = ownDraftPack({ runId: 'r', asOf: '2026-11-19', ticker: 'NVDA', trigger: 'MANUAL', held: true, premises: premises.map(packPremise), facts: [], docs: [doc], dataQuality: {}, thesisVersion: 1, fileId: 'NVDA@2026-11-19', broken: null, webDomains: ['trendforce.com'], now: new Date('2026-11-20T01:00:00Z') }).pack;
   const out = judge(pack, [{ run_id: 'r', function: OWN_DRAFT, verdict: 'DONE', evidence: evOf(doc), payload, report: '草稿。' }], PAYLOAD_HOOKS[OWN_DRAFT]);
   const r = draftResult(out, pack, METRICS)!;
   if (!r.ok) throw new Error(r.why);
@@ -112,11 +116,12 @@ describe('T56 草稿的每一項預設都不勾（§2.3）', () => {
     ]);
   });
 
-  it('每條前提寫查得到的來源；NONE 寫紅字「stock bot 監測不了這一條」；出場條件的動作是白話', () => {
+  // T60 改（composite_layer_design §2.3）：NONE 是信念，寫「這一條查不到，是你選擇相信的」，不再是紅字「stock bot 監測不了這一條」
+  it('每條前提寫查得到的來源；NONE 寫信念；出場條件的動作是白話', () => {
     const items = draftItems(okDraft());
-    expect(checkLine(items.premises[0])).toEqual({ ok: true, text: '查得到：財報數字（程式比對）' });
-    expect(checkLine(items.premises[1])).toEqual({ ok: true, text: '查得到：清單內的網站（trendforce.com）' });
-    expect(checkLine(items.premises[2])).toEqual({ ok: false, text: NOT_CHECKABLE });
+    expect(checkLine(items.premises[0])).toEqual({ ok: true, belief: false, text: '查得到：財報數字（程式比對）' });
+    expect(checkLine(items.premises[1])).toEqual({ ok: true, belief: false, text: '查得到：清單內的網站（trendforce.com）' });
+    expect(checkLine(items.premises[2])).toEqual({ ok: true, belief: true, text: BELIEF_TEXT });
     expect(ACTION_TEXT[items.exits[0].action as string]).toBe('減半');
     expect(items.exits[0].threshold).toBe(true);
   });
@@ -127,7 +132,7 @@ describe('T56 草稿的每一項預設都不勾（§2.3）', () => {
   });
 
   it('草稿沒有沿用的你現在的前提列出來（「新的」裡照舊留著）', () => {
-    const d = okDraft({ ...goodPayload(), premises: [{ text: '資料中心需求延續到 2027', keep_id: 'P1', breaks_if: '連兩季營收年增率低於 15%', checkable_by: 'XBRL', evidence_ids: ['E2'] }, ...(goodPayload().premises as unknown[]).slice(1)] });
+    const d = okDraft({ ...goodPayload(), premises: [{ text: '資料中心需求延續到 2027', keep_id: 'P1', confirms_if: C0, breaks_if: ['連兩季營收年增率低於 15%'], verify: { by: 'XBRL' }, evidence_ids: ['E2'] }, ...(goodPayload().premises as unknown[]).slice(1)] });
     expect(untouchedPremises(d, [{ id: 'P1', system: false }, { id: 'P2', system: false }])).toEqual(['P2']);
   });
 });
@@ -182,9 +187,10 @@ describe('T56 前提的來源與 breaksIf（引擎 mapPremises）', () => {
   it('新的一條帶 origin 與 breaksIf；沿用的照舊保留來源，送了 breaksIf 就換（空字串 = 拿掉）', () => {
     const m = mapPremises(meta, [{ id: 'P1', text: '資料中心需求延續到 2027', breaksIf: '連兩季營收年增率低於 15%' }, { id: 'P4', text: 'HBM 長約有價格保護', breaksIf: '' }, { text: P0, origin: 'AI_DRAFT_ACCEPTED', breaksIf: '連兩季營收年增率低於 15%' }, { text: P1, origin: 'USER' }], '2026-11-21');
     expect(m.premises).toEqual([
-      { id: 'P1', text: '資料中心需求延續到 2027', origin: 'USER', addedAt: '2026-11-01', breaksIf: '連兩季營收年增率低於 15%' },
+      // T60：存成子句的陣列（送一段字當成一句）
+      { id: 'P1', text: '資料中心需求延續到 2027', origin: 'USER', addedAt: '2026-11-01', breaksIf: ['連兩季營收年增率低於 15%'] },
       { id: 'P4', text: 'HBM 長約有價格保護', origin: 'AI_DRAFT_ACCEPTED', addedAt: '2026-11-02' },
-      { id: 'P6', text: P0, origin: 'AI_DRAFT_ACCEPTED', breaksIf: '連兩季營收年增率低於 15%', addedAt: '2026-11-21' },
+      { id: 'P6', text: P0, origin: 'AI_DRAFT_ACCEPTED', breaksIf: ['連兩季營收年增率低於 15%'], addedAt: '2026-11-21' },
       { id: 'P7', text: P1, origin: 'USER', addedAt: '2026-11-21' },
     ]);
   });
@@ -198,10 +204,11 @@ describe('T56 存檔時怎麼用這份草稿（draftSave）', () => {
   const d = okDraft();
   const ws = { peers: [{ name: 'SK hynix', yahoo: '000660.KS' }], domains: ['www.micron.com'] };
   it('原樣勾選 → AI_DRAFT_ACCEPTED；改字 → USER；breaks_if 預設用草稿的、你改了用你的；論點一字沒改 → DRAFT；沒勾的有幾條', () => {
-    const r = draftSave(viewOf(d), { thesis: DRAFT_THESIS, thesisPressed: true, premises: [{ id: null, text: P0, draft: 0 }, { id: null, text: 'HBM 的合約價到 2027 年仍然上漲', breaksIf: '合約價連兩季下跌', draft: 1 }, { id: 'P1', text: '資料中心需求延續到 2027', draft: null }], exits: [0], peers: [0], domains: [0, 1], webSources: ws }, 3);
+    const r = draftSave(viewOf(d), { thesis: DRAFT_THESIS, thesisPressed: true, premises: [{ id: null, text: P0, draft: 0 }, { id: null, text: 'HBM 的合約價到 2027 年仍然上漲', breaksIf: ['合約價連兩季下跌'], draft: 1 }, { id: 'P1', text: '資料中心需求延續到 2027', draft: null }], exits: [0], peers: [0], domains: [0, 1], webSources: ws }, 3);
+    // T60：怎樣算證實、怎麼驗證也照草稿的（送了就用送的）
     expect(r.premises).toEqual([
-      { id: null, text: P0, origin: 'AI_DRAFT_ACCEPTED', breaksIf: '連兩季營收年增率低於 15%' },
-      { id: null, text: 'HBM 的合約價到 2027 年仍然上漲', origin: 'USER', breaksIf: '合約價連兩季下跌' },
+      { id: null, text: P0, origin: 'AI_DRAFT_ACCEPTED', breaksIf: ['連兩季營收年增率低於 15%'], confirmsIf: C0, verify: { by: 'XBRL' } },
+      { id: null, text: 'HBM 的合約價到 2027 年仍然上漲', origin: 'USER', breaksIf: ['合約價連兩季下跌'], confirmsIf: C1, verify: { by: 'WEB', source: 'trendforce.com' } },
       { id: 'P1', text: '資料中心需求延續到 2027' },
     ]);
     expect(r.source).toBe('DRAFT');
@@ -438,8 +445,9 @@ describe('T56 勾選與存檔（§2.3）', () => {
       expect(r.status).toBe(200);
       const a = await acctOf(c.db);
       expect(a.own.NVDA.premises).toEqual([
-        { id: 'P4', text: P0, origin: 'AI_DRAFT_ACCEPTED', breaksIf: '連兩季營收年增率低於 15%', addedAt: '2026-11-19' },
-        { id: 'P5', text: 'HBM 的合約價到 2027 年仍然上漲', origin: 'USER', breaksIf: 'TrendForce 的新聞稿報 HBM 合約價季跌', addedAt: '2026-11-19' },
+        // T60：子句的陣列；怎樣算證實、怎麼驗證照草稿的
+        { id: 'P4', text: P0, origin: 'AI_DRAFT_ACCEPTED', breaksIf: ['連兩季營收年增率低於 15%'], confirmsIf: C0, verify: { by: 'XBRL' }, addedAt: '2026-11-19' },
+        { id: 'P5', text: 'HBM 的合約價到 2027 年仍然上漲', origin: 'USER', breaksIf: ['TrendForce 的新聞稿報 HBM 合約價季跌'], confirmsIf: C1, verify: { by: 'WEB', source: 'trendforce.com' }, addedAt: '2026-11-19' },
       ]);
       expect(a.own.NVDA.thesis).toMatchObject({ text: DRAFT_THESIS, source: 'DRAFT', version: 1, afterBreak: 0 });
       const after = (await draftsOf(c.db))[0];

@@ -1,3 +1,5 @@
+> 不再使用（2026-11-21）：T60 起改用 `own_draft_v2.md`（前提多 `confirms_if`、`verify`，`breaks_if` 改成最多 3 句；查不到的標成信念、至少 2 條不是信念；拿掉「`NONE` 最多 1 條」；程式檢查多三條）。
+
 # own_draft_v1：論點草稿（OWN_DRAFT）
 
 共用的取證據包、取文件、外殼格式與送回方式見 `run.md`；這份只寫這個功能怎麼做。設計依據：`docs/design/web_evidence_design_2026-11-20.md` 第 2 章（§2.2 草稿任務、§2.4 怎麼避免 AI 出題又改考卷）與 §1.5（找資料的步驟）；`docs/design/own_thesis_design_2026-11-15.md` §1.4（論點是使用者的）。

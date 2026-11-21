@@ -2,21 +2,29 @@
 // 資料抓取、時機與上限、own_drafts 表在 src/app/ownDraft.ts。
 //
 //   權限 A2（只說明；使用者逐條勾選才有效果），一份（samples = 1），不是三票。
-//   流程（own_draft_v1）：研究員讀證據包、可以找資料（和審查同一套取文件，§1.5）→ 反方先寫 → 正方回應 → 主筆寫草稿。
+//   流程（own_draft_v2）：研究員讀證據包、可以找資料（和審查同一套取文件，§1.5）→ 反方先寫 → 正方回應 → 主筆寫草稿。
 //   程式檢查（§2.2）不過的整份退回（這一票改成 INSUFFICIENT、原因寫進 issues），不給使用者半份草稿：
 //     外殼與 evidence 照 check.ts（引用逐字出自證據包）；前提 3～5 條、出場條件 2～6 條、字數上限同 parseThesisBlock；
-//     每條前提都有 breaks_if 與 checkable_by，NONE 最多 1 條；至少一條出清或減半的出場條件是財報數字門檻（數字有通過檢查的引用）；
+//     至少一條出清或減半的出場條件是財報數字門檻（數字有通過檢查的引用）；
 //     反方 3 點、每點至少一條通過檢查的引用；來源的網域要是公開的 https 主機（safeWebUrl）；
 //     這檔有還沒回覆的乙類通知時（§2.4 第 6 點）keep_id 不能是被判不成立的那一條，文字很像的標出來。
+//   T60（composite_layer_design §2.2、§2.3；prompt 升成 own_draft_v2）：前提的欄位改成
+//     confirms_if（怎樣算證實）、breaks_if（1～3 句）、verify { by, source, every }（by = NONE 是信念）。檢查多四條、拿掉一條：
+//     1. breaks_if 的子句不能在證據包的財報表裡已經成立（src/ai/xbrlClause.ts 認得的寫法；verify.by 是 XBRL 或 FILING 的才比）
+//     2. 前提的本文不放會過時的字樣（「最新一季」「財測約」…）
+//     3. verify.by 不是 NONE 時 confirms_if 必填
+//     4. 至少 2 條不是信念的前提；拿掉「NONE 最多 1 條」（信念不限條數）
 import type { CheckedEvidence, CheckedSample, EvidencePack, Outcome, PackDoc, PackPremise } from './check';
 import { buildPack } from './pack';
-import { premiseKey } from '../engine';
+import { PREMISE_FIELD_LIMITS, VERIFY_BY, premiseKey, type VerifyBy } from '../engine';
 import type { CondAction } from '../app/thesis';
+import type { QuarterRow } from '../data/edgar';
 import { safeWebUrl } from '../data/webDoc';
 import { WEB_EXCLUDED, hostMatches } from '../data/webSources';
+import { clauseMetNow, type ClauseQuarter } from './xbrlClause';
 
 export const OWN_DRAFT = 'OWN_DRAFT';
-export const OWN_DRAFT_PROMPT = 'own_draft_v1';
+export const OWN_DRAFT_PROMPT = 'own_draft_v2';
 
 /**
  * 程式檢查的數字（§2.2）。條數上限與字數上限同 parseThesisBlock 的 THESIS_LIMITS（src/ai/discussion.ts；這裡不 import 它，
@@ -30,18 +38,32 @@ export const DRAFT_LIMITS = {
   thesis: 600,
   premise: 200,
   exit: 300,
-  breaksIf: 300,
-  hint: 200,
+  /** 「怎樣算不成立」每一句的上限（T60 起最多 3 句，breaksClauses）。 */
+  breaksIf: PREMISE_FIELD_LIMITS.clause,
+  breaksClauses: PREMISE_FIELD_LIMITS.breaksClauses,
+  confirmsIf: PREMISE_FIELD_LIMITS.confirmsIf,
+  /** verify.source 的上限。 */
+  hint: PREMISE_FIELD_LIMITS.source,
+  everyMin: PREMISE_FIELD_LIMITS.everyMin,
+  everyMax: PREMISE_FIELD_LIMITS.everyMax,
+  /** 至少幾條不是信念的前提（composite §2.3；取代 T55 的「NONE 最多 1 條」）。 */
+  checkableMin: PREMISE_FIELD_LIMITS.minCheckable,
   against: 3,
   line: 300,
-  noneMax: 1,
   notCheckable: 5,
   peers: 4,
   domains: 6,
 } as const;
 
-export const CHECKABLE_BY = ['XBRL', 'FILING', 'PEER_FILING', 'WEB', 'NONE'] as const;
-export type CheckableBy = (typeof CHECKABLE_BY)[number];
+/** 前提用什麼查（T55 叫 checkable_by；T60 起是 verify.by）：同 engine 的 VERIFY_BY。 */
+export const CHECKABLE_BY = VERIFY_BY;
+export type CheckableBy = VerifyBy;
+
+/**
+ * 前提本文裡會過時的字樣（composite §2.2 草稿檢查第 2 條：「前提的本文不放會過時的數字」由 prompt 規定，程式只擋這類字樣）。
+ * 只看前提的本文；confirms_if、breaks_if、出場條件可以寫現在的數字（例如「毛利率連兩季低於 55%（最新一季 61.2%）」）。
+ */
+export const DATED_WORDS = /最新一季|最近一季|本季|這一季|財測約|財測為|目前股價|現在股價|目前的股價|現價/;
 const ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
 const XBRL_TYPES = ['xbrl_metric_below', 'xbrl_metric_above'];
 const ANSWERS = ['YES', 'NO', 'UNSURE'] as const;
@@ -56,13 +78,20 @@ export interface DraftBroken {
 /** 草稿最上面固定的那句話（§2.4 第 6 點；T56 顯示）。 */
 export const brokenNotice = (premiseId: string): string => `前提 ${premiseId} 剛被判不成立。在這之後改論點，很容易只是替繼續持有找新理由`;
 
+/**
+ * 檢查過的一條前提（T60 的形狀，composite §2.2）。T55（own_draft_v1）存的舊草稿是 breaks_if（一段字）、checkable_by、source_hint，
+ * 讀的地方（src/app/ownDraft.ts 的 draftPremiseFields、public/js/thesis-draft.js）兩種都收。
+ */
 export interface DraftPremise {
   text: string;
   /** 沿用現行的哪一條（沒改字才能寫）；新的是 null。 */
   keep_id: string | null;
-  breaks_if: string;
-  checkable_by: CheckableBy;
-  source_hint: string | null;
+  /** 怎樣算證實（信念可以沒有：null）。 */
+  confirms_if: string | null;
+  /** 怎樣算不成立：1～3 句。 */
+  breaks_if: string[];
+  /** 怎麼驗證：by = NONE 是信念；source、every 沒寫是 null（every 用 100 天）。 */
+  verify: { by: CheckableBy; source: string | null; every: number | null };
   /** 通過檢查的引用編號。 */
   evidence_ids: string[];
   /** 文字和剛被判不成立的那一條很像（§2.4 第 6 點：標出來，不擋）。 */
@@ -124,8 +153,16 @@ export interface OwnDraftInput {
   broken: DraftBroken | null;
   /** 可以當證據的網頁來源（共用清單＋這檔的一手網域；webEvidence.ts 的 sourceFacts）。記在 rule.detail.webDomains。 */
   webDomains: string[];
+  /**
+   * XBRL 的季度數字（新的在前；T60）：記在 rule.detail.quarters，給程式檢查第 1 條比對「怎樣算不成立」是不是已經成立。
+   * 和證據包的 XBRL 表是同一份數字；XBRL 抓不到是 null（那一條就不比）。
+   */
+  quarters?: QuarterRow[] | null;
   now: Date;
 }
+
+/** 季度數字只留程式檢查要的欄位。 */
+const clauseRows = (rows: QuarterRow[]): ClauseQuarter[] => rows.map((r) => ({ end: r.end, revenue: r.revenue, grossMarginPct: r.grossMarginPct, operatingMarginPct: r.operatingMarginPct, netMarginPct: r.netMarginPct, revenueYoY: r.revenueYoY, epsDiluted: r.epsDiluted, cfoToNetIncome: r.cfoToNetIncome }));
 
 export function ownDraftPack(inp: OwnDraftInput) {
   const who = inp.held ? `使用者持有自選股 ${inp.ticker}` : `使用者把 ${inp.ticker} 加進自選`;
@@ -138,7 +175,8 @@ export function ownDraftPack(inp: OwnDraftInput) {
     subject: { ticker: inp.ticker },
     question:
       (brk ? `${brk.notice}。草稿不能沿用前提 ${brk.premiseId}（keep_id 不能寫 ${brk.premiseId}），也不要換個說法把它寫回來。` : '') +
-      `${who}。請替使用者草擬這檔的論點（payload.thesis）、${DRAFT_LIMITS.premisesMin}～${DRAFT_LIMITS.premisesMax} 條前提（每條寫怎樣算不成立、查得到的來源）、` +
+      `${who}。請替使用者草擬這檔的論點（payload.thesis）、${DRAFT_LIMITS.premisesMin}～${DRAFT_LIMITS.premisesMax} 條前提` +
+      `（每條寫怎樣算證實、怎樣算不成立〔最多 ${DRAFT_LIMITS.breaksClauses} 句〕、用什麼來源驗證與多久有新的一份；查不到的配一個查得到的替代指標，配不出來的標成信念，至少 ${DRAFT_LIMITS.checkableMin} 條不是信念）、` +
       `${DRAFT_LIMITS.exitsMin}～${DRAFT_LIMITS.exitsMax} 條出場條件（至少一條是出清或減半的財報數字門檻）。` +
       '反方先寫：這家公司最可能讓持有者後悔的三件事（各附證據），以及「如果現在沒有持股，今天用這個價格會不會買」的反方答案；正方要回應反方的三件事。' +
       '每一條前提都要查得到哪些證據顯示它成立、哪些顯示它不成立。這是草稿：每一條都要使用者勾選才會生效。不要評論該不該買或賣、不要寫股數或價位。',
@@ -151,6 +189,7 @@ export function ownDraftPack(inp: OwnDraftInput) {
         fileId: inp.fileId,
         broken: brk,
         ...(inp.webDomains.length ? { webDomains: inp.webDomains } : {}),
+        ...(inp.quarters?.length ? { quarters: clauseRows(inp.quarters) } : {}),
       },
     },
     facts: inp.facts,
@@ -203,6 +242,7 @@ function hostOf(raw: string): string | null {
 interface PackDetail {
   broken?: DraftBroken | null;
   webDomains?: string[];
+  quarters?: ClauseQuarter[];
 }
 
 /**
@@ -235,16 +275,40 @@ export function checkDraft(s: CheckedSample, pack: Pick<EvidencePack, 'documents
     const n = `前提第 ${k + 1} 條`;
     if (!isObj(raw)) return void errors.push(`${n}格式不對`);
     const text = txt(raw.text);
-    const breaks = txt(raw.breaks_if);
-    const by = txt(raw.checkable_by).toUpperCase();
     const keep = raw.keep_id === null || raw.keep_id === undefined || raw.keep_id === '' ? null : txt(raw.keep_id).toUpperCase();
     if (!text) errors.push(`${n}沒有文字`);
     else if (text.length > L.premise) errors.push(`${n}超過 ${L.premise} 字`);
-    if (!breaks) errors.push(`${n}沒有寫怎樣算不成立（breaks_if）`);
-    else if (breaks.length > L.breaksIf) errors.push(`${n}的 breaks_if 超過 ${L.breaksIf} 字`);
-    if (!(CHECKABLE_BY as readonly string[]).includes(by)) errors.push(`${n}的 checkable_by 要是 ${CHECKABLE_BY.join('、')} 其中之一`);
-    const hint = txt(raw.source_hint);
-    if (hint.length > L.hint) errors.push(`${n}的 source_hint 超過 ${L.hint} 字`);
+    // 本文不放會過時的數字（§2.2 第 2 條；程式只擋這類字樣）
+    const dated = DATED_WORDS.exec(text);
+    if (dated) errors.push(`${n}的本文有會過時的字「${dated[0]}」：前提寫會一直成立的事，現在的數字寫進 confirms_if 或 breaks_if`);
+    // 怎麼驗證（T60）：by 五選一；source、every 可以不寫（every 用 100 天）
+    const v = isObj(raw.verify) ? raw.verify : null;
+    const by = txt(v?.by).toUpperCase();
+    const byOk = (CHECKABLE_BY as readonly string[]).includes(by);
+    if (!byOk) errors.push(`${n}的 verify.by 要是 ${CHECKABLE_BY.join('、')} 其中之一`);
+    const source = txt(v?.source);
+    if (source.length > L.hint) errors.push(`${n}的 verify.source 超過 ${L.hint} 字`);
+    const ev0 = v?.every;
+    const every = ev0 === undefined || ev0 === null || ev0 === '' ? null : Number(ev0);
+    if (every !== null && !(Number.isInteger(every) && every >= L.everyMin && every <= L.everyMax)) errors.push(`${n}的 verify.every 要是 ${L.everyMin}～${L.everyMax} 的整數（天）`);
+    const belief = by === 'NONE';
+    // 怎樣算證實（§2.2 第 3 條）：查得到的前提必填，信念可以不寫
+    const confirms = txt(raw.confirms_if);
+    if (!confirms && byOk && !belief) errors.push(`${n}查得到（verify.by 不是 NONE），要寫怎樣算證實（confirms_if）`);
+    else if (confirms.length > L.confirmsIf) errors.push(`${n}的 confirms_if 超過 ${L.confirmsIf} 字`);
+    // 怎樣算不成立：1～3 句（舊的一段字當成一句）
+    const rb = raw.breaks_if;
+    const breaks = typeof rb === 'string' ? (rb.trim() ? [rb.trim()] : []) : Array.isArray(rb) ? rb.map((x) => (typeof x === 'string' ? x.trim() : '')) : [];
+    if (!breaks.length) errors.push(`${n}沒有寫怎樣算不成立（breaks_if）`);
+    else if (breaks.length > L.breaksClauses) errors.push(`${n}的 breaks_if 最多 ${L.breaksClauses} 句（送回 ${breaks.length} 句）：一句寫一件事，挑最關鍵的`);
+    else if (breaks.some((b) => !b)) errors.push(`${n}的 breaks_if 有空的一句`);
+    breaks.forEach((b, j) => {
+      if (b.length > L.breaksIf) return void errors.push(`${n}的 breaks_if 第 ${j + 1} 句超過 ${L.breaksIf} 字`);
+      // 已經成立的子句（§2.2 第 1 條）：只比公司自己的財報數字查得到的（XBRL、FILING）；同業、網頁、信念不比
+      if (by !== 'XBRL' && by !== 'FILING') return;
+      const met = clauseMetNow(b, detail.quarters);
+      if (met?.met) errors.push(`${n}的 breaks_if 第 ${j + 1} 句「${b}」用證據包的財報表看已經成立（${met.end} 那一季），前提一開始就不成立：寫成從現在起看得出來的事（例如「下一季…」「之後任一季…」），或換一個還沒碰到的門檻`);
+    });
     if (keep !== null) {
       if (brk && keep === brk.premiseId) errors.push(`${n}沿用了剛被判不成立的前提 ${brk.premiseId}（keep_id 不能是它）`);
       else {
@@ -256,15 +320,16 @@ export function checkDraft(s: CheckedSample, pack: Pick<EvidencePack, 'documents
     premises.push({
       text,
       keep_id: keep,
-      breaks_if: breaks,
-      checkable_by: by as CheckableBy,
-      source_hint: hint || null,
+      confirms_if: confirms || null,
+      breaks_if: breaks.filter(Boolean),
+      verify: { by: by as CheckableBy, source: belief ? null : source || null, every: belief || every === null || !Number.isInteger(every) ? null : every },
       evidence_ids: ids(raw.evidence_ids).filter((id) => okIds.has(id)),
       ...(brk && text && likeText(text, brk.text) ? { like_broken: true } : {}),
     });
   });
-  const none = premises.filter((x) => x.checkable_by === 'NONE').length;
-  if (none > L.noneMax) errors.push(`查不到的前提（checkable_by = NONE）最多 ${L.noneMax} 條（送回 ${none} 條）；寫不成查得到的事的放 not_checkable`);
+  // 信念不限條數，但至少要有 2 條不是信念的前提（composite §2.3；取代「NONE 最多 1 條」）
+  const checkable = premises.filter((x) => x.verify.by !== 'NONE').length;
+  if (rawPremises && rawPremises.length >= L.premisesMin && checkable < L.checkableMin) errors.push(`至少要 ${L.checkableMin} 條不是信念的前提（verify.by 不是 NONE；送回 ${checkable} 條）：查不到的先配一個之後會出現在申報裡的替代指標，配不出來的才標成信念`);
 
   // 出場條件
   const rawExits = Array.isArray(p.exits) ? p.exits : null;

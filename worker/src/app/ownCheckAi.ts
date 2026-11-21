@@ -95,7 +95,7 @@ export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, v
     ticker,
     exits: clean,
     held: !!meta,
-    premises: ownPremises(acct, ticker),
+    premises: ownPremises(acct, ticker, { beliefs: true }),
     condFacts: conds,
     facts,
     hits: entry?.hits ?? [],

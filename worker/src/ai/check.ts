@@ -34,7 +34,12 @@ export interface PackPremise {
   id: string;
   text: string;
   origin?: string;
-  breaksIf?: string;
+  /** 怎樣算不成立的子句（T60 起是陣列，最多 3 句；composite_layer_design §2.2）。 */
+  breaksIf?: string[];
+  /** 怎樣算證實（T60）。 */
+  confirmsIf?: string;
+  /** 怎麼驗證（T60）：by、來源、多久會有新的一份（天）。信念（NONE）只出現在草稿的證據包，審查的不放。 */
+  verify?: { by: string; source?: string; every?: number };
 }
 
 export interface PackPolicy {

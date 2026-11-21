@@ -8,9 +8,9 @@
 // 8-K 的挑選順序、論點那一份 note）。讀 D1，所以不在引擎裡。
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
 import { ownCheckResult, type ExitLine } from '../ai/ownCheck';
-import { packOrigin } from '../ai/pack';
+import { packPremise } from '../ai/pack';
 import { confirmMode, namedWebDomains, webConfirmText, type OwnCondition } from '../ai/ownReview';
-import { DEFAULT_CONFIG, clone, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Thesis, type Tier } from '../engine';
+import { DEFAULT_CONFIG, breaksOf, clone, isBelief, premiseKey, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Premise, type PremiseVerify, type Thesis, type Tier } from '../engine';
 import { concentrationHits, sizeText } from './concentration';
 import type { ThesisLogInput } from './ledgerStore';
 import { XBRL_METRICS, type QuarterRow } from '../data/edgar';
@@ -145,7 +145,11 @@ export interface ThesisPremise {
   text: string;
   origin: string;
   addedAt: string | null;
-  breaksIf?: string;
+  /** 怎樣算不成立的子句（T60 起最多 3 句；舊資料的一段字當成一句）。 */
+  breaksIf?: string[];
+  /** 怎樣算證實、怎麼驗證（T60，composite_layer_design §2.2）；verify.by = NONE 是信念（§2.3）。 */
+  confirmsIf?: string;
+  verify?: PremiseVerify;
   /** 最近一次三票一致的檢查（定期審查）；不一致的不算（own_thesis §1.4）。 */
   lastCheck: { date: string; runId: string; status: string } | null;
   /** 比 lastCheck 新的審查裡，這一條沒有一致結論（顯示「這次沒有一致結論」）。 */
@@ -427,7 +431,7 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
       }
       splitAfter = true;
     }
-    return { id: p.id, text: p.text, origin: p.origin, addedAt: p.addedAt ?? null, ...(p.breaksIf ? { breaksIf: p.breaksIf } : {}), lastCheck, splitAfter };
+    return { ...premiseFields(p), lastCheck, splitAfter };
   });
 
   // 出場條件改寫回來、還沒確認的（最近 30 天）
@@ -491,7 +495,7 @@ export function metaFile(acct: Pick<Account, 'own'>, ticker: string, asOf: strin
     status: 'OPEN',
     thesis: meta.thesis ?? null,
     buyNote: meta.buyNote ?? null,
-    premises: meta.premises.map((p) => ({ id: p.id, text: p.text, origin: p.origin, addedAt: p.addedAt ?? null, ...(p.breaksIf ? { breaksIf: p.breaksIf } : {}), lastCheck: null, splitAfter: false })),
+    premises: meta.premises.map((p) => ({ ...premiseFields(p), lastCheck: null, splitAfter: false })),
     conditions: [],
     events: [],
     reviews: [],
@@ -597,11 +601,12 @@ export const WEB_DUE_DAYS = 25;
  *   你的前提（不含系統預設）最近一次檢查是三票一致的「證據不足」，或還沒被檢查過；
  *   你定的、監測中的條件（ACTIVE、REVIEW_ONLY）指名了網頁來源（confirm_by 有 `web:<網域>`）。
  * 只有系統預設前提的論點檔不用網頁證據（不能取文件）→ 一律是空的。分析師自己不受這張表限制。
+ * 信念（verify.by = NONE，composite_layer_design §2.3）不觸發 WEB_DUE：它不進審查，永遠「還沒被檢查過」。
  */
 export function externalNeeds(file: Pick<ThesisFile, 'kind' | 'premises' | 'conditions'>): { premises: string[]; conds: number[] } {
   if (file.kind !== 'THESIS') return { premises: [], conds: [] };
   return {
-    premises: file.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT' && (!p.lastCheck || p.lastCheck.status === 'INSUFFICIENT')).map((p) => p.id),
+    premises: file.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT' && !isBelief(p) && (!p.lastCheck || p.lastCheck.status === 'INSUFFICIENT')).map((p) => p.id),
     conds: file.conditions.filter((c) => isOwned(c) && OWNED_LIVE.includes(c.status) && namedWebDomains(c.check).length > 0).map((c) => c.id),
   };
 }
@@ -703,9 +708,15 @@ function toEvent(e: SecEventRow, last: ThesisFile['lastReview'], newSince: strin
   };
 }
 
-/** 證據包的前提（F19 用）：論點檔的現行前提，格式同 ownPremises。 */
+/** 證據包的前提（F19 用）：論點檔的現行前提，格式同 ownPremises（信念不放，composite_layer_design §2.3）。 */
 export function filePremises(tf: Pick<ThesisFile, 'premises'>): PackPremise[] {
-  return tf.premises.map((p) => ({ id: p.id, text: p.text, origin: packOrigin(p.origin), ...(p.breaksIf ? { breaksIf: p.breaksIf } : {}) }));
+  return tf.premises.filter((p) => !isBelief(p)).map((p) => packPremise({ ...p, origin: p.origin as Premise['origin'] }));
+}
+
+/** 帳戶狀態的一條前提 → 論點檔的那幾個欄位（子句、怎樣算證實、怎麼驗證只在有的時候帶）。 */
+function premiseFields(p: Premise): Omit<ThesisPremise, 'lastCheck' | 'splitAfter'> {
+  const breaks = breaksOf(p);
+  return { id: p.id, text: p.text, origin: p.origin, addedAt: p.addedAt ?? null, ...(breaks.length ? { breaksIf: breaks } : {}), ...(p.confirmsIf ? { confirmsIf: p.confirmsIf } : {}), ...(p.verify ? { verify: p.verify } : {}) };
 }
 
 // ---------------------------------------------------------------- 證據包要的部分（純函式）
@@ -1026,6 +1037,47 @@ const cnNum = (n: number) => CN_NUM[n] ?? String(n);
 /** 你定的、會自己發通知的條件（ACTIVE＋REVIEW_ONLY）。 */
 const ownedLive = (f: Pick<ThesisFile, 'conditions'>) => f.conditions.filter((c) => isOwned(c) && OWNED_LIVE.includes(c.status));
 
+/** 一條前提連續幾次審查沒驗到，就列「要看的事」（composite_layer_design §2.3）。 */
+export const UNVERIFIED_AFTER = 3;
+/** 那一件的後半句（設計原文）。 */
+export const UNVERIFIED_TEXT = '這一條一直查不到，可以改寫、配一個查得到的指標，或改標成信念';
+
+/**
+ * 一條前提最近連續幾次定期審查「沒驗到」（composite_layer_design §2.3；純函式。T61 持股頁的「已經 3 次沒驗到」也可以用）：
+ *   新到舊看這份論點檔的定期審查，有這一條的票才算一次（逾時、沒有合格票、這一條是信念沒進證據包的，不算也不中斷）；
+ *   3 票都判成立（證實）或 3 票都判不成立 → 這一串停在那裡；其他（證據不足、票數不一致）算一次沒驗到。
+ *   這條前提的字改過（論點檔 log 的 THESIS 前後這一條的字不同，只改標點空白不算）那天以前的審查不算：看的是舊的字。
+ * 回傳：count 連續幾次；first 這一串最早的那次審查（「要看的事」的鍵）；reachedAt 達到 3 次的那次審查的日期；
+ *   lastConfirmed 字改過之後最近一次 3 票都判成立的日期（沒有是 null）。
+ */
+export function unverifiedStreak(file: Pick<ThesisFile, 'reviews' | 'log'>, premiseId: string): { count: number; first: string | null; reachedAt: string | null; lastConfirmed: string | null } {
+  const textOf = (ps: unknown) => (Array.isArray(ps) ? (ps as { id?: unknown; text?: unknown }[]).find((p) => p?.id === premiseId)?.text : undefined);
+  let cutoff = '';
+  for (const l of file.log) {
+    if (l.kind !== 'THESIS') continue;
+    const b = textOf((l.body.before as { premises?: unknown } | undefined)?.premises);
+    const a = textOf((l.body.after as { premises?: unknown } | undefined)?.premises);
+    if (typeof b === 'string' && typeof a === 'string' && premiseKey(a) !== premiseKey(b) && l.session > cutoff) cutoff = l.session;
+  }
+  const streak: { runId: string; date: string }[] = [];
+  let lastConfirmed: string | null = null;
+  let open = true;
+  for (const r of file.reviews) {
+    if (r.fn !== 'OWN_REVIEW' || r.status === 'PENDING' || r.date <= cutoff) continue;
+    const v = r.premiseVotes[premiseId];
+    if (!v?.length) continue;
+    const same = v.length >= 3 && v.every((x) => x === v[0]);
+    if (same && v[0] === 'HOLDS') {
+      lastConfirmed ??= r.date;
+      open = false;
+    } else if (same && v[0] === 'BROKEN') open = false;
+    else if (open) streak.push({ runId: r.runId, date: r.date });
+    if (!open && lastConfirmed) break;
+  }
+  const n = streak.length;
+  return { count: n, first: n ? streak[n - 1].runId : null, reachedAt: n >= UNVERIFIED_AFTER ? streak[n - UNVERIFIED_AFTER].date : null, lastConfirmed };
+}
+
 /**
  * 自選股的「要看的事」，一種一個物件。加一種 = 在這裡加一個物件（T29a 的 COND_MET_NO_SELL、T29b 的 PRICE_NO_FILING、
  * T29c 的 PRESS_MISMATCH、T31a 的 NO_CONSENSUS 已加；T35 的 SIZE_2X）；判斷需要的資料先放進論點檔或帳戶狀態。
@@ -1126,7 +1178,8 @@ export const OWN_ATTN: AttnKind[] = [
     // 同一組前提每 6 個月列一次（鍵帶編號；哪幾條變了就是新的一件）。系統預設前提不列（程式先算好的，資料不足是暫時的）
     kind: 'PREMISE_NO_DATA',
     detect({ file }) {
-      const ps = file.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT' && p.lastCheck?.status === 'INSUFFICIENT');
+      // 信念不列（T60：不進審查）；已經連續 3 次沒驗到的列在下面的 PREMISE_UNVERIFIED（同一條不列兩次）
+      const ps = file.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT' && !isBelief(p) && p.lastCheck?.status === 'INSUFFICIENT' && unverifiedStreak(file, p.id).count < UNVERIFIED_AFTER);
       if (!ps.length) return [];
       const short = (s: string) => (s.length > 30 ? `${s.slice(0, 30)}…` : s);
       const since = ps.map((p) => p.lastCheck!.date).sort().at(-1)!;
@@ -1140,6 +1193,21 @@ export const OWN_ATTN: AttnKind[] = [
           text: `${file.ticker} 的前提 ${ps.map((p) => `${p.id}「${short(p.text)}」`).join('、')}最近一次審查 3 票都是證據不足：公司的申報、財報與 AI 另外取到的網頁裡都沒有找到依據。距上次審查滿 ${WEB_DUE_DAYS} 天，月底會為${which}再審一次、讓 AI 再去找；也可以改寫成查得到的事，或複製討論包到 claude.ai 討論`,
         },
       ];
+    },
+  },
+  {
+    // 你的前提連續 3 次定期審查都沒驗到（composite_layer_design §2.3，T60）：改寫、配一個查得到的指標，或改標成信念，
+    // 由使用者決定，程式不自動改（G16）。一條一件；鍵帶這一串最早的那次審查（同一串每 6 個月列一次，中間證實或判不成立過再發生是新的一件）
+    kind: 'PREMISE_UNVERIFIED',
+    detect({ file }) {
+      const short = (s: string) => (s.length > 30 ? `${s.slice(0, 30)}…` : s);
+      return file.premises
+        .filter((p) => p.origin !== 'SYSTEM_DEFAULT' && !isBelief(p))
+        .flatMap((p) => {
+          const s = unverifiedStreak(file, p.id);
+          if (s.count < UNVERIFIED_AFTER || !s.first || !s.reachedAt) return [];
+          return [{ key: `PREMISE_UNVERIFIED:${p.id}@${s.first}`, every: 6, since: s.reachedAt, text: `${file.ticker} 的前提 ${p.id}「${short(p.text)}」已經連續 ${s.count} 次審查都沒驗到：${UNVERIFIED_TEXT}` }];
+        });
     },
   },
   {

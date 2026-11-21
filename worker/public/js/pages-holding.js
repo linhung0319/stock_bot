@@ -8,6 +8,7 @@ import { aiBlock, attentionList, chart, refillText } from './parts.js';
 import { actionButton, errBox } from './pages-notif.js';
 import { ownMonitor } from './pages-ai.js';
 import { attnDraftAction, copyPackButton, draftAction } from './pages-thesis.js';
+import { BELIEF_TEXT } from './thesis-fields.js';
 
 const em = (t) => ({ t, tone: 'em' });
 const PREM = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
@@ -60,8 +61,11 @@ function ownBubble(d, main) {
   if (o.kind === 'DEFAULT_ONLY') return { k: '這一檔現在', say: [em('還沒有你的論點'), `，AI 用系統預設前提做一般健康檢查。${rule}`], mood };
   const broken = o.premises.filter((p) => checks[p.id]?.status === 'BROKEN').map((p) => p.id);
   if (broken.length) return { k: '這一檔現在', say: [`前提 ${broken.join('、')} 最近一次檢查`, em('不成立'), `。${rule}`], mood: 'worry' };
-  const n = o.premises.length;
-  const cnt = (st) => o.premises.filter((p) => (checks[p.id]?.status ?? null) === st).length;
+  // 信念（T60）不進審查，不算在「幾條成立、幾條還沒檢查」裡
+  const judged = o.premises.filter((p) => !p.belief);
+  if (!judged.length) return { k: '這一檔現在', say: [em(`你的 ${o.premises.length} 條前提都是信念`), `，審查不逐條檢查。${rule}`], mood };
+  const n = judged.length;
+  const cnt = (st) => judged.filter((p) => (checks[p.id]?.status ?? null) === st).length;
   const [ok, insuf, none] = [cnt('HOLDS'), cnt('INSUFFICIENT'), cnt(null)];
   const prem = none === n ? `你的 ${n} 條前提還沒有被 AI 審查過` : ok === n ? `你的 ${n} 條前提最近一次檢查都成立` : `你的 ${n} 條前提：${[ok ? `${ok} 條成立` : '', insuf ? `${insuf} 條證據不足` : '', none ? `${none} 條還沒檢查` : ''].filter(Boolean).join('、')}`;
   return { k: '這一檔現在', say: [em(prem), `。${rule}`], mood };
@@ -168,9 +172,11 @@ function premiseList(o, t, checks) {
             'p',
             { class: 'plist-meta' },
             h('span', { class: 'faint' }, p.origin),
-            c?.status ? [h('span', { class: 'st ' + c.status }, PREM[c.status]), h('span', { class: 'faint' }, c.when)] : t && !t.partial ? h('span', { class: 'faint' }, '還沒有檢查過') : null,
+            // 信念（T60，composite §2.3）：不進審查，不寫「還沒有檢查過」
+            p.belief ? null : c?.status ? [h('span', { class: 'st ' + c.status }, PREM[c.status]), h('span', { class: 'faint' }, c.when)] : t && !t.partial ? h('span', { class: 'faint' }, '還沒有檢查過') : null,
           ),
-          c?.split ? h('p', { class: 'small faint' }, '之後的審查對這一條沒有一致結論，先看上面這次。') : null,
+          p.belief ? h('p', { class: 'small prem-belief' }, `${BELIEF_TEXT}（不進審查的逐條判定）`) : null,
+          c?.split && !p.belief ? h('p', { class: 'small faint' }, '之後的審查對這一條沒有一致結論，先看上面這次。') : null,
           p.silenced ? h('p', { class: 'small plist-quiet' }, p.silenced) : null,
         ),
       );

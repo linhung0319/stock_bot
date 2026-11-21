@@ -27,6 +27,10 @@ import {
   type Notif,
   type OwnMeta,
   type Premise,
+  type PremiseVerify,
+  PREMISE_FIELD_LIMITS,
+  breaksOf,
+  normVerify,
   type ShadowRecord,
   type Thesis,
   type Tier,
@@ -1105,13 +1109,15 @@ export interface PremiseMapping {
  * 新的一條都沒有：原本只有系統預設 → 預設留著；原本有你的前提 → 丟錯（至少留一條）。
  * 草稿（T56，web_evidence_design §2.3）：新的一條帶 origin（原樣勾選的草稿是 AI_DRAFT_ACCEPTED，其他 USER）與 breaksIf（怎樣算不成立）；
  *   沿用的一條照舊保留原本的來源，帶了 breaksIf 就換成新的（空字串 = 拿掉）。原樣勾選的草稿前提之後被你改了字 → 來源改成 USER（字是你的了）。
+ * T60（composite_layer_design §2.2、§2.3）：breaksIf 存成子句的陣列（最多 3 句）；confirmsIf、verify 和 breaksIf 同一個規則（送了就換、空的拿掉、沒送照舊）。
+ *   只改這三個欄位不算論點變動（edited 只看前提的字）。
  */
 export function mapPremises(meta: Pick<OwnMeta, 'premises' | 'premiseSeq'>, next: PremiseInput[], date: string): PremiseMapping {
   const cur = meta.premises;
   const onlyDefault = cur.every((p) => p.origin === 'SYSTEM_DEFAULT');
   // 原樣送回來的系統預設前提（預覽裡沒動的）：全部都是 → 照舊；混了自己的前提 → 預設整組拿掉
   const isDefaultEcho = (r: { text: string }) => cur.some((p) => p.origin === 'SYSTEM_DEFAULT' && premiseKey(p.text) === premiseKey(r.text));
-  const all = next.map((p) => ({ id: p.id ?? null, text: p.text.trim(), origin: p.origin, breaksIf: typeof p.breaksIf === 'string' ? p.breaksIf.trim() : p.breaksIf })).filter((p) => p.text);
+  const all = next.map((p) => ({ id: p.id ?? null, text: p.text.trim(), origin: p.origin, ...premiseFieldsIn(p) })).filter((p) => p.text);
   const rows = all.filter((r) => !isDefaultEcho(r));
   let seq = nextPremiseSeq(meta);
   if (!rows.length) {
@@ -1133,28 +1139,61 @@ export function mapPremises(meta: Pick<OwnMeta, 'premises' | 'premiseSeq'>, next
       const changed = premiseKey(hit.text) !== premiseKey(r.text);
       if (changed) edited.push({ id: hit.id, before: hit.text, after: r.text });
       const p: Premise = { ...hit, text: r.text, ...(changed && hit.origin === 'AI_DRAFT_ACCEPTED' ? { origin: 'USER' as const } : {}) };
+      // 新欄位（T56 的 breaksIf；T60 的 confirmsIf、verify）：送了就換（空的 = 拿掉），沒送照舊
       if (r.breaksIf !== undefined) {
-        if (r.breaksIf) p.breaksIf = r.breaksIf;
+        if (r.breaksIf.length) p.breaksIf = r.breaksIf;
         else delete p.breaksIf;
+      }
+      if (r.confirmsIf !== undefined) {
+        if (r.confirmsIf) p.confirmsIf = r.confirmsIf;
+        else delete p.confirmsIf;
+      }
+      if (r.verify !== undefined) {
+        if (r.verify) p.verify = r.verify;
+        else delete p.verify;
       }
       premises.push(p);
     } else {
       const id = `P${seq++}`;
       added.push(id);
-      premises.push({ id, text: r.text, origin: r.origin === 'AI_DRAFT_ACCEPTED' ? 'AI_DRAFT_ACCEPTED' : 'USER', ...(r.breaksIf ? { breaksIf: r.breaksIf } : {}), addedAt: date });
+      premises.push({
+        id,
+        text: r.text,
+        origin: r.origin === 'AI_DRAFT_ACCEPTED' ? 'AI_DRAFT_ACCEPTED' : 'USER',
+        ...(r.breaksIf?.length ? { breaksIf: r.breaksIf } : {}),
+        ...(r.confirmsIf ? { confirmsIf: r.confirmsIf } : {}),
+        ...(r.verify ? { verify: r.verify } : {}),
+        addedAt: date,
+      });
     }
   }
   return { premises, kept, added, retired: cur.filter((p) => !used.has(p.id)), edited, premiseSeq: seq };
 }
 
-/** 編輯論點時送來的一條前提（T56 起可以帶草稿的來源與「怎樣算不成立」）。 */
+/**
+ * 送來的一條前提的新欄位整理成存檔的形狀（undefined = 沒送、照舊；空陣列、空字串、null = 拿掉）：
+ * breaksIf 一段字當成一句、陣列去空白去空的、最多取前 3 句（多的由呼叫的地方先擋）；confirmsIf 去頭尾空白；verify 經過 normVerify。
+ */
+function premiseFieldsIn(p: PremiseInput): { breaksIf?: string[]; confirmsIf?: string; verify?: PremiseVerify | null } {
+  const out: { breaksIf?: string[]; confirmsIf?: string; verify?: PremiseVerify | null } = {};
+  if (p.breaksIf !== undefined) out.breaksIf = p.breaksIf === null ? [] : breaksOf({ breaksIf: p.breaksIf }).slice(0, PREMISE_FIELD_LIMITS.breaksClauses);
+  if (p.confirmsIf !== undefined) out.confirmsIf = (p.confirmsIf ?? '').trim();
+  if (p.verify !== undefined) out.verify = p.verify === null ? null : normVerify(p.verify);
+  return out;
+}
+
+/** 編輯論點時送來的一條前提（T56 起可以帶草稿的來源與「怎樣算不成立」；T60 起帶「怎樣算證實」與怎麼驗證）。 */
 export interface PremiseInput {
   id?: string | null;
   text: string;
   /** 新的一條的來源：原樣勾選的草稿是 AI_DRAFT_ACCEPTED；沒給是 USER。沿用的一條不看這個。 */
   origin?: 'USER' | 'AI_DRAFT_ACCEPTED';
-  /** 怎樣算不成立（進審查的證據包）。undefined = 不改（沿用的照舊）；空字串或 null = 拿掉。 */
-  breaksIf?: string | null;
+  /** 怎樣算不成立（進審查的證據包；最多 3 句）。undefined = 不改（沿用的照舊）；空陣列、空字串或 null = 拿掉。一段字當成一句。 */
+  breaksIf?: string[] | string | null;
+  /** 怎樣算證實（T60）。undefined = 不改；空字串或 null = 拿掉。 */
+  confirmsIf?: string | null;
+  /** 怎麼驗證（T60；by = NONE 是信念）。undefined = 不改；null（或不認得的 by）= 拿掉。 */
+  verify?: PremiseVerify | null;
 }
 
 export interface ThesisInput {

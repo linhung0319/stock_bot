@@ -14,6 +14,7 @@ import { judge, type EvidencePack, type PackDoc } from '../src/ai/check';
 import { THESIS_LIMITS } from '../src/ai/discussion';
 import { PAYLOAD_HOOKS } from '../src/ai/hooks';
 import { DRAFT_LIMITS, OWN_DRAFT, OWN_DRAFT_PROMPT, brokenNotice, draftResult, likeText, ownDraftPack, type DraftBroken, type OwnDraft } from '../src/ai/ownDraft';
+import { packPremise } from '../src/ai/pack';
 import type { ApplyCtx, StartCtx } from '../src/app/aiCtx';
 import { getRun } from '../src/app/aiRuns';
 import { APPLIERS, aiStep } from '../src/app/aiStep';
@@ -61,9 +62,10 @@ function goodPayload(): Record<string, unknown> {
   return {
     thesis: '資料中心的 GPU 需求帶動營收與毛利，持有的理由靠需求延續、供給吃緊與毛利率維持。',
     premises: [
-      { text: '資料中心營收連續四季年增超過 30%', keep_id: null, breaks_if: '連兩季營收年增率低於 15%', checkable_by: 'XBRL', source_hint: null, evidence_ids: ['E2'] },
-      { text: 'HBM 的合約價到 2027 年上半年仍然逐季上漲', keep_id: null, breaks_if: 'TrendForce 的新聞稿報 HBM 合約價季跌', checkable_by: 'WEB', source_hint: 'trendforce.com', evidence_ids: [] },
-      { text: '毛利率維持在 55% 以上', keep_id: null, breaks_if: '毛利率連兩季低於 55%', checkable_by: 'XBRL', source_hint: null, evidence_ids: ['E1'] },
+      // T60（composite_layer_design §2.2）：前提多 confirms_if、verify，breaks_if 是 1～3 句
+      { text: '資料中心營收連續四季年增超過 30%', keep_id: null, confirms_if: '10-Q 的營收年增率仍高於 30%', breaks_if: ['連兩季營收年增率低於 15%'], verify: { by: 'XBRL', source: 'SEC XBRL 季度表', every: 91 }, evidence_ids: ['E2'] },
+      { text: 'HBM 的合約價到 2027 年上半年仍然逐季上漲', keep_id: null, confirms_if: 'TrendForce 最新一季的 HBM 合約價預估仍是季漲', breaks_if: ['TrendForce 的新聞稿報 HBM 合約價季跌'], verify: { by: 'WEB', source: 'trendforce.com', every: 90 }, evidence_ids: [] },
+      { text: '毛利率維持在 55% 以上', keep_id: null, confirms_if: '季報的毛利率仍在 55% 以上', breaks_if: ['毛利率連兩季低於 55%'], verify: { by: 'XBRL' }, evidence_ids: ['E1'] },
     ],
     exits: [
       { text: '毛利率連兩季低於 55%（最新一季 60%）', action: 'HALF', kind: 'XBRL', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55, quarters: 2 }, premise_index: 2, evidence_ids: ['E1'] },
@@ -81,7 +83,7 @@ function goodPayload(): Record<string, unknown> {
 }
 
 function purePack(o: { broken?: DraftBroken | null; premises?: Premise[] } = {}): EvidencePack {
-  return ownDraftPack({ runId: 'draft-test', asOf: '2026-11-19', ticker: 'NVDA', trigger: 'MANUAL', held: true, premises: o.premises ?? USER_PREMISES, facts: [], docs: [DOC_Q, DOC_NOTE], dataQuality: {}, thesisVersion: 1, fileId: 'NVDA@2026-11-19', broken: o.broken ?? null, webDomains: ['trendforce.com', 'dramexchange.com', 'news.skhynix.com'], now: new Date('2026-11-20T01:00:00Z') }).pack;
+  return ownDraftPack({ runId: 'draft-test', asOf: '2026-11-19', ticker: 'NVDA', trigger: 'MANUAL', held: true, premises: (o.premises ?? USER_PREMISES).map(packPremise), facts: [], docs: [DOC_Q, DOC_NOTE], dataQuality: {}, thesisVersion: 1, fileId: 'NVDA@2026-11-19', broken: o.broken ?? null, webDomains: ['trendforce.com', 'dramexchange.com', 'news.skhynix.com'], now: new Date('2026-11-20T01:00:00Z') }).pack;
 }
 const sampleOf = (pack: EvidencePack, payload: unknown, extra: Record<string, unknown> = {}, ev: unknown[] = evOf(DOC_Q)) => ({ run_id: pack.run_id, function: OWN_DRAFT, verdict: 'DONE', evidence: ev, payload, report: '草稿：論點靠需求、供給與毛利率。\n\n細節。', ...extra });
 function draftOf(payload: unknown, o: { pack?: EvidencePack; extra?: Record<string, unknown>; ev?: unknown[] } = {}) {
@@ -114,7 +116,7 @@ describe('T55 程式檢查（§2.2）：通過的草稿', () => {
     expect(outcome.status).toBe('AGREED');
     expect(result.ok).toBe(true);
     const d = (result as { draft: OwnDraft }).draft;
-    expect(d.premises.map((p) => p.checkable_by)).toEqual(['XBRL', 'WEB', 'XBRL']);
+    expect(d.premises.map((p) => p.verify.by)).toEqual(['XBRL', 'WEB', 'XBRL']); // T60：checkable_by 改成 verify.by
     expect(d.exits.map((x) => [x.action, x.threshold])).toEqual([
       ['HALF', true],
       ['REVIEW', false],
@@ -171,17 +173,22 @@ describe('T55 程式檢查（§2.2）：每一條各一個不過的例子（整�
     expect(failWhy(withField('thesis', ''))).toContain('沒有論點本文');
   });
 
-  it('每一條前提都要有 breaks_if 與 checkable_by', () => {
+  it('每一條前提都要有 breaks_if 與 verify.by（T60：checkable_by 改成 verify.by）', () => {
     expect(failWhy(withField('premises.0.breaks_if', undefined))).toContain('前提第 1 條沒有寫怎樣算不成立（breaks_if）');
-    expect(failWhy(withField('premises.2.checkable_by', 'MAYBE'))).toContain('前提第 3 條的 checkable_by 要是');
-    expect(failWhy(withField('premises.2.checkable_by', undefined))).toContain('前提第 3 條的 checkable_by 要是');
+    expect(failWhy(withField('premises.2.verify.by', 'MAYBE'))).toContain('前提第 3 條的 verify.by 要是');
+    expect(failWhy(withField('premises.2.verify', undefined))).toContain('前提第 3 條的 verify.by 要是');
   });
 
-  it('checkable_by = NONE 最多 1 條（1 條可以，2 條不過）', () => {
-    expect(draftOf(withField('premises.1.checkable_by', 'NONE')).result.ok).toBe(true);
-    const p = withField('premises.1.checkable_by', 'NONE');
-    (p.premises as Record<string, unknown>[])[0].checkable_by = 'NONE';
-    expect(failWhy(p)).toContain('查不到的前提（checkable_by = NONE）最多 1 條（送回 2 條）');
+  // T60 改（composite_layer_design §2.3 取代「NONE 最多 1 條」）：信念不限條數，但至少 2 條不是信念
+  it('信念（verify.by = NONE）：3 條裡 1 條可以，2 條不過（至少 2 條不是信念）；4 條裡 2 條信念可以', () => {
+    expect(draftOf(withField('premises.1.verify', { by: 'NONE' })).result.ok).toBe(true);
+    const p = withField('premises.1.verify', { by: 'NONE' });
+    (p.premises as Record<string, unknown>[])[0].verify = { by: 'NONE' };
+    expect(failWhy(p)).toContain('至少要 2 條不是信念的前提（verify.by 不是 NONE；送回 1 條）');
+    const four = goodPayload();
+    (four.premises as unknown[]).push({ text: '大客戶的長約照約履行', keep_id: null, confirms_if: null, breaks_if: ['公司在 8-K 揭露大客戶違約'], verify: { by: 'NONE' }, evidence_ids: [] });
+    (four.premises as Record<string, unknown>[])[1].verify = { by: 'NONE' };
+    expect(draftOf(four).result.ok).toBe(true);
   });
 
   it('至少一條出清或減半的財報數字門檻：動作是重新審查、指標程式算不出來、門檻沒有通過檢查的引用、只引用使用者的話、不是財報類，都不過', () => {
@@ -221,7 +228,7 @@ describe('T55 程式檢查（§2.2）：每一條各一個不過的例子（整�
   });
 
   it('keep_id：沿用現行一字沒改的前提可以；字改了、不是現行的前提都不過', () => {
-    const keep = withField('premises.0', { text: '資料中心需求延續到 2027', keep_id: 'P1', breaks_if: '連兩季營收年增率低於 15%', checkable_by: 'XBRL', evidence_ids: ['E2'] });
+    const keep = withField('premises.0', { text: '資料中心需求延續到 2027', keep_id: 'P1', confirms_if: '10-Q 的營收年增率仍高於 30%', breaks_if: ['連兩季營收年增率低於 15%'], verify: { by: 'XBRL' }, evidence_ids: ['E2'] });
     expect((draftOf(keep).result as { draft: OwnDraft }).draft.premises[0].keep_id).toBe('P1');
     expect(failWhy(withField('premises.0.keep_id', 'P1'))).toContain('前提第 1 條沿用了 P1，但字改了');
     expect(failWhy(withField('premises.0.keep_id', 'P9'))).toContain('前提第 1 條的 keep_id P9 不是現行的前提');
@@ -237,7 +244,7 @@ describe('T55 剛被判不成立的前提（§2.4 第 6 點）', () => {
   });
 
   it('keep_id 是被判不成立的那一條 → 程式擋下（整份退回）', () => {
-    const p = withField('premises.0', { text: 'HBM 供給持續吃緊', keep_id: 'P2', breaks_if: 'TrendForce 報 HBM 合約價季跌', checkable_by: 'WEB', evidence_ids: [] });
+    const p = withField('premises.0', { text: 'HBM 供給持續吃緊', keep_id: 'P2', confirms_if: 'TrendForce 報 HBM 供給仍然吃緊', breaks_if: ['TrendForce 報 HBM 合約價季跌'], verify: { by: 'WEB', source: 'trendforce.com' }, evidence_ids: [] });
     expect(failWhy(p, { pack: purePack({ broken: BROKEN }) })).toContain('前提第 1 條沿用了剛被判不成立的前提 P2（keep_id 不能是它）');
     // 沒有被判不成立時，同一條可以沿用
     expect(draftOf(p).result.ok).toBe(true);
@@ -508,7 +515,7 @@ describe('T55 使用者按「請 stock bot 草擬」（§2.5）', () => {
         expect(JSON.parse((await draftsOf(c.db))[0].broken!)).toEqual(want);
         const run = (await getRun(c.db, r.runId))!;
         expect(run.pack.question.startsWith(want.notice)).toBe(true);
-        const keep = withField('premises.0', { text: 'HBM 供給持續吃緊', keep_id: 'P2', breaks_if: 'TrendForce 報 HBM 合約價季跌', checkable_by: 'WEB', evidence_ids: [] });
+        const keep = withField('premises.0', { text: 'HBM 供給持續吃緊', keep_id: 'P2', confirms_if: 'TrendForce 報 HBM 供給仍然吃緊', breaks_if: ['TrendForce 報 HBM 合約價季跌'], verify: { by: 'WEB', source: 'trendforce.com' }, evidence_ids: [] });
         await answer(c, r.runId, at(T0, 0, 10), keep);
         expect((await draftsOf(c.db))[0]).toMatchObject({ status: 'FAILED' });
         expect((await draftsOf(c.db))[0].error).toContain('沿用了剛被判不成立的前提 P2（keep_id 不能是它）');
@@ -595,9 +602,9 @@ describe('T55 own_drafts：結算、過期、匯出', () => {
     expect(guide).toContain('`OWN_DRAFT`（論點草稿');
   });
 
-  it('prompt：own_draft_v1 存在，寫明研究員可以找、其他角色不上網，反方先寫', () => {
+  it('prompt：own_draft_v2 存在（T60 升版），寫明研究員可以找、其他角色不上網，反方先寫', () => {
     const p = readFileSync(join(ROOT, 'ai', 'prompts', `${OWN_DRAFT_PROMPT}.md`), 'utf8');
-    expect(OWN_DRAFT_PROMPT).toBe('own_draft_v1');
+    expect(OWN_DRAFT_PROMPT).toBe('own_draft_v2');
     expect(p).toContain('只有研究員可以用 WebSearch、可以取文件');
     expect(p).toContain('**反方**（Sonnet，**先寫**');
     expect(p).toContain('反方、正方、主筆不要用 WebSearch、不要取文件');

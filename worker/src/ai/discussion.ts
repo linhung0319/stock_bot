@@ -300,7 +300,8 @@ export const PREMISE_DATA_NOTE = [
 function premiseSection(file: ThesisFile): string[] {
   if (!file.premises.length) return ['還沒有', ...PREMISE_DATA_NOTE];
   const L = file.premises.map((p) => {
-    const chk = p.lastCheck ? `${PREM_TEXT[p.lastCheck.status] ?? p.lastCheck.status}（${p.lastCheck.date} 審查）` : '還沒有檢查過';
+    // 信念（T60，composite_layer_design §2.3）不進審查：寫明是我選擇相信的，不寫「還沒有檢查過」
+    const chk = p.verify?.by === 'NONE' ? '信念：查不到，是我選擇相信的（審查不檢查這一條）' : p.lastCheck ? `${PREM_TEXT[p.lastCheck.status] ?? p.lastCheck.status}（${p.lastCheck.date} 審查）` : '還沒有檢查過';
     const def = p.origin === 'SYSTEM_DEFAULT' ? '（系統預設）' : '';
     // 編號後面加「.」（T40）：收尾時沒改的前提照抄、保留這個編號（[P2]）
     return `${p.id}. ${p.text}${def}${SP}— ${chk}${p.splitAfter ? '；之後的審查沒有一致結論' : ''}`;
