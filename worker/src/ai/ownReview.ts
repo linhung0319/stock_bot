@@ -32,7 +32,10 @@ export function raiseAllowed(acct: Account, ticker: string, asOf: string): { ok:
   return { ok: true, why: '規則條件成立' };
 }
 
-/** 自選股的條件（own_conditions；T26 起審查不再整組替換，AI 只能建議，使用者勾選才監測）。 */
+/**
+ * 自選股的條件（own_conditions；T26 起審查不再整組替換）。T71（confirm_audit_design §3）：AI 三票一致建議的條件寫入就監測
+ * （「AI 監測中」，成立時重新審查、不發甲類通知），使用者把成立時的動作改成出清或減半才變成「你定的」。
+ */
 export interface OwnCondition {
   ticker: string;
   runId: string;
@@ -43,7 +46,7 @@ export interface OwnCondition {
   check: Record<string, unknown>;
   tierIfMet: Tier | null;
   /**
-   * own_thesis §1.5 的狀態：PROPOSED 建議中（觀察項，不會自己發通知）、ACTIVE 監測中、REVIEW_ONLY 只在定期審查時檢查（確認來源只有法說會或新聞）、
+   * own_thesis §1.5 的狀態：PROPOSED 建議中（舊資料的觀察項，T71 起不再產生）、ACTIVE 監測中、REVIEW_ONLY 只在定期審查時檢查（確認來源只有法說會或新聞）、
    * MANUAL 只記錄（價格條件、沒通過檢查的）、MET 已成立、RETIRED 你撤下或被取代、EXPIRED 建議中的過期了、REPLACED 舊資料（改版前被整組替換的）。
    */
   status: 'PROPOSED' | 'ACTIVE' | 'MET' | 'REPLACED' | 'MANUAL' | 'REVIEW_ONLY' | 'RETIRED' | 'EXPIRED';
@@ -64,7 +67,7 @@ export interface OwnReviewInput {
   filings: PackDoc[];
   news: PackDoc | null;
   /**
-   * 論點檔的條件：你定的 C、觀察項 W（thesis.ts 的 condFacts）；map 是證據包編號 → 條件的列編號，記在 rule.detail.conds。
+   * 論點檔的條件：你定的 C、AI 監測中的 W（T71；舊資料的觀察項也是 W；thesis.ts 的 condFacts）；map 是證據包編號 → 條件的列編號，記在 rule.detail.conds。
    * web（T53）：指名了網頁來源的條件（confirm_by 有 `web:<網域>`）→ 那幾個網域，記在 rule.detail.condWeb。
    */
   conds?: { facts: EvidencePack['facts']; map: Record<string, number>; web?: Record<string, string[]> };
@@ -114,8 +117,8 @@ export function ownReviewPack(inp: OwnReviewInput) {
       '假設三個月後回頭看，這次維持現狀是錯的，最可能的原因是什麼、今天有什麼證據？' +
       `最後選一個檔位：${verdicts.map((v) => `${v}（${TIER_NAME[v]}）`).join('、')}；證據不足以改變就選 HOLD。` +
       (raise.ok ? '只有前提全部成立時才可以選 RAISE。' : `這個月不能選 RAISE（${raise.why}）。`) +
-      (hasC || hasW ? `並逐條檢查${hasC ? '使用者定的條件（facts 的 C 開頭）' : ''}${hasC && hasW ? '與' : ''}${hasW ? '觀察項（facts 的 W 開頭）' : ''}是否已經成立（payload.condition_checks）。` : '') +
-      '最後可以建議最多 3 條新增的條件（payload.proposed_conditions）：現有的條件已經涵蓋的事不要再提，還適用的觀察項原樣再提（算在 3 條內）；使用者勾選才會監測。',
+      (hasC || hasW ? `並逐條檢查${hasC ? '使用者定的條件（facts 的 C 開頭）' : ''}${hasC && hasW ? '與' : ''}${hasW ? 'AI 監測中的條件（facts 的 W 開頭）' : ''}是否已經成立（payload.condition_checks）。` : '') +
+      '最後可以建議最多 3 條新增的條件（payload.proposed_conditions）：現有的條件已經涵蓋的事不要再提，還適用的 AI 監測中條件原樣再提（算在 3 條內，沒再提的會換掉）；三票一致時寫入就開始監測，成立時只會再開一次審查，不會直接通知使用者賣。',
     // holds_fresh_days（T61）：判成立要指出正面的引用，而且那幾份原文不能比驗證頻率舊（前提沒寫 every 時用 100 天）
     policy: { level: 'A3', verdicts, abstain: 'HOLD', min_evidence: 1, samples: OWN_REVIEW_SAMPLES, holds_fresh_days: VERIFY_EVERY_DEFAULT },
     rule: { action: `規則這次沒有動作；慢規則狀態：${state === 'HALF' ? '減半中' : '標準'}`, detail: { trigger: inp.trigger, state, raise: raise.why, conds: conds.map, ...condWeb, ...webDomains, thesisVersion: acct.own[ticker]?.thesis?.version ?? 0, ...(inp.reasons ? { reasons: inp.reasons } : {}), ...(inp.early ? { events: inp.early.events } : {}) } },

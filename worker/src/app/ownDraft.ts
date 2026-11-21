@@ -29,7 +29,7 @@ import type { ApplyCtx, StartCtx } from './aiCtx';
 import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { gatherOwnEvidence, reviewThesisEvidence, routineReady } from './ownAi';
-import { DRAFT_EXPIRE_DAYS, acceptStatus, condFacts, draftUntil, fileKind, loadPrevFile, thesisFile, type CondAction, type PrevFile } from './thesis';
+import { DRAFT_EXPIRE_DAYS, OWNED_LIVE, acceptStatus, condFacts, draftUntil, fileKind, loadPrevFile, thesisFile, type CondAction, type PrevFile } from './thesis';
 import { buildDocMenu, sourceFacts } from './webEvidence';
 import type { DocCtx } from '../ai/added';
 
@@ -714,6 +714,20 @@ export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits'>, live: Li
   });
   const kept = new Set(keep.map((x) => x.id));
   return { premises, add, rewrite, keep, retire: live.filter((c) => !kept.has(c.id)) };
+}
+
+/**
+ * 採用之後「你定的、會自己發通知的條件」（ACTIVE＋REVIEW_ONLY）有幾條（T71：採用時也要守 8 條的上限）。
+ * 採用是整組取代：監測中、草稿沒有的都撤下，所以剩下的是沿用的（keep，看它現在的狀態）加上直接寫進去的（add，看寫進去之後的狀態）；
+ * 送改寫的（rewrite）之後在持股頁確認時另外檢查上限（acceptOwnConditions 的 checkCap）。
+ * AI 監測中的條件不在 live 裡（不是你定的），採用不動它們，也不算在這 8 條裡。live 的 code 沒給（舊的呼叫端）時沿用的那條算一條。
+ */
+export function adoptOwnedCount(plan: Pick<AdoptPlan, 'keep' | 'add'>, live: LiveCondition[]): number {
+  const kept = plan.keep.filter((k) => {
+    const code = live.find((l) => l.id === k.id)?.code;
+    return code === undefined || OWNED_LIVE.includes(code);
+  }).length;
+  return kept + plan.add.filter((a) => OWNED_LIVE.includes(a.status)).length;
 }
 
 /**

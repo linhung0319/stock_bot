@@ -1,11 +1,14 @@
-// T26：條件的所有權（own_thesis §1.4、§1.5）。使用者在持股頁做的三件事：
-//   勾選  AI 建議的條件（PROPOSED）→ 你定的條件：寫勾選時間與成立時的動作，狀態依確認方式；有 supersedes 的，被取代的那條 RETIRED
-//   撤下  你定的條件 → RETIRED
+// T26：條件的所有權（own_thesis §1.4、§1.5）。使用者在持股頁做的事：
+//   勾選  舊資料的 AI 建議（PROPOSED）→ 你定的條件：寫勾選時間與成立時的動作，狀態依確認方式；有 supersedes 的，被取代的那條 RETIRED
+//         （T71 起審查不再寫 PROPOSED，持股頁也沒有勾選的按鈕；端點留著給舊資料）
+//   撤下  你定的條件、AI 監測中的條件 → RETIRED
 //   改動作 你定的條件成立時做什麼（出清／減半／重新審查）
-// 你定的條件（ACTIVE＋REVIEW_ONLY）一檔最多 8 條。每一次都在 own_thesis_log 寫一筆 CONDITION。
+//         AI 監測中的條件（T71，confirm_audit_design §3）改成出清或減半 → 寫 accepted_at，變成你定的（之後的審查換不掉）；
+//         有 supersedes 的，被取代的那條 RETIRED（和勾選同一套）
+// 你定的條件（ACTIVE＋REVIEW_ONLY）一檔最多 8 條；AI 監測中的另算（最多 3 條，由審查寫入時維持）。每一次都在 own_thesis_log 寫一筆 CONDITION。
 import type { Account } from '../engine';
 import { thesisLogStmt } from './ledgerStore';
-import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, acceptStatus, defaultAction, fileConditions, isOwned, type CondAction, type FileCondition } from './thesis';
+import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, acceptStatus, defaultAction, fileConditions, isAiWatch, isOwned, type CondAction, type FileCondition } from './thesis';
 
 export class CondError extends Error {}
 
@@ -13,18 +16,21 @@ export type CondOp = 'accept' | 'retire' | 'action';
 
 const isAction = (x: unknown): x is CondAction => COND_ACTIONS.includes(x as CondAction);
 
-/** 一檔現在有幾條會自己發通知的你定的條件（ACTIVE＋REVIEW_ONLY）；except：不算這幾列（被取代的那一條）。 */
-export const ownedCount = (conds: FileCondition[], except: number[] = []) => conds.filter((c) => OWNED_LIVE.includes(c.status) && !except.includes(c.id)).length;
+/**
+ * 一檔現在有幾條會自己發通知的你定的條件（ACTIVE＋REVIEW_ONLY）；except：不算這幾列（被取代的那一條）。
+ * AI 監測中的（T71：同樣是 ACTIVE／REVIEW_ONLY，但不是你定的）不算，它們另算 3 條。
+ */
+export const ownedCount = (conds: FileCondition[], except: number[] = []) => conds.filter((c) => isOwned(c) && OWNED_LIVE.includes(c.status) && !except.includes(c.id)).length;
 
 /** 上限的檢查：再加 add 條會不會超過 8 條。 */
 export function checkCap(conds: FileCondition[], add: number, except: number[] = []): void {
   const n = ownedCount(conds, except);
-  if (n + add > MAX_OWNED) throw new CondError(`你定的條件已經有 ${n} 條（上限 ${MAX_OWNED} 條），先撤下一條才能再勾。`);
+  if (n + add > MAX_OWNED) throw new CondError(`你定的條件已經有 ${n} 條（上限 ${MAX_OWNED} 條），先撤下一條才能再加。`);
 }
 
 /** CONDITION 那一筆 log（沒有論點檔編號的舊自選不寫）。條件不跟著帳戶的版本走，所以 account_version 是空的（復原快照不會刪）。 */
-const logStmt = (db: D1Database, ticker: string, fileId: string | undefined, session: string, at: string, id: number, change: 'ACCEPTED' | 'RETIRED' | 'ACTION_CHANGED', action: CondAction | null) =>
-  fileId ? [thesisLogStmt(db, { ticker, fileId, session, kind: 'CONDITION', ref: String(id), body: { id, change, action, by: 'USER' } }, null, at)] : [];
+const logStmt = (db: D1Database, ticker: string, fileId: string | undefined, session: string, at: string, id: number, change: 'ACCEPTED' | 'RETIRED' | 'ACTION_CHANGED', action: CondAction | null, extra: Record<string, unknown> = {}) =>
+  fileId ? [thesisLogStmt(db, { ticker, fileId, session, kind: 'CONDITION', ref: String(id), body: { id, change, action, by: 'USER', ...extra } }, null, at)] : [];
 
 // T68（confirm_audit_design §1.6）：勾選條件時選「用哪個網頁來源確認」拿掉了（使用者沒有判斷網站的依據）。
 // 條件寫的 web:<網域> 原樣存；能不能確認成立看審查時那個網域的級別（一手或產業研究機構才算），排除列表的在檢查時就改標只記錄。
@@ -67,7 +73,29 @@ export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'>, ti
     return { id: c.id, status, action: act, ...(sup ? { retired: sup.id } : {}) };
   }
 
-  if (!isOwned(c) || !['ACTIVE', 'REVIEW_ONLY', 'MANUAL'].includes(c.status)) throw new CondError(c.status === 'MET' ? '這條條件已經成立過了（一次性），要再監測就重新定一條。' : '只有你定的、還在監測或記錄中的條件可以撤下或改動作。');
+  // AI 監測中的條件（T71）：可以撤下；改成出清或減半就變成你定的
+  if (isAiWatch(c)) {
+    if (op === 'retire') {
+      stmts.push(db.prepare("UPDATE own_conditions SET status = 'RETIRED', note = ? WHERE id = ?").bind(`你在 ${at.slice(0, 10)} 撤下（AI 監測中的條件）`, c.id));
+      stmts.push(...logStmt(db, ticker, meta.fileId, session, at, c.id, 'RETIRED', c.action, { aiWatch: true }));
+      await db.batch(stmts);
+      return { id: c.id, status: 'RETIRED', action: c.action };
+    }
+    if (op === 'action') {
+      if (!isAction(action)) throw new CondError('要選成立時做什麼：出清、減半或重新審查。');
+      // 重新審查本來就是 AI 監測中的動作：不變（要讓之後的審查換不掉，改成出清或減半）
+      if (action === 'REVIEW') return { id: c.id, status: c.status, action: 'REVIEW' };
+      const sup = c.supersedes ? conds.find((x) => x.id === c.supersedes && x.id !== c.id && SUPERSEDABLE.includes(x.status)) : undefined;
+      if (OWNED_LIVE.includes(c.status)) checkCap(conds, 1, sup ? [sup.id] : []);
+      stmts.push(db.prepare('UPDATE own_conditions SET action = ?, accepted_at = ? WHERE id = ? AND accepted_at IS NULL').bind(action, at, c.id));
+      stmts.push(...logStmt(db, ticker, meta.fileId, session, at, c.id, 'ACCEPTED', action, { from: 'AI_WATCH' }));
+      if (sup) stmts.push(...supersedeStmts(db, ticker, meta.fileId, session, at, sup, c.text));
+      await db.batch(stmts);
+      return { id: c.id, status: c.status, action, ...(sup ? { retired: sup.id } : {}) };
+    }
+    throw new CondError(`不認得的操作：${String(op)}`);
+  }
+  if (!isOwned(c) || !['ACTIVE', 'REVIEW_ONLY', 'MANUAL'].includes(c.status)) throw new CondError(c.status === 'MET' ? '這條條件已經成立過了（一次性），要再監測就重新定一條。' : '只有你定的或 AI 監測中、還在監測或記錄中的條件可以撤下或改動作。');
   if (op === 'retire') {
     stmts.push(db.prepare("UPDATE own_conditions SET status = 'RETIRED', note = ? WHERE id = ?").bind(`你在 ${at.slice(0, 10)} 撤下`, c.id));
     stmts.push(...logStmt(db, ticker, meta.fileId, session, at, c.id, 'RETIRED', c.action));

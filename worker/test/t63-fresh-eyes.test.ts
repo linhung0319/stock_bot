@@ -563,7 +563,8 @@ describe('T63：new_risks 的程式檢查（最多 3 條、每條一句加一個
 // ---------------------------------------------------------------- 4～6 整條流程：只當建議、要看的事、編輯論點頁
 
 describe('T63：整條流程（假的 AI 回覆）', () => {
-  it('送回 new_risks → 逐條檢查後存下來；通過的列進「要看的事」（文字照設計）、持股頁帶著引用；紀錄頁列出拿掉的與原因', async () => {
+  // T71（confirm_audit_design §4）改了這個行為：新風險不再列「要看的事」，只放持股頁的審查那一塊（thesis.risks）與紀錄頁
+  it('送回 new_risks → 逐條檢查後存下來；通過的不列「要看的事」（T71）、持股頁帶著引用；紀錄頁列出拿掉的與原因', async () => {
     await withWorld(async (c) => {
       const { run, tf } = await runWithRisks(c, (d) => [
         { text: RISK_NAND, source_id: d.source_id, date: d.date, quote: Q_TF1 },
@@ -575,29 +576,27 @@ describe('T63：整條流程（假的 AI 回覆）', () => {
       expect(run.newRisks!.items.map(brief)).toEqual([[0, true, null], [1, false, 'OVERLAP'], [2, true, null], [3, false, 'EXTRA']]);
       expect(run.newRisks!.items[0].doc).toMatchObject({ date: tf.date, url: TF(1), headline: false });
 
-      // 「要看的事」：信念 P3 不在證據包裡，和它重疊的那一條在這裡拿掉（已經有人看了）→ 只剩一件
+      // 「要看的事」不列（T71）；信念 P3 不在證據包裡，和它重疊的那一條在列給持股頁時拿掉（已經有人看了）→ 持股頁只剩一件
       const acct = await acctOf(c.db);
-      const att = (await holdingAttention(c.db, acct, c.view, 'NVDA')).filter((x) => x.kind === 'NEW_RISK');
-      expect(att).toEqual([{ ticker: 'NVDA', kind: 'NEW_RISK', text: `NVDA 的審查提到一件你的前提沒有涵蓋的事：${RISK_NAND}。要不要加一條前提由你決定`, since: AS_OF, src: 'own' }]);
+      expect((await holdingAttention(c.db, acct, c.view, 'NVDA')).filter((x) => x.kind === 'NEW_RISK')).toEqual([]);
       // 設計的例句
       expect(riskLine('MU', { label: '審查', text: 'NAND 現貨價兩週跌 20%。' })).toBe('MU 的審查提到一件你的前提沒有涵蓋的事：NAND 現貨價兩週跌 20%。要不要加一條前提由你決定');
       expect(riskLine('MU', { label: '減半檢視', text: 'NAND 現貨價兩週跌 20%' })).toContain('MU 的減半檢視提到一件');
 
-      // 持股頁的 API：要看的事那一行，以及編輯論點頁要的那幾件（引用與出處）
+      // 持股頁的 API：要看的事沒有它；審查那一塊與編輯論點頁要的那幾件（引用與出處）
       const hd = (await c.call<HoldingBody>('GET', '/api/holding/NVDA')).body;
-      expect(hd.attention.filter((x) => x.kind === 'NEW_RISK').map((x) => x.text)).toEqual([att[0].text]);
+      expect(hd.attention.filter((x) => x.kind === 'NEW_RISK')).toEqual([]);
       expect(hd.thesis.risks).toEqual([{ runId: run.runId, k: 0, date: AS_OF, label: '審查', text: RISK_NAND, quote: Q_TF1, source: tf.title, sourceDate: tf.date, url: TF(1), headline: false }]);
 
-      // 月報：列一次（之後同一件不再列）
+      // 月報：也不列（T71）
       const m1 = await monthOwnAttention(c.db, acct, c.view);
-      expect(m1.items.filter((x) => x.kind === 'NEW_RISK')).toHaveLength(1);
-      expect(m1.acct.own.NVDA.attnShown).toHaveProperty(`NEW_RISK@${run.runId}#0`);
-      expect((await monthOwnAttention(c.db, m1.acct, { ...c.view, date: '2026-12-31' })).items.filter((x) => x.kind === 'NEW_RISK')).toEqual([]);
+      expect(m1.items.filter((x) => x.kind === 'NEW_RISK')).toEqual([]);
+      expect(m1.acct.own.NVDA.attnShown ?? {}).not.toHaveProperty(`NEW_RISK@${run.runId}#0`);
 
       // 紀錄頁
       const rv = risksView(run)!;
       expect(rv.state).toBe('LISTED');
-      expect(rv.line).toBe('新眼光列了 4 件前提以外的風險，2 件通過程式檢查、列進「要看的事」，2 件被拿掉。只當建議：不影響三票的結論、不影響檔位、不發通知。');
+      expect(rv.line).toBe('新眼光列了 4 件前提以外的風險，2 件通過程式檢查，2 件被拿掉。通過的列在持股頁的審查那一塊，下一次 stock bot 草擬論點時會一起看。只當建議：不影響三票的結論、不影響檔位、不發通知。');
       expect(rv.items.map((x) => [x.kept, x.note])).toEqual([[true, null], [false, '和現有的前提 P2 的字重疊高（已經有人看了）'], [true, null], [false, '超過 3 條，只看前 3 條']]);
       const api = (await c.call<{ risks: typeof rv }>('GET', `/api/ai/run/${run.runId}`)).body.risks;
       expect(api).toEqual(rv);
@@ -637,7 +636,7 @@ describe('T63：整條流程（假的 AI 回覆）', () => {
     const pack = unitPack();
     const v = { run_id: pack.run_id, verdict: 'HOLD', premise_checks: [], evidence: [], payload: { tier: 'HOLD' }, report: 'r' };
     expect(judge(pack, [v, v, v], PAYLOAD_HOOKS[OWN_REVIEW]).status).toBe('INSUFFICIENT');
-    expect(OWN_ATTN.map((k) => k.kind)).toContain('NEW_RISK');
+    expect(OWN_ATTN.map((k) => k.kind)).not.toContain('NEW_RISK'); // T71：不列「要看的事」
   });
 
   it('編輯論點頁：帶進右欄存檔 → 預覽寫帶進來幾條；存檔後記成已帶進論點（帳戶與論點檔的 log），那一件不再列', async () => {
@@ -674,26 +673,27 @@ describe('T63：整條流程（假的 AI 回覆）', () => {
       // 那一件不再列；另一件（沒處理的）還在
       const hd = (await c.call<HoldingBody>('GET', '/api/holding/NVDA')).body;
       expect(hd.thesis.risks.map((r) => r.k)).toEqual([1]);
-      expect(hd.attention.filter((x) => x.kind === 'NEW_RISK')).toHaveLength(1);
+      expect(hd.attention.filter((x) => x.kind === 'NEW_RISK')).toEqual([]); // T71：不列「要看的事」
       // 不存在的那一件（編號亂寫）不會被記下
       const none = await c.call<{ preview: { risks: unknown[] } }>('POST', '/api/ops/own-thesis', { ...body(true), premises: [{ id: 'P1', text: PREMISES[0].text, risk: { runId: 'nope', k: 9 } }] });
       expect(none.body.preview.risks).toEqual([]);
     });
   });
 
-  it('前端的文字（thesis-risks.js）：依據那一行、兩個按鈕與帶進去之後的狀態、存檔前的那一句', () => {
+  // T71（confirm_audit_design §4）：「看過了，不加」拿掉（dismiss 一律 null）；不再寫「要看的事」
+  it('前端的文字（thesis-risks.js）：依據那一行、按鈕與帶進去之後的狀態、存檔前的那一句', () => {
     expect(RJ.RISK_DAYS).toBe(RISK_SEEN_DAYS);
     expect(RJ.RISK_TITLE).toBe('審查提到、你的前提沒有涵蓋的事');
     expect(RJ.riskMeta({ date: '2026-11-20', label: '審查', source: '〔網頁｜媒體｜CNBC〕NAND prices slide', headline: false })).toBe('11/20 的審查提的；依據：〔網頁｜媒體｜CNBC〕NAND prices slide');
     expect(RJ.riskMeta({ date: '2026-11-20', label: '減半檢視', source: 'MU 最近的新聞標題（Yahoo，只有標題）', headline: true })).toBe('11/20 的減半檢視提的；依據：MU 最近的新聞標題（Yahoo，只有標題）（只有新聞標題，沒有讀到全文：當成線索）');
-    expect(RJ.riskButtons(false)).toEqual({ take: '帶進右欄', note: null, dismiss: '看過了，不加' });
+    expect(RJ.riskButtons(false)).toEqual({ take: '帶進右欄', note: null, dismiss: null });
     expect(RJ.riskButtons(true)).toMatchObject({ take: null, dismiss: null });
     expect(RJ.riskButtons(true).note).toContain('已經帶進「新的」');
     expect(RJ.RISK_ROW_HINT).toContain('請改寫成「要繼續成立的事」');
     expect(RJ.riskDismissed()).toBe('記下了：這件事 180 天內不再列在「要看的事」。');
     expect(RJ.riskPreviewLine([])).toBeNull();
     expect(RJ.riskPreviewLine(null)).toBeNull();
-    expect(RJ.riskPreviewLine([{}, {}])).toBe('從審查提到的風險帶進來 2 條：存檔後這 2 件不再列在「要看的事」（180 天內同一件事也不再列）。');
+    expect(RJ.riskPreviewLine([{}, {}])).toBe('從審查提到的風險帶進來 2 條：存檔後這 2 件不再另外列在持股頁與這裡（180 天內同一件事也不再列）。');
     // 畫面的文字不出現內部代號
     expect([RJ.RISK_TITLE, RJ.RISK_ROW_HINT, RJ.riskDismissed(), RJ.riskPreviewLine([{}])].join('')).not.toMatch(/NEW_RISK|new_risks|fresh|OVERLAP|DISMISSED|ADOPTED/);
   });

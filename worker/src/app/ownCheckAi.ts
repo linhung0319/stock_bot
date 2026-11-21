@@ -19,7 +19,7 @@ import { SUPERSEDABLE, checkCap, supersedeStmts } from './ownConds';
 import { namedWebDomains, type ConditionDraft } from '../ai/ownReview';
 import { sourceFacts } from './webEvidence';
 import { loadRatings } from './webRatings';
-import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, REWRITE_DAYS, acceptStatus, condFacts, confirmText, defaultAction, fileConditions, fileKind, fmtMetric, isOwned, latestExitSet, ownerText, progressText, runOfSet, thesisFile, type CondAction, type ExitSet, type FileCondition } from './thesis';
+import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, REWRITE_DAYS, acceptStatus, aiTierText, condFacts, confirmText, defaultAction, fileConditions, fileKind, fmtMetric, isAiCond, isOwned, latestExitSet, ownerText, progressText, runOfSet, thesisFile, type CondAction, type ExitSet, type FileCondition } from './thesis';
 
 /** 改寫結果或「還沒送去改寫」不是最新一版的出場條件（T42）：不能再勾選或重送。網站回 409。 */
 export class StaleExitsError extends Error {}
@@ -418,9 +418,18 @@ export interface MonitorRow {
   status: string;
   /** 狀態代號（畫面判斷能做什麼用，不顯示）。 */
   code: string;
-  /** 你定的條件（勾選過、或你自己寫的）。 */
+  /** 你定的條件（勾選過、改過動作、採用草稿、或你自己寫的）。 */
   owned: boolean;
-  /** 你定的：成立時做什麼；建議中的：勾選時預設的動作（AI 建議的檔位）。 */
+  /**
+   * AI 監測中的（T71，confirm_audit_design §3）：審查三票一致建議、寫入就監測、你沒動過的（含已成立的、舊資料的建議中）。
+   * 持股頁分兩組：你定的、AI 監測中（成立時重新審查）。
+   */
+  ai: boolean;
+  /** AI 監測中的：「AI 建議成立時減半；目前設定是重新審查」（tier_if_met 照存，只顯示）。其他是 null。 */
+  aiTier: string | null;
+  /** AI 監測中、有 supersedes 指到你一條還在監測的條件的：那一條的字（改成出清或減半、變成你定的時會取代它）。 */
+  replaces: string | null;
+  /** 你定的：成立時做什麼；AI 監測中的：重新審查；舊資料的建議中：勾選時預設的動作（AI 建議的檔位）。 */
   action: CondAction | null;
   actionText: string | null;
   /** 怎麼確認。 */
@@ -467,7 +476,7 @@ export function progressSteps(c: Pick<FileCondition, 'progress' | 'check'>): Mon
 
 const STATUS_TEXT: Record<string, string> = { ACTIVE: '監測中', MET: '已成立', MANUAL: '只記錄', REVIEW_ONLY: '只在定期審查時檢查', PROPOSED: '建議中', RETIRED: '已撤下', EXPIRED: '已過期', REPLACED: '已替換' };
 
-/** 持股頁要顯示的條件：你定的（監測中、只在審查時檢查、只記錄、已成立）與 AI 建議、你還沒勾選的；撤下與過期的不列。 */
+/** 持股頁要顯示的條件：你定的（監測中、只在審查時檢查、只記錄、已成立）與 AI 監測中的（T71；含舊資料的建議中）；撤下與過期的不列。 */
 export async function monitorView(env: Env, ticker: string): Promise<MonitorRow[]> {
   try {
     const acct = (await loadAccount(env.DB))?.acct;
@@ -478,11 +487,15 @@ export async function monitorView(env: Env, ticker: string): Promise<MonitorRow[
       if (c.kind !== 'EVENT' || !['ACTIVE', 'REVIEW_ONLY', 'PROPOSED'].includes(c.status) || acceptStatus(c) === 'MANUAL') return '';
       return defaultOnly && namedWebDomains(c.check).length ? '（這檔只有系統預設前提，審查不取網頁；寫下你自己的前提之後才會用這個來源）' : '';
     };
-    return (acct ? await fileConditions(env.DB, acct, ticker) : [])
+    const all = acct ? await fileConditions(env.DB, acct, ticker) : [];
+    return all
       .filter((c) => c.status !== 'RETIRED' && c.status !== 'EXPIRED')
       .map((c) => {
         const owned = isOwned(c) && c.status !== 'PROPOSED';
-        const action = owned ? c.action : defaultAction(c);
+        const ai = !owned && isAiCond(c);
+        // AI 監測中的（T71）：成立時的動作固定是重新審查；舊資料的建議中照舊帶 AI 建議的檔位（勾選時的預設）
+        const action = owned ? c.action : c.status === 'PROPOSED' ? defaultAction(c) : (c.action ?? 'REVIEW');
+        const sup = ai && c.status !== 'PROPOSED' && c.supersedes ? all.find((x) => x.id === c.supersedes && isOwned(x) && LIVE_CODES.includes(x.status)) : undefined;
         return {
           id: c.id,
           text: c.text,
@@ -491,6 +504,9 @@ export async function monitorView(env: Env, ticker: string): Promise<MonitorRow[
           status: STATUS_TEXT[c.status] ?? c.status,
           code: c.status,
           owned,
+          ai,
+          aiTier: ai && c.status !== 'PROPOSED' ? aiTierText(c) : null,
+          replaces: sup ? sup.text : null,
           action,
           actionText: action ? ACTION_TEXT[action] : null,
           confirm: confirmText(c, ratings) + goneNote(c),
@@ -502,6 +518,6 @@ export async function monitorView(env: Env, ticker: string): Promise<MonitorRow[
         };
       });
   } catch (e) {
-    return [{ id: 0, text: `讀不到：${errText(e)}`, kind: '', origin: '', status: '', code: '', owned: false, action: null, actionText: null, confirm: '', progress: null, steps: null, recordOnly: false, note: null, web: [] }];
+    return [{ id: 0, text: `讀不到：${errText(e)}`, kind: '', origin: '', status: '', code: '', owned: false, ai: false, aiTier: null, replaces: null, action: null, actionText: null, confirm: '', progress: null, steps: null, recordOnly: false, note: null, web: [] }];
   }
 }

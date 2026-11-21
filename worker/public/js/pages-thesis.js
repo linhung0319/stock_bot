@@ -3,7 +3,8 @@
 // T56（web_evidence_design §2.6）：stock bot 的草稿——編輯論點頁右邊多一塊草稿（反方 → 論點 → 前提 → 出場條件 → 同業 → 監測不了的）；
 // 各入口的「請 stock bot 草擬」（draftAction）。T70（confirm_audit_design §2.1）：草稿那一塊只顯示，「採用這份草稿」整份照草稿存
 // （現在有論點時先列對照、按「確定採用」），存完回持股頁。不碰 DOM 的部分在 thesis-draft.js。
-// T63（composite_layer_design §3）：審查提到、你的前提沒有涵蓋的事——右欄上面多一塊，每一件可以「帶進右欄」再改字，或「看過了，不加」。
+// T63（composite_layer_design §3）：審查提到、你的前提沒有涵蓋的事——右欄上面多一塊，每一件可以「帶進右欄」再改字
+// （T71，confirm_audit_design §4：「看過了，不加」拿掉，新風險也不再列「要看的事」）。
 // 不碰 DOM 的部分在 thesis-risks.js。
 import { api } from './api.js';
 import { day, h, put, toast } from './dom.js';
@@ -16,7 +17,7 @@ import { prevFill } from './thesis-prev.js';
 import { sourcesEditor, sourcesNow } from './thesis-sources.js';
 import { ACTION_TEXT as DRAFT_ACTION, ADOPT_HINT, ANSWER_TEXT, adoptCompare, adoptResultLines, checkLine, draftButtonState, draftItems, draftNotices, exitMonitorText, md } from './thesis-draft.js';
 import { BELIEF_NOTE, EVERY_DEFAULT, LIMITS as FIELD_LIMITS, MAX_CLAUSES, VERIFY_OPTIONS, checkableWarn, fieldsSummary, hasFields, premiseFieldsOf, verifyText } from './thesis-fields.js';
-import { RISK_INTRO, RISK_ROW_HINT, RISK_TITLE, riskButtons, riskDismissed, riskMeta, riskPreviewLine } from './thesis-risks.js';
+import { RISK_INTRO, RISK_ROW_HINT, RISK_TITLE, riskButtons, riskMeta, riskPreviewLine } from './thesis-risks.js';
 
 const ACTIONS = [
   ['EXIT', '出清'],
@@ -443,7 +444,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       const sc = r.preview.sources?.changed ? `；網頁證據的來源已存${srcBad ? `（${srcBad} 項目前抓不到）` : ''}` : '';
       const ex = r.rewrite.status === 'SENT' ? '論點已存；出場條件送去 AI 對照與改寫，回來後在持股頁確認（確認之前舊的照舊監測）' : r.preview.exits?.changed ? '論點已存；出場條件全部拿掉，到持股頁確認才撤下' : '論點已存';
       // 從審查提到的風險帶進來的（T63）
-      const rk = r.preview.risks?.length ? `；審查提到的 ${r.preview.risks.length} 件風險已經帶進論點，不再列在「要看的事」` : '';
+      const rk = r.preview.risks?.length ? `；審查提到的 ${r.preview.risks.length} 件風險已經帶進論點，不再另外列出` : '';
       toast([ex + rv + cd + sc + rk, ...(r.preview.defaultOnly ? [DEFAULT_ONLY_TEXT.replace(/。$/, '')] : []), ...(r.conds?.errors ?? [])].join('；'));
       ctx.go(back.href);
     } catch (e) {
@@ -590,7 +591,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     );
     return { el };
   }
-  // ---- 審查提到、你的前提沒有涵蓋的事（T63，composite_layer_design §3）：每一件可以帶進右欄再改字，或「看過了，不加」。
+  // ---- 審查提到、你的前提沒有涵蓋的事（T63，composite_layer_design §3）：每一件可以帶進右欄再改字（T71 拿掉「看過了，不加」）。
   // 只當建議：帶進來的要你改寫、存檔才算；不帶的不會自己變成前提
   const risks = d.thesis?.risks ?? [];
   const riskBox = risks.length ? buildRiskBox() : null;
@@ -602,7 +603,6 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     const dropEmpty = () => prems.filter((r) => !r.input.value.trim() && r.draft === null && !r.id && !r.risk).forEach((r) => (prems.splice(prems.indexOf(r), 1), r.el.remove()));
     for (const r of risks) {
       const acts = h('div');
-      const msg = h('div');
       const li = h(
         'li',
         { class: 'risk-item' },
@@ -610,11 +610,10 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
         h('p', { class: 'small faint' }, riskMeta(r), r.url ? ['；', h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, '原始網址')] : null),
         h('details', { class: 'more dr-ev' }, h('summary', null, '引用的原文'), h('blockquote', { class: 'more-body small risk-quote' }, `「${r.quote}」`)),
         acts,
-        msg,
       );
       const draw = (taken) => {
         const b = riskButtons(taken);
-        put(acts, b.take ? h('div', { class: 'btn-row', style: 'margin-top:8px' }, h('button', { class: 'btn', type: 'button', onclick: take }, b.take), actionButton(b.dismiss, 'quiet', dismiss)) : h('p', { class: 'small', style: 'margin-top:6px;color:var(--core)' }, b.note));
+        put(acts, b.take ? h('div', { class: 'btn-row', style: 'margin-top:8px' }, h('button', { class: 'btn', type: 'button', onclick: take }, b.take)) : h('p', { class: 'small', style: 'margin-top:6px;color:var(--core)' }, b.note));
       };
       function take() {
         dropEmpty();
@@ -626,17 +625,6 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
         draw(true);
         changed();
         row.input.focus();
-      }
-      async function dismiss() {
-        try {
-          const res = await api.post('/ops/own-risk', { ticker: d.ticker, runId: r.runId, k: r.k });
-          li.remove();
-          count.textContent = `${list.children.length} 件`;
-          toast(riskDismissed(res.days));
-          if (!list.children.length) box.remove();
-        } catch (e) {
-          put(msg, errBox(e));
-        }
       }
       draw(false);
       list.append(li);
@@ -930,7 +918,7 @@ export function attnDraftAction(x, state = null) {
   if (x.kind === 'DRAFT_READY') return h('a', { class: 'linkbtn', href: `#/h/${encodeURIComponent(x.ticker)}/thesis` }, '看草稿');
   // 前提一直沒驗到（T60，composite §2.3）：改寫、配一個查得到的指標，或改標成信念，都在編輯論點頁做
   if (x.kind === 'PREMISE_UNVERIFIED') return h('a', { class: 'linkbtn', href: `#/h/${encodeURIComponent(x.ticker)}/thesis` }, '編輯論點');
-  // 審查提到的前提以外的風險（T63，composite §3）：看依據、帶進右欄再改字，或標成看過，都在編輯論點頁做
+  // 審查提到的前提以外的風險（T63，composite §3）：T71 起不再列「要看的事」；這一行只給舊的月報（當時存下的清單）用
   if (x.kind === 'NEW_RISK') return h('a', { class: 'linkbtn', href: `#/h/${encodeURIComponent(x.ticker)}/thesis` }, '看依據，決定要不要加');
   if (DRAFT_ATTN.includes(x.kind)) return draftAction(x.ticker, state, { link: true });
   return null;

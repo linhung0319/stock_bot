@@ -10,6 +10,7 @@ import { ownMonitor } from './pages-ai.js';
 import { attnDraftAction, copyPackButton, draftAction, takeAdoptFlash } from './pages-thesis.js';
 import { BELIEF_TEXT } from './thesis-fields.js';
 import { CHECK_TONE, premiseChecks, premiseSummary } from './premise-check.js';
+import { RISK_TITLE, riskMeta } from './thesis-risks.js';
 
 const em = (t) => ({ t, tone: 'em' });
 const panelTop = (title, ...right) => h('div', { class: 'panel-top' }, h('h2', { class: 'panel-h' }, title), ...right);
@@ -180,7 +181,7 @@ function attentionPanel(d) {
   return glass('pad hp', panelTop('要看的事', h('span', { class: 'chip warn' }, `${d.attention.length} 件`)), h('p', { class: 'small dim' }, '不用下單、不用回覆；月報也會列出來（同一件事不會每個月都列）。'), attentionList(d.attention, { link: false, action: (x) => attnDraftAction(x, d.own?.draft ?? null) }));
 }
 
-/** 出場條件：你定的、AI 建議的、改寫回來還沒勾的。 */
+/** 出場條件：你定的、AI 監測中的（T71）、改寫回來還沒勾的。 */
 function condPanel(ctx, d) {
   const body = ownMonitor(ctx, d).filter(Boolean);
   const edit = `#/h/${encodeURIComponent(d.ticker)}/thesis`;
@@ -190,7 +191,7 @@ function condPanel(ctx, d) {
     panelTop('出場條件'),
     body.length
       ? body
-      : h('p', { class: 'small dim' }, partial ? '示範模式不記出場條件（通知裡提到的條件是示範腳本寫的）。真實帳戶這裡會列出你定的條件、AI 建議的條件和進度。' : ['還沒有出場條件。在「', h('a', { href: edit }, '編輯論點'), '」寫下出場條件，AI 改寫成查得到的格式之後，回到這裡確認才會開始監測。']),
+      : h('p', { class: 'small dim' }, partial ? '示範模式不記出場條件（通知裡提到的條件是示範腳本寫的）。真實帳戶這裡會列出你定的條件、AI 監測中的條件和進度。' : ['還沒有出場條件。在「', h('a', { href: edit }, '編輯論點'), '」寫下出場條件，AI 改寫成查得到的格式之後，回到這裡確認才會開始監測。']),
   );
 }
 
@@ -256,7 +257,38 @@ function reviewPanel(d) {
         ),
       ),
     ),
+    risksBox(d),
     last,
+  );
+}
+
+/**
+ * 審查提到、你的前提沒有涵蓋的事（T71，confirm_audit_design §4：不再列「要看的事」，放在審查這一塊；只當建議）。
+ * 每一件：那一句、哪一次審查提的與依據（原文收合）；要不要加成前提，到編輯論點頁帶進右欄再改字。
+ */
+function risksBox(d) {
+  const rs = d.thesis?.risks ?? [];
+  if (!rs.length) return null;
+  const edit = `#/h/${encodeURIComponent(d.ticker)}/thesis`;
+  return h(
+    'div',
+    { class: 'risk-sum', style: 'margin-top:14px' },
+    h('h5', null, `${RISK_TITLE}（${rs.length} 件）`),
+    h('p', { class: 'small dim' }, '審查時有一個角色不看你的前提、只讀原文，列出持有者最可能後悔的事。只是建議：不影響審查的結論與部位，也不會通知你。下一次 stock bot 草擬論點時會一起看。'),
+    h(
+      'ul',
+      { class: 'risk-list' },
+      rs.map((r) =>
+        h(
+          'li',
+          { class: 'risk-item' },
+          h('p', null, r.text),
+          h('p', { class: 'small faint' }, riskMeta(r), '；', h('a', { href: `#/ai/${encodeURIComponent(r.runId)}` }, '那次審查')),
+          h('details', { class: 'more dr-ev' }, h('summary', null, '引用的原文'), h('blockquote', { class: 'more-body small risk-quote' }, `「${r.quote}」`)),
+        ),
+      ),
+    ),
+    h('p', { class: 'small', style: 'margin-top:6px' }, '要加成前提：', h('a', { href: edit }, '編輯論點'), '，在右欄上面按「帶進右欄」再改字。'),
   );
 }
 

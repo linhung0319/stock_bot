@@ -23,7 +23,7 @@ import { patchAccount } from './ledgerStore';
 import { briefNote } from './marketBrief';
 import { citedBasis, docOf, lastReview, newsDocOf } from './ownAi';
 import { buildDocMenu } from './webEvidence';
-import { condFacts, defaultFacts, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote } from './thesis';
+import { condFacts, defaultFacts, isAiWatch, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote } from './thesis';
 
 /** 最近一次 F24 的摘要（F7 的底）。 */
 function baseDoc(run: AiRun | null, ticker: string): PackDoc | null {
@@ -75,10 +75,10 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
       const news = feed ? newsDocOf(feed, t, session, since) : null;
       if (news) docs.push(news);
       const urgent = acct.own[t].pending?.action !== 'REDUCE';
-      // 只有預設前提的股票：D1～D3 要季度數字；有財報類觀察項時也要（W 附程式比對的結果）。F7 原本不抓 XBRL
+      // 只有預設前提的股票：D1～D3 要季度數字；有財報類的 AI 監測中條件或觀察項時也要（W 附程式比對的結果）。F7 原本不抓 XBRL
       let rows: QuarterRow[] | null = null;
       const chk = sc.checks.find((x) => x.ticker === t);
-      const needRows = tf?.kind === 'DEFAULT_ONLY' || !!tf?.conditions.some((c) => c.status === 'PROPOSED' && c.kind === 'XBRL');
+      const needRows = tf?.kind === 'DEFAULT_ONLY' || !!tf?.conditions.some((c) => (c.status === 'PROPOSED' || isAiWatch(c)) && c.kind === 'XBRL');
       if (needRows && chk && env.EDGAR_USER_AGENT) {
         try {
           rows = quarterTable(await fetchCompanyFacts(fetcher, chk.cik, env.EDGAR_USER_AGENT), session);
@@ -89,7 +89,7 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
       const note = tf ? thesisNote(tf, session) : null;
       // 市場摘要（T65，composite_layer_design §1.6）：和定期審查同一個函式；讓 cause_class 有東西可讀，歸類仍由三票判、程式用跌幅拆解核對
       const brief = await briefNote(env.DB, t, session);
-      // 你定的條件 C 與觀察項 W 只當背景：F7 不確認條件成不成立（own_thesis §3.3）
+      // 你定的條件 C 與 AI 監測中的條件 W 只當背景：F7 不確認條件成不成立（own_thesis §3.3）
       const extraFacts = tf ? [...thesisFacts(tf), ...defaultFacts(tf, rows, session), ...condFacts(tf, rows).facts] : [];
       // 分析師可以另外找資料（T54，web_evidence_design §1.7、§1.8）：目錄（M）與清單內的網頁來源（S）和定期審查同一個函式；
       // 只有系統預設前提的沒有目錄、不能取文件（doc_ctx 記 off）。目錄組不成時照樣跑減半檢視（不能取文件，免得用沒有記下的範圍去取）

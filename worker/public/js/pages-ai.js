@@ -140,7 +140,7 @@ function risksBlock(r) {
       h(
         'div',
         { class: 'cond found-doc' },
-        h('div', { class: 'cond-h' }, h('b', null, x.text || '（沒有寫）'), h('span', { class: 'chip ' + (x.kept ? 'ok' : 'warn') }, x.kept ? '列入' : '拿掉')),
+        h('div', { class: 'cond-h' }, h('b', null, x.text || '（沒有寫）'), h('span', { class: 'chip ' + (x.kept ? 'ok' : 'warn') }, x.kept ? '通過' : '拿掉')),
         x.note ? h('p', { class: 'small', style: 'margin-top:2px;color:var(--warn)' }, `拿掉的原因：${x.note}`) : null,
         x.quote ? h('blockquote', { class: 'quote', style: 'margin-top:6px' }, `「${x.quote}」`) : null,
         x.source ? h('p', { class: 'small dim', style: 'margin-top:2px' }, `${x.source}${x.date && !x.source.includes(x.date) ? `（${x.date}）` : ''}`, x.url ? ['；', h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer' }, '原始網址')] : null) : null,
@@ -459,6 +459,8 @@ const COND_ACTIONS = [
   ['REVIEW', '重新審查'],
 ];
 const MAX_OWNED = 8;
+/** AI 監測中的條件一檔最多幾條（T71；和伺服器的 MAX_AI_WATCH 同一個數字）。 */
+const MAX_AI_WATCH = 3;
 
 /** 成立時做什麼的下拉選單。 */
 function actionSelect(value, onchange) {
@@ -474,7 +476,8 @@ function actionSelect(value, onchange) {
  */
 function condRow(c, controls, extra = null) {
   const tone = c.code === 'MET' ? 'hot' : c.code === 'ACTIVE' ? 'ok' : c.code === 'PROPOSED' ? 'now' : '';
-  const how = c.confirm && c.confirm !== c.status ? (c.code === 'PROPOSED' ? `勾選後${c.confirm}` : c.confirm) : null;
+  // 舊資料的建議中（PROPOSED）不監測：不寫「怎麼確認」（T71 起沒有勾選）
+  const how = c.confirm && c.confirm !== c.status && c.code !== 'PROPOSED' ? c.confirm : null;
   return h(
     'div',
     { class: 'cond' },
@@ -504,13 +507,19 @@ async function condOp(ctx, ticker, msg, body, done) {
   }
 }
 
-/** 這檔的條件（你定的、AI 建議的），與最近一次健檢 AI 改寫的出場條件（勾選後開始監測）。 */
+/**
+ * 這檔的條件，分兩組（T71，confirm_audit_design §3）：
+ *   你定的：成立時照你選的動作通知你，之後的審查換不掉。
+ *   AI 監測中（成立時重新審查）：審查三票一致建議、寫入就監測；成立時不叫你賣，只再開一次審查。把動作改成出清或減半就變成你定的。
+ * 下面接最近一次健檢 AI 改寫的出場條件（勾選後開始監測）。
+ */
 export function ownMonitor(ctx, d) {
   const out = [];
   const all = d.monitor ?? [];
   const owned = all.filter((c) => c.owned);
-  const proposed = all.filter((c) => c.code === 'PROPOSED');
+  const ai = all.filter((c) => c.ai);
   const live = owned.filter((c) => c.code === 'ACTIVE' || c.code === 'REVIEW_ONLY').length;
+  const watching = ai.filter((c) => c.code !== 'MET' && c.code !== 'PROPOSED').length;
   const msg = h('div');
   if (owned.length)
     out.push(
@@ -530,19 +539,43 @@ export function ownMonitor(ctx, d) {
         ),
       ),
     );
-  if (proposed.length)
+  if (ai.length)
     out.push(
-      h('h5', { style: 'margin-top:18px' }, `AI 建議的（${proposed.length} 條，你還沒勾選）`),
-      h('p', { class: 'small dim' }, `沒勾選的不會自己發通知，只給下一次審查參考；勾選之後才監測，成立時通知你。下一次審查寫了新的建議時，沒勾的會過期。${live >= MAX_OWNED ? `你定的條件已經 ${MAX_OWNED} 條，要先撤下一條才能再勾。` : ''}`),
-      proposed.map((c) => {
-        let act = c.action;
-        return condRow(c, [
-          ...(c.recordOnly ? [h('span', { class: 'small dim' }, '勾選後只記錄，不會通知')] : [h('span', { class: 'small' }, '成立時'), actionSelect(act, (e) => (act = e.target.value))]),
-          h('button', { class: 'btn', type: 'button', onclick: () => condOp(ctx, d.ticker, msg, { id: c.id, op: 'accept', action: act }, c.recordOnly ? '已勾選（只記錄）' : '已勾選，開始監測') }, c.recordOnly ? '勾選' : '勾選，開始監測'),
-        ]);
+      h('h5', { style: owned.length ? 'margin-top:18px' : 'margin-top:4px' }, `AI 監測中（成立時重新審查；${watching}／${MAX_AI_WATCH} 條）`),
+      h(
+        'p',
+        { class: 'small dim' },
+        `審查三票一致建議的條件，寫下就開始監測。成立時不會叫你賣，只會再開一次審查，由那次審查判斷要不要建議你動。下一次審查有新的建議時，還沒成立的這幾條會換成新的。想讓它成立時直接通知你出清或減半，就把成立時的動作改掉：它會變成你定的，之後的審查換不掉${live >= MAX_OWNED ? `（你定的已經 ${MAX_OWNED} 條，要先撤下一條）` : ''}。`,
+      ),
+      ai.map((c) => {
+        if (c.code === 'PROPOSED') return condRow(c, [h('span', { class: 'small dim' }, '改版前的建議（舊資料），不會監測；下一次審查有新的建議時會過期')]);
+        const extra = h('p', { class: 'small', style: 'margin-top:2px' }, c.aiTier, c.replaces ? h('span', { class: 'dim' }, `；改成出清或減半之後，會取代你原本的「${c.replaces}」`) : null);
+        if (c.code === 'MET') return condRow(c, [h('span', { class: 'small dim' }, '成立時：重新審查（已經開過一次審查；一次性）')], extra);
+        return condRow(
+          c,
+          [
+            ...(c.recordOnly
+              ? [h('span', { class: 'small dim' }, '只記錄，不會開審查')]
+              : [
+                  h('span', { class: 'small' }, '成立時'),
+                  actionSelect(c.action ?? 'REVIEW', (e) => {
+                    const v = e.target.value;
+                    if (v === 'REVIEW') return;
+                    const name = COND_ACTIONS.find(([x]) => x === v)[1];
+                    if (!window.confirm(`改成成立時${name}之後，這條變成你定的：成立時直接通知你${name}，之後的審查不會換掉它。${c.replaces ? `你原本的「${c.replaces}」會撤下。` : ''}`)) {
+                      e.target.value = 'REVIEW';
+                      return;
+                    }
+                    condOp(ctx, d.ticker, msg, { id: c.id, op: 'action', action: v }, `改成成立時${name}，這條變成你定的`);
+                  }),
+                ]),
+            h('button', { class: 'btn quiet', type: 'button', onclick: () => window.confirm(`撤下「${c.text}」？撤下之後不再監測（之後的審查可能再建議）。`) && condOp(ctx, d.ticker, msg, { id: c.id, op: 'retire' }, '已撤下') }, '撤下'),
+          ],
+          extra,
+        );
       }),
     );
-  if (owned.length || proposed.length) out.push(msg);
+  if (owned.length || ai.length) out.push(msg);
   out.push(...rewriteBlock(ctx, d));
   return out;
 }

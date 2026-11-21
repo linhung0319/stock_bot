@@ -161,6 +161,7 @@ export interface RisksView {
   items: { text: string; kept: boolean; note: string | null; quote: string; source: string | null; date: string | null; url: string | null }[];
 }
 
+/** T71（confirm_audit_design §4）：新風險不再列「要看的事」；通過的放持股頁的審查那一塊、帶進下一份草稿。 */
 export function risksView(run: AiRun): RisksView | null {
   const plan = run.pack.fresh_eyes;
   if (!plan) return null;
@@ -180,8 +181,8 @@ export function risksView(run: AiRun): RisksView | null {
   const line = !items.length
     ? `新眼光沒有列出前提以外的風險。${tail}`
     : kept
-      ? `新眼光列了 ${items.length} 件前提以外的風險，${kept} 件通過程式檢查、列進「要看的事」${dropped ? `，${dropped} 件被拿掉` : ''}。${tail}`
-      : `新眼光列了 ${items.length} 件，都被程式拿掉（原因在下面），沒有列進「要看的事」。${tail}`;
+      ? `新眼光列了 ${items.length} 件前提以外的風險，${kept} 件通過程式檢查${dropped ? `，${dropped} 件被拿掉` : ''}。通過的列在持股頁的審查那一塊，下一次 stock bot 草擬論點時會一起看。${tail}`
+      : `新眼光列了 ${items.length} 件，都被程式拿掉（原因在下面）。${tail}`;
   return { state: 'LISTED', line, items };
 }
 

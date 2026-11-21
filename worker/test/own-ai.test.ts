@@ -326,12 +326,13 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       expect(fin.status).toBe('SKIPPED');
       let acct = (await loadAccount(db))!.acct;
       expect(acct.own.NVDA.aiTier).toMatchObject({ tier: 'HALF', date: '2026-11-27', suggest: true, runId: r1.runId });
-      // T26：審查寫的條件只是建議（勾選才監測）；不成立的前提記進 aiTier
+      // T26：審查寫的條件不是你定的；T71（confirm_audit_design §3）起寫入就是 AI 監測中（狀態照確認方式、成立時重新審查、沒有勾選時間）
+      // 不成立的前提記進 aiTier
       const conds = await loadConditions(db, 'NVDA');
-      expect(conds.map((c) => [c.condId, c.status])).toEqual([
-        ['C1', 'PROPOSED'],
-        ['C2', 'PROPOSED'],
-        ['C4', 'PROPOSED'],
+      expect(conds.map((c) => [c.condId, c.status, c.action, c.acceptedAt])).toEqual([
+        ['C1', 'ACTIVE', 'REVIEW', null],
+        ['C2', 'ACTIVE', 'REVIEW', null],
+        ['C4', 'MANUAL', 'REVIEW', null],
       ]);
       expect(acct.own.NVDA.aiTier!.premiseId).toBe('P2');
 
@@ -349,8 +350,8 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
       expect(e.line.slice(lineAtMonthly).find((t) => t.includes('月報'))).toContain('另有 1 項 AI 建議（預設不做），到網站決定。');
       expect(acct.own.NVDA.aiTier!.suggest).toBe(false);
 
-      // 使用者在持股頁勾選 C2（成立時出清，帶 AI 建議的檔位）→ 監測中
-      expect(await conditionOp(db, acct, 'NVDA', conds[1].id, 'accept', undefined, '2026-11-30', new Date('2026-11-30T12:00:00Z'))).toMatchObject({ status: 'ACTIVE', action: 'EXIT' });
+      // 使用者在持股頁把 C2 成立時的動作改成出清（T71：AI 監測中的改成出清或減半 → 變成你定的）
+      expect(await conditionOp(db, acct, 'NVDA', conds[1].id, 'action', 'EXIT', '2026-11-30', new Date('2026-11-30T12:00:00Z'))).toMatchObject({ status: 'ACTIVE', action: 'EXIT' });
       // 12-01：公司送了一份 8-K（下修財測）→ 條件 C2 的確認來源 → 開 F25
       e.filings.push({ accession: '0001045810-26-000350', form: '8-K', items: '2.02,9.01', acceptanceDateTime: '2026-12-01T21:05:00.000Z', filingDate: '2026-12-01', primaryDocument: 'nvda-8k.htm', html: EIGHTK_GUIDE });
       await run('2026-12-01');
@@ -400,8 +401,8 @@ describe('整條流程：F24 → 月報；構造的 8-K → F25 當天通知', (
   it('財報條件：新的 10-Q 出來，程式直接比對 XBRL（不用 AI）→ 降級條件成立就當天通知', async () => {
     await withWorld(async ({ db, e, run }) => {
       await run('2026-11-20');
-      // T25：條件屬於這檔現在的論點檔（file_id）
-      await db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, file_id) VALUES ('NVDA', 'r0', 'C1', 'DOWN', 'XBRL', '毛利率低於 55%', ?, 'HALF', 'ACTIVE', '2026-11-01', ?)").bind(JSON.stringify({ type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55, quarters: 1 }), (await loadAccount(db))!.acct.own.NVDA.fileId).run();
+      // T25：條件屬於這檔現在的論點檔（file_id）。T71：origin 寫 USER（你定的；沒寫 origin 的預設是 AI，成立時只開重新審查，見 t71-ai-watch.test.ts）
+      await db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, file_id, origin) VALUES ('NVDA', 'r0', 'C1', 'DOWN', 'XBRL', '毛利率低於 55%', ?, 'HALF', 'ACTIVE', '2026-11-01', ?, 'USER')").bind(JSON.stringify({ type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55, quarters: 1 }), (await loadAccount(db))!.acct.own.NVDA.fileId).run();
       // 新的 10-Q（10-Q/A 修正前一季：毛利率 50%）
       e.facts = facts({
         quarters: [
@@ -455,7 +456,7 @@ describe('T24：確認來源只有法說會、新聞的事件條件只在定期�
     expect(confirmMode({ kind: 'EVENT', check: { confirm_by: ['earnings_call'] }, manual: true })).toBe('NONE');
   });
 
-  /** 11-27 開 F24、送回 3 票減半（建議的條件照 conds）、套用、使用者全部勾選（T26：勾選才監測）；回傳之後的條件。 */
+  /** 11-27 開 F24、送回 3 票減半（建議的條件照 conds）、套用、使用者全部改成成立時減半（T71：變成你定的）；回傳之後的條件。 */
   async function review(c: Ctx, conds: unknown[]) {
     const { db, run } = c;
     for (const d of ['2026-11-20', '2026-11-23', '2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
@@ -467,7 +468,7 @@ describe('T24：確認來源只有法說會、新聞的事件條件只在定期�
     await postResult(db, r1.runId, [vote(), vote(), vote()], new Date('2026-11-28T00:10:00Z'));
     await run('2026-11-27', 'FINAL');
     const acct = (await loadAccount(db))!.acct;
-    for (const x of await loadConditions(db, 'NVDA')) if (x.status === 'PROPOSED') await conditionOp(db, acct, 'NVDA', x.id, 'accept', undefined, '2026-11-27', new Date('2026-11-28T01:00:00Z'));
+    for (const x of await loadConditions(db, 'NVDA')) if (!x.acceptedAt) await conditionOp(db, acct, 'NVDA', x.id, 'action', 'HALF', '2026-11-27', new Date('2026-11-28T01:00:00Z'));
     return loadConditions(db, 'NVDA');
   }
 
@@ -499,8 +500,8 @@ describe('T24：確認來源只有法說會、新聞的事件條件只在定期�
     });
   });
 
-  // T26 改了這個行為：審查不再整組替換條件，勾選過的 REVIEW_ONLY 條件留著，新提的只寫成建議
-  it('下一次審查不會換掉勾選過的 REVIEW_ONLY 條件；新提的條件寫成建議中', async () => {
+  // T26 改了這個行為：審查不再整組替換條件，勾選過的 REVIEW_ONLY 條件留著；T71：新提的寫入就是 AI 監測中（8-K 確認的是監測中）
+  it('下一次審查不會換掉你定的 REVIEW_ONLY 條件；新提的條件寫成 AI 監測中', async () => {
     await withWorld(async (c) => {
       expect((await review(c, [ev('C1', ['earnings_call'])])).map((x) => x.status)).toEqual(['REVIEW_ONLY']);
       c.e.filings.push({ accession: '0001045810-26-000350', form: '8-K', items: '2.02,9.01', acceptanceDateTime: '2026-12-01T21:05:00.000Z', filingDate: '2026-12-01', primaryDocument: 'nvda-8k.htm', html: EIGHTK_GUIDE });
@@ -512,7 +513,7 @@ describe('T24：確認來源只有法說會、新聞的事件條件只在定期�
       await c.run('2026-12-01', 'FINAL');
       expect((await loadConditions(c.db, 'NVDA')).map((x) => [x.runId === r2.runId, x.status])).toEqual([
         [false, 'REVIEW_ONLY'],
-        [true, 'PROPOSED'],
+        [true, 'ACTIVE'],
       ]);
     });
   });

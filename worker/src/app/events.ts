@@ -27,7 +27,7 @@ import { accOf, fetchFilingChecks, handledStmt, insertHitStmts, loadEvents, setS
 import { momEvidence } from './momEvidence';
 import { NOT_LOOKBACK_SQL, applyLookback } from './momLookback';
 import { docOf, newsDoc, xbrlDoc } from './ownAi';
-import { fileConditions, filePremises, thesisFile } from './thesis';
+import { fileConditions, filePremises, isAiWatch, thesisFile } from './thesis';
 
 /**
  * 每日掃描與規則分類的對象：自選、動能持股（momentum_ai §3.2，T32d 起不再掃排名 6～10 的候選股，改由月報前一天的進場前回看看要進場的那幾檔）。
@@ -663,11 +663,11 @@ export async function startScan(sc: StartCtx, targets: ScanTarget[]): Promise<bo
     return false;
   }
 
-  // 自選股的觀察項（事件類）與只在審查時檢查的條件（own_thesis §2.5）
+  // 自選股的觀察項（事件類，舊資料）與只在審查時檢查的條件（own_thesis §2.5；T71 起含 AI 監測中的）
   const conditions: ScanCondition[] = [];
   for (const t of targets.filter((x) => x.role === 'OWN'))
     for (const c of (await fileConditions(env.DB, sc.acct, t.ticker)).filter((x) => x.kind === 'EVENT' && (x.status === 'PROPOSED' || x.status === 'REVIEW_ONLY')))
-      conditions.push({ ticker: t.ticker, condId: c.condId, text: c.text, rowId: c.id, status: c.status as ScanCondition['status'] });
+      conditions.push({ ticker: t.ticker, condId: c.condId, text: c.text, rowId: c.id, status: c.status as ScanCondition['status'], ...(isAiWatch(c) ? { aiWatch: true } : {}) });
   const runId = newRunId(session, EVENT_SCAN);
   const { pack, notes: packNotes } = eventScanPack({ runId, asOf: session, targets, docs, conditions, cursors, batch, notes, dataQuality: dq, now });
   try {

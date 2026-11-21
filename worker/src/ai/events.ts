@@ -39,7 +39,8 @@ export interface ScanTarget {
 }
 
 /**
- * 自選股的條件，讓掃描順便標出「可能有關的條件」（own_thesis §2.5）：事件類的觀察項（PROPOSED）與你定的、只在審查時檢查的（REVIEW_ONLY）。
+ * 自選股的條件，讓掃描順便標出「可能有關的條件」（own_thesis §2.5）：事件類的觀察項（舊資料的 PROPOSED）與只在審查時檢查的（REVIEW_ONLY：
+ * 你定的，以及 T71 起 AI 建議、寫入就監測的「AI 監測中」）。
  * 可以由申報確認的（ACTIVE）不放：它們由新申報直接開條件確認（F25）。
  */
 export interface ScanCondition {
@@ -49,6 +50,8 @@ export interface ScanCondition {
   /** own_conditions 的列編號（標到時寫進 CONDITION_HINT 的細項）。 */
   rowId: number;
   status: 'PROPOSED' | 'REVIEW_ONLY';
+  /** AI 監測中的（T71：AI 建議、使用者沒動過）；舊的呼叫端沒給 = 你定的。 */
+  aiWatch?: boolean;
 }
 
 /** 這次掃描的一份文件（申報或一檔的新聞標題），沒有結論時寫進 SCAN_FAILED 告警。 */
@@ -109,7 +112,7 @@ export function eventScanPack(inp: EventScanInput) {
     },
     facts: [
       ...inp.targets.map((t, k) => ({ id: `T${k + 1}`, label: t.ticker, value: ROLE[t.role] })),
-      ...inp.conditions.map((c, k) => ({ id: `K${k + 1}`, label: `${c.ticker} 的${c.status === 'PROPOSED' ? '觀察項' : '條件（只在審查時檢查）'} ${c.condId}`, value: c.text })),
+      ...inp.conditions.map((c, k) => ({ id: `K${k + 1}`, label: `${c.ticker} 的${c.status === 'PROPOSED' ? '觀察項' : c.aiWatch ? 'AI 監測中的條件（只在審查時檢查）' : '條件（只在審查時檢查）'} ${c.condId}`, value: c.text })),
     ],
     documents: inp.docs.map(({ ticker: _t, ...d }) => d),
     dataQuality: inp.dataQuality,

@@ -905,13 +905,15 @@ describe('F14：新增自選健檢 → 確認出場條件 → 之後的 F24 不�
       await applyOwnReview(ctx, { runId: 'rev1', fn: 'OWN_REVIEW', ticker: 'NVDA', asOf: '2026-11-20', outcome, pack } as never);
       await db.batch(ctx.stmts);
       const conds = await loadConditions(db, 'NVDA');
-      // T26：審查不再整組替換條件（舊的 AI 條件 C9 也留著），新提的只是建議（勾選才監測）
+      // T26：審查不再整組替換條件，你定的兩條不動。T71（confirm_audit_design §3）：新提的寫入就是 AI 監測中（ACTIVE、沒有勾選時間）；
+      // 舊的 AI 條件 C9（使用者沒動過、還沒成立）在有新建議寫入時過期
       expect(conds.map((c) => [c.condId, c.origin, c.status])).toEqual([
         ['U1', 'USER', 'ACTIVE'],
         ['U2', 'USER', 'MANUAL'],
-        ['C9', 'AI', 'ACTIVE'],
-        ['C1', 'AI', 'PROPOSED'],
+        ['C9', 'AI', 'EXPIRED'],
+        ['C1', 'AI', 'ACTIVE'],
       ]);
+      expect(conds.find((c) => c.condId === 'C1')).toMatchObject({ acceptedAt: null, action: 'REVIEW' });
       // 勾選的出場條件是「你定的條件」：有勾選時間、成立時的動作帶 AI 改寫時的檔位
       expect(conds.filter((c) => c.origin === 'USER').map((c) => [c.condId, !!c.acceptedAt, c.action])).toEqual([
         ['U1', true, 'EXIT'],

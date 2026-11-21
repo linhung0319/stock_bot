@@ -314,8 +314,10 @@ function conditionSection(file: ThesisFile): string[] {
   const isMine = (c: ThesisFile['conditions'][number]) => !!c.acceptedAt || c.origin === 'USER';
   const owned = file.conditions.filter((c) => isMine(c) && c.status in COND_STATE && c.status !== 'MET');
   const met = file.conditions.filter((c) => isMine(c) && c.status === 'MET');
+  // T71（confirm_audit_design §3）：AI 建議的條件寫入就監測（不是我定的，成立時只會再開一次審查）；舊資料的建議中照舊列
+  const watch = file.conditions.filter((c) => !isMine(c) && c.status in COND_STATE && c.status !== 'MET');
   const proposed = file.conditions.filter((c) => c.status === 'PROPOSED');
-  if (!owned.length && !met.length && !proposed.length) return ['還沒有'];
+  if (!owned.length && !met.length && !watch.length && !proposed.length) return ['還沒有'];
   const L: string[] = [];
   if (owned.length) {
     // 不帶編號（T42）：收尾區塊寫要的全部出場條件；哪一條和舊的相同、取代哪一條，由 stock bot 改寫的 AI 對照
@@ -329,8 +331,12 @@ function conditionSection(file: ThesisFile): string[] {
     L.push('已成立（一次性，不再監測；要再監測就寫成新的一條）：');
     met.forEach((c) => L.push(`${c.text}（${c.metAt?.slice(0, 10) ?? ''} 成立）`));
   }
+  if (watch.length) {
+    L.push('AI 監測中（審查建議的，我沒有定；成立時只會再開一次審查，不會叫我賣；下一次審查有新的建議時會換掉）：');
+    watch.forEach((c) => L.push(`- ${c.text}（${md(c.createdAt)} 的審查寫的；${COND_STATE[c.status]}）`));
+  }
   if (proposed.length) {
-    L.push('AI 建議、還沒勾選的：');
+    L.push('AI 建議、還沒勾選的（改版前的舊資料，不監測）：');
     proposed.forEach((c, k) => L.push(`W${k + 1} ${c.text}`));
   }
   return L;
@@ -583,6 +589,8 @@ export interface LiveCondition {
   action: CondAction | null;
   /** 狀態的白話（監測中、只在定期審查時檢查、只記錄）。 */
   status: string;
+  /** 狀態代號（ACTIVE／REVIEW_ONLY／MANUAL；T71 採用草稿時算 8 條的上限用）。舊的呼叫端沒給。 */
+  code?: string;
 }
 
 export interface ExitPlan {

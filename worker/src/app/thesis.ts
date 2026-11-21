@@ -877,15 +877,37 @@ export function thesisNote(tf: ThesisFile, asOf: string): PackDoc | null {
 
 /** 一檔「你定的條件」（ACTIVE＋REVIEW_ONLY）最多幾條（§1.5 第 5 點）。 */
 export const MAX_OWNED = 8;
-/** 一次審查最多寫幾條建議（§1.5 第 1 點）。 */
+/**
+ * 一次審查最多寫幾條建議（§1.5 第 1 點）；也是一檔「AI 監測中」的條件最多幾條（T71，confirm_audit_design §3：
+ * 新的建議寫入時舊的 AI 條件過期，所以一檔同時最多就是一次審查的量）。不佔你定的 8 條。
+ */
 export const MAX_PROPOSED = 3;
+export const MAX_AI_WATCH = MAX_PROPOSED;
 /** 會自己發通知的「你定的條件」狀態。 */
 export const OWNED_LIVE = ['ACTIVE', 'REVIEW_ONLY'];
 /** 監測中的你定的條件（T40 的對照、T42 整組取代的範圍）：會發通知的兩種，加上只記錄的。 */
 export const LIVE_CODES = ['ACTIVE', 'REVIEW_ONLY', 'MANUAL'];
 
-/** 你定的條件：有勾選時間；舊資料裡使用者確認過的出場條件（origin = USER）也算。 */
+/**
+ * 你定的條件：有勾選（或改動作、採用草稿）的時間；舊資料裡使用者確認過的出場條件（origin = USER）也算。
+ * T71（confirm_audit_design §3）：AI 建議的條件寫入就監測，但 accepted_at 是空的 → 不是你定的（「AI 監測中」，成立時只開重新審查）。
+ */
 export const isOwned = (c: Pick<FileCondition, 'acceptedAt' | 'origin'>): boolean => !!c.acceptedAt || c.origin === 'USER';
+
+/**
+ * AI 監測中的條件（T71，confirm_audit_design §3）：審查三票一致建議、寫入就監測、使用者沒動過的（不是你定的），還在監測或記錄中。
+ * 成立時的動作固定是重新審查；下一次三票一致的審查有寫入新建議時過期。舊資料的 PROPOSED（建議中）不算（它不監測）。
+ */
+export const isAiWatch = (c: Pick<FileCondition, 'acceptedAt' | 'origin' | 'status'>): boolean => !isOwned(c) && LIVE_CODES.includes(c.status);
+
+/** AI 定的、使用者沒動過的條件（監測中、已成立、舊資料的建議中）：證據包的 W、持股頁「AI 監測中」那一組。 */
+export const isAiCond = (c: Pick<FileCondition, 'acceptedAt' | 'origin' | 'status'>): boolean => !isOwned(c) && (LIVE_CODES.includes(c.status) || c.status === 'MET' || c.status === 'PROPOSED');
+
+/** AI 建議成立時的動作的那一句（T71）：「AI 建議成立時減半；目前設定是重新審查」；AI 建議的本來就是重新審查時只寫後半。 */
+export function aiTierText(c: Pick<FileCondition, 'direction' | 'tierIfMet'>): string {
+  const sug = defaultAction(c);
+  return sug === 'REVIEW' ? '成立時重新審查（AI 建議的就是重新審查）' : `AI 建議成立時${ACTION_TEXT[sug]}；目前設定是重新審查`;
+}
 
 /** 勾選時預設的動作：帶 AI 建議的檔位（出清、減半），其他（升級、沒寫）是重新審查。 */
 export function defaultAction(c: Pick<FileCondition, 'direction' | 'tierIfMet'>): CondAction {
@@ -953,7 +975,8 @@ export function progressText(c: Pick<FileCondition, 'progress' | 'check'>): stri
 export function ownerText(c: Pick<FileCondition, 'origin' | 'acceptedAt' | 'createdAt'>): string {
   if (c.origin === 'USER') return `你寫的，${md(c.acceptedAt ?? c.createdAt)} 定`;
   if (c.origin === 'AI_DRAFT_ACCEPTED') return `stock bot 草稿，你在 ${md(c.acceptedAt ?? c.createdAt)} 採用`;
-  return c.acceptedAt ? `AI 建議，你在 ${md(c.acceptedAt)} 勾選` : `AI 建議，${md(c.createdAt)} 的審查寫的`;
+  // T71：AI 建議的條件不再勾選；改成立時的動作（出清、減半）就變成你定的。舊資料勾選過的也寫「定下」
+  return c.acceptedAt ? `AI 建議，你在 ${md(c.acceptedAt)} 定下` : `AI 建議，${md(c.createdAt)} 的審查寫的`;
 }
 
 const FILING_CONFIRM_TEXT = '新申報出來時由 AI 確認';
@@ -976,7 +999,8 @@ const STATE_TEXT: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '
 /**
  * F24、F7 的證據包裡的條件（§1.6）：
  *   C1…  你定的條件（ACTIVE、REVIEW_ONLY，以及上次有結論的審查之後成立的 MET）：誰哪天定的、成立時做什麼、怎麼確認、目前狀態
- *   W1…  觀察項（PROPOSED）：財報類附程式用當時的財報數字比對的結果
+ *   W1…  AI 監測中的條件（T71：AI 建議、使用者沒動過；含上次有結論的審查之後成立的）與舊資料的觀察項（PROPOSED）：
+ *        財報類附程式用當時的財報數字比對的結果
  * map：證據包的編號 → own_conditions 的列編號（審查回來時對回條件用，放在 rule.detail.conds）。
  * rows：XBRL 季度表（新的在前）；null = 抓不到。
  */
@@ -1002,13 +1026,20 @@ export function condFacts(tf: Pick<ThesisFile, 'conditions' | 'lastReview' | 'ne
       note: `成立時：${ACTION_TEXT[act as CondAction] ?? act}；怎麼確認：${confirmText(c)}；目前：${c.status === 'MET' ? `已成立（${c.metAt?.slice(0, 10)}）` : (STATE_TEXT[c.status] ?? c.status)}${progressText(c) ? `；${progressText(c)}` : ''}`,
     });
   });
+  // W：AI 定的、使用者沒動過的條件（T71，confirm_audit_design §3）——AI 監測中的（成立時重新審查）、上次有結論的審查之後成立的，
+  // 以及舊資料的建議中（PROPOSED，不監測）。審查照舊逐條判它們成不成立。
   tf.conditions
-    .filter((c) => c.status === 'PROPOSED')
+    .filter((c) => isAiWatch(c) || c.status === 'PROPOSED' || (c.status === 'MET' && !isOwned(c) && !!c.metAt && afterLastReview(tf, c.metAt.slice(0, 10), c.metAt)))
     .forEach((c, k) => {
       const id = `W${k + 1}`;
       map[id] = c.id;
+      const legacy = c.status === 'PROPOSED';
+      if (!legacy && c.kind === 'EVENT' && acceptStatus(c) !== 'MANUAL') {
+        const named = namedWebDomains(c.check);
+        if (named.length) web[id] = named;
+      }
       let check = `怎麼確認：${confirmText(c)}`;
-      if (c.kind === 'XBRL') {
+      if (c.kind === 'XBRL' && c.status !== 'MET') {
         const chk = c.check as { type: string; metric: string; level: number; quarters?: number };
         const p = rows?.length ? xbrlProgress(rows, chk, '') : null;
         if (!rows?.length) check = `程式比對：資料還沒更新（${rows ? '沒有季度數字' : 'XBRL 抓不到'}）`;
@@ -1022,11 +1053,20 @@ export function condFacts(tf: Pick<ThesisFile, 'conditions' | 'lastReview' | 'ne
             .join('、')}，門檻 ${fmtMetric(chk.metric, p.level)}${p.need > 1 ? `，要連續 ${p.need} 季` : ''}${fresh}）`;
         }
       }
+      const tail = `${KIND_TEXT[c.kind] ?? c.kind}；${md(c.createdAt)} 的審查寫的${c.premiseId ? `；對應前提 ${c.premiseId}` : ''}`;
+      if (legacy)
+        return void facts.push({
+          id,
+          label: `觀察項 ${id}（AI 建議、使用者還沒勾選；${tail}）`,
+          value: c.text,
+          note: `${check}；AI 建議成立時：${ACTION_TEXT[defaultAction(c)]}${c.auto === false ? '；沒有通過格式檢查，勾選後只記錄' : ''}`,
+        });
+      const state = c.status === 'MET' ? `已成立（${c.metAt?.slice(0, 10)}），已經開過一次重新審查` : (STATE_TEXT[c.status] ?? c.status);
       facts.push({
         id,
-        label: `觀察項 ${id}（AI 建議、使用者還沒勾選；${KIND_TEXT[c.kind] ?? c.kind}；${md(c.createdAt)} 的審查寫的${c.premiseId ? `；對應前提 ${c.premiseId}` : ''}）`,
+        label: `AI 監測中的條件 ${id}（之前的審查三票一致建議、寫入就監測，使用者沒有改過；${tail}）`,
         value: c.text,
-        note: `${check}；AI 建議成立時：${ACTION_TEXT[defaultAction(c)]}${c.auto === false ? '；沒有通過格式檢查，勾選後只記錄' : ''}`,
+        note: `成立時：重新審查（不會直接通知使用者賣）；${check}；目前：${state}${c.status !== 'MET' && progressText(c) ? `；${progressText(c)}` : ''}；AI 建議成立時：${ACTION_TEXT[defaultAction(c)]}`,
       });
     });
   return { facts, map, web };
@@ -1218,16 +1258,7 @@ export function withRiskSeen(prev: readonly RiskSeen[] | undefined, add: RiskSee
  * 月報的頻率用「月」算（月報一個月一份；設計寫的「90 天」「6 個月」「每年」= 3、6、12 個月）。
  */
 export const OWN_ATTN: AttnKind[] = [
-  {
-    // 有建議中的條件（§1.5 第 6 點）：審查寫入新建議的那個月列一次（鍵帶最新那次審查的執行編號）
-    kind: 'PROPOSED_CONDS',
-    detect({ file }) {
-      const ps = file.conditions.filter((c) => c.status === 'PROPOSED');
-      if (!ps.length) return [];
-      const last = ps.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
-      return [{ key: `PROPOSED_CONDS@${last.runId}`, every: null, since: last.createdAt.slice(0, 10), text: `${file.ticker} 有 ${ps.length} 條 AI 建議的條件等你看` }];
-    },
-  },
+  // T71（confirm_audit_design §3）：PROPOSED_CONDS 拿掉——AI 建議的條件寫入就監測、成立時重新審查，不用你看過才算數
   {
     // 你定的財報條件「要連續 N 季（N ≥ 2）、已經 N−1 季」（§3.6.2）：每個條件每季一次（鍵帶季末日）
     kind: 'COND_NEAR',
@@ -1344,14 +1375,7 @@ export const OWN_ATTN: AttnKind[] = [
         });
     },
   },
-  {
-    // 新眼光提到的前提以外的風險（composite_layer_design §3，T63）：一條一件，只當建議。每一件在月報列一次（鍵帶那次執行與第幾條）；
-    // 持股頁列到你帶進論點、按「看過了，不加」、被之後的新眼光換掉，或滿 180 天為止
-    kind: 'NEW_RISK',
-    detect({ file, meta, view }) {
-      return openRisks(file, meta, view.date).map((r) => ({ key: `NEW_RISK@${r.runId}#${r.k}`, every: null, since: r.date, text: riskLine(file.ticker, r) }));
-    },
-  },
+  // T71（confirm_audit_design §4）：NEW_RISK 拿掉——新風險只放審查紀錄頁、持股頁的審查那一塊，並帶進下一份草稿（openRisks 照舊）
   {
     // 你定的條件成立、但換算出來不用賣（§1.10 甲類）：沒有發通知（log 沒有這條的 BREAK_NOTICE）、也不是等著進月報的。
     // 成立後的第一份月報列一次；持股頁列到那份月報產生為止（之後有成立日之後的月報就不再算）

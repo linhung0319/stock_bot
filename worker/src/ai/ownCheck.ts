@@ -33,7 +33,7 @@ export interface OwnCheckInput {
   held: boolean;
   /** 現行的前提（背景，不用逐條檢查）。 */
   premises: PackPremise[];
-  /** 既有的條件（你定的 C、觀察項 W；thesis.ts 的 condFacts）。 */
+  /** 既有的條件（你定的 C、AI 監測中的 W；thesis.ts 的 condFacts）。 */
   condFacts: EvidencePack['facts'];
   facts: EvidencePack['facts'];
   hits: EntryHit[];

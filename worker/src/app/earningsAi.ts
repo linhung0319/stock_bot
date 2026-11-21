@@ -4,6 +4,8 @@
 //   套用（applyOwnEarnings）：§1.11 的六項程式檢查（src/ai/earnings.ts）都過 → 程式算這一季的指標，和條件的門檻比：
 //       你定的條件成立 → MET、met_basis = PRESS → 甲類通知（理由寫「依財報新聞稿…10-Q 出來後再核對」）；
 //       你定的與觀察項都寫進度 progress_json（basis = PRESS，§3.6.2）；觀察項成立也不通知
+//       AI 監測中的財報條件（T71，confirm_audit_design §3）：這次有擷取時一樣比對，成立 → MET、開一次重新審查（不發甲類通知）；
+//       開不開這個擷取仍只看你定的條件（AI 監測中的不為了自己多開一次執行，財報後的審查與之後的 10-Q 照樣會看它）
 //     不過或沒擷取到 → 什麼都不做（只記錄）；10-Q／10-K 出來時照原本的方式比對
 //   10-Q／10-K 出來後的核對在 src/app/ownAi.ts 的 ownXbrlConditions（pressVerify）。
 import type { PackDoc } from '../ai/check';
@@ -104,6 +106,6 @@ export async function applyOwnEarnings(ctx: ApplyCtx, run: AiRun): Promise<void>
     }
     ctx.stmts.push(metStmt(ctx.db, c.id, at, `財報新聞稿（8-K ${detail.filingDate ?? run.asOf}）：${m.values.map((v) => (v === null ? '—' : v.toFixed(4))).join('、')}`, 'PRESS'));
     (ctx.met ??= new Set()).add(c.id);
-    notifyOwnCondition(ctx, c, pressWhy(check, m.values, detail.filingDate ?? run.asOf), [run.runId, c.runId], `${t} 財報條件 ${c.condId} 依財報新聞稿成立`);
+    notifyOwnCondition(ctx, c, pressWhy(check, m.values, detail.filingDate ?? run.asOf), [run.runId, c.runId], `${t} ${isOwned(c) ? '' : 'AI 監測中的'}財報條件 ${c.condId} 依財報新聞稿成立`);
   }
 }

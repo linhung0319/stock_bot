@@ -5,7 +5,8 @@
 //   題目固定（FRESH_QUESTION）；輸出 new_risks（最多 3 條，每條一句加一個引用）。
 //   程式檢查（checkNewRisks）：引用照 check.ts 的逐字檢查（同一個函式，沒有放寬）；引用要出自給它的那幾份文件；
 //   和現有前提的字重疊高的拿掉（已經有人看了）；彼此重複的拿掉。
-//   用途只有建議：列進「要看的事」（NEW_RISK，src/app/thesis.ts）、編輯論點頁可以帶進右欄。不影響三票、不影響檔位、不發通知。
+//   用途只有建議：審查紀錄頁、持股頁的審查那一塊、編輯論點頁可以帶進右欄、帶進下一份草稿（T71 起不列「要看的事」）。
+//   不影響三票、不影響檔位、不發通知。同一件反覆出現的偵測：repeatedRisks（T71；T72 接自動草稿）。
 //   頻率（freshPlan）：減半檢視每次都跑；定期審查每檔每 90 個日曆天最多一次。使用者看過不採用的，同一件事 180 天內不再列。
 import { checkQuote, type EvidencePack, type PackDoc } from './check';
 import { isBriefDoc } from './marketBrief';
@@ -198,3 +199,45 @@ export function parseNewRisks(raw: string | null | undefined): NewRisksRecord | 
     return null;
   }
 }
+
+// ---------------------------------------------------------------- 同一件反覆出現（T71 偵測；T72 接自動草稿 RISK_REPEAT）
+
+/** 一次審查（或減半檢視）送回、檢查過的新風險（ai_runs.new_risks 的 items）。 */
+export interface RiskRun {
+  ticker: string;
+  runId: string;
+  items: readonly Pick<NewRiskItem, 'ok' | 'source_id' | 'quote'>[];
+}
+
+/** 反覆出現的一件：哪一檔、哪一份文件的哪一段原文、出現在哪幾次執行（舊到新照傳進來的順序）。 */
+export interface RiskRepeat {
+  ticker: string;
+  sourceId: string;
+  quote: string;
+  runIds: string[];
+}
+
+/** 比對用的原文：去掉前後空白、連續空白當一個（逐字引用檢查本來就容許空白差異）。 */
+const quoteKey = (q: string) => q.replace(/\s+/g, ' ').trim();
+
+/**
+ * 同一件反覆出現（confirm_audit_design §4）：兩次**不同的**執行的新風險引用了**同一份文件的同一段原文**（source_id 與 quote 相同）。
+ * 只看通過檢查的（ok）；同一次執行裡兩件引用同一段只算一次；不同文件講同一件事認不出來（設計寫明的限制）。
+ * 純函式：傳進來的範圍（哪幾檔、多久以內、哪幾種功能）由呼叫的地方決定（T72 接排程時定）。
+ */
+export function repeatedRisks(runs: readonly RiskRun[]): RiskRepeat[] {
+  const seen = new Map<string, RiskRepeat>();
+  for (const r of runs)
+    for (const it of r.items) {
+      const quote = quoteKey(it.quote ?? '');
+      if (!it.ok || !it.source_id || !quote) continue;
+      const key = JSON.stringify([r.ticker, it.source_id, quote]);
+      const hit = seen.get(key) ?? { ticker: r.ticker, sourceId: it.source_id, quote, runIds: [] };
+      if (!hit.runIds.includes(r.runId)) hit.runIds.push(r.runId);
+      seen.set(key, hit);
+    }
+  return [...seen.values()].filter((x) => x.runIds.length >= 2);
+}
+
+/** 有同一件反覆出現的那幾檔（照第一次出現的順序，不重複）。 */
+export const riskRepeatTickers = (runs: readonly RiskRun[]): string[] => [...new Set(repeatedRisks(runs).map((x) => x.ticker))];

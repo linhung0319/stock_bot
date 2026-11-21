@@ -1,7 +1,7 @@
 // T10：F24 自選定期審查、F25 自選條件監測（每日流程的 AI 段在 src/app/aiStep.ts）。
 //
 //   套用（applyOwnReview／applyOwnCondition）：F24 → 引擎記下檔位，照 own_thesis §1.9 決定當天通知（乙類）、進月報或只放網站
-//                                              ＋建議的條件（PROPOSED，勾選才監測）＋審查確認你定的條件成立（甲類）；
+//                                              ＋建議的條件（T71：寫入就是 AI 監測中，成立時重新審查）＋審查確認你定的條件成立（甲類）；
 //                                              F25 → 你定的條件成立（甲類，當天通知）
 //   財報條件（ownXbrlConditions）：新的 10-Q／10-K → 程式直接比對 XBRL（不用 LLM），寫進度；你定的條件成立 → 甲類當天通知；
 //                                   財報新聞稿成立的（met_basis = PRESS，T29c）→ 用 XBRL 核對
@@ -34,7 +34,7 @@ import type { Env, Fetcher } from './env';
 import { accOf, cikFor, fetchFilingChecks, handledStmt, loadEvents, sectorEtfs, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { briefNote } from './marketBrief';
 import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
-import { EARLY_NOTE, EVIDENCE_TEXT, MAX_PROPOSED, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultFacts, externalNeeds, fileConditions, flaggedAccessions, fmtMetric, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
+import { EARLY_NOTE, EVIDENCE_TEXT, MAX_AI_WATCH, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultFacts, externalNeeds, fileConditions, flaggedAccessions, fmtMetric, isAiWatch, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
 
 export { cikFor } from './filings';
 export { loadConditions } from './thesis';
@@ -51,20 +51,24 @@ const fileClause = (fileId: string | null) => (fileId ? ['file_id = ?', [fileId]
 const autoNote = (c: ConditionDraft, auto: boolean, reviewOnly: boolean) => (auto ? (reviewOnly ? '確認來源沒有申報可以讀，只在定期審查時由 AI 判斷' : null) : c.kind === 'PRICE' ? '價格條件只記錄' : '沒有通過檢查，只記錄');
 
 /**
- * 審查建議新增的條件（own_thesis §1.5 第 1、2 點）：寫成 PROPOSED（觀察項，不會自己發通知）。
- * 這次有寫入至少一條時，這份論點檔原本還在 PROPOSED 的標成 EXPIRED；一條都沒提時舊的留著（呼叫的地方判斷）。
- * map：證據包的編號（C…、W…）→ 列編號，把 supersedes 換成列編號。
+ * 審查建議新增的條件（own_thesis §1.5 第 1 點；T71 改照 confirm_audit_design §3）：寫入就監測——狀態照確認方式
+ * （ACTIVE／REVIEW_ONLY／MANUAL，和 acceptStatus 同一個算法），origin = 'AI'、action = 'REVIEW'（成立時重新審查，不發甲類通知）、
+ * accepted_at 留空（不是你定的）。tier_if_met 照存（AI 建議成立時的檔位，只顯示）。
+ * 這次有寫入至少一條時，這份論點檔原本 AI 定、使用者沒動過、還沒成立的條件（監測中、只在審查時檢查、只記錄，和舊資料的 PROPOSED）
+ * 標成 EXPIRED；使用者改過動作的（accepted_at 有值）與已經成立的（MET）不動。一條都沒提時舊的留著（呼叫的地方判斷）。
+ * 不再寫 PROPOSED。map：證據包的編號（C…、W…）→ 列編號，把 supersedes 換成列編號（只記著；使用者把它改成你定的時才取代）。
  */
 export function proposeStmts(db: D1Database, ticker: string, fileId: string | null, runId: string, drafts: ProposedDraft[], at: string, map: Record<string, number>): D1PreparedStatement[] {
   if (!drafts.length) return [];
   const [fw, fa] = fileClause(fileId);
-  const ins = db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, note, origin, file_id, premise_id, supersedes, auto) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, 'AI', ?, ?, ?, ?)");
+  const ins = db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, note, origin, file_id, premise_id, supersedes, auto, action, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'AI', ?, ?, ?, ?, 'REVIEW', NULL)");
   return [
-    db.prepare(`UPDATE own_conditions SET status = 'EXPIRED' WHERE ticker = ? AND ${fw} AND status = 'PROPOSED'`).bind(ticker, ...fa),
-    ...drafts.slice(0, MAX_PROPOSED).map((c) => {
+    db.prepare(`UPDATE own_conditions SET status = 'EXPIRED' WHERE ticker = ? AND ${fw} AND accepted_at IS NULL AND origin = 'AI' AND status IN ('PROPOSED', 'ACTIVE', 'REVIEW_ONLY', 'MANUAL')`).bind(ticker, ...fa),
+    ...drafts.slice(0, MAX_AI_WATCH).map((c) => {
       const auto = isAuto(c);
       const reviewOnly = auto && confirmMode(c) === 'REVIEW_ONLY';
-      return ins.bind(ticker, runId, c.condId, c.direction, c.kind, c.text, JSON.stringify(c.check), c.tierIfMet, at, autoNote(c, auto, reviewOnly), fileId, c.premiseId, c.supersedes && map[c.supersedes] ? map[c.supersedes] : null, auto ? 1 : 0);
+      const status = reviewOnly ? 'REVIEW_ONLY' : auto ? 'ACTIVE' : 'MANUAL';
+      return ins.bind(ticker, runId, c.condId, c.direction, c.kind, c.text, JSON.stringify(c.check), c.tierIfMet, status, at, autoNote(c, auto, reviewOnly), fileId, c.premiseId, c.supersedes && map[c.supersedes] ? map[c.supersedes] : null, auto ? 1 : 0);
     }),
   ];
 }
@@ -351,6 +355,8 @@ export function xbrlWhy(check: Record<string, unknown>, values: (number | null)[
 /**
  * 你定的條件成立（甲類，own_thesis §1.10）：
  *   動作是重新審查 → 不發通知，記 condReviewDue（下一次開執行時開一次審查，觸發原因 CONDITION）
+ *   AI 監測中的條件（不是你定的，T71，confirm_audit_design §3）→ 一律當成重新審查：不發甲類通知、不會叫你賣
+ *     （tier_if_met 只是 AI 建議的檔位；舊列沒有 action 時也不照 tier_if_met 通知）
  *   動作是出清或減半 → 當天通知（不設上限）；monthly = 月審確認成立的 → 進隔天的月報（項目相同）
  *   換算出來不用賣 → 不發通知，條件照樣是成立（「要看的事」的 COND_MET_NO_SELL 由論點檔判斷）
  * why：理由（依 met_basis）；AI 建議、你勾選的條件另外寫一句是誰哪天勾的。
@@ -358,11 +364,12 @@ export function xbrlWhy(check: Record<string, unknown>, values: (number | null)[
 export function notifyOwnCondition(ctx: ApplyCtx, c: FileCondition, why: string, runIds: string[], label: string, monthly = false): void {
   const t = c.ticker;
   if (!ctx.acct.own[t]) return;
-  const tier = notifyTier(c);
+  const owned = isOwned(c);
+  const tier = owned ? notifyTier(c) : null;
   if (!tier) {
     ctx.acct = clone(ctx.acct);
     ctx.acct.own[t].condReviewDue = ctx.session;
-    return void ctx.log.push(`${label}（成立時重新審查）→ 不通知，開一次審查（觸發原因：你定的條件）`);
+    return void ctx.log.push(`${label}（${owned ? '成立時重新審查' : 'AI 監測中，成立時重新審查'}）→ 不通知，開一次審查（觸發原因：條件成立）`);
   }
   if (tier !== 'EXIT' && tier !== 'HALF') return void ctx.log.push(`${label}（舊資料的檔位 ${TIER_NAME[tier]}，不是出清或減半）→ 不通知`);
   const spec: CondNotice = {
@@ -391,8 +398,9 @@ export function notifyOwnCondition(ctx: ApplyCtx, c: FileCondition, why: string,
  * 條件只在三票一致（含一致選「不動」）時動（own_thesis §1.5、§1.6）：
  *   你定的條件（REVIEW_ONLY、申報確認的 ACTIVE）三票確認成立 → MET（met_basis = REVIEW_VOTE），甲類通知（月審確認的進隔天的月報）
  *     條件指名了網頁來源、靠那個來源的引用成立的（T53，web_evidence_design §1.6）→ met_basis = WEB_VOTE，理由寫是哪個來源哪一天的文章
- *   財報類的你定的條件以程式比對為準，審查的看法只記錄；觀察項（W）成立與否只是給下一次審查的輸入
- *   建議新增的條件 → PROPOSED（有寫入時舊的建議 EXPIRED，沒提時留著）。你定的條件不會被換掉。
+ *   AI 監測中的條件（W，T71）三票確認成立 → 一樣標 MET（REVIEW_VOTE／WEB_VOTE）；動作固定是重新審查，確認它的就是這次審查，不另外開
+ *   財報類的條件（C、W）以程式比對為準，審查的看法只記錄；舊資料的觀察項（PROPOSED）成立與否只是給下一次審查的輸入
+ *   建議新增的條件 → 寫入就是 AI 監測中（proposeStmts：有寫入時舊的 AI 條件 EXPIRED，沒提時留著）。你定的條件不會被換掉。
  */
 export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
   const t = run.ticker ?? '';
@@ -416,7 +424,11 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
   const at = ctx.now.toISOString();
   for (const pid of d.metChecks) {
     const c = conds.find((x) => x.id === map[pid]);
-    if (!c || !pid.startsWith('C') || !isOwned(c)) continue;
+    if (!c) continue;
+    // C：你定的；W：AI 監測中的（T71）。舊資料的觀察項（PROPOSED）不監測，成立與否只是輸入
+    const mine = pid.startsWith('C') && isOwned(c);
+    const watch = pid.startsWith('W') && isAiWatch(c);
+    if (!mine && !watch) continue;
     if (c.kind === 'XBRL') {
       ctx.log.push(`${run.runId}：財報條件 ${pid}（${c.text}）3 票認為成立；以程式比對財報數字為準，只記錄`);
       continue;
@@ -429,21 +441,21 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
     const named = namedWebDomains(c.check);
     const bases = votes.map((s) => condCite(s, condIds(s), src, named));
     if (bases.some((b) => !b)) {
-      ctx.log.push(`${run.runId}：你定的條件 ${c.condId} 3 票認為成立，但引用的網頁不是這條條件現在指名的來源、或那個來源不是一手或產業研究機構，不算成立`);
+      ctx.log.push(`${run.runId}：${mine ? '你定的' : 'AI 監測中的'}條件 ${c.condId} 3 票認為成立，但引用的網頁不是這條條件現在指名的來源、或那個來源不是一手或產業研究機構，不算成立`);
       continue;
     }
     // 至少一票靠的是指名的網頁來源 → WEB_VOTE，理由寫那一份（靠網頁的那一票排前面）
     const viaWeb = bases.some((b) => b === 'WEB');
     const webBasis = viaWeb ? citedBasis({ outcome: { ...run.outcome, samples: [...votes.filter((_, k) => bases[k] === 'WEB'), ...votes.filter((_, k) => bases[k] !== 'WEB')] }, pack: run.pack }, condIds, named) : null;
     ctx.stmts.push(metStmt(ctx.db, c.id, at, viaWeb ? `定期審查 ${run.runId} 3 票確認（${webBasis!.text}）` : `定期審查 ${run.runId} 3 票確認`, viaWeb ? 'WEB_VOTE' : 'REVIEW_VOTE'));
-    const label = `${run.runId}：你定的條件 ${c.condId} 由審查 3 票確認成立${viaWeb ? '（指名的網頁來源）' : ''}`;
-    // 動作是重新審查：確認它成立的就是這次審查，結論照 §1.9 處理，不再另外開
-    if (!notifyTier(c)) ctx.log.push(`${label}（成立時重新審查）→ 這次審查就是重新審查，結論照建議的規則處理`);
+    const label = `${run.runId}：${mine ? '你定的' : 'AI 監測中的'}條件 ${c.condId} 由審查 3 票確認成立${viaWeb ? '（指名的網頁來源）' : ''}`;
+    // 動作是重新審查（AI 監測中的一律是）：確認它成立的就是這次審查，結論照 §1.9 處理，不再另外開
+    if (!mine || !notifyTier(c)) ctx.log.push(`${label}（成立時重新審查）→ 這次審查就是重新審查，結論照建議的規則處理`);
     else notifyOwnCondition(ctx, c, viaWeb ? `${webBasis!.text}，3 票確認（${webBasis!.note}）` : `${run.asOf} 的審查 3 票確認（引用在網站）`, [run.runId, c.runId], label, trigger === 'MONTHLY');
   }
   if (d.proposed.length) {
     ctx.stmts.push(...proposeStmts(ctx.db, t, ctx.acct.own[t].fileId ?? null, run.runId, d.proposed, at, map));
-    ctx.log.push(`${run.runId}：寫入 ${Math.min(d.proposed.length, MAX_PROPOSED)} 條建議的條件（勾選才監測）`);
+    ctx.log.push(`${run.runId}：寫入 ${Math.min(d.proposed.length, MAX_AI_WATCH)} 條建議的條件（AI 監測中，成立時重新審查）`);
   }
 }
 
@@ -462,7 +474,8 @@ export async function applyOwnCondition(ctx: ApplyCtx, run: AiRun): Promise<void
 
 /**
  * 新的 10-Q／10-K：財報條件由程式直接比對 XBRL（不用 LLM）。
- * 你定的（ACTIVE）與觀察項（PROPOSED）每次比對都寫進度 progress_json（§3.6.2）；只有你定的成立時會標 MET、通知。
+ * 監測中的（ACTIVE：你定的與 AI 監測中的）與舊資料的觀察項（PROPOSED）每次比對都寫進度 progress_json（§3.6.2）；
+ * 監測中的成立時標 MET：你定的照動作通知，AI 監測中的開一次重新審查（notifyOwnCondition）。
  * 財報新聞稿成立的條件（met_basis = PRESS，還沒核對）：用 XBRL 再比一次（pressVerify，§1.11）。
  * 同一次套用裡剛由財報新聞稿標成立的（ctx.met）不再比對，免得通知兩次。
  */
@@ -481,7 +494,7 @@ export async function ownXbrlConditions(ctx: ApplyCtx, facts: Map<string, Quarte
         continue;
       }
       ctx.stmts.push(metStmt(ctx.db, c.id, ctx.now.toISOString(), `新財報（${rows[0].form} ${rows[0].filed}）：${m.values.map((v) => (v === null ? '—' : v.toFixed(4))).join('、')}`, 'XBRL'));
-      notifyOwnCondition(ctx, c, xbrlWhy(c.check, m.values, rows[0]), [c.runId], `${t} 財報條件 ${c.condId} 成立（程式比對 XBRL）`);
+      notifyOwnCondition(ctx, c, xbrlWhy(c.check, m.values, rows[0]), [c.runId], `${t} ${isOwned(c) ? '' : 'AI 監測中的'}財報條件 ${c.condId} 成立（程式比對 XBRL）`);
     }
   }
 }
@@ -630,7 +643,7 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
 }
 
 /**
- * 你定的條件成立、動作是「重新審查」（own_thesis §1.10 甲類）：condReviewDue 有值的開一次審查，觸發原因 CONDITION，
+ * 你定的條件成立、動作是「重新審查」（own_thesis §1.10 甲類），或 AI 監測中的條件成立（T71）：condReviewDue 有值的開一次審查，觸發原因 CONDITION，
  * 不受提前審查的頻率上限限制。今天已經有這檔的審查（例如財報後的）→ 只清掉。沒開成 → 留著，下一次開執行時再試。
  * 每日第一次流程（startOwnRuns 最後）與 01:30 的 finalStarts 都呼叫：01:30 才套用的條件確認當天就開。
  */
@@ -643,16 +656,16 @@ export async function startCondReviews(sc: StartCtx): Promise<void> {
     const same = await env.DB.prepare("SELECT 1 AS x FROM ai_runs WHERE fn = 'OWN_REVIEW' AND ticker = ? AND as_of = ? LIMIT 1").bind(t, session).first();
     if (same) {
       patch[t] = { condReviewDue: null };
-      res.log.push(`${t} 你定的條件成立（重新審查）：今天已經有審查，不另外開`);
+      res.log.push(`${t} 條件成立（重新審查）：今天已經有審查，不另外開`);
       continue;
     }
     try {
       res.started.push((await startOwnReview(env, fetcher, acct, view, axis, t, 'CONDITION', now)).runId);
       patch[t] = { condReviewDue: null, ...(m.reviewSkip ? { reviewSkip: null } : {}) };
-      res.log.push(`${t} 你定的條件成立（重新審查）→ 開審查`);
+      res.log.push(`${t} 條件成立（重新審查）→ 開審查`);
     } catch (e) {
-      res.log.push(`${t} 的審查（你定的條件成立）沒有開成：${errText(e)}`);
-      res.alerts.push({ kind: 'FLOW_ERROR', message: `${t} 的 AI 審查（你定的條件成立、動作是重新審查）沒有開成：${errText(e)}` });
+      res.log.push(`${t} 的審查（條件成立）沒有開成：${errText(e)}`);
+      res.alerts.push({ kind: 'FLOW_ERROR', message: `${t} 的 AI 審查（條件成立、動作是重新審查）沒有開成：${errText(e)}` });
       try {
         const alert = await reviewStartFailed(env.DB, t, m.fileId ?? null, session, now, ov);
         if (alert) res.alerts.push(alert);

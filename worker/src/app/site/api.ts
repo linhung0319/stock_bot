@@ -1,6 +1,6 @@
 // 網站的 API（T8）。/api/* 是真實帳本，/demo/api/* 是示範資料；兩邊是同一組端點。
 // 每個會改帳戶的端點都是：讀帳戶與市場 → 呼叫引擎的純函式 → 替新通知寫下理由 → 存檔。
-import { DraftError, adoptPeers, draftAdoptPlan, draftViewOf, peerSkipText, type AdoptPlan, type DraftRow, type DraftUse } from '../ownDraft';
+import { DraftError, adoptOwnedCount, adoptPeers, draftAdoptPlan, draftViewOf, peerSkipText, type AdoptPlan, type DraftRow, type DraftUse } from '../ownDraft';
 import { DRAFT_LIMITS, type OwnDraft } from '../../ai/ownDraft';
 import type { AdoptCondition } from '../ownCheckAi';
 import {
@@ -60,7 +60,7 @@ import { DISCUSSION_MODES, LIVE_CONDITION_CODES, THESIS_LIMITS, parseThesisBlock
 import type { ExitLine } from '../../ai/ownCheck';
 import { demoDiscussion } from '../discussion';
 import type { ThesisLogInput } from '../ledgerStore';
-import { ruleResponseLogs, withRiskSeen, type CondAction } from '../thesis';
+import { MAX_OWNED, ruleResponseLogs, withRiskSeen, type CondAction } from '../thesis';
 import { RISK_SEEN_DAYS } from '../../ai/freshEyes';
 import { StaleExitsError } from '../ownCheckAi';
 import { thesisReviewHeld } from '../ownAi';
@@ -405,7 +405,7 @@ function sourcesOf(v: unknown, tk: string): OwnWebSources | null {
 async function liveConditions(backend: SiteBackend, tk: string): Promise<LiveCondition[]> {
   if (!backend.ai) return [];
   const rows = await backend.ai.monitor(tk);
-  return rows.filter((r) => r.id > 0 && r.owned && (LIVE_CONDITION_CODES as readonly string[]).includes(r.code)).map((r) => ({ id: r.id, text: r.text, action: r.action, status: r.status }));
+  return rows.filter((r) => r.id > 0 && r.owned && (LIVE_CONDITION_CODES as readonly string[]).includes(r.code)).map((r) => ({ id: r.id, text: r.text, action: r.action, status: r.status, code: r.code }));
 }
 
 /** 編輯論點頁送來的 risk：{ runId, k }（哪一次執行的第幾條「前提以外的風險」）；格式不對 → null。 */
@@ -426,6 +426,7 @@ async function openRisksOf(backend: SiteBackend, tk: string): Promise<RiskView[]
  * POST /api/ops/own-risk：{ ticker, runId, k } → 「看過了，不加」（T63，composite_layer_design §3）。
  * 那一件記進這檔的 riskSeen（DISMISSED）、論點檔的 log 寫 RISK_SEEN；之後 180 個日曆天內，同一件事不再列進「要看的事」。
  * 不動論點、不動檔位、不發通知。那一件已經不在清單上（處理過、被新的審查換掉、過期）→ 409。
+ * T71（confirm_audit_design §4）：新風險不再列「要看的事」，畫面拿掉這個按鈕；端點與舊的 riskSeen 留著（照舊讀）。
  */
 async function dismissRisk(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
   if (!backend.ai) throw new SiteError(400, '示範模式沒有審查紀錄。');
@@ -490,7 +491,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
         })
         .filter((p) => p.text);
   // T63（composite_layer_design §3）：從「審查提到的前提以外的風險」帶進右欄的前提帶 risk（哪一次執行的第幾條）；
-  // 存檔後那幾件記成已經帶進論點（ADOPTED），180 天內同一件事不再列進「要看的事」
+  // 存檔後那幾件記成已經帶進論點（ADOPTED），180 天內同一件事不再列出（T71 起只列在持股頁的審查那一塊與編輯論點頁）
   const riskRefs = rawPs
     .map((p) => (p ?? {}) as Record<string, unknown>)
     .filter((o) => String(o.text ?? '').trim())
@@ -508,6 +509,12 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
   const plan = planExits(exitsIn, live);
   // 採用草稿（T70）：出場條件直接寫進條件，只有監測不了格式的才送改寫；字和監測中的一樣的沿用，動作不同的直接改
   const ap = adopt?.plan ?? null;
+  // T71：採用之後你定的條件不能超過 8 條（預覽與存檔都擋，存檔前就擋：帳戶和條件分兩次寫，不能存了論點才發現條件寫不進去）。
+  // 草稿最多 6 條、監測中而草稿沒有的會撤下，正常不會超過；超過時整份不採用，請使用者按「不用這份草稿」或自己編輯
+  if (ap) {
+    const n = adoptOwnedCount(ap, live);
+    if (n > MAX_OWNED) throw new SiteError(422, `採用這份草稿之後，你定的條件會有 ${n} 條（上限 ${MAX_OWNED} 條），這份草稿不能採用。按「不用這份草稿」，或到編輯論點自己寫出場條件。`);
+  }
   const exitsChanged = ap ? ap.add.length + ap.rewrite.length + ap.retire.length > 0 : plan.changed;
   const exits: ExitLine[] = ap ? ap.rewrite.map((x) => ({ text: x.text, action: x.action })) : plan.changed ? exitsIn : [];
   const actionChanged: { id: number; text: string; action: CondAction; was: CondAction | null }[] = ap
@@ -822,7 +829,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     return json(parseThesisBlock(text(b.text, '貼上的內容', 30_000, false), tk));
   }
   if (rest === 'ops/own-thesis' && post) return saveThesis(backend, await body(req));
-  // 審查提到的前提以外的風險：「看過了，不加」（T63）
+  // 審查提到的前提以外的風險：「看過了，不加」（T63）。T71（confirm_audit_design §4）起畫面沒有這個按鈕，端點留著不用
   if (rest === 'ops/own-risk' && post) return dismissRisk(backend, await body(req));
   // 試抓這檔的網頁證據來源（T52；不存）：{ ticker, webSources } → { items }
   if (rest === 'ops/own-sources/probe' && post) {
@@ -931,7 +938,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       throw new SiteError(e instanceof StaleExitsError ? 409 : 422, errText(e));
     }
   }
-  // 條件的所有權（T26，own_thesis §1.5）：勾選 AI 建議的條件（accept）、撤下你定的條件（retire）、改成立時的動作（action）
+  // 條件的所有權（T26，own_thesis §1.5）：勾選舊資料的 AI 建議（accept；T71 起畫面沒有這個按鈕）、撤下（retire：你定的或 AI 監測中的）、
+  // 改成立時的動作（action；AI 監測中的改成出清或減半 → 變成你定的，T71）
   if (rest === 'ops/own-condition' && post) {
     if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI。');
     const b = await body(req);

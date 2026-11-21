@@ -14,7 +14,7 @@ import { getRun } from '../src/app/aiRuns';
 import type { Env, Fetcher } from '../src/app/env';
 import { runFlow } from '../src/app/flow';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
-import { adoptPeers, draftAdoptPlan, draftLineText, loadDrafts, type DraftUse } from '../src/app/ownDraft';
+import { adoptOwnedCount, adoptPeers, draftAdoptPlan, draftLineText, loadDrafts, type DraftUse } from '../src/app/ownDraft';
 import type { CompanyFacts, XbrlFact } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
@@ -625,6 +625,64 @@ describe('T70 運作統計：依前提的來源分開（§2.4，「原樣採用�
       // 草稿那一段：採用的那一份算 used，原樣採用的前提 3 條
       const drafts = res.body.sections.find((s) => s.id === 'drafts')!;
       expect(drafts.rows.find((r: Row) => r.trigger === 'MANUAL')).toMatchObject({ used: 1, premises_same: 3, premises_unused: 0, exits_used: 4 });
+    });
+  });
+});
+
+// ---------------------------------------------------------------- T71：採用時的 8 條上限、AI 監測中的不動
+
+describe('T71 採用草稿與條件的上限（confirm_audit_design §3）', () => {
+  it('adoptOwnedCount：沿用的（看現在的狀態）＋直接寫進去的（看寫進去之後的狀態），只記錄的不算', () => {
+    const add = (status: 'ACTIVE' | 'REVIEW_ONLY' | 'MANUAL', k = 0) => ({ k, text: `x${k}`, action: 'HALF' as const, kind: 'XBRL' as const, check: XBRL_CHECK, premiseIndex: null, status });
+    const keep = (id: number) => ({ k: 9, id, text: `c${id}`, action: 'EXIT' as const, was: 'EXIT' as const });
+    const live = [
+      { id: 1, text: 'c1', action: 'EXIT' as const, status: '監測中', code: 'ACTIVE' },
+      { id: 2, text: 'c2', action: 'EXIT' as const, status: '只記錄', code: 'MANUAL' },
+      { id: 3, text: 'c3', action: 'EXIT' as const, status: '監測中' },
+    ];
+    expect(adoptOwnedCount({ keep: [keep(1), keep(2)], add: [add('ACTIVE'), add('REVIEW_ONLY'), add('MANUAL')] }, live)).toBe(3);
+    // 舊的呼叫端沒給 code：沿用的那條算一條
+    expect(adoptOwnedCount({ keep: [keep(3)], add: [] }, live)).toBe(1);
+    expect(adoptOwnedCount({ keep: [], add: Array.from({ length: 9 }, (_, k) => add('ACTIVE', k)) }, live)).toBe(9);
+  });
+
+  it('AI 監測中的條件：採用不撤下、不改、不算在你定的條件裡；採用之後你定的超過 8 條 → 422（預覽與存檔都擋），什麼都沒存', async () => {
+    await withWorld(async (c) => {
+      const fid = 'NVDA@2026-11-19';
+      const ins = (cid: string, text: string) =>
+        c.db.prepare("INSERT INTO own_conditions (ticker, run_id, cond_id, direction, kind, text, check_json, tier_if_met, status, created_at, origin, file_id, action, auto) VALUES ('NVDA', 'rev-0', ?, 'DOWN', 'XBRL', ?, ?, 'HALF', 'ACTIVE', '2026-11-19T23:00:00.000Z', 'AI', ?, 'REVIEW', 1)").bind(cid, text, JSON.stringify(XBRL_CHECK), fid).run();
+      await ins('W1', 'AI 監測中：毛利率低於 50%');
+      await ins('W2', 'AI 監測中：毛利率低於 45%');
+      const row = await readyDraft(c);
+      // 先把存下的那一份改成出場條件 9 條（正常的草稿最多 6 條，檢查擋得住；這裡模擬上限被突破）
+      const good = row.payload!;
+      const nine = Array.from({ length: 9 }, (_, k) => ({ text: `毛利率連兩季低於 ${40 + k}%`, action: 'HALF', kind: 'XBRL', check: { ...XBRL_CHECK, level: 0.4 + k / 100 }, premise_index: null, evidence_ids: [] }));
+      await c.db.prepare('UPDATE own_drafts SET payload = ? WHERE id = ?').bind(JSON.stringify({ ...(JSON.parse(good) as Record<string, unknown>), exits: nine }), row.id).run();
+      const before = await acctOf(c.db);
+      for (const dry of [true, false]) {
+        const bad = await adopt(c, row.id, { dry });
+        expect(bad.status).toBe(422);
+        expect(bad.body.error).toBe('採用這份草稿之後，你定的條件會有 9 條（上限 8 條），這份草稿不能採用。按「不用這份草稿」，或到編輯論點自己寫出場條件。');
+      }
+      expect((await acctOf(c.db)).own.NVDA.thesis).toEqual(before.own.NVDA.thesis);
+      expect((await condsOf(c.db)).map((x) => x.cond_id)).toEqual(['W1', 'W2']);
+      expect((await draftsOf(c.db)).find((d) => d.id === row.id)!.status).toBe('READY');
+
+      // 正常的那一份：AI 監測中的兩條不撤下（對照裡也沒有）、不改；你定的是草稿的 4 條
+      await c.db.prepare('UPDATE own_drafts SET payload = ? WHERE id = ?').bind(good, row.id).run();
+      const pv = await adopt(c, row.id, { dry: true });
+      expect(pv.status).toBe(200);
+      expect(pv.body.preview.draft.exitPlan.retire).toEqual([]);
+      const r = await adopt(c, row.id);
+      expect(r.status).toBe(200);
+      const all = await condsOf(c.db);
+      expect(all.filter((x) => x.origin === 'AI').map((x) => [x.cond_id, x.status, x.accepted_at, x.action])).toEqual([
+        ['W1', 'ACTIVE', null, 'REVIEW'],
+        ['W2', 'ACTIVE', null, 'REVIEW'],
+      ]);
+      expect(all.filter((x) => x.origin === 'AI_DRAFT_ACCEPTED')).toHaveLength(4);
+      const hd = await c.call<{ monitor: { owned: boolean; ai: boolean }[] }>('GET', '/api/holding/NVDA', undefined, at(T0, 0, 30));
+      expect([hd.body.monitor.filter((m) => m.owned).length, hd.body.monitor.filter((m) => m.ai).length]).toEqual([4, 2]);
     });
   });
 });

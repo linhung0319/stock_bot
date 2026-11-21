@@ -1,6 +1,7 @@
 // T37：「要看的事」清單（own_thesis §3.6.6、§1.5 第 6 點、§3.6.2 最後一點）。
 // 完成條件：
 //   五種（PROPOSED_CONDS、COND_NEAR、NO_THESIS、THESIS_OLD、HALF_NO_EXIT）各有成立與不成立的測試
+//   （T71，confirm_audit_design §3：PROPOSED_CONDS 拿掉了，那一個測試改成確認它不再列）
 //   頻率（同一件事下個月不再列、COND_NEAR 換季才再列）
 //   「本月不用動」的月報也列
 //   LINE 有與沒有那一行
@@ -79,11 +80,11 @@ function acctOf(state: 'STD' | 'HALF' = 'STD', notifs: Account['notifs'] = []): 
 const hits = (kind: string, file: ThesisFile, acct: MiniAcct = acctOf(), date = DATE) => ownAttention([file], acct, { date }).filter((x) => x.kind === kind);
 
 describe('五種要看的事：成立與不成立', () => {
-  it('PROPOSED_CONDS：有建議中的條件才列；件數是建議中的條數；過期、監測中的不算', () => {
-    const f = fileOf({ conditions: [cond({ id: 1, status: 'PROPOSED', runId: 'rev-1', acceptedAt: null, createdAt: '2026-10-05T01:00:00.000Z' }), cond({ id: 2, status: 'PROPOSED', runId: 'rev-2', acceptedAt: null, createdAt: '2026-11-06T01:00:00.000Z' }), cond({ id: 3, status: 'ACTIVE' })] });
-    expect(hits('PROPOSED_CONDS', f)).toEqual([{ ticker: 'MU', kind: 'PROPOSED_CONDS', src: 'own', text: 'MU 有 2 條 AI 建議的條件等你看', since: '2026-11-06', key: 'PROPOSED_CONDS@rev-2', every: null }]);
-    expect(hits('PROPOSED_CONDS', fileOf({ conditions: [cond({ status: 'EXPIRED', acceptedAt: null }), cond({ status: 'ACTIVE' })] }))).toEqual([]);
-    expect(hits('PROPOSED_CONDS', fileOf())).toEqual([]);
+  // T71（confirm_audit_design §3）改了這個行為：AI 建議的條件寫入就監測，「要看的事」不再列 PROPOSED_CONDS
+  it('PROPOSED_CONDS 拿掉了：舊資料的建議中、AI 監測中的條件都不列', () => {
+    expect(OWN_ATTN.map((k) => k.kind)).not.toContain('PROPOSED_CONDS');
+    const f = fileOf({ conditions: [cond({ id: 1, status: 'PROPOSED', runId: 'rev-1', acceptedAt: null, createdAt: '2026-10-05T01:00:00.000Z' }), cond({ id: 2, status: 'ACTIVE', runId: 'rev-2', acceptedAt: null, action: 'REVIEW', createdAt: '2026-11-06T01:00:00.000Z' }), cond({ id: 3, status: 'ACTIVE' })] });
+    expect(hits('PROPOSED_CONDS', f)).toEqual([]);
   });
 
   it('COND_NEAR：你定的、要連續 N 季（N ≥ 2）、已經 N−1 季才列；文字照設計', () => {
@@ -261,7 +262,7 @@ describe('月報與網站', () => {
   it('月底的月報帶「要看的事」、記下 attnShown；LINE 只加一行；不產生通知；同一天再算不會再列；持股頁列出全部', async () => {
     await withWorld(async ({ db, env, line, run }) => {
       const a0 = (await loadAccount(db))!.acct;
-      // NVDA：2 條 AI 建議；MSFT：你定的條件已經一季低於門檻
+      // NVDA：2 條 AI 建議（舊資料的建議中；T71 起不列「要看的事」）；MSFT：你定的條件已經一季低於門檻
       await seedCond(db, { ticker: 'NVDA', fileId: a0.own.NVDA.fileId!, status: 'PROPOSED', runId: 'rev-n' });
       await seedCond(db, { ticker: 'NVDA', fileId: a0.own.NVDA.fileId!, status: 'PROPOSED', runId: 'rev-n' });
       await seedCond(db, { ticker: 'MSFT', fileId: a0.own.MSFT.fileId!, status: 'ACTIVE', accepted: true, progress: { at: '2026-11-05', basis: 'XBRL', period: '2026-09-30', values: [0.684, 0.72], level: 0.7, streak: 1, need: 2 } });
@@ -274,19 +275,18 @@ describe('月報與網站', () => {
       const n = acct.notifs.find((x) => x.id === r.monthly)!;
       expect(n.kind).toBe('MONTHLY');
       const want: Attention[] = [
-        { ticker: 'NVDA', kind: 'PROPOSED_CONDS', text: 'NVDA 有 2 條 AI 建議的條件等你看', since: '2026-11-20', src: 'own' },
         { ticker: 'NVDA', kind: 'NO_THESIS', text: 'NVDA 還沒有你的論點，目前用系統預設前提檢查', since: '2026-11-19', src: 'own' },
         { ticker: 'MSFT', kind: 'COND_NEAR', text: 'MSFT：你定的條件「毛利率連兩季低於 70%」已經有一季低於門檻（68.4%），下一季也低於就會成立 → 出清', since: '2026-11-05', src: 'own' },
       ];
       expect(n.attention).toEqual(want);
       expect(n.monthly!.input.attention).toEqual(want);
-      expect(acct.own.NVDA.attnShown).toEqual({ 'PROPOSED_CONDS@rev-n': '2026-11-30', NO_THESIS: '2026-11-30' });
+      expect(acct.own.NVDA.attnShown).toEqual({ NO_THESIS: '2026-11-30' });
       expect(Object.keys(acct.own.MSFT.attnShown!)).toEqual([expect.stringMatching(/^COND_NEAR:\d+@2026-09-30$/)]);
       // 不產生通知：這一天只多了月報那一則；LINE 只推月報，裡面一行
       expect(r.created).toEqual([n.id]);
       expect(acct.notifs.length).toBe(before.notifs.length + 1);
       expect(line).toHaveLength(1);
-      expect(line[0]).toContain('\n持股有 3 件事要看（不用下單），在持股頁。\n');
+      expect(line[0]).toContain('\n持股有 2 件事要看（不用下單），在持股頁。\n');
       expect(line[0].match(/件事要看/g)).toHaveLength(1);
 
       // 同一天、同樣的狀態再算一次：都列過了
@@ -299,7 +299,7 @@ describe('月報與網站', () => {
       const res = await handle(new Request('https://bot.example/api/holding/NVDA'), env, fakeFetcher(newWorld('2026-11-30')), new Date('2026-12-01T02:00:00Z'));
       expect(res.status).toBe(200);
       const body = (await res.json()) as { attention: Attention[] };
-      expect(body.attention.map((x) => x.kind)).toEqual(['PROPOSED_CONDS', 'NO_THESIS']);
+      expect(body.attention.map((x) => x.kind)).toEqual(['NO_THESIS']);
       // 月報頁：通知的資料帶 attention
       const nv = (await (await handle(new Request(`https://bot.example/api/notif/${n.id}`), env, fakeFetcher(newWorld('2026-11-30')), new Date('2026-12-01T02:00:00Z'))).json()) as { attention: Attention[] };
       expect(nv.attention).toEqual(want);

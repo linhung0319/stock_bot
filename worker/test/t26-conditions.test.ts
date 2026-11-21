@@ -217,6 +217,7 @@ async function setup(c: Ctx) {
 // ---------------------------------------------------------------- 審查不再整組替換條件
 
 describe('T26：審查只寫建議，你定的條件換不掉', () => {
+  // T71（confirm_audit_design §3）改了這個行為：建議寫入就是 AI 監測中（不是 PROPOSED）
   it('F24 回來後你定的條件不變；這次有寫入時舊的建議變 EXPIRED，下一次沒提時建議留著', async () => {
     await withWorld(async (c) => {
       const { acct, view, axis } = await setup(c);
@@ -242,10 +243,10 @@ describe('T26：審查只寫建議，你定的條件換不掉', () => {
       expect(after.map((x) => [x.condId, x.status])).toEqual([
         ['U1', 'ACTIVE'],
         ['C7', 'EXPIRED'],
-        ['N1', 'PROPOSED'],
-        ['N2', 'PROPOSED'],
+        ['N1', 'ACTIVE'],
+        ['N2', 'ACTIVE'],
       ]);
-      expect(after.find((x) => x.condId === 'N1')).toMatchObject({ origin: 'AI', acceptedAt: null, premiseId: 'P2', supersedes: mine, tierIfMet: 'HALF', auto: true, runId: pack.run_id });
+      expect(after.find((x) => x.condId === 'N1')).toMatchObject({ origin: 'AI', acceptedAt: null, action: 'REVIEW', premiseId: 'P2', supersedes: mine, tierIfMet: 'HALF', auto: true, runId: pack.run_id });
       // 建議不發通知（T29a：這次審查 3 票判 P2 不成立，發的是乙類的當天通知，和建議的條件無關）
       expect(ctx.acct.notifs.filter((n) => n.kind === 'URGENT' && !n.items.every((i) => i.brk?.type === 'B'))).toEqual([]);
 
@@ -256,8 +257,8 @@ describe('T26：審查只寫建議，你定的條件換不掉', () => {
       expect((await loadConditions(c.db, 'NVDA')).map((x) => [x.condId, x.status])).toEqual([
         ['U1', 'ACTIVE'],
         ['C7', 'EXPIRED'],
-        ['N1', 'PROPOSED'],
-        ['N2', 'PROPOSED'],
+        ['N1', 'ACTIVE'],
+        ['N2', 'ACTIVE'],
       ]);
     });
   });
@@ -406,7 +407,7 @@ describe('T26：勾選、撤下、改動作', () => {
       const price = await seed(c.db, { condId: 'N3', kind: 'PRICE', status: 'PROPOSED', text: '收盤跌破 90', check: { type: 'price_close_below', level: 90 }, auto: false });
       const op = (id: number, o: 'accept' | 'retire' | 'action', action?: string) => conditionOp(c.db, acct, 'NVDA', id, o, action, '2026-11-20', new Date('2026-11-21T01:00:00Z'));
       await expect(op(ninth, 'accept')).rejects.toThrow(CondError);
-      await expect(op(ninth, 'accept')).rejects.toThrow('你定的條件已經有 8 條（上限 8 條），先撤下一條才能再勾。');
+      await expect(op(ninth, 'accept')).rejects.toThrow('你定的條件已經有 8 條（上限 8 條），先撤下一條才能再加。');
       expect((await byId(c.db, ninth)).status).toBe('PROPOSED');
       // 只記錄的建議（價格）勾得進去：不算在 8 條裡
       expect((await monitorView(c.env, 'NVDA')).find((x) => x.id === price)).toMatchObject({ code: 'PROPOSED', recordOnly: true });
@@ -453,7 +454,7 @@ describe('T26：勾選、撤下、改動作', () => {
       expect(r.status).toBe(200);
       expect(await r.json()).toEqual({ ok: true, id: p, status: 'ACTIVE', action: 'EXIT' });
       m = (await monitorView(c.env, 'NVDA'))[0];
-      expect(m).toMatchObject({ code: 'ACTIVE', status: '監測中', owned: true, action: 'EXIT', actionText: '出清', origin: 'AI 建議，你在 11/21 勾選' });
+      expect(m).toMatchObject({ code: 'ACTIVE', status: '監測中', owned: true, action: 'EXIT', actionText: '出清', origin: 'AI 建議，你在 11/21 定下' }); // T71：「勾選」改「定下」
       // 改動作、撤下
       r = await post({ ticker: 'NVDA', id: p, op: 'action', action: 'HALF' });
       expect(await r.json()).toMatchObject({ ok: true, action: 'HALF' });
@@ -540,7 +541,7 @@ describe('T26：F24、F7 的證據包有你定的條件（C）與觀察項（W�
     const f = Object.fromEntries(facts.map((x) => [x.id, x]));
     expect(f.C1.label).toBe('你定的條件 C1（財報；你寫的，11/20 定；對應前提 P2）');
     expect(f.C1.note).toBe('成立時：出清；怎麼確認：新財報出來時比對；目前：監測中；最新一季 50.0%（2026-09-30，門檻 55.0%）；已連續 1／2 季');
-    expect(f.C2.label).toContain('AI 建議，你在 11/21 勾選');
+    expect(f.C2.label).toContain('AI 建議，你在 11/21 定下'); // T71：不再勾選，誰定的寫「定下」
     expect(f.C2.note).toBe('成立時：減半；怎麼確認：只在定期審查時檢查；目前：只在定期審查時檢查');
     expect(f.C3.note).toContain('目前：已成立（2026-12-01）');
     expect(f.W1.label).toBe('觀察項 W1（AI 建議、使用者還沒勾選；財報；11/20 的審查寫的）');
