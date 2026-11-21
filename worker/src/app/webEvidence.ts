@@ -12,6 +12,7 @@
 import { DOCS_MAX, DOCS_MAX_CALLS, DOCS_MAX_CHARS, DOCS_PER_CALL, DOC_FNS, FILING_GIVE, REFUSED_KEEP, WEB_GIVE, addedHash, parseAdded, withAdded, type AddedDoc, type AddedRecord, type DocCtx, type MenuEntry, type RefuseReason } from '../ai/added';
 import type { EvidencePack } from '../ai/check';
 import { FRESH_ROLE, freshView } from '../ai/freshEyes';
+import { MARKET_BRIEF, MARKET_DOC_TICKER } from '../ai/marketBrief';
 import { NEWS_SOURCES, fetchFilingDoc, tryHeadlineSource, type Headline } from '../data/edgar';
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { errText } from '../data/util';
@@ -185,10 +186,14 @@ export async function fetchPeerFilings(env: Env, fetcher: Fetcher, ws: OwnWebSou
   return ok ? out : null;
 }
 
-/** RSS 標題裡連結在清單內的（S2）：決策日以前、不早於 notBefore；同一個網址只留一則，新的在前。 */
+/**
+ * RSS 標題裡連結在清單內的（S2）：決策日以前、不早於 notBefore；同一個網址只留一則。
+ * 一手與指名的產業來源排在媒體前面，同一級裡新的在前（T64：共用清單加了 Yahoo Finance 等財經媒體之後，RSS 的連結大多是媒體級的，
+ * 目錄只列 20 項，不讓它們把一手與指名的來源擠出去）。
+ */
 export function listedHeadlines(items: Headline[], domains: readonly string[], asOf: string, notBefore: string): MenuEntry[] {
   const seen = new Set<string>();
-  const out: (MenuEntry & { at: string })[] = [];
+  const out: (MenuEntry & { at: string; media: number })[] = [];
   for (const h of items) {
     const u = safeWebUrl(h.link);
     if (!u || h.date > asOf || h.date < notBefore) continue;
@@ -198,9 +203,9 @@ export function listedHeadlines(items: Headline[], domains: readonly string[], a
     if (seen.has(url)) continue;
     seen.add(url);
     const title = h.title.replace(/\s+/g, ' ').trim().slice(0, 160);
-    out.push({ id: '', kind: 'web', text: `${m.label}｜${TIER_TEXT[m.tier]}｜${h.date}｜${title}`, url, title, published: h.date, at: h.at });
+    out.push({ id: '', kind: 'web', text: `${m.label}｜${TIER_TEXT[m.tier]}｜${h.date}｜${title}`, url, title, published: h.date, at: h.at, media: m.tier === 'MEDIA' ? 1 : 0 });
   }
-  return out.sort((a, b) => b.at.localeCompare(a.at)).map(({ at: _at, ...e }) => e);
+  return out.sort((a, b) => a.media - b.media || b.at.localeCompare(a.at)).map(({ at: _at, media: _media, ...e }) => e);
 }
 
 export interface MenuInput {
@@ -319,7 +324,7 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
   const t = await getTask(db, id);
   if (!t) return json({ error: 'not_found' }, 404);
   const run = t.kind === 'RUN' ? await db.prepare('SELECT run_id, fn, ticker, as_of, status, doc_ctx, added_docs FROM ai_runs WHERE task_id = ?').bind(id).first<RunRow>() : null;
-  if (!run || !(DOC_FNS as readonly string[]).includes(run.fn)) return json({ error: 'not_allowed', why: '這個任務不能取文件（只有定期審查、減半檢視、論點草稿可以）' }, 403);
+  if (!run || !(DOC_FNS as readonly string[]).includes(run.fn)) return json({ error: 'not_allowed', why: '這個任務不能取文件（只有定期審查、減半檢視、論點草稿、市場摘要可以）' }, 403);
   if (!['PENDING', 'FETCHED'].includes(t.status) || run.status !== 'PENDING' || now.getTime() - Date.parse(t.created_at) > TASK_TIMEOUT_MS) return json({ error: 'task_closed', status: t.status }, 410);
   if (t.status === 'PENDING') return json({ error: 'evidence_not_fetched', why: '先取證據包，讀完再取文件' }, 409);
   const ctx = run.doc_ctx ? (JSON.parse(run.doc_ctx) as DocCtx) : await fallbackCtx(db, run.ticker, run.as_of);
@@ -430,7 +435,8 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
     const got = await obtainWebDoc(
       db,
       fetcher,
-      { url: url!, ticker: run.ticker ?? '', fileId: ctx.fileId, via, ref: run.run_id, premiseId: w.for?.startsWith('P') ? w.for : null, condId: w.for && !w.for.startsWith('P') ? w.for : null, session: run.as_of },
+      // 市場摘要（T64）不屬於任何一檔：快照記在固定的代號下
+      { url: url!, ticker: run.ticker ?? (run.fn === MARKET_BRIEF ? MARKET_DOC_TICKER : ''), fileId: ctx.fileId, via, ref: run.run_id, premiseId: w.for?.startsWith('P') ? w.for : null, condId: w.for && !w.for.startsWith('P') ? w.for : null, session: run.as_of },
       now,
       { extraDomains: ctx.domains, title: entry?.title ?? (typeof o.title === 'string' ? o.title.slice(0, 300) : null), rssPublished: entry?.published ?? null, siteCount, decisionDate: run.as_of, notBefore: ctx.notBefore },
     );

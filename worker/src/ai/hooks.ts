@@ -6,6 +6,7 @@ import { CRASH_REVIEW, checkCrashPayload } from './crash';
 import { OWN_DROP, checkDropPayload } from './drops';
 import { OWN_EARNINGS, checkEarningsPayload } from './earnings';
 import { EVENT_SCAN, HARD_EVENT, checkEventScanPayload, checkHardEventPayload } from './events';
+import { MARKET_BRIEF, checkBriefPayload } from './marketBrief';
 import { MOM_ENTRY, checkMomEntryPayload } from './momEntry';
 import { OWN_CHECK, checkOwnCheckPayload } from './ownCheck';
 import { OWN_DRAFT, checkDraftPayload } from './ownDraft';
@@ -27,4 +28,6 @@ export const PAYLOAD_HOOKS: Record<string, PayloadHook> = {
   [OWN_EARNINGS]: (s) => checkEarningsPayload(s),
   // 論點草稿（T55）：程式檢查不過的整份退回（web_evidence_design §2.2）
   [OWN_DRAFT]: (s, pack) => checkDraftPayload(s, pack, METRICS),
+  // 市場摘要（T64）：固定欄位檢查不過的整份退回（composite_layer_design §1.5）
+  [MARKET_BRIEF]: (s, pack) => checkBriefPayload(s, pack),
 };

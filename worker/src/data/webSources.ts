@@ -15,6 +15,22 @@ export interface WebSource {
   note: string;
   /** 只收這些路徑開頭（`NAMED` 的付費報告頁等要排除時用）；沒有就是整個網域。 */
   paths?: readonly string[];
+  /**
+   * 這個來源的頁面結構和一般文章頁不同時的擷取方式（T64，composite_layer_design §5.1：官方來源要先改擷取與日期的認法才用得上）。
+   * 只寫在確定沒有付費牆、同意頁的官方網站上；沒有這個欄位 = 照一般的規則（webDoc.ts）。
+   */
+  extract?: WebExtract;
+}
+
+export interface WebExtract {
+  /** 內文門檻（> 200 字的段落合計）；沒寫用 WEB_DOC_MIN_BODY（1,500）。官方的短聲明（利率決議）用較低的。 */
+  minBody?: number;
+  /** 內文放在 `<pre>`、每行固定寬度斷行（勞工統計局的新聞稿）：先把斷行接回成段落再算內文。 */
+  pre?: boolean;
+  /** 認不出發布日時的備案：網址檔名裡的 8 位數日期（聯準會的 `monetary20250917a.htm`、`powell20250822a.htm`）。 */
+  urlDate?: boolean;
+  /** 認不出發布日時的備案：內文之前「…星期幾, 月 日, 年」結尾的發布時間那一行（勞工統計局的 `8:30 a.m. (ET) Friday, September 5, 2025`）。 */
+  releaseLine?: boolean;
 }
 
 export const WEB_SOURCES: readonly WebSource[] = [
@@ -26,6 +42,28 @@ export const WEB_SOURCES: readonly WebSource[] = [
   { domain: 'dramexchange.com', tier: 'NAMED', label: 'DRAMeXchange（TrendForce）', note: '只收週報文章（/WeeklyResearch/Post/）；發布日寫在「Published」那一行（2026-11-20 實測 5 篇，一次 4 篇沒有被擋）', paths: ['/WeeklyResearch/Post/'] },
   // 媒體：有編輯、會寫明消息來源的產業媒體
   { domain: 'techpowerup.com', tier: 'MEDIA', label: 'TechPowerUp', note: '短新聞的內文剛好過 1,500 字；<time> 有發布日（2026-11-20 實測 5 篇，一次 4 篇沒有被擋）。標題有（PR）的是轉載新聞稿' },
+  // T64（composite_layer_design §0.4 的 Y2、§5.1 的 M5）：市場摘要要讀的財經媒體。四個都是媒體級：單一媒體的一篇報導不夠（web_evidence_design §1.6），要兩個不同網域
+  { domain: 'cnbc.com', tier: 'MEDIA', label: 'CNBC', note: '文章頁抓得到，meta 有發布日（2026-11-21 實測 2 篇，含當天的即時更新頁）' },
+  { domain: 'finance.yahoo.com', tier: 'MEDIA', label: 'Yahoo Finance', note: '只收文章路徑（/news/）；報價頁、列表頁不收。JSON-LD 有發布日；開頭夾一句廣告字樣；轉載通訊社的文章常只有開頭一小段（THIN）（2026-11-21 實測 2 篇）', paths: ['/news/'] },
+  { domain: 'npr.org', tier: 'MEDIA', label: 'NPR', note: '文章頁抓得到，認得出發布日；有些是美聯社的稿（2026-11-21 實測 2 篇）' },
+  { domain: 'fortune.com', tier: 'MEDIA', label: 'Fortune', note: '文章頁抓得到，認得出發布日（2026-11-21 實測 2 篇）' },
+  // T64（§5.1）：官方來源。頁面結構和文章頁不同，各自寫擷取方式（extract）；只收新聞稿、演講、證詞這幾種有明確發布日的頁面
+  {
+    domain: 'federalreserve.gov',
+    tier: 'PRIMARY',
+    label: '聯準會（Federal Reserve Board）',
+    note: '只收新聞稿（含利率決議聲明）、演講、國會證詞。發布日寫在標題上面那一行，離內文遠的時候用網址裡的日期；利率決議聲明很短，內文門檻降到 400 字。會議紀錄不收（網址的日期是開會日，不是發布日）',
+    paths: ['/newsevents/pressreleases/', '/newsevents/speech/', '/newsevents/testimony/'],
+    extract: { minBody: 400, urlDate: true },
+  },
+  {
+    domain: 'bls.gov',
+    tier: 'PRIMARY',
+    label: '美國勞工統計局（BLS）',
+    note: '只收新聞稿（/news.release/：就業報告、CPI…）。內文放在 <pre>、固定寬度斷行，先接回成段落；發布日是開頭「8:30 a.m. (ET) Friday, …」那一行。2026-11-21 實測從 Cloudflare 抓得到（本機是 403）',
+    paths: ['/news.release/'],
+    extract: { minBody: 800, pre: true, releaseLine: true },
+  },
 ];
 
 /**
@@ -45,6 +83,8 @@ export interface WebSourceMatch {
   domain: string;
   tier: WebTier;
   label: string;
+  /** 這個來源自己的擷取方式（T64；只有共用清單上寫了的才有）。 */
+  extract?: WebExtract;
 }
 
 export type WebSourceMiss = 'EXCLUDED' | 'NOT_LISTED' | 'PATH';
@@ -59,7 +99,7 @@ export function matchWebSource(url: URL, extraDomains: readonly string[] = [], l
   const s = list.find((x) => hostMatches(host, x.domain));
   if (s) {
     if (s.paths && !s.paths.some((p) => url.pathname.toLowerCase().startsWith(p.toLowerCase()))) return { miss: 'PATH' };
-    return { domain: s.domain, tier: s.tier, label: s.label };
+    return { domain: s.domain, tier: s.tier, label: s.label, ...(s.extract ? { extract: s.extract } : {}) };
   }
   const extra = extraDomains.map((d) => d.trim().toLowerCase()).find((d) => d && hostMatches(host, d));
   if (extra) return { domain: extra, tier: 'PRIMARY', label: extra };

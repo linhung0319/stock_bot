@@ -16,8 +16,8 @@ export const FILING_GIVE = 15_000;
 /** 被拒絕的紀錄最多留幾筆（之後的只算次數）。 */
 export const REFUSED_KEEP = 60;
 
-/** 可以取文件的功能（§1.5）：定期審查、減半檢視、論點草稿（T55）。其他功能呼叫 → 403。 */
-export const DOC_FNS = ['OWN_REVIEW', 'OWN_DROP', 'OWN_DRAFT'] as const;
+/** 可以取文件的功能（§1.5）：定期審查、減半檢視、論點草稿（T55）、市場摘要（T64，composite_layer_design §1.4）。其他功能呼叫 → 403。 */
+export const DOC_FNS = ['OWN_REVIEW', 'OWN_DROP', 'OWN_DRAFT', 'MARKET_BRIEF'] as const;
 
 /** 目錄的一項（§1.2）：S1 同業在 EDGAR 的申報（kind filing）、S2 RSS 標題裡清單內的連結（kind web）。text 是放進 facts 的那一行。 */
 export interface MenuEntry {

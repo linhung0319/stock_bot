@@ -8,7 +8,7 @@
 //        F25／F24（自選）、財報新聞稿的數字擷取（OWN_EARNINGS，T29c）、F19 法庭與 F18 掃描、F1 否決法庭、進場前回看（月報前一天；
 //        月報當天才進榜的在月報之後開，T32b）、
 //        F5／F6 崩盤規則檢視（月報前一天；切換了卻沒預估到時補開）、F7 減半檢視、自選的個股自身大跌（PRICE_DROP）、
-//        F21 策略檢討說明、提前審查（T29b）、新的自選自動草擬論點（OWN_DRAFT，T55）。擬事件打分與動能的 F20 大跌說明 T32d 拿掉（momentum_ai §3.6、§3.7）
+//        F21 策略檢討說明、提前審查（T29b）、市場摘要（MARKET_BRIEF，T64）、新的自選自動草擬論點（OWN_DRAFT，T55）。擬事件打分與動能的 F20 大跌說明 T32d 拿掉（momentum_ai §3.6、§3.7）
 //      沒有 startNew 時只開 afterApply 的那幾種（01:30 的 finalStarts，src/app/schedule.ts）；03:30 兩者都沒有，只套用
 //   策略檢討的提醒（startNew 才有）：套用之前抓 French 動能因子，歷史對照接在提醒的文字後面（momentum_ai §3.8），開 AI 時沿用
 // 每一段出錯只記在紀錄裡，不擋其他段；規則的部分在這之前已經照常做完。
@@ -31,6 +31,8 @@ import type { Env, Fetcher } from './env';
 import { applyEventScan, applyHardEvent, applyRuleEvents, classifyFresh, scanTargets, startEventRuns, type Classified } from './events';
 import { fetchFilingChecks, markSeen, sectorEtfs, type FilingCheck } from './filings';
 import { ConflictError, loadAccount, requiredTickers, saveAccount, thesisLogStmt } from './ledgerStore';
+import { MARKET_BRIEF } from '../ai/marketBrief';
+import { applyMarketBrief, startMarketBrief } from './marketBrief';
 import { applyMomEntry, momLateStart, momPreview } from './momAi';
 import { applyOwnCondition, applyOwnReview, ownFacts, ownXbrlConditions, routineReady, startEarlyReviews, startOwnRuns } from './ownAi';
 import { applyOwnDraft, startAutoDrafts } from './ownDraft';
@@ -59,6 +61,8 @@ export const APPLIERS: Record<string, Applier> = {
   [STRATEGY_REVIEW]: applyStrategyReview,
   // 論點草稿（T55）：結算成 READY 或 FAILED（逾時的也在這裡）；自動開的連續 2 次失敗 → 告警（web_evidence_design §2.5）
   [OWN_DRAFT]: applyOwnDraft,
+  // 市場摘要（T64）：結算成 READY 或 FAILED（逾時的也在這裡）；只說明，不動帳戶、不發通知（composite_layer_design §1.1）
+  [MARKET_BRIEF]: applyMarketBrief,
 };
 
 /** 套用之後、沒有 startNew 時另外開的執行（01:30 的 finalStarts）。 */
@@ -183,6 +187,9 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
   await guard(res, '減半檢視、個股自身大跌與大跌說明', () => startDropRuns(sc));
   // 提前審查（own_thesis §2.4）：規則段與之前的掃描標到的可提前事件、上面剛寫的個股自身大跌；放在其他自選審查之後（今天已經開了的不另開）
   await guard(res, '提前審查', () => startEarlyReviews(sc));
+  // 市場摘要（composite_layer_design §1.2，T64）：規則判斷的觸發（大盤、族群、累積、當天有減半檢視或提前審查）→ 一個訊號日最多開一次；
+  // 放在減半檢視與提前審查之後，才知道今天有沒有開
+  await guard(res, '市場摘要', () => startMarketBrief(sc));
   await guard(res, '策略檢討說明', () => startStrategyRun(sc));
   // 新的自選自動草擬論點一次（web_evidence_design §2.5，T55）；放在最後：今天的審查與其他執行先開
   await guard(res, '論點草稿', () => startAutoDrafts(sc));

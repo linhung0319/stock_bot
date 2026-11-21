@@ -29,6 +29,7 @@ import { probeRss, probeWebPage } from './data/webProbe';
 import { handleAdminThesis, handleSite } from './app/site/api';
 import { handleTaskDocs, handleTaskFresh } from './app/webEvidence';
 import { pushDraftLines, settleDrafts } from './app/ownDraft';
+import { BriefError, manualBrief, settleBriefs } from './app/marketBrief';
 import { handleLineLogin } from './app/site/lineLogin';
 import { APPLY_CRON, FINAL_CRON, INGEST_CRON, attemptOfCron } from './app/schedule';
 import { loadCalendarOverrides, loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
@@ -79,6 +80,8 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
         task.kind === 'RUN'
           ? finalizeRun(env.DB, task, result, now)
               .then(() => settleDrafts(env.DB, now))
+              // 市場摘要（T64）收下之後當場結算成 READY 或 FAILED；這裡出錯不擋下面草稿的推播（每日流程套用時會再結算一次）
+              .then(() => settleBriefs(env.DB, now).catch((e) => console.error('市場摘要的結算出錯', e)))
               .then(() => pushDraftLines(env, fetcher, now))
           : Promise.resolve(),
       );
@@ -163,6 +166,16 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
       const built = buildMarketView(series, session, loaded.acct.cfg.coreTicker);
       const run = await startOwnReview(env, fetcher, loaded.acct, built.view, built.axis, t, 'MANUAL', now);
       return json({ runId: run.runId, taskId: run.taskId, status: run.status, outcome: run.outcome, notes: run.packNotes, documents: run.pack.documents.map((d) => ({ source: d.source_id, title: d.title, chars: d.text.length })), dataQuality: run.pack.data_quality });
+    }
+    if (path === '/admin/ai/brief' && request.method === 'POST') {
+      // 手動開一次市場摘要的暫定稿（T64；composite_layer_design §5 的 M7：量一次要多久、用多少額度）。不佔頻率上限、不屬於任何事件
+      try {
+        const run = await manualBrief(env, fetcher, now);
+        return json({ runId: run.runId, taskId: run.taskId, status: run.status, outcome: run.outcome, notes: run.packNotes, period: (run.pack.rule.detail as { period?: unknown }).period, facts: run.pack.facts.map((f) => `${f.id} ${f.value}`), documents: run.pack.documents.map((d) => ({ source: d.source_id, title: d.title, chars: d.text.length })), dataQuality: run.pack.data_quality });
+      } catch (e) {
+        if (e instanceof BriefError) return json({ error: e.message }, e.status);
+        throw e;
+      }
     }
     if (path === '/admin/ai/entry' && request.method === 'GET') {
       // T11：對一檔股票跑 F1 的規則偵測（不開法庭、不寫任何東西），部署後驗證 EDGAR、XBRL 小檔、單日漲幅占比

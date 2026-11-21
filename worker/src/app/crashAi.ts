@@ -251,7 +251,8 @@ async function retryMacro(sc: StartCtx): Promise<void> {
 
 // ---------------------------------------------------------------- 開檢視（§3.1）
 
-const snapshotDoc = (s: MacroSnapshot): PackDoc => ({ id: 'DASH', source_id: `macro:${s.asOf}`, kind: 'table', date: s.asOf, title: `總經儀表板（${s.asOf}，FRED）`, text: dashboardText(s.rows, s.breadth, s.core) });
+/** 總經儀表板 → 證據包的一份原文（崩盤規則檢視與市場摘要 T64 共用）。 */
+export const snapshotDoc = (s: MacroSnapshot): PackDoc => ({ id: 'DASH', source_id: `macro:${s.asOf}`, kind: 'table', date: s.asOf, title: `總經儀表板（${s.asOf}，FRED）`, text: dashboardText(s.rows, s.breadth, s.core) });
 
 async function start(sc: StartCtx, snap: MacroSnapshot, direction: CrashDirection, month: string, detail: { kind: CrashNeed['kind']; basis: string; try: number } | null = null, preface?: string): Promise<void> {
   const { env, fetcher, session, now, res } = sc;

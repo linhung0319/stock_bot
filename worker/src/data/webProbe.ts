@@ -2,7 +2,8 @@
 // 只量、不存資料、不進任何流程（設計 docs/design/web_evidence_design_2026-11-20.md；/admin/web/test）。
 import { htmlToText, parseRss } from './edgar';
 import type { Fetcher } from './sources';
-import { findPublished, findPublishedInText, safeWebUrl } from './webDoc';
+import { extractPage, findPublished, safeWebUrl } from './webDoc';
+import { matchWebSource } from './webSources';
 
 // safeWebUrl、findPublished 搬到 webDoc.ts（T51），這裡照舊匯出給既有的呼叫者。
 export { findPublished, safeWebUrl };
@@ -45,12 +46,14 @@ export async function probeWebPage(fetcher: Fetcher, raw: string): Promise<WebPr
     if (!res.ok) return { ...base, ok: false, error: `HTTP ${res.status}` };
     if (!/html|xml|text/i.test(contentType)) return { ...base, ok: false, error: `不是網頁（${contentType || '沒有 content-type'}）` };
     const html = new TextDecoder().decode(buf.slice(0, WEB_PROBE_MAX_BYTES));
-    const text = htmlToText(html);
-    const body = text.split('\n').filter((p) => p.trim().length > 200).join('\n');
-    const inText = findPublishedInText(text);
-    const pub = findPublished(html) ?? (inText ? { date: inText, from: 'text' } : null);
+    // 和 fetchWebDoc 同一套認法（T64）：清單上寫了擷取方式的來源（官方來源）照它的規則量，其他照一般的規則
+    const final = safeWebUrl(base.finalUrl) ?? u;
+    const src = matchWebSource(final);
+    const page = extractPage(html, final, 'miss' in src ? undefined : src.extract);
+    const { text, body } = page;
+    const pub = page.published;
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];
-    const hint = body.length < 1500 ? (BLOCK.exec(text)?.[0] ?? '內文太短') : null;
+    const hint = body.length < page.minBody ? (BLOCK.exec(text)?.[0] ?? '內文太短') : null;
     return { ...base, ok: !hint, title: title ? htmlToText(title).slice(0, 160) : undefined, textChars: text.length, bodyChars: body.length, published: pub?.date ?? null, publishedFrom: pub?.from ?? null, blockedHint: hint, sample: body.slice(0, 240) };
   } catch (e) {
     return { url: raw, ok: false, ms: Date.now() - t0, error: e instanceof Error ? e.message : String(e) };

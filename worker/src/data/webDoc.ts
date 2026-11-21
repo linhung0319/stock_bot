@@ -3,7 +3,7 @@
 // 快照只存在 D1 的 web_docs（repo 是公開的）。取文件的端點與證據包的接法在 T52。
 import { htmlToText } from './edgar';
 import type { Fetcher } from './sources';
-import { matchWebSource, type WebSourceMatch, type WebTier } from './webSources';
+import { matchWebSource, type WebExtract, type WebSourceMatch, type WebTier } from './webSources';
 
 export const WEB_DOC_TIMEOUT_MS = 15_000;
 export const WEB_DOC_MAX_BYTES = 2_000_000;
@@ -182,6 +182,85 @@ export function resolvePublished(page: { date: string; from: string } | null, rs
   return { published: null, from: null, conflict: false };
 }
 
+// ---------------------------------------------------------------- 官方來源的擷取（T64，composite_layer_design §5.1）
+
+const WEEKDAY = /\b(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day,?\s+(.+)$/i;
+/** 發布時間那一行往回找幾行（不算空行）。 */
+const RELEASE_LINES_BACK = 25;
+
+/**
+ * 內文之前「…星期幾, 月 日, 年」結尾的那一行（勞工統計局新聞稿開頭的 `8:30 a.m. (ET) Friday, September 5, 2025`）→ YYYY-MM-DD。
+ * 只在來源寫了 extract.releaseLine 時用；只看第一段內文之前、不算空行的 25 行內，一行最多 120 字。
+ */
+export function findReleaseDate(text: string): string | null {
+  const lines = text.split('\n').map((l) => l.trim());
+  const fb = lines.findIndex((l) => l.length > WEB_DOC_PARA_MIN);
+  if (fb <= 0) return null;
+  let seen = 0;
+  for (let i = fb - 1; i >= 0 && seen < RELEASE_LINES_BACK; i--) {
+    if (!lines[i]) continue;
+    seen++;
+    if (lines[i].length > 120) continue;
+    const m = WEEKDAY.exec(lines[i]);
+    const d = m && dateLine(m[1]);
+    if (d) return d;
+  }
+  return null;
+}
+
+/** 網址檔名裡的 8 位數日期（`…/monetary20250917a.htm`、`…/powell20250822a.htm`）→ YYYY-MM-DD；只在來源寫了 extract.urlDate 時用。 */
+export function urlDate(url: URL): string | null {
+  const m = /(\d{4})(\d{2})(\d{2})[a-z]?\.html?$/i.exec(url.pathname);
+  return m ? dateLine(`${m[1]}-${m[2]}-${m[3]}`) : null;
+}
+
+/**
+ * `<pre>` 裡固定寬度斷行的內文 → 段落（勞工統計局的新聞稿整篇放在 `<pre>`，每行不到 100 字，照一般的規則一段內文都沒有）。
+ * 空行分段；一段裡每一行都像句子（去掉開頭縮排之後，中間沒有連續 3 個以上的空白、沒有直線）才接成一行，表格與對齊的清單照原樣一行一行留著。
+ */
+export function reflowPre(html: string): string {
+  return html.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_, inner: string) => {
+    const blocks: string[][] = [[]];
+    for (const raw of inner.replace(/\r/g, '').split('\n')) {
+      const line = raw.replace(/\t/g, '    ').trimEnd();
+      if (!line.trim()) blocks.push([]);
+      else blocks.at(-1)!.push(line);
+    }
+    return blocks
+      .filter((b) => b.length)
+      .map((b) => {
+        const prose = b.every((l) => !/\S {3,}\S/.test(l.trimStart()) && !l.includes('|'));
+        return `<p>${prose ? b.map((l) => l.trim()).join(' ') : b.map((l) => l.trim()).join('<br>')}</p>`;
+      })
+      .join('\n');
+  });
+}
+
+export interface PageExtract {
+  /** 轉成純文字的整頁。 */
+  text: string;
+  /** 內文：超過 200 字的段落。 */
+  body: string;
+  /** 這個來源的內文門檻。 */
+  minBody: number;
+  published: { date: string; from: string } | null;
+}
+
+/**
+ * 一頁的內文與發布日（fetchWebDoc 與量測用的 /admin/web/test 共用）。一般的規則：meta、JSON-LD、<time>，再來是內文之前單獨一行的日期。
+ * 來源寫了 extract 的（官方來源）多三個備案：`<pre>` 接回段落、發布時間那一行（from = release-line）、網址裡的日期（from = url）。
+ */
+export function extractPage(html: string, url: URL, ex?: WebExtract): PageExtract {
+  const text = htmlToText(ex?.pre ? reflowPre(html) : html);
+  const body = text
+    .split('\n')
+    .filter((p) => p.trim().length > WEB_DOC_PARA_MIN)
+    .join('\n');
+  const pick = (date: string | null, from: string) => (date ? { date, from } : null);
+  const published = findPublished(html) ?? pick(findPublishedInText(text), 'text') ?? (ex?.releaseLine ? pick(findReleaseDate(text), 'release-line') : null) ?? (ex?.urlDate ? pick(urlDate(url), 'url') : null);
+  return { text, body, minBody: ex?.minBody ?? WEB_DOC_MIN_BODY, published };
+}
+
 // ---------------------------------------------------------------- 內文
 
 const clean = (s: string) => htmlToText(s).replace(/\s+/g, ' ').trim();
@@ -284,14 +363,15 @@ export async function fetchWebDoc(fetcher: Fetcher, raw: string, now: Date, opt:
     const isHtml = /text\/html|application\/xhtml\+xml/i.test(ctype) || (!ctype && /<html|<!doctype html/i.test(head));
     if (!isHtml || head.startsWith('%PDF')) return { ...got, status: 'UNSUPPORTED', error: `不是網頁（${ctype || '沒有 content-type'}）` };
     const html = new TextDecoder().decode(buf);
-    const text = htmlToText(html);
+    // 內文與發布日：一般的規則；官方來源照清單上寫的擷取方式（T64：<pre> 接回段落、較低的內文門檻、發布時間那一行、網址裡的日期）
+    const page = extractPage(html, cur, src.extract);
+    const text = page.text;
     const tc = titleCandidates(html);
     const art = articleText(text, tc.all);
     const title = (art.title || tc.og || tc.h1 || tc.title).slice(0, 300) || got.title;
-    const body = text.split('\n').filter((p) => p.trim().length > WEB_DOC_PARA_MIN).join('\n');
-    if (body.length < WEB_DOC_MIN_BODY) return { ...got, title, chars: text.length, status: 'THIN', error: `內文 ${body.length} 字（不到 ${WEB_DOC_MIN_BODY} 字）` };
-    const inText = findPublishedInText(text);
-    const pub = resolvePublished(findPublished(html) ?? (inText ? { date: inText, from: 'text' } : null), opt.rssPublished);
+    const body = page.body;
+    if (body.length < page.minBody) return { ...got, title, chars: text.length, status: 'THIN', error: `內文 ${body.length} 字（不到 ${page.minBody} 字）` };
+    const pub = resolvePublished(page.published, opt.rssPublished);
     const dated = { ...got, title, chars: text.length, published: pub.published, publishedFrom: pub.from, dateConflict: pub.conflict };
     if (!pub.published) return { ...dated, status: 'NO_DATE', error: '認不出發布日' };
     const limit = opt.decisionDate ?? now.toISOString().slice(0, 10);

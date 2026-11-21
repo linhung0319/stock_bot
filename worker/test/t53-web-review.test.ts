@@ -574,7 +574,7 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
     expect(confirmText(row(['major_news']))).toBe('只在定期審查時檢查');
     expect(confirmText(row(['web:trendforce.com'], false))).toBe('只記錄');
     // 可以指名的來源：共用清單＋這檔的一手網域；不列入的網站、清單外的對不到
-    expect(listedWebSources(['news.skhynix.com', 'fool.com', 'www.trendforce.com']).map((s) => s.domain)).toEqual(['nvidianews.nvidia.com', 'semiconductors.org', 'trendforce.com', 'dramexchange.com', 'techpowerup.com', 'news.skhynix.com']);
+    expect(listedWebSources(['news.skhynix.com', 'fool.com', 'www.trendforce.com']).map((s) => s.domain)).toEqual(['nvidianews.nvidia.com', 'semiconductors.org', 'trendforce.com', 'dramexchange.com', 'techpowerup.com', 'cnbc.com', 'finance.yahoo.com', 'npr.org', 'fortune.com', 'federalreserve.gov', 'bls.gov', 'news.skhynix.com']);
     expect(findWebSource('www.trendforce.com')).toMatchObject({ domain: 'trendforce.com', tier: 'NAMED', label: 'TrendForce' });
     expect(findWebSource('news.skhynix.com', ['news.skhynix.com'])).toMatchObject({ tier: 'PRIMARY' });
     expect(findWebSource('news.skhynix.com')).toBeNull();
@@ -662,9 +662,16 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
         'trendforce.com｜TrendForce｜指名的產業來源｜只收 /presscenter/、/news/',
         'dramexchange.com｜DRAMeXchange（TrendForce）｜指名的產業來源｜只收 /WeeklyResearch/Post/',
         'techpowerup.com｜TechPowerUp｜媒體',
+        // T64（composite_layer_design §0.4 的 Y2、§5.1）：共用清單多了四個媒體與兩個官方來源
+        'cnbc.com｜CNBC｜媒體',
+        'finance.yahoo.com｜Yahoo Finance｜媒體｜只收 /news/',
+        'npr.org｜NPR｜媒體',
+        'fortune.com｜Fortune｜媒體',
+        'federalreserve.gov｜聯準會（Federal Reserve Board）｜一手｜只收 /newsevents/pressreleases/、/newsevents/speech/、/newsevents/testimony/',
+        'bls.gov｜美國勞工統計局（BLS）｜一手｜只收 /news.release/',
         'news.skhynix.com｜news.skhynix.com｜一手',
       ]);
-      expect((run.pack.rule.detail as { webDomains: string[] }).webDomains).toEqual(['nvidianews.nvidia.com', 'semiconductors.org', 'trendforce.com', 'dramexchange.com', 'techpowerup.com', 'news.skhynix.com']);
+      expect((run.pack.rule.detail as { webDomains: string[] }).webDomains).toEqual(['nvidianews.nvidia.com', 'semiconductors.org', 'trendforce.com', 'dramexchange.com', 'techpowerup.com', 'cnbc.com', 'finance.yahoo.com', 'npr.org', 'fortune.com', 'federalreserve.gov', 'bls.gov', 'news.skhynix.com']);
       expect(run.pack.question).toContain('web:<網域>');
       // 改寫回來（一票，假的）
       const price = run.pack.documents.find((d) => d.source_id === 'price:NVDA')!;
@@ -678,7 +685,7 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
       );
       type Hd = { condSources: { domain: string; label: string; tier: string }[]; rewrites: { results: { runId: string; conditions: { condId: string; then: string; web: string[]; canSource: boolean; manual: boolean }[] }[] }; monitor: { id: number; text: string; code: string; confirm: string; web: string[]; canSource: boolean }[] };
       const hd = (await c.call<Hd>('GET', '/api/holding/NVDA')).body;
-      expect(hd.condSources.map((x) => x.domain)).toEqual(['nvidianews.nvidia.com', 'semiconductors.org', 'trendforce.com', 'dramexchange.com', 'techpowerup.com', 'news.skhynix.com']);
+      expect(hd.condSources.map((x) => x.domain)).toEqual(['nvidianews.nvidia.com', 'semiconductors.org', 'trendforce.com', 'dramexchange.com', 'techpowerup.com', 'cnbc.com', 'finance.yahoo.com', 'npr.org', 'fortune.com', 'federalreserve.gov', 'bls.gov', 'news.skhynix.com']);
       const rw = hd.rewrites.results[0];
       expect(rw.conditions.map((x) => [x.condId, x.then, x.web, x.canSource, x.manual])).toEqual([
         ['U1', '審查時用 TrendForce 的網頁檢查', ['trendforce.com'], true, false],
@@ -731,7 +738,7 @@ describe('T53：分析師找資料的紀錄（§1.5 的 lookups、G22）', () =>
       const r = await startOwnReview(c.env, c.fetcher, c.acct, c.view, c.axis, 'NVDA', 'MANUAL', T0);
       expect(r.promptVersion).toBe('own_review_v4');
       // 清單內的網頁來源（S）接在目錄（M）後面；網域清單記在 rule.detail
-      expect(r.pack.facts.filter((f) => /^[MS]\d+$/.test(f.id)).map((f) => f.id)).toEqual(['M1', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6']);
+      expect(r.pack.facts.filter((f) => /^[MS]\d+$/.test(f.id)).map((f) => f.id)).toEqual(['M1', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12']); // T64：共用清單多了 6 個來源
       expect(r.pack.facts.find((f) => f.id === 'S3')).toMatchObject({ label: '清單內的網頁來源', value: 'trendforce.com｜TrendForce｜指名的產業來源｜只收 /presscenter/、/news/' });
       expect((r.pack.rule.detail as { webDomains: string[] }).webDomains).toContain('news.skhynix.com');
       // 還在等結果：這一塊寫「還沒有結果」

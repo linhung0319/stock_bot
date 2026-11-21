@@ -29,6 +29,8 @@ export const EXPORT_TABLES: Record<string, ExportTable> = {
   own_thesis_log: { mode: 'append', json: ['body'], pageRows: 500 },
   // T55：論點草稿（狀態會改：PENDING → READY／FAILED → USED／DISMISSED／EXPIRED）
   own_drafts: { mode: 'replace', json: ['payload', 'broken'], pageRows: 200 },
+  // T64：市場摘要（狀態會改：PENDING → READY／FAILED）
+  market_briefs: { mode: 'replace', json: ['payload'], pageRows: 100 },
   sec_events: { mode: 'replace', json: [], pageRows: 500 },
   macro_snapshots: { mode: 'replace', json: ['data'], pageRows: 50 },
   // 使用者的選擇與帳戶
@@ -44,6 +46,8 @@ export const EXPORT_TABLES: Record<string, ExportTable> = {
   constituents: { mode: 'append', json: ['only_spy', 'only_wiki', 'holdings'], key: 'session', pageRows: 50 },
   calendar_overrides: { mode: 'replace', json: [], pageRows: 1000 },
   splits: { mode: 'append', json: [], pageRows: 1000 },
+  // T64：市場摘要的觸發紀錄（規則判斷；只增加）
+  market_triggers: { mode: 'append', json: [], pageRows: 1000 },
   // T51：網頁快照（text 最多 30,000 字，一頁少拉一點）。只增加；之後清掉的全文與 used_by 的更新不會回到本機已拉的列
   web_docs: { mode: 'append', json: [], pageRows: 50 },
   // 系統運作
