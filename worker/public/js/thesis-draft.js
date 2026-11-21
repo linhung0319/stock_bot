@@ -41,7 +41,7 @@ export function draftItems(payload) {
     }),
     exits: (p.exits ?? []).map((x, k) => ({ k, checked: false, text: x.text, action: x.action, threshold: !!x.threshold, premiseIndex: x.premise_index ?? null, evidence: x.evidence_ids ?? [] })),
     peers: (p.sources?.peers ?? []).map((x, k) => ({ k, checked: false, name: x.name, edgar: x.edgar ?? null, yahoo: x.yahoo ?? null })),
-    domains: (p.sources?.domains ?? []).map((x, k) => ({ k, checked: false, domain: x.domain, state: x.state, note: x.note, checkable: x.state === 'NEW' })),
+    domains: (p.sources?.domains ?? []).map((x, k) => ({ k, checked: false, domain: x.domain, state: x.state, note: x.note, checkable: false })),
   };
 }
 

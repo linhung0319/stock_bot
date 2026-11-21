@@ -33,6 +33,7 @@ import { loadAccount, requiredTickers } from './ledgerStore';
 import { momHoldings } from './momNotes';
 import { newsDocOf, routineReady } from './ownAi';
 import { MENU_MAX, listedHeadlines, sourceFacts } from './webEvidence';
+import { loadRatings } from './webRatings';
 
 type Fact = EvidencePack['facts'][number];
 
@@ -298,13 +299,13 @@ export async function openBrief(env: Env, fetcher: Fetcher, acct: Account, view:
     }
   }
 
-  // 目錄（標題裡連結在清單內的文章）與清單內的網頁來源（共用清單；市場摘要沒有「這檔自己的網域」）
+  // 目錄（標題裡的連結，排除列表的不列、標上級別；T68）與種子（facts 的 S 開頭）
   const notBefore = addDays(period.from, -BRIEF.webBeforeDays);
-  const listed = listedHeadlines(items, [], asOf, notBefore);
+  const listed = listedHeadlines(items, await loadRatings(db), asOf, notBefore);
   const menu: MenuEntry[] = listed.slice(0, MENU_MAX).map((e, k) => ({ ...e, id: `M${k + 1}` }));
   const menuFacts: Fact[] = menu.map((e, k) => ({ id: e.id, label: '可以取的文件', value: e.text, ...(k === 0 ? { note: '目錄只有標題；要讀全文，向 Worker 的取文件端點送這個編號' } : {}) }));
   if (listed.length > MENU_MAX) menuFacts.push({ id: 'M+', label: '可以取的文件', value: `另有 ${listed.length - MENU_MAX} 項沒有列出` });
-  const sources = sourceFacts([]);
+  const sources = sourceFacts();
   const ctx: DocCtx = { menu, notBefore, domains: [], fileId: null };
 
   // 定稿：附這個事件最近一份寫好的暫定稿（背景）

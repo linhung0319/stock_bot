@@ -2,6 +2,7 @@
 //   取文件的端點（src/app/webEvidence.ts）把每一份取回的文件記在 ai_runs.added_docs（給 AI 的那一份原文，截過的就是截過的）；
 //   表決時 check.ts 比對的原文＝證據包的文件＋這裡的文件（withAdded）。check.ts 本身不改：引用照樣要逐字出自原文。
 //   原本的 pack_hash 不變（程式準備的那一份）；取回的文件另算 added_hash。
+import { rateDomain, type WebRating, type WebRatingRow } from '../data/webSources';
 import { packHash, type EvidencePack, type PackDoc } from './check';
 
 /** 每次執行最多取回幾份、合計幾個字、最多呼叫幾次端點（§1.5；設計第 6 章第 3 項）。 */
@@ -39,7 +40,7 @@ export interface DocCtx {
   menu: MenuEntry[];
   /** 網頁發布日早於這天 → TOO_OLD（上次有結論的審查前 120 天；沒有上一次時決策日前 365 天）。 */
   notBefore: string;
-  /** 這檔的一手網域（OwnMeta.webSources.domains）。 */
+  /** T68 之前：這檔的一手網域（OwnMeta.webSources.domains）。T68 起不再讀（confirm_audit_design §1.7），新的執行寫空的。 */
   domains: string[];
   fileId: string | null;
   off?: string | null;
@@ -57,8 +58,17 @@ export interface AddedDoc {
   id: string;
   source_id: string;
   kind: 'web' | 'filing';
-  /** 網頁的級別；同業申報是 null。 */
-  tier: 'PRIMARY' | 'NAMED' | 'MEDIA' | null;
+  /** 網頁在取回那一刻的級別（T68 起含 LEAD、UNRATED）；同業申報是 null。 */
+  tier: WebRating | null;
+  /**
+   * 判的時候用的級別（T68，confirm_audit_design §1.4）：Worker 收到結果、表決之前查一次當下的級別記在這裡，
+   * 之後重看紀錄對得上。還沒送回結果、或 T68 之前的紀錄沒有（照 tier）。EXCLUDED：取回之後被評成排除（不能當證據）。
+   */
+  rating?: WebRating | 'EXCLUDED' | null;
+  /** 判的時候的級別是這一次執行的來源評級評的：它的理由（審查紀錄頁寫「這次評的：…」）。 */
+  rated_here?: string | null;
+  /** 網站自稱的名稱（Worker 取的，給來源評級；T68 之前的紀錄沒有）。 */
+  site?: string | null;
   date: string;
   title: string;
   url: string | null;
@@ -102,6 +112,8 @@ export interface AddedRecord {
   sites: Record<string, number>;
   /** 其中新眼光呼叫了幾次（T63；沒有這個欄位 = 0）。 */
   freshCalls?: number;
+  /** GET /ai/task/<id>/unrated 給過的網域（T68；POST /ratings 只收這些）。 */
+  unrated?: string[];
 }
 
 export const emptyAdded = (): AddedRecord => ({ calls: 0, chars: 0, docs: [], refused: [], refusedTotal: 0, sites: {} });
@@ -111,22 +123,24 @@ export function parseAdded(raw: string | null | undefined): AddedRecord {
   if (!raw) return emptyAdded();
   try {
     const o = JSON.parse(raw) as Partial<AddedRecord>;
-    return { calls: Number(o.calls) || 0, chars: Number(o.chars) || 0, docs: Array.isArray(o.docs) ? o.docs : [], refused: Array.isArray(o.refused) ? o.refused : [], refusedTotal: Number(o.refusedTotal) || 0, sites: o.sites && typeof o.sites === 'object' ? o.sites : {}, ...(Number(o.freshCalls) ? { freshCalls: Number(o.freshCalls) } : {}) };
+    return { calls: Number(o.calls) || 0, chars: Number(o.chars) || 0, docs: Array.isArray(o.docs) ? o.docs : [], refused: Array.isArray(o.refused) ? o.refused : [], refusedTotal: Number(o.refusedTotal) || 0, sites: o.sites && typeof o.sites === 'object' ? o.sites : {}, ...(Number(o.freshCalls) ? { freshCalls: Number(o.freshCalls) } : {}), ...(Array.isArray(o.unrated) ? { unrated: o.unrated.filter((x): x is string => typeof x === 'string') } : {}) };
   } catch {
     return emptyAdded();
   }
 }
 
 /**
- * 網頁文件多帶的三樣（T53，web_evidence_design §1.6：級別決定它能觸發什麼）：級別、清單上的網域、來源名稱。
- * 由程式在取文件時記下（不是 AI 寫的）；放在證據包的文件上，判斷「合格的引用」時讀（src/ai/ownReview.ts）。
+ * 網頁文件多帶的三樣（T53，web_evidence_design §1.6：級別決定它能觸發什麼）：級別、網域、來源名稱。
+ * 由程式記下（不是 AI 寫的）；放在證據包的文件上，判斷「合格的引用」時讀（src/ai/ownReview.ts）。
+ * T68：級別是判的時候查的當下的級別（AddedDoc.rating；沒有時是取回那一刻的 tier），含 LEAD、UNRATED、EXCLUDED（只當線索）。
  * check.ts 的 PackDoc 不改：逐字引用檢查不看這三樣。
  */
 export interface WebMeta {
-  tier: 'PRIMARY' | 'NAMED' | 'MEDIA';
+  tier: WebRating | 'EXCLUDED';
   domain: string;
   label: string;
 }
+const WEB_META_TIERS: readonly string[] = ['PRIMARY', 'NAMED', 'MEDIA', 'LEAD', 'UNRATED', 'EXCLUDED'];
 export type WebPackDoc = PackDoc & Partial<WebMeta>;
 
 const hostOf = (url: string | null | undefined): string => {
@@ -141,12 +155,12 @@ const hostOf = (url: string | null | undefined): string => {
 export function webMetaOf(d: PackDoc): WebMeta | null {
   if (d.kind !== 'web') return null;
   const w = d as WebPackDoc;
-  if (w.tier !== 'PRIMARY' && w.tier !== 'NAMED' && w.tier !== 'MEDIA') return null;
+  if (!w.tier || !WEB_META_TIERS.includes(w.tier)) return null;
   const domain = (w.domain || hostOf(d.url)).toLowerCase();
   return domain ? { tier: w.tier, domain, label: w.label || domain } : null;
 }
 
-/** 取回的文件 → 證據包的文件（網頁多帶級別、網域、來源名稱）。 */
+/** 取回的文件 → 證據包的文件（網頁多帶級別、網域、來源名稱）。級別用判的時候的（rating），還沒判的用取回那一刻的（tier）。 */
 export const packDocOf = (d: AddedDoc): WebPackDoc => ({
   id: d.id,
   source_id: d.source_id,
@@ -156,7 +170,7 @@ export const packDocOf = (d: AddedDoc): WebPackDoc => ({
   ...(d.url ? { url: d.url } : {}),
   text: d.text,
   fetched_at: d.fetched_at,
-  ...(d.kind === 'web' && d.tier ? { tier: d.tier, domain: (d.domain || hostOf(d.url)).toLowerCase(), label: d.label || d.domain || hostOf(d.url) } : {}),
+  ...(d.kind === 'web' && (d.rating ?? d.tier) ? { tier: (d.rating ?? d.tier)!, domain: (d.domain || hostOf(d.url)).toLowerCase(), label: d.label || d.domain || hostOf(d.url) } : {}),
 });
 
 /**
@@ -170,10 +184,24 @@ export function withAdded(pack: EvidencePack, docs: readonly AddedDoc[]): Eviden
   return extra.length ? { ...pack, documents: [...pack.documents, ...extra] } : pack;
 }
 
-/** 取回的文件的雜湊（ai_runs.added_hash）：給 AI 的那幾份，照取回的順序。 */
+/** 取回的文件的雜湊（ai_runs.added_hash）：給 AI 的那幾份，照取回的順序。判的時候才記的級別（rating）不算進去。 */
 export async function addedHash(docs: readonly AddedDoc[]): Promise<string | null> {
   if (!docs.length) return null;
-  return packHash({ documents: docs.map(packDocOf) } as unknown as EvidencePack);
+  return packHash({ documents: docs.map(({ rating: _r, rated_here: _h, ...d }) => packDocOf(d)) } as unknown as EvidencePack);
+}
+
+/**
+ * 判的時候的級別（T68，confirm_audit_design §1.4）：每一份網頁照評級表查當下的級別，記在 rating；
+ * 是這一次執行評的（評級表那一列的 run_id）另外記理由（rated_here）。同業申報不動。純函式：評級表由呼叫的人讀。
+ */
+export function rateAdded(docs: readonly AddedDoc[], table: ReadonlyMap<string, WebRatingRow>, runId: string): AddedDoc[] {
+  return docs.map((d) => {
+    if (d.kind !== 'web') return d;
+    const domain = d.domain || hostOf(d.url);
+    if (!domain) return { ...d, rating: d.tier ?? null };
+    const r = rateDomain(domain, table);
+    return { ...d, rating: r.rating, rated_here: r.by === 'AI' && r.runId === runId ? r.reason : null };
+  });
 }
 
 // ---------------------------------------------------------------- 分析師自己回報的找資料紀錄（T53，§1.5 第 5 點）

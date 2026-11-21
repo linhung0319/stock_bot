@@ -12,6 +12,7 @@ import { likeText } from '../ai/ownDraft';
 import { ownCheckResult, type ExitLine } from '../ai/ownCheck';
 import { packPremise } from '../ai/pack';
 import { confirmMode, namedWebDomains, webConfirmText, type OwnCondition } from '../ai/ownReview';
+import type { WebRatingRow } from '../data/webSources';
 import { DEFAULT_CONFIG, breaksOf, clone, isBelief, premiseKey, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Premise, type PremiseVerify, type RiskSeen, type Thesis, type Tier } from '../engine';
 import { concentrationHits, sizeText } from './concentration';
 import { loadRunupHits } from './runup';
@@ -952,11 +953,14 @@ export function ownerText(c: Pick<FileCondition, 'origin' | 'acceptedAt' | 'crea
 
 const FILING_CONFIRM_TEXT = '新申報出來時由 AI 確認';
 
-/** 怎麼確認（§1.5 的顯示）；指名了網頁來源的事件條件寫「審查時用 <來源> 的網頁檢查」（T53，web_evidence_design §1.6）。 */
-export function confirmText(c: Pick<FileCondition, 'kind' | 'check' | 'auto' | 'status'>): string {
+/**
+ * 怎麼確認（§1.5 的顯示）；指名了網頁來源的事件條件寫「審查時用 <來源> 的網頁檢查」（T53，web_evidence_design §1.6）。
+ * ratings（T68，confirm_audit_design §1.6）：評級表；網站上給，來源後面加級別或「還沒評級」。證據包裡的說明不給。
+ */
+export function confirmText(c: Pick<FileCondition, 'kind' | 'check' | 'auto' | 'status'>, ratings?: ReadonlyMap<string, WebRatingRow> | null): string {
   const s = acceptStatus(c);
   if (s === 'MANUAL') return '只記錄';
-  const web = c.kind === 'EVENT' ? webConfirmText(c.check) : null;
+  const web = c.kind === 'EVENT' ? webConfirmText(c.check, ratings) : null;
   if (s === 'REVIEW_ONLY') return web ?? '只在定期審查時檢查';
   if (c.kind === 'XBRL') return '新財報出來時比對';
   return web ? `${FILING_CONFIRM_TEXT}；${web.replace('審查時用', '審查時也用')}` : FILING_CONFIRM_TEXT;

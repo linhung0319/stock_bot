@@ -1,7 +1,7 @@
 // T10：F24 自選定期審查、F25 自選條件監測（ai_layer_design 的 F24、F25、F23 卡片）。
 // 純函式：證據包、payload 的逐欄檢查、結論怎麼變成引擎的輸入。資料抓取與排程在 src/app/ownAi.ts。
 import { TIER_NAME, VERIFY_EVERY_DEFAULT, type Account, type MarketView, type ReviewTrigger, type Tier } from '../engine';
-import { hostMatches, sameWebDomain, webLabel } from '../data/webSources';
+import { GRADED_RATINGS, STRONG_RATINGS, TIER_TEXT, isExcluded, rateDomain, sameWebDomain, webLabel, type WebRatingRow } from '../data/webSources';
 import { webMetaOf, type WebMeta } from './added';
 import { keptByChoice, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
 import { buildPack, ownPremises, ownRuleFacts, priceDoc, priceFacts } from './pack';
@@ -65,7 +65,7 @@ export interface OwnReviewInput {
    * web（T53）：指名了網頁來源的條件（confirm_by 有 `web:<網域>`）→ 那幾個網域，記在 rule.detail.condWeb。
    */
   conds?: { facts: EvidencePack['facts']; map: Record<string, number>; web?: Record<string, string[]> };
-  /** 可以當證據的網頁來源（共用清單＋這檔的一手網域；webEvidence.ts 的 sourceFacts）：建議的條件指名來源時只能指名這些。記在 rule.detail.webDomains。 */
+  /** 種子的網域（webEvidence.ts 的 sourceFacts）：記在 rule.detail.webDomains，只是紀錄（T68 起條件的 web:<網域> 不再限這些，只擋排除列表）。 */
   webDomains?: string[];
   dataQuality: EvidencePack['data_quality'];
   /** 由論點檔組的數字（T0、事件 V、預設前提的 D1～D3；own_thesis §1.6），接在原本的數字後面。 */
@@ -142,12 +142,29 @@ export function namedWebDomains(check: Record<string, unknown>): string[] {
 }
 
 /**
- * 指名了網頁來源的事件條件怎麼檢查（web_evidence_design §1.6；G24：寫的就是實際在做的事）：`審查時用 TrendForce 的網頁檢查`。
- * 沒有指名 → null。
+ * 指名的網頁來源後面加的級別（T68，confirm_audit_design §1.6）：一手、產業研究機構寫級別；還沒評的寫「評級之前不算數」；
+ * 媒體與只當線索的照規則不能確認條件，寫明（G24：寫的就是實際在做的事）。
  */
-export function webConfirmText(check: Record<string, unknown>): string | null {
+function webRatingNote(domain: string, table: ReadonlyMap<string, WebRatingRow>): string {
+  const r = rateDomain(domain, table);
+  if (r.rating === 'UNRATED') return '來源還沒評級，評級之前不算數';
+  if (STRONG_RATINGS.includes(r.rating)) return TIER_TEXT[r.rating];
+  return `${TIER_TEXT[r.rating]}：照規則不能用來確認條件`;
+}
+
+/**
+ * 指名了網頁來源的事件條件怎麼檢查（web_evidence_design §1.6；G24：寫的就是實際在做的事）：`審查時用 TrendForce 的網頁檢查`。
+ * ratings（T68）：評級表；有給時句子後面加級別（「…的網頁檢查（產業研究機構）」「（來源還沒評級，評級之前不算數）」；指名兩個以上時
+ * 每個來源各寫一段），網站名稱用評級時取的。證據包裡的條件說明不給（不帶級別，免得證據包的文字跟著評級表變）。沒有指名 → null。
+ */
+export function webConfirmText(check: Record<string, unknown>, ratings?: ReadonlyMap<string, WebRatingRow> | null): string | null {
   const named = namedWebDomains(check);
-  return named.length ? `審查時用 ${named.map((d) => webLabel(d)).join('、')} 的網頁檢查` : null;
+  if (!named.length) return null;
+  const label = (d: string) => webLabel(d, ratings ?? new Map());
+  const base = `審查時用 ${named.map(label).join('、')} 的網頁檢查`;
+  if (!ratings) return base;
+  const notes = named.map((d) => webRatingNote(d, ratings));
+  return `${base}（${named.length === 1 ? notes[0] : named.map((d, k) => `${label(d)}：${notes[k]}`).join('；')}）`;
 }
 
 /**
@@ -169,20 +186,17 @@ export function confirmMode(c: { kind: string; check: Record<string, unknown>; m
   return by.every((x) => x === 'earnings_call' || x === 'major_news' || webRefDomain(x) !== null) ? 'REVIEW_ONLY' : 'NONE';
 }
 
-/** 證據包記下的「可以指名的網頁來源」（rule.detail.webDomains）；沒有（舊的證據包、只有預設前提的股票）就是空的。 */
-const packWebDomains = (pack: Pick<EvidencePack, 'rule'>): string[] => {
-  const d = (pack.rule?.detail as { webDomains?: unknown } | undefined)?.webDomains;
-  return Array.isArray(d) ? d.filter((x): x is string => typeof x === 'string') : [];
-};
-
-/** 事件條件的確認來源哪裡不合格（null = 合格）：固定的幾種，或指名清單內的網頁來源（清單外的擋下）。 */
-function confirmByIssue(by: unknown, allowed: readonly string[]): string | null {
+/**
+ * 事件條件的確認來源哪裡不合格（null = 合格）：固定的幾種，或指名網頁來源 `web:<網域>`。
+ * T68（confirm_audit_design §1.6）：不再要求網域在清單或這檔的 domains 裡，只擋排除列表；能不能確認成立看審查時那個網域的級別。
+ */
+function confirmByIssue(by: unknown): string | null {
   if (!Array.isArray(by) || !by.length) return '事件條件要寫確認來源（confirm_by）';
   for (const x of by) {
     if (CONFIRM_BY.includes(String(x))) continue;
     const d = webRefDomain(x);
     if (!d) return '事件條件要寫確認來源（confirm_by）';
-    if (!allowed.some((a) => hostMatches(d, a))) return `指名的網頁來源 ${d} 不在清單或這檔的來源裡（清單外的網站不能當確認來源）`;
+    if (isExcluded(d)) return `指名的網頁來源 ${d} 在排除列表裡（評論、預測、社群網站不能當確認來源）`;
   }
   return null;
 }
@@ -190,7 +204,7 @@ function confirmByIssue(by: unknown, allowed: readonly string[]): string | null 
 /**
  * F24 的 payload 逐欄檢查（ai_layer F24 卡片；own_review_v2）：tier 要和 verdict 一致；建議新增的條件（proposed_conditions）最多 3 條，
  * kind 只能是 XBRL（指標要是程式算得出來的）／EVENT（要寫確認來源）／PRICE（只記錄，不通知），tier_if_met 要是合法檔位。
- * 事件條件的確認來源可以指名清單內的網頁來源（`web:<網域>`，T53；清單是證據包的 rule.detail.webDomains），清單外的改標人工。
+ * 事件條件的確認來源可以指名網頁來源（`web:<網域>`，T53；T68 起只擋排除列表），排除列表裡的改標人工。
  * 不合格的條件改標人工，不整票作廢。F14 健檢（payload.conditions，最多 5 條）共用同一套條件檢查。
  */
 export function checkOwnReviewPayload(s: CheckedSample, pack: EvidencePack, metrics: ReadonlySet<string>): void {
@@ -198,7 +212,6 @@ export function checkOwnReviewPayload(s: CheckedSample, pack: EvidencePack, metr
   if (p.tier !== undefined && p.tier !== s.rawVerdict) s.issues.push(`payload.tier（${String(p.tier)}）和 verdict 不同`);
   if (Array.isArray(p.conditions) && p.conditions.length > 5) s.issues.push('條件超過 5 條，只看前 5 條');
   if (Array.isArray(p.proposed_conditions) && p.proposed_conditions.length > 3) s.issues.push('建議的條件超過 3 條，只看前 3 條');
-  const allowed = packWebDomains(pack);
   for (const c of s.conditions) {
     if ((c.from !== 'payload.conditions' && c.from !== 'payload.proposed_conditions') || !c.auto) continue;
     const raw = c.raw;
@@ -213,7 +226,7 @@ export function checkOwnReviewPayload(s: CheckedSample, pack: EvidencePack, metr
           : raw.kind === 'EVENT'
             ? c.type !== 'event'
               ? '事件條件要寫確認來源（confirm_by）'
-              : confirmByIssue(check.confirm_by, allowed)
+              : confirmByIssue(check.confirm_by)
             : raw.kind === 'PRICE'
               ? '價格條件只記錄、不通知（B-1：價格面交給慢規則）'
               : 'kind 要是 XBRL、EVENT 或 PRICE';
@@ -259,7 +272,10 @@ const pnum = (id: string) => Number(/\d+/.exec(id)?.[0] ?? Infinity);
 /** `MEDIA` 級的網頁要判前提不成立，每一票至少要引用幾個不同網域的文件（web_evidence_design §1.6、第 6 章第 5 項）。 */
 export const MEDIA_MIN_DOMAINS = 2;
 
-/** 證據包的文件照來源分：hard = 申報原文或財報表（自己的與同業的）；web = 程式抓、存了快照的清單內網頁（帶級別與網域）。其他（新聞標題、價格、論點 note）都不算。 */
+/**
+ * 證據包的文件照來源分：hard = 申報原文或財報表（自己的與同業的）；web = 程式抓、存了快照的網頁（帶判的時候的級別與網域，T68 起含 LEAD、UNRATED）。
+ * 其他（新聞標題、價格、論點 note）都不算。
+ */
 export interface PackSources {
   hard: Set<string>;
   web: Map<string, WebMeta>;
@@ -286,10 +302,11 @@ export function citedSources(s: CheckedSample, ids: unknown): string[] {
 export type CiteBasis = 'HARD' | 'WEB' | null;
 
 /**
- * 這一票判某條前提「不成立」的引用夠不夠（web_evidence_design §1.6 表的第二欄）：
+ * 這一票判某條前提「不成立」的引用夠不夠（web_evidence_design §1.6 表的第二欄；T68 起看網域判的時候的級別，confirm_audit_design §1.2）：
  *   申報、財報表（自己或同業的）        → 可以（照舊）
- *   網頁，一手或指名的產業來源          → 可以
- *   網頁，媒體                          → 要引用 2 個不同網域的文件（單一媒體的一篇報導不夠）
+ *   網頁，一手或產業研究機構            → 可以
+ *   網頁，媒體                          → 要引用 2 個不同網域的媒體文件（單一媒體的一篇報導不夠）
+ *   網頁，只當線索、還沒評級、排除的    → 不行（只當線索）
  *   新聞標題、價格、論點 note、其他      → 不行
  * hardOnly：只認申報與財報表（往上加碼的判斷不放寬）。
  */
@@ -298,14 +315,15 @@ export function premiseCite(s: CheckedSample, ids: unknown, src: PackSources, ha
   if (from.some((id) => src.hard.has(id))) return 'HARD';
   if (hardOnly) return null;
   const webs = from.map((id) => src.web.get(id)).filter((w): w is WebMeta => !!w);
-  if (webs.some((w) => w.tier === 'PRIMARY' || w.tier === 'NAMED')) return 'WEB';
-  return new Set(webs.map((w) => w.domain)).size >= MEDIA_MIN_DOMAINS ? 'WEB' : null;
+  if (webs.some((w) => STRONG_RATINGS.includes(w.tier))) return 'WEB';
+  return new Set(webs.filter((w) => w.tier === 'MEDIA').map((w) => w.domain)).size >= MEDIA_MIN_DOMAINS ? 'WEB' : null;
 }
 
 /**
- * 這一票確認某條條件「成立」的引用夠不夠（§1.6 表的第三欄）：
+ * 這一票確認某條條件「成立」的引用夠不夠（§1.6 表的第三欄；T68，confirm_audit_design §1.6）：
  *   申報、財報表                        → 可以（照舊）
- *   網頁                                → 只有條件指名了這個網域時可以（不論級別；沒指名的一手、指名的產業來源、媒體都不行）
+ *   網頁                                → 條件指名了這個網域、而且它判的時候的級別是一手或產業研究機構才可以
+ *                                         （媒體不行；只當線索、還沒評級的不算 → 這一票的這一條算證據不足）
  *   新聞標題與其他                      → 不行
  * named：條件指名的網域（namedWebDomains）。
  */
@@ -315,15 +333,18 @@ export function condCite(s: CheckedSample, ids: unknown, src: PackSources, named
   if (!named.length) return null;
   return from.some((id) => {
     const w = src.web.get(id);
-    return !!w && named.some((n) => sameWebDomain(w.domain, n));
+    return !!w && STRONG_RATINGS.includes(w.tier) && named.some((n) => sameWebDomain(w.domain, n));
   })
     ? 'WEB'
     : null;
 }
 
+/** 判的時候這份網頁算不算「有級別」（一手、產業研究機構、媒體）；只當線索、還沒評級、排除的不算。 */
+export const gradedWeb = (w: WebMeta | null | undefined): boolean => !!w && GRADED_RATINGS.includes(w.tier);
+
 /**
  * 不成立的前提（own_thesis §1.6 第 1 點；減半檢視的「出清」也用同一個定義，§3.3）：每一票都判 BROKEN、而且每一票都有合格的引用
- * （premiseCite：申報或財報表；清單內的網頁照級別，T53）——取交集，編號由小到大。samples 是合格的票；不到 wanted 票就是空的。
+ * （premiseCite：申報或財報表；網頁照判的時候的級別，T53、T68）——取交集，編號由小到大。samples 是合格的票；不到 wanted 票就是空的。
  * opt.hardOnly：只認申報與財報表的引用。
  */
 export function brokenPremises(samples: CheckedSample[], pack: Pick<EvidencePack, 'documents'>, wanted = OWN_REVIEW_SAMPLES, opt: { hardOnly?: boolean } = {}): string[] {
@@ -415,9 +436,9 @@ export function reviewDecision(outcome: Outcome, acct: Account, ticker: string, 
   }
   if (premiseId) {
     const web = samples.some((s) => s.premises.some((p) => p.premise_id === premiseId && p.status === 'BROKEN' && premiseCite(s, p.evidence_ids, src) === 'WEB'));
-    return { ...base, suggest: true, why: `3 票都判前提 ${premiseId} 不成立（${web ? '有清單內網頁全文的引用' : '有申報或財報的引用'}）：月報並列 AI 建議。` };
+    return { ...base, suggest: true, why: `3 票都判前提 ${premiseId} 不成立（${web ? '有評過級的網頁全文的引用' : '有申報或財報的引用'}）：月報並列 AI 建議。` };
   }
-  return { ...base, suggest: false, why: '檔位和目前不同，但沒有一條前提三票都判「不成立」而且有合格的引用（申報、財報表，或清單內的網頁：一手與指名的產業來源一份、媒體要兩個不同網域），只放網站。' };
+  return { ...base, suggest: false, why: '檔位和目前不同，但沒有一條前提三票都判「不成立」而且有合格的引用（申報、財報表，或評過級的網頁：一手與產業研究機構一份、媒體要兩個不同網域；還沒評級與只當線索的不算），只放網站。' };
 }
 
 // ---------------------------------------------------------------- F25 事件條件（新申報出現時）

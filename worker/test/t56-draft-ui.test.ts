@@ -105,13 +105,13 @@ const viewOf = (d: OwnDraft, o: Partial<DraftView> = {}): DraftView => ({ id: 7,
 // ---------------------------------------------------------------- 純函式：畫面上的文字與預設
 
 describe('T56 草稿的每一項預設都不勾（§2.3）', () => {
-  it('前提、出場條件、同業、網站全部 checked = false；網站只有「新的來源」可以勾', () => {
+  it('前提、出場條件、同業、網站全部 checked = false；網站都不能勾（T68：每檔的網站不再讀，confirm_audit_design §1.7）', () => {
     const items = draftItems(okDraft());
     const all = [...items.premises, ...items.exits, ...items.peers, ...items.domains];
     expect(all.length).toBe(3 + 2 + 1 + 2);
     expect(all.every((x) => x.checked === false)).toBe(true);
     expect(items.domains.map((x) => [x.domain, x.state, x.checkable])).toEqual([
-      ['www.micron.com', 'NEW', true],
+      ['www.micron.com', 'NEW', false],
       ['fool.com', 'EXCLUDED', false],
     ]);
   });

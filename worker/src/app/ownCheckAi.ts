@@ -13,12 +13,11 @@ import { entryEvidence } from './momAi';
 import { loadAccount, thesisLogStmt } from './ledgerStore';
 import { gatherOwnEvidence, insertConditionStmts, routineReady } from './ownAi';
 import { CONC, corr1y } from './concentration';
-import { SUPERSEDABLE, checkCap, condSources, supersedeStmts, withWebSource } from './ownConds';
-import { canPickSource } from '../ai/ownCheck';
+import { SUPERSEDABLE, checkCap, supersedeStmts } from './ownConds';
 import { namedWebDomains } from '../ai/ownReview';
-import { findWebSource } from '../data/webSources';
 import { sourceFacts } from './webEvidence';
-import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, REWRITE_DAYS, acceptStatus, condFacts, confirmText, defaultAction, fileConditions, fmtMetric, isOwned, latestExitSet, ownerText, progressText, runOfSet, thesisFile, type CondAction, type ExitSet, type FileCondition } from './thesis';
+import { loadRatings } from './webRatings';
+import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, REWRITE_DAYS, acceptStatus, condFacts, confirmText, defaultAction, fileConditions, fileKind, fmtMetric, isOwned, latestExitSet, ownerText, progressText, runOfSet, thesisFile, type CondAction, type ExitSet, type FileCondition } from './thesis';
 
 /** 改寫結果或「還沒送去改寫」不是最新一版的出場條件（T42）：不能再勾選或重送。網站回 409。 */
 export class StaleExitsError extends Error {}
@@ -104,8 +103,8 @@ export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, v
     thesisVersion: meta?.thesis?.version ?? null,
     condMap: cf?.map ?? {},
     ...(set ? { exitsVersion: set.version, live: set.live, sameByText: set.sameByText } : {}),
-    // 可以指名的網頁來源（T53，§1.6）：只有系統預設前提的股票不給（它的審查不用網頁證據）
-    ...(condSources(meta).length ? { sources: sourceFacts(meta?.webSources?.domains ?? []) } : {}),
+    // 已有級別的網頁來源（T53 的清單，T68 起是種子）：只有系統預設前提的股票不給（它的審查不用網頁證據）
+    ...(meta && fileKind(meta) !== 'DEFAULT_ONLY' ? { sources: sourceFacts() } : {}),
     now,
   });
   return startRun(env, fetcher, pack, now, [...ev.notes, ...(entry?.notes ?? []), ...notes]);
@@ -164,7 +163,7 @@ export async function ownCheckView(env: Env, runId: string, now: Date): Promise<
   const d = (run.pack.rule.detail ?? {}) as RewriteDetail;
   const exits = exitsOf(d);
   const live = Array.isArray(d.live) ? d.live : null;
-  const r = ownCheckResult(run.outcome, run.ticker ?? '', exits, objOf(d.condMap), objOf(d.sameByText), live);
+  const r = ownCheckResult(run.outcome, run.ticker ?? '', exits, objOf(d.condMap), objOf(d.sameByText), live, await loadRatings(env.DB));
   // 只算現在這份論點檔勾過的（移出再加回之後，同一次改寫的條件可以重新勾）
   const fileId = await currentFileId(env.DB, run.ticker ?? '');
   const accepted = (await env.DB.prepare(`SELECT cond_id FROM own_conditions WHERE run_id = ? AND origin = 'USER' AND ${fileId ? 'file_id = ?' : 'file_id IS NULL'}`).bind(runId, ...(fileId ? [fileId] : [])).all<{ cond_id: string }>()).results.map((x) => x.cond_id);
@@ -290,7 +289,7 @@ const retireNote = (date: string, version: number) => `你在 ${date} 確認第 
  * 被取代的（勾選了取代它的那一條）與這次沒提到的撤下（RETIRED，log 寫原因）；和現有條件相同、動作不同的改動作。log 寫 EXITS_CONFIRMED。
  * 只能確認最近一次出場條件有改動的那一版、還沒確認過的（不是 → StaleExitsError）。會自己發通知的你定的條件一檔最多 8 條。
  */
-export async function acceptOwnConditions(env: Env, ticker: string, runId: string, ids: string[], now: Date, actions: Record<string, unknown> = {}, session?: string, sources: Record<string, unknown> = {}): Promise<ConfirmResult> {
+export async function acceptOwnConditions(env: Env, ticker: string, runId: string, ids: string[], now: Date, actions: Record<string, unknown> = {}, session?: string): Promise<ConfirmResult> {
   const v = await ownCheckView(env, runId, now);
   if (!v || v.status !== 'DONE') throw new Error('這次改寫還沒有結果');
   const acct = (await loadAccount(env.DB))?.acct;
@@ -301,8 +300,8 @@ export async function acceptOwnConditions(env: Env, ticker: string, runId: strin
   if (set.confirmed) throw new StaleExitsError('這一版的出場條件已經確認過了。');
   const conds = await fileConditions(env.DB, acct, ticker);
   const plan = confirmPlan(v.conditions, set.live, conds, ids);
-  // sources（T53，web_evidence_design §1.6）：勾選時改的網頁來源（條件編號 → 網域，'' = 不指名）；清單外的擋下（CondError）
-  const pick = plan.pick.map((c) => ({ ...c, check: withWebSource(c, sources[c.condId], acct.own[ticker]), action: COND_ACTIONS.includes(actions[c.condId] as CondAction) ? (actions[c.condId] as CondAction) : (c.action ?? defaultAction(c)) }));
+  // T68（confirm_audit_design §1.6）：勾選時不再選網頁來源；條件寫的 web:<網域> 原樣存，能不能確認看審查時那個網域的級別
+  const pick = plan.pick.map((c) => ({ ...c, action: COND_ACTIONS.includes(actions[c.condId] as CondAction) ? (actions[c.condId] as CondAction) : (c.action ?? defaultAction(c)) }));
   if (!pick.length && !plan.retire.length && !plan.actionChanges.length) throw new Error('至少勾一條');
   checkCap(
     conds,
@@ -394,9 +393,8 @@ export interface MonitorRow {
   recordOnly: boolean;
   /** 說明（已成立的寫怎麼確認成立的；其他是寫入時的原因）。 */
   note: string | null;
-  /** 指名的網頁來源（網域；T53）；canSource：建議中的條件勾選時可以改來源。 */
+  /** 指名的網頁來源（網域；T53）。T68 起勾選時不能改來源（選單拿掉），級別寫在 confirm 裡。 */
   web: string[];
-  canSource: boolean;
 }
 
 const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '');
@@ -430,12 +428,12 @@ const STATUS_TEXT: Record<string, string> = { ACTIVE: '監測中', MET: '已成�
 export async function monitorView(env: Env, ticker: string): Promise<MonitorRow[]> {
   try {
     const acct = (await loadAccount(env.DB))?.acct;
-    // 指名的來源後來從這檔的來源拿掉了（T53；G24：寫「用 X 的網頁檢查」就要真的取得到）：在「怎麼確認」後面寫明
-    const usable = condSources(acct?.own[ticker]).length > 0;
+    // 「怎麼確認」寫指名的來源的級別（T68，confirm_audit_design §1.6）；只有系統預設前提的股票審查不取網頁（G24：寫明）
+    const ratings = await loadRatings(env.DB);
+    const defaultOnly = !acct?.own[ticker] || fileKind(acct.own[ticker]) === 'DEFAULT_ONLY';
     const goneNote = (c: FileCondition): string => {
       if (c.kind !== 'EVENT' || !['ACTIVE', 'REVIEW_ONLY', 'PROPOSED'].includes(c.status) || acceptStatus(c) === 'MANUAL') return '';
-      const gone = namedWebDomains(c.check).filter((d) => !usable || !findWebSource(d, acct?.own[ticker]?.webSources?.domains ?? []));
-      return gone.length ? `（${gone.join('、')} 現在不在清單或這檔的來源裡，審查取不到它的網頁；到「編輯論點」把它加回這檔的來源，或撤下這一條）` : '';
+      return defaultOnly && namedWebDomains(c.check).length ? '（這檔只有系統預設前提，審查不取網頁；寫下你自己的前提之後才會用這個來源）' : '';
     };
     return (acct ? await fileConditions(env.DB, acct, ticker) : [])
       .filter((c) => c.status !== 'RETIRED' && c.status !== 'EXPIRED')
@@ -452,16 +450,15 @@ export async function monitorView(env: Env, ticker: string): Promise<MonitorRow[
           owned,
           action,
           actionText: action ? ACTION_TEXT[action] : null,
-          confirm: confirmText(c) + goneNote(c),
+          confirm: confirmText(c, ratings) + goneNote(c),
           progress: progressText(c),
           steps: progressSteps(c),
           recordOnly: acceptStatus(c) === 'MANUAL',
           note: c.status === 'MET' ? metNote(c) : c.note,
           web: c.kind === 'EVENT' ? namedWebDomains(c.check) : [],
-          canSource: c.status === 'PROPOSED' && canPickSource({ kind: c.kind, check: c.check, manual: c.auto === false }),
         };
       });
   } catch (e) {
-    return [{ id: 0, text: `讀不到：${errText(e)}`, kind: '', origin: '', status: '', code: '', owned: false, action: null, actionText: null, confirm: '', progress: null, steps: null, recordOnly: false, note: null, web: [], canSource: false }];
+    return [{ id: 0, text: `讀不到：${errText(e)}`, kind: '', origin: '', status: '', code: '', owned: false, action: null, actionText: null, confirm: '', progress: null, steps: null, recordOnly: false, note: null, web: [] }];
   }
 }

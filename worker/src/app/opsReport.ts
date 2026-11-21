@@ -8,7 +8,8 @@
 // T61（composite_layer_design §2.1）：前提的審查結果多一欄 stale（逾期）；加一段「前提的判定，依功能與 prompt 版本」（HOLDS 收緊前後對照）。
 // T65（composite_layer_design §4.1）：加一段「資料庫大小」（現在的大小，不看期間）；超過 300 MB 的告警由每日流程呼叫 dbSizeAlert。
 import { liveShadow, type ShadowRecord } from '../engine';
-import { DOC_FNS } from '../ai/added';
+import { DOC_FNS, parseAdded } from '../ai/added';
+import { webDomainOf } from '../data/webSources';
 import { WEB_DOC_PER_SITE } from '../data/webDoc';
 import { launchDate } from './export';
 
@@ -695,8 +696,8 @@ export const webRunsSection: SectionFn = async (db, p) => {
 
 /**
  * 取文件被拒絕的原因（依功能與原因；ai_runs.added_docs.refused，只留每次執行前 60 筆，超過的合成 OVER_CAP 一列，所以每個功能的列加起來 = 被拒絕的總數）。
- * 原因：NOT_LISTED 清單外（含不列入、路徑不收）、BLOCKED 被擋（HTTP 4xx、5xx）、THIN 內文太短、UNSUPPORTED 不是網頁、NO_DATE 認不出發布日、
- * TOO_OLD 太舊、LIMIT 超過每次執行的上限、ERROR 其他（發布日晚於決策日、申報抓不到、轉址到清單外、格式不對）。
+ * 原因：NOT_LISTED 排除或路徑不收（T68 起只剩這兩種；之前的紀錄另有「不在清單」）、BLOCKED 被擋（HTTP 4xx、5xx）、THIN 內文太短、UNSUPPORTED 不是網頁、
+ * NO_DATE 認不出發布日、TOO_OLD 太舊、LIMIT 超過每次執行的上限、ERROR 其他（發布日晚於決策日、申報抓不到、轉址到排除或路徑不收的網址、格式不對）。
  */
 export const webRefusedSection: SectionFn = async (db, p) => {
   const c = atCond(p, 'r.created_at');
@@ -718,13 +719,14 @@ export const webRefusedSection: SectionFn = async (db, p) => {
 };
 
 const webWindow = (p: Period): { sql: string; args: string[] } => ({ sql: 'fetched_at >= ? AND fetched_at < ?', args: [`${dayShift(p.to, 1 - WEB_DOMAIN_DAYS)}T00:00:00.000Z`, `${nextDay(p.to)}T00:00:00.000Z`] });
-const WEB_SKIPPED_TITLE = `被略過最多的網域（不在清單；最近 ${WEB_DOMAIN_DAYS} 天，到期間迄日為止；前 ${WEB_DOMAIN_ROWS} 個）`;
-const WEB_FAILED_TITLE = `抓取失敗的網域（清單內；最近 ${WEB_DOMAIN_DAYS} 天，到期間迄日為止；有失敗的前 ${WEB_DOMAIN_ROWS} 個）`;
+const WEB_SKIPPED_TITLE = `被排除或路徑不收的網址（依網域；最近 ${WEB_DOMAIN_DAYS} 天，到期間迄日為止；前 ${WEB_DOMAIN_ROWS} 個）`;
+const WEB_FAILED_TITLE = `抓取失敗的網域（排除與路徑不收的不算；最近 ${WEB_DOMAIN_DAYS} 天，到期間迄日為止；有失敗的前 ${WEB_DOMAIN_ROWS} 個）`;
 
 /**
- * 被略過最多的網域（web_docs 的 NOT_LISTED：分析師要了、但不在共用清單也不在這檔的 domains；設計 §1.3「加網域的流程」）。
+ * 被排除或路徑不收的網址（web_docs 的 NOT_LISTED；T68，confirm_audit_design §1.8：不在排除列表的都抓了，NOT_LISTED 只剩這兩種）。依網域分。
  * 最近 WEB_DOMAIN_DAYS 天（到期間的迄日為止，不跟 from 走）；列前 WEB_DOMAIN_ROWS 個，合計列算全部。
- * excluded = 評論與社群網站（不列入）；path = 網域在清單內但路徑不收；not_listed = 完全不在清單；tickers = 幾檔股票要過；last_title = 最近一次的標題（搜尋結果的標題）。
+ * excluded = 排除列表（評論與社群網站，或 AI 評成排除的）；path = 種子的路徑不收；not_listed = T68 之前的紀錄「不在清單」（之後不會再有）；
+ * tickers = 幾檔股票要過；last_title = 最近一次的標題（搜尋結果的標題）。
  */
 export const webSkippedSection: SectionFn = async (db, p) => {
   const w = webWindow(p);
@@ -759,7 +761,7 @@ export const webSkippedSection: SectionFn = async (db, p) => {
 };
 
 /**
- * 抓取失敗的網域（web_docs，清單內的網域；NOT_LISTED 不算抓取，看 web_skipped）。同樣最近 WEB_DOMAIN_DAYS 天、前 WEB_DOMAIN_ROWS 個（有失敗的才列），合計列算全部。
+ * 抓取失敗的網域（web_docs，實際去抓的；NOT_LISTED 沒有去抓，看 web_skipped）。同樣最近 WEB_DOMAIN_DAYS 天、前 WEB_DOMAIN_ROWS 個（有失敗的才列），合計列算全部。
  * attempts = 實際抓過幾次（重用舊快照的不再抓、不算）；ok 抓到全文；失敗 failed = thin 內文太短 ＋ blocked 被擋 ＋ unsupported 不是網頁 ＋ no_date 認不出發布日 ＋ error 其他；
  * too_old 發布日太舊（程式規則擋掉，不算失敗）；fail_ratio = failed ÷ attempts；thin_avg_chars = 內文太短的那幾篇轉成文字後平均幾字
  * （門檻 1,500 字對韓文、中文偏嚴，設計 §0.5 說看這一欄再決定要不要改）；last_error = 最近一次失敗的原因。
@@ -915,7 +917,41 @@ export async function dbSizeAlert(db: D1Database, now: Date): Promise<{ kind: 'D
 }
 
 /** 報表的各段，照這個順序輸出。要加段就在這裡加一個函式（T31a 加了月底檢查點、T33b 加了崩盤規則、T32d 加了動能進場審查、T57 加了前提結果、網頁與草稿七段、T61 加了前提的判定依 prompt 版本、T65 加了資料庫大小）。 */
-export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, momEntrySection, premiseOriginSection, premisePromptSection, webRunsSection, webRefusedSection, webSkippedSection, webFailedSection, draftsSection, draftFailuresSection, dbSizeSection];
+/**
+ * 網頁來源的評級（T68，confirm_audit_design §1.8）：每個 AI 評過的網域一列（web_source_ratings；不看期間，評級表本來就只增加）——
+ * tier、reason、site_name、rated_at、run_id（哪一次執行評的）、cited = 判的時候是這個網域、而且通過逐字檢查的引用有幾條（所有執行，三票分開算）、
+ * cited_runs = 幾次執行引用過。使用者不必看；覺得哪個不對就說，主持者改種子（種子不在這張表）。新評的在前。
+ */
+export const webRatingsSection: SectionFn = async (db) => {
+  const ratings = await query(db, 'SELECT domain, tier, site_name, reason, run_id, rated_at FROM web_source_ratings ORDER BY rated_at DESC, domain', []).catch(() => [] as Row[]);
+  const title = '網頁來源的評級（AI 評的網域；種子不列；cited = 通過逐字檢查的引用幾條）';
+  if (!ratings.length) return { id: 'web_ratings', title, rows: [] };
+  const runs = await query(db, `SELECT run_id, added_docs, outcome FROM ai_runs WHERE fn IN (${FN_LIST}) AND added_docs IS NOT NULL AND outcome IS NOT NULL`, []);
+  const cited = new Map<string, { n: number; runs: Set<string> }>();
+  for (const r of runs) {
+    const added = parseAdded(r.added_docs as string | null);
+    const dom = new Map(added.docs.filter((d) => d.kind === 'web').map((d) => [d.source_id, webDomainOf(d.domain || hostOf(d.url))]));
+    if (!dom.size) continue;
+    let o: { samples?: { evidence?: { ok?: boolean; source_id?: string }[] }[] } = {};
+    try {
+      o = JSON.parse(String(r.outcome)) as typeof o;
+    } catch {
+      continue;
+    }
+    for (const s of o.samples ?? [])
+      for (const e of s.evidence ?? []) {
+        const d = e.ok && e.source_id ? dom.get(e.source_id) : undefined;
+        if (!d) continue;
+        const a = cited.get(d) ?? { n: 0, runs: new Set<string>() };
+        a.n++;
+        a.runs.add(String(r.run_id));
+        cited.set(d, a);
+      }
+  }
+  return { id: 'web_ratings', title, rows: ratings.map((r) => ({ domain: r.domain, tier: r.tier, reason: r.reason, site_name: r.site_name, rated_at: String(r.rated_at).slice(0, 10), run_id: r.run_id, cited: cited.get(String(r.domain))?.n ?? 0, cited_runs: cited.get(String(r.domain))?.runs.size ?? 0 })) };
+};
+
+export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, momEntrySection, premiseOriginSection, premisePromptSection, webRunsSection, webRefusedSection, webSkippedSection, webFailedSection, webRatingsSection, draftsSection, draftFailuresSection, dbSizeSection];
 
 export interface OpsReport {
   generated_at: string;

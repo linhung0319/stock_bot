@@ -50,6 +50,8 @@ export const EXPORT_TABLES: Record<string, ExportTable> = {
   market_triggers: { mode: 'append', json: [], pageRows: 1000 },
   // T51：網頁快照（text 最多 30,000 字，一頁少拉一點）。只增加；之後清掉的全文與 used_by 的更新不會回到本機已拉的列
   web_docs: { mode: 'append', json: [], pageRows: 50 },
+  // T68：網頁來源的 AI 評級（只增加；一個網域一列，不會重評）
+  web_source_ratings: { mode: 'append', json: [], key: 'domain', pageRows: 1000 },
   // 系統運作
   data_runs: { mode: 'append', json: ['detail'], pageRows: 500 },
   flow_runs: { mode: 'append', json: ['detail'], pageRows: 500 },

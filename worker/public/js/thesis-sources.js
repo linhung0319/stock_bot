@@ -1,10 +1,12 @@
-// 編輯論點頁的「網頁證據的來源」（T52，web_evidence_design §1.3）：這檔的同業與專用的一手網站。只求能用，版面之後整理。
-// 存檔照論點的同一個按鈕（POST /ops/own-thesis 的 webSources，有改動才送）；存檔前伺服器先試抓一次，抓不到的仍存、標「目前抓不到」。
+// 編輯論點頁的「網頁證據的來源」（T52，web_evidence_design §1.3）：這檔的同業。只求能用，版面之後整理。
+// T68（confirm_audit_design §1.7）：「這檔的網站」拿掉了——審查時 AI 取得到排除列表以外的任何網站，可信度由來源評級決定，不用一個個加。
+// 之前存的網站（domains）不顯示、不再讀，存檔時原樣留著。
+// 存檔照論點的同一個按鈕（POST /ops/own-thesis 的 webSources，有改動才送）；存檔前伺服器核對同業的 EDGAR 代號，找不到的仍存、標「目前抓不到」。
 import { api } from './api.js';
 import { h, put } from './dom.js';
 import { actionButton, errBox } from './pages-notif.js';
 
-const LIMITS = { peers: 4, domains: 6 };
+const LIMITS = { peers: 4 };
 
 /** 試抓結果的那一項叫什麼（key：edgar:MU、yahoo:000660.KS、domain:news.skhynix.com）。 */
 export function sourceLabel(key) {
@@ -26,7 +28,7 @@ export const checkList = (items) => (items?.length ? h('ul', { class: 'src-check
 
 /** 「現在的」那一欄：存著的同業與網站，以及存檔時試抓的結果。 */
 export function sourcesNow(ws, defaultOnly) {
-  if (!ws) return h('p', { class: 'small faint', style: 'margin-top:4px' }, '沒有指定（審查只看這檔自己新聞裡、共用清單內的網站）');
+  if (!ws?.peers?.length) return h('p', { class: 'small faint', style: 'margin-top:4px' }, '沒有指定同業（審查照樣可以讀這檔自己新聞裡的連結與 AI 搜尋到的網站）');
   const items = ws.checked?.items ?? [];
   const failed = items.filter((c) => c.ok === false).length;
   const untried = items.filter((c) => c.ok === null).length;
@@ -34,9 +36,8 @@ export function sourcesNow(ws, defaultOnly) {
     'div',
     { class: 'small', style: 'margin-top:4px' },
     ws.peers.length ? h('p', null, `同業：${ws.peers.map((p) => `${p.name}（${[p.edgar && `EDGAR ${p.edgar}`, p.yahoo && `Yahoo ${p.yahoo}`].filter(Boolean).join('、')}）`).join('；')}`) : null,
-    ws.domains.length ? h('p', null, `這檔的網站：${ws.domains.join('、')}`) : null,
-    ws.checked ? h('p', { class: failed ? null : 'faint', style: failed ? 'color:var(--warn)' : null }, failed ? `存檔時試抓：${failed} 項目前抓不到（仍存著，抓得到之後就會用）` : untried === items.length ? '存檔時沒有真的試抓（原因在下面）' : untried ? `存檔時試抓：${untried} 項沒有試，其他都抓得到` : '存檔時試抓：都抓得到') : null,
-    checkList(ws.checked?.items),
+    ws.checked ? h('p', { class: failed ? null : 'faint', style: failed ? 'color:var(--warn)' : null }, failed ? `存檔時核對：${failed} 項目前找不到（仍存著，找得到之後就會用）` : untried === items.length ? '存檔時沒有真的核對（原因在下面）' : untried ? `存檔時核對：${untried} 項沒有試，其他都找得到` : '存檔時核對：都找得到') : null,
+    checkList(ws.checked?.items.filter((c) => c.key.startsWith('edgar:'))),
     defaultOnly ? h('p', { class: 'faint' }, '這檔目前只有系統預設前提：來源先存著，寫了自己的前提之後審查才會用。') : null,
   );
 }
@@ -49,9 +50,9 @@ const norm = (ws) => JSON.stringify(ws ? { p: ws.peers.map((p) => [p.name, p.edg
  */
 export function sourcesEditor(ticker, ws, onChange) {
   const peerList = h('div');
-  const domList = h('div');
   const peers = [];
-  const doms = [];
+  // 之前存的網站：不顯示、不再讀；存檔時原樣帶回去（不讓「沒改同業」被當成改了來源）
+  const keptDomains = ws?.domains ?? [];
   const inp = (v, ph, label, max) => {
     const el = h('input', { type: 'text', maxlength: max, value: v ?? '', placeholder: ph, 'aria-label': label });
     el.addEventListener('input', onChange);
@@ -76,38 +77,19 @@ export function sourcesEditor(ticker, ws, onChange) {
     peerList.append(r.el);
     return true;
   };
-  const addDom = (d = '') => {
-    if (doms.length >= LIMITS.domains) return false;
-    const r = { input: inp(d, '例如 news.skhynix.com', '網站', 200) };
-    r.el = h(
-      'div',
-      { class: 'src-dom' },
-      r.input,
-      rm(() => {
-        doms.splice(doms.indexOf(r), 1);
-        r.el.remove();
-        onChange();
-      }),
-    );
-    doms.push(r);
-    domList.append(r.el);
-    return true;
-  };
   for (const p of ws?.peers ?? []) addPeer(p);
-  for (const d of ws?.domains ?? []) addDom(d);
   const value = () => {
     const ps = peers.map((r) => ({ name: r.name.value.trim(), edgar: r.edgar.value.trim().toUpperCase(), yahoo: r.yahoo.value.trim().toUpperCase() })).filter((p) => p.name || p.edgar || p.yahoo);
-    const ds = doms.map((r) => r.input.value.trim()).filter(Boolean);
-    return ps.length || ds.length ? { peers: ps.map((p) => ({ name: p.name, ...(p.edgar ? { edgar: p.edgar } : {}), ...(p.yahoo ? { yahoo: p.yahoo } : {}) })), domains: ds } : null;
+    return ps.length || keptDomains.length ? { peers: ps.map((p) => ({ name: p.name, ...(p.edgar ? { edgar: p.edgar } : {}), ...(p.yahoo ? { yahoo: p.yahoo } : {}) })), domains: keptDomains } : null;
   };
   const probeMsg = h('div');
-  const probe = actionButton('試抓這些來源', '', async () => {
+  const probe = actionButton('核對 EDGAR 代號', '', async () => {
     const v = value();
-    if (!v) return put(probeMsg, h('p', { class: 'small faint', style: 'margin-top:6px' }, '還沒有填任何來源。'));
+    if (!v?.peers.some((p) => p.edgar)) return put(probeMsg, h('p', { class: 'small faint', style: 'margin-top:6px' }, '還沒有填任何 EDGAR 代號。'));
     try {
       const r = await api.post('/ops/own-sources/probe', { ticker, webSources: v });
       const bad = r.items.filter((c) => c.ok === false).length;
-      put(probeMsg, h('p', { class: 'small', style: `margin-top:6px${bad ? ';color:var(--warn)' : ''}` }, bad ? `${bad} 項目前抓不到：仍可以存，網站會標「目前抓不到」，審查時取不到它的文件。` : r.items.every((c) => c.ok === null) ? '沒有真的試抓（原因在下面）；還沒存。' : '試抓完成，都抓得到（還沒存）。'), checkList(r.items));
+      put(probeMsg, h('p', { class: 'small', style: `margin-top:6px${bad ? ';color:var(--warn)' : ''}` }, bad ? `${bad} 個代號目前找不到：仍可以存，網站會標「目前抓不到」，審查時列不出它的申報。` : r.items.every((c) => c.ok === null) ? '沒有真的核對（原因在下面）；還沒存。' : '核對完成，都找得到（還沒存）。'), checkList(r.items));
     } catch (e) {
       put(probeMsg, errBox(e));
     }
@@ -115,24 +97,20 @@ export function sourcesEditor(ticker, ws, onChange) {
   const el = h(
     'div',
     { class: 'field src-edit', style: 'margin:16px 0 0' },
-    h('span', null, '網頁證據的來源（選填）'),
-    h('small', null, `審查時 AI 可以另外讀的同業申報與網站。同業最多 ${LIMITS.peers} 家：填 EDGAR 代號（美股，例如 MU）會列出它在 SEC 的申報，填 Yahoo 代號（例如 000660.KS）會看它新聞裡的連結，至少填一個。這檔專用的網站最多 ${LIMITS.domains} 個（公司與同業的新聞室、投資人關係網站）。TrendForce 這類共用的產業來源不用另外加；評論與社群網站加不進來。存檔時會先試抓一次，抓不到的仍會存。`),
-    h('b', { class: 'small', style: 'margin-top:4px' }, '同業'),
+    h('span', null, '同業（選填）'),
+    h('small', null, `審查時 AI 可以另外讀的同業申報與新聞連結。最多 ${LIMITS.peers} 家：填 EDGAR 代號（美股，例如 MU）會列出它在 SEC 的申報，填 Yahoo 代號（例如 000660.KS）會看它新聞裡的連結，至少填一個。網站不用另外加：AI 取得到評論與社群網站以外的網站，能不能當證據由來源評級決定。存檔時會核對 EDGAR 代號，找不到的仍會存。`),
     peerList,
     h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addPeer(); onChange(); } }, '再加一家同業')),
-    h('b', { class: 'small', style: 'margin-top:4px' }, '這檔的網站'),
-    domList,
-    h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addDom(); onChange(); } }, '再加一個網站')),
     h('div', { class: 'btn-row', style: 'margin-top:6px' }, probe),
     probeMsg,
   );
-  // 草稿勾來的同業與網站（T56）：勾了加一列、取消勾選拿掉那一列（照代號或網域找）；滿了回 false
+  // 草稿勾來的同業（T56）：勾了加一列、取消勾選拿掉那一列（照代號找）；滿了回 false。草稿的網站不再能加（T68：addDom 一律 false）
   const samePeer = (r, p) => (!!p.edgar && r.edgar.value.trim().toUpperCase() === p.edgar) || (!!p.yahoo && r.yahoo.value.trim().toUpperCase() === p.yahoo);
   const pick = {
     addPeer: (p) => peers.some((r) => samePeer(r, p)) || addPeer(p),
     removePeer: (p) => peers.filter((r) => samePeer(r, p)).forEach((r) => (peers.splice(peers.indexOf(r), 1), r.el.remove())),
-    addDom: (d) => doms.some((r) => r.input.value.trim().toLowerCase() === d) || addDom(d),
-    removeDom: (d) => doms.filter((r) => r.input.value.trim().toLowerCase() === d).forEach((r) => (doms.splice(doms.indexOf(r), 1), r.el.remove())),
+    addDom: () => false,
+    removeDom: () => undefined,
   };
   return { el, value, changed: () => norm(value()) !== norm(ws), ...pick };
 }

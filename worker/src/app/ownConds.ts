@@ -3,12 +3,9 @@
 //   撤下  你定的條件 → RETIRED
 //   改動作 你定的條件成立時做什麼（出清／減半／重新審查）
 // 你定的條件（ACTIVE＋REVIEW_ONLY）一檔最多 8 條。每一次都在 own_thesis_log 寫一筆 CONDITION。
-import { namedWebDomains, webRefDomain } from '../ai/ownReview';
-import { canPickSource } from '../ai/ownCheck';
-import { findWebSource, listedWebSources, type WebSourceMatch } from '../data/webSources';
-import type { Account, OwnMeta } from '../engine';
+import type { Account } from '../engine';
 import { thesisLogStmt } from './ledgerStore';
-import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, acceptStatus, defaultAction, fileConditions, fileKind, isOwned, type CondAction, type FileCondition } from './thesis';
+import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, acceptStatus, defaultAction, fileConditions, isOwned, type CondAction, type FileCondition } from './thesis';
 
 export class CondError extends Error {}
 
@@ -29,42 +26,8 @@ export function checkCap(conds: FileCondition[], add: number, except: number[] =
 const logStmt = (db: D1Database, ticker: string, fileId: string | undefined, session: string, at: string, id: number, change: 'ACCEPTED' | 'RETIRED' | 'ACTION_CHANGED', action: CondAction | null) =>
   fileId ? [thesisLogStmt(db, { ticker, fileId, session, kind: 'CONDITION', ref: String(id), body: { id, change, action, by: 'USER' } }, null, at)] : [];
 
-// ---------------------------------------------------------------- 條件指名的網頁來源（T53，web_evidence_design §1.6）
-
-/**
- * 這檔的條件可以指名哪些網頁來源：共用清單＋這檔自己的一手網域。只有系統預設前提的股票是空的（它的審查不用網頁證據）。
- * 持股頁勾選條件時的來源選單、存檔時的檢查都用這一份。
- */
-export function condSources(meta: Pick<OwnMeta, 'premises' | 'webSources'> | undefined): WebSourceMatch[] {
-  if (!meta || fileKind(meta) === 'DEFAULT_ONLY') return [];
-  return listedWebSources(meta.webSources?.domains ?? []).map((s) => ({ domain: s.domain, tier: s.tier, label: s.label }));
-}
-
-/**
- * 勾選條件時的網頁來源（「使用者勾選條件時看得到並可以改；網域要在清單或這檔的來源裡，否則擋下」）。回傳勾選後要存的 check。
- *   source 沒給（undefined、null）→ 不改；條件原本指名的來源要還在清單內，不在就擋下（不讓畫面寫著「用 X 的網頁檢查」卻永遠取不到）
- *   source = ''       → 不指名：拿掉 `web:`；確認來源因此變空的，改成 major_news（只在定期審查時檢查，要申報或財報的引用才算成立）
- *   source = 網域      → 換成這個來源（寫成清單上的網域）；只有可以改來源的條件（canPickSource）才收
- * 不能做時丟 CondError（訊息直接給使用者看）。
- */
-export function withWebSource(c: { kind: string; check: Record<string, unknown>; manual?: boolean }, source: unknown, meta: Pick<OwnMeta, 'premises' | 'webSources'>): Record<string, unknown> {
-  const extra = fileKind(meta) === 'DEFAULT_ONLY' ? null : (meta.webSources?.domains ?? []);
-  const ok = (d: string) => (extra ? findWebSource(d, extra) : null);
-  if (c.manual || c.kind !== 'EVENT') return c.check;
-  if (source === undefined || source === null) {
-    const gone = namedWebDomains(c.check).find((d) => !ok(d));
-    if (gone) throw new CondError(extra ? `這條條件指名的來源 ${gone} 不在清單或這檔的來源裡。改選別的來源或選「不指名」再勾。` : `這檔只有系統預設前提，審查不用網頁證據：先寫下你的前提，或把來源改成「不指名」再勾。`);
-    return c.check;
-  }
-  if (typeof source !== 'string') throw new CondError('來源的格式不對。');
-  if (!canPickSource(c)) throw new CondError('這條條件由申報或財報確認，不能改成網頁來源。');
-  const by = (Array.isArray(c.check.confirm_by) ? c.check.confirm_by.map(String) : []).filter((x) => webRefDomain(x) === null);
-  const d = source.trim().toLowerCase();
-  if (!d) return { ...c.check, confirm_by: by.length ? by : ['major_news'] };
-  const hit = ok(d);
-  if (!hit) throw new CondError(extra ? `${d} 不在清單或這檔的來源裡，不能當確認來源。要用它，先到「編輯論點」把它加進這檔的來源（評論、社群網站加不進來）。` : '這檔只有系統預設前提，審查不用網頁證據，不能指名網頁來源。');
-  return { ...c.check, confirm_by: [...by, `web:${hit.domain}`] };
-}
+// T68（confirm_audit_design §1.6）：勾選條件時選「用哪個網頁來源確認」拿掉了（使用者沒有判斷網站的依據）。
+// 條件寫的 web:<網域> 原樣存；能不能確認成立看審查時那個網域的級別（一手或產業研究機構才算），排除列表的在檢查時就改標只記錄。
 
 /** 可以被取代的條件狀態（監測中、只在審查時檢查、只記錄、建議中）。 */
 export const SUPERSEDABLE: readonly string[] = ['ACTIVE', 'REVIEW_ONLY', 'MANUAL', 'PROPOSED'];
@@ -80,7 +43,7 @@ export function supersedeStmts(db: D1Database, ticker: string, fileId: string | 
  * 持股頁的條件操作。acct：現在的帳戶（只讀 fileId）；session：訊號日（log 用）。
  * 回傳這一條之後的狀態。不能做時丟 CondError（訊息直接給使用者看）。
  */
-export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'>, ticker: string, id: number, op: CondOp, action: unknown, session: string, now: Date, source?: unknown): Promise<{ id: number; status: string; action: CondAction | null; retired?: number }> {
+export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'>, ticker: string, id: number, op: CondOp, action: unknown, session: string, now: Date): Promise<{ id: number; status: string; action: CondAction | null; retired?: number }> {
   const meta = acct.own[ticker];
   if (!meta) throw new CondError(`${ticker} 不是自選股。`);
   const conds = await fileConditions(db, acct, ticker);
@@ -93,9 +56,8 @@ export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'>, ti
   if (op === 'accept') {
     if (c.status !== 'PROPOSED') throw new CondError(c.status === 'EXPIRED' ? '這條建議已經過期（之後的審查寫了新的建議）。' : '這條不是建議中的條件，不用再勾。');
     const act: CondAction = isAction(action) ? action : defaultAction(c);
-    // 指名的網頁來源（T53）：勾選時可以改；清單外的擋下
-    const check = withWebSource({ kind: c.kind, check: c.check, manual: c.auto === false }, source, meta);
-    const status = acceptStatus({ ...c, check });
+    const check = c.check;
+    const status = acceptStatus(c);
     const sup = c.supersedes ? conds.find((x) => x.id === c.supersedes && SUPERSEDABLE.includes(x.status)) : undefined;
     if (OWNED_LIVE.includes(status)) checkCap(conds, 1, sup ? [sup.id] : []);
     stmts.push(db.prepare("UPDATE own_conditions SET status = ?, accepted_at = ?, action = ?, check_json = ? WHERE id = ? AND status = 'PROPOSED'").bind(status, at, act, JSON.stringify(check), c.id));

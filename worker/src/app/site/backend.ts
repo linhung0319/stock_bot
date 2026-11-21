@@ -29,7 +29,7 @@ import { acceptOwnConditions, confirmDropAll, exitSetOf, monitorView, ownCheckVi
 import type { ExitLine } from '../../ai/ownCheck';
 import type { DiscussionMode } from '../../ai/discussion';
 import { realDiscussion } from '../discussion';
-import { condSources, conditionOp, type CondOp } from '../ownConds';
+import { conditionOp, type CondOp } from '../ownConds';
 import { holdingAttention, loadPrevFile, thesisFile, type ExitSet, type PrevFile } from '../thesis';
 import { thesisView, type ThesisView } from './thesisView';
 import { holdingMom, vetoEpisodes, type HoldingMom, type VetoEpisode } from '../momNotes';
@@ -129,11 +129,9 @@ export interface SiteAi {
   /** 討論包（own_thesis §1.7）。 */
   discussion(ticker: string, acct: Account, view: MarketView, mode: DiscussionMode | null, notif: number | null): Promise<{ text: string; mode: DiscussionMode }>;
   /** 確認改寫結果（T42）：勾選的開始監測、被取代的與這次沒提到的撤下。 */
-  acceptConditions(ticker: string, runId: string, ids: string[], actions?: Record<string, unknown>, sources?: Record<string, unknown>): Promise<ConfirmResult>;
+  acceptConditions(ticker: string, runId: string, ids: string[], actions?: Record<string, unknown>): Promise<ConfirmResult>;
   /** 持股頁的條件操作（T26）：勾選 AI 建議的條件、撤下你定的條件、改成立時的動作。 */
-  condition(ticker: string, id: number, op: CondOp, action?: unknown, source?: unknown): Promise<{ id: number; status: string; action: string | null; retired?: number }>;
-  /** 這檔的條件可以指名哪些網頁來源（T53；勾選條件時的來源選單）。 */
-  condSources(ticker: string): Promise<{ domain: string; label: string; tier: string }[]>;
+  condition(ticker: string, id: number, op: CondOp, action?: unknown): Promise<{ id: number; status: string; action: string | null; retired?: number }>;
   monitor(ticker: string): Promise<Awaited<ReturnType<typeof monitorView>>>;
   /** 持股頁：這檔現在成立的「要看的事」（全部，不看頻率；own_thesis §3.6.6）。 */
   attention(ticker: string, acct: Account, view: MarketView): Promise<Attention[]>;
@@ -303,13 +301,12 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       checkView: (runId) => ownCheckView(env, runId, now),
       rewrites: (ticker) => rewriteView(env, ticker, now),
       discussion: (ticker, acct, view, mode, notif) => realDiscussion(env, fetcher, acct, view, ticker, mode, notif),
-      acceptConditions: async (ticker, runId, ids, actions, sources) => acceptOwnConditions(env, ticker, runId, ids, now, actions, lastCompletedSession(now, await loadCalendarOverrides(env.DB)), sources),
-      async condition(ticker, id, op, action, source) {
+      acceptConditions: async (ticker, runId, ids, actions) => acceptOwnConditions(env, ticker, runId, ids, now, actions, lastCompletedSession(now, await loadCalendarOverrides(env.DB))),
+      async condition(ticker, id, op, action) {
         const acct = (await loadAccount(env.DB))?.acct;
         if (!acct) throw new Error('還沒有帳戶');
-        return conditionOp(env.DB, acct, ticker, id, op, action, lastCompletedSession(now, await loadCalendarOverrides(env.DB)), now, source);
+        return conditionOp(env.DB, acct, ticker, id, op, action, lastCompletedSession(now, await loadCalendarOverrides(env.DB)), now);
       },
-      condSources: async (ticker) => condSources((await loadAccount(env.DB))?.acct.own[ticker]),
       monitor: (ticker) => monitorView(env, ticker),
       attention: (ticker, acct, view) => holdingAttention(env.DB, acct, view, ticker),
       prevFile: (ticker, acct) => loadPrevFile(env.DB, acct, ticker),

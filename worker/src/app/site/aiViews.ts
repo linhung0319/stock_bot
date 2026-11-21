@@ -1,6 +1,6 @@
 // 網站的 AI 紀錄（T9；design_v2 §6.6）：每一次 AI 執行一頁（輸入、每一票、檢查、結論、過程），「匯出 md 拿去問 AI」，
 // 以及把 AI 紀錄轉成建議單上的 AI 說明（AiNote）。
-import { DOC_FNS, LOOKUP_QUERIES, questionsCap, type RefuseReason } from '../../ai/added';
+import { DOC_FNS, LOOKUP_QUERIES, questionsCap, type AddedDoc, type RefuseReason } from '../../ai/added';
 import { FRESH_ROLE } from '../../ai/freshEyes';
 import { keptByChoice, type CheckedPremise, type CheckedSample, type Outcome } from '../../ai/check';
 import { TIER_TEXT } from '../../data/webSources';
@@ -204,7 +204,7 @@ export interface FoundView {
 }
 
 const REFUSE_TEXT: Record<RefuseReason, string> = {
-  NOT_LISTED: '不在清單內',
+  NOT_LISTED: '排除或路徑不收',
   BLOCKED: '網站擋下',
   THIN: '內文太短（多半是付費牆或要登入）',
   UNSUPPORTED: '不是網頁（例如 PDF）',
@@ -215,10 +215,21 @@ const REFUSE_TEXT: Record<RefuseReason, string> = {
 };
 /** 被拒絕的原因（白話；程式記的代號不給使用者看）。 */
 function refuseText(reason: string, detail: string | null): string {
-  if (reason === 'NOT_LISTED') return detail === 'EXCLUDED' ? '評論、預測或社群網站：抓得到也不當證據' : detail === 'PATH' ? '這個網站只收特定的頁面（例如新聞稿），這一頁不收' : REFUSE_TEXT.NOT_LISTED;
+  if (reason === 'NOT_LISTED') return detail === 'EXCLUDED' ? '排除列表裡的網站（評論、預測或社群）：抓得到也不當證據' : detail === 'PATH' ? '這個網站只收特定的頁面（例如新聞稿），這一頁不收' : REFUSE_TEXT.NOT_LISTED;
   const base = REFUSE_TEXT[reason as RefuseReason] ?? '沒有抓成';
   if (reason === 'NO_DATE' || !detail) return base;
   return `${base}（${detail}）`;
+}
+
+/**
+ * 網頁的級別（T68，confirm_audit_design §1.8）：判的時候用的（rating；還沒送回結果的是取回那一刻的 tier）；
+ * 這次執行的來源評級剛評的另外寫理由。
+ */
+function webLevel(d: AddedDoc): string {
+  const r = d.rating ?? d.tier;
+  if (!r) return '網頁（級別不明）';
+  const base = `網頁（${TIER_TEXT[r]}${r === 'PRIMARY' ? '來源' : ''}）`;
+  return d.rated_here ? `${base}（這次評的：${d.rated_here}）` : base;
 }
 
 /** 取回的文件的標題：去掉程式加的「〔網頁｜…〕」與「（發布…抓）」「（只取開頭 N 字）」，那幾樣另外列。 */
@@ -244,7 +255,7 @@ export function foundView(run: AiRun): FoundView | null {
     return {
       title: plainTitle(d.title),
       source: d.kind === 'filing' ? (peer ?? '同業') : (d.label ?? d.domain ?? '網頁'),
-      level: d.kind === 'filing' ? '同業的申報' : `網頁（${d.tier ? `${TIER_TEXT[d.tier]}${d.tier === 'PRIMARY' ? '來源' : ''}` : '級別不明'}）`,
+      level: d.kind === 'filing' ? '同業的申報' : webLevel(d),
       published: d.date,
       fetched: d.fetched_at.slice(0, 10),
       url: d.url,

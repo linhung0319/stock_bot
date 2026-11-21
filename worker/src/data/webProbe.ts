@@ -3,7 +3,7 @@
 import { htmlToText, parseRss } from './edgar';
 import type { Fetcher } from './sources';
 import { extractPage, findPublished, safeWebUrl, webHeaders } from './webDoc';
-import { matchWebSource } from './webSources';
+import { seedOf } from './webSources';
 
 // safeWebUrl、findPublished 搬到 webDoc.ts（T51），這裡照舊匯出給既有的呼叫者。
 export { findPublished, safeWebUrl };
@@ -40,18 +40,16 @@ export async function probeWebPage(fetcher: Fetcher, raw: string): Promise<WebPr
   const t0 = Date.now();
   try {
     // 和 fetchWebDoc 同一套 User-Agent：寫了 selfIdentify 的網站（勞工統計局）用寫明是程式的
-    const first = matchWebSource(u);
-    const res = await fetcher(u.toString(), { headers: webHeaders('miss' in first ? undefined : first.extract, HEADERS), redirect: 'follow', signal: AbortSignal.timeout(15_000) });
+    const res = await fetcher(u.toString(), { headers: webHeaders(seedOf(u.hostname)?.extract, HEADERS), redirect: 'follow', signal: AbortSignal.timeout(15_000) });
     const contentType = res.headers.get('content-type') ?? '';
     const buf = new Uint8Array(await res.arrayBuffer());
     const base = { url: raw, status: res.status, finalUrl: res.url || u.toString(), contentType, bytes: buf.length, ms: Date.now() - t0 };
     if (!res.ok) return { ...base, ok: false, error: `HTTP ${res.status}` };
     if (!/html|xml|text/i.test(contentType)) return { ...base, ok: false, error: `不是網頁（${contentType || '沒有 content-type'}）` };
     const html = new TextDecoder().decode(buf.slice(0, WEB_PROBE_MAX_BYTES));
-    // 和 fetchWebDoc 同一套認法（T64）：清單上寫了擷取方式的來源（官方來源）照它的規則量，其他照一般的規則
+    // 和 fetchWebDoc 同一套認法（T64）：種子寫了擷取方式的來源（官方來源）照它的規則量，其他照一般的規則
     const final = safeWebUrl(base.finalUrl) ?? u;
-    const src = matchWebSource(final);
-    const page = extractPage(html, final, 'miss' in src ? undefined : src.extract);
+    const page = extractPage(html, final, seedOf(final.hostname)?.extract);
     const { text, body } = page;
     const pub = page.published;
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];

@@ -29,14 +29,14 @@ import { LINE_PUSH_URL, notifText } from '../src/app/line';
 import { saveAccount } from '../src/app/ledgerStore';
 import { applyOwnReview, citedBasis, docLabel, startOwnReview, webDocLabel } from '../src/app/ownAi';
 import { monitorView } from '../src/app/ownCheckAi';
-import { CondError, condSources, withWebSource } from '../src/app/ownConds';
+import { conditionOp } from '../src/app/ownConds';
 import { foundView, noteOfRun } from '../src/app/site/aiViews';
 import { explainItem } from '../src/app/site/explain';
 import { acceptStatus, condFacts, confirmText, loadConditions, thesisFile } from '../src/app/thesis';
 import type { CompanyFacts, XbrlFact } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
-import { findWebSource, listedWebSources, sameWebDomain } from '../src/data/webSources';
+import { sameWebDomain } from '../src/data/webSources';
 import { breakItem, createAccount, monthlyReport, type Account, type MarketView } from '../src/engine';
 import { handle } from '../src/index';
 import { freshDb } from './helpers/d1';
@@ -86,6 +86,8 @@ function fetcherOf(w: World, line: string[]): Fetcher {
     if (doc) return doc[2] === 'index.json' ? Response.json({ directory: { item: [{ name: TENQ.primaryDocument }] } }) : new Response(TENQ.html);
     if (url.startsWith('https://www.nasdaq.com/feed/rssoutbound')) return new Response(url.includes('NVDA') ? NVDA_RSS : '<rss><channel></channel></rss>');
     if (url.startsWith('https://feeds.finance.yahoo.com/rss/2.0/headline')) return new Response('<rss><channel></channel></rss>');
+    // T68：不在種子的網址也會去抓；這個假網站回 404
+    if (url === OTHER) return new Response('nf', { status: 404 });
     const p = PAGES[url];
     if (p) return new Response(p(), { headers: { 'content-type': 'text/html; charset=utf-8' } });
     return base(url, init);
@@ -222,7 +224,7 @@ describe('T53 §1.6：引用來自哪裡，可不可以判前提不成立', () =
   it('網頁，一手 → 可以', () => {
     const { d } = broken([DOC.skh], () => [E('E1', DOC.skh, QUOTE.skh)]);
     expect(d).toMatchObject(YES);
-    expect(d.why).toContain('有清單內網頁全文的引用');
+    expect(d.why).toContain('有評過級的網頁全文的引用');
   });
 
   it('網頁，指名的產業來源 → 可以', () => {
@@ -319,10 +321,10 @@ describe('T53 §1.6：引用來自哪裡，可不可以確認你定的條件成�
     expect(met([DOC.tf, DOC.skh], ['trendforce.com'], (k) => (k === 1 ? [E('E1', DOC.skh, QUOTE.skh)] : [E('E1', DOC.tf, QUOTE.tf)]))).toMatchObject(NO);
   });
 
-  it('網頁，媒體 → 不行（兩個網域也不行）；除非條件指名了它', () => {
+  it('網頁，媒體 → 不行（兩個網域也不行；T68 起條件指名了它也不行，confirm_audit_design §1.6）', () => {
     expect(met([DOC.tpu], [], () => [E('E1', DOC.tpu, QUOTE.tpu)])).toMatchObject(NO);
     expect(met([DOC.tpu, DOC.mw], ['trendforce.com'], () => [E('E1', DOC.tpu, QUOTE.tpu), E('E2', DOC.mw, QUOTE.mw)])).toMatchObject(NO);
-    expect(met([DOC.tpu], ['techpowerup.com'], () => [E('E1', DOC.tpu, QUOTE.tpu)])).toMatchObject({ metChecks: ['C1'], metBasis: { C1: 'WEB_VOTE' } });
+    expect(met([DOC.tpu], ['techpowerup.com'], () => [E('E1', DOC.tpu, QUOTE.tpu)])).toMatchObject(NO);
   });
 
   it('新聞標題、沒有取過的網址 → 不行（指名了來源也一樣）', () => {
@@ -507,7 +509,7 @@ describe('T53：指名來源的條件（甲類，met_basis = WEB_VOTE）', () =>
         before: async () => void (await c.db.prepare('UPDATE own_conditions SET check_json = ? WHERE id = ?').bind(JSON.stringify({ type: 'event', confirm_by: ['web:dramexchange.com'] }), id).run()),
       });
       expect(urgents(changed.ctx.acct)).toEqual([]);
-      expect(changed.ctx.log.join('\n')).toContain('引用的網頁不是這條條件現在指名的來源，不算成立');
+      expect(changed.ctx.log.join('\n')).toContain('引用的網頁不是這條條件現在指名的來源');
       await c.db.prepare('UPDATE own_conditions SET check_json = ? WHERE id = ?').bind(JSON.stringify({ type: 'event', confirm_by: ['web:trendforce.com'] }), id).run();
 
       // 條件指名的來源 → 成立：甲類當天通知
@@ -573,17 +575,14 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
     expect(confirmText(row(['8-K', 'web:trendforce.com']))).toBe('新申報出來時由 AI 確認；審查時也用 TrendForce 的網頁檢查');
     expect(confirmText(row(['major_news']))).toBe('只在定期審查時檢查');
     expect(confirmText(row(['web:trendforce.com'], false))).toBe('只記錄');
-    // 可以指名的來源：共用清單＋這檔的一手網域；不列入的網站、清單外的對不到
-    expect(listedWebSources(['news.skhynix.com', 'fool.com', 'www.trendforce.com']).map((s) => s.domain)).toEqual(['nvidianews.nvidia.com', 'semiconductors.org', 'trendforce.com', 'dramexchange.com', 'techpowerup.com', 'cnbc.com', 'finance.yahoo.com', 'npr.org', 'fortune.com', 'federalreserve.gov', 'bls.gov', 'news.skhynix.com']);
-    expect(findWebSource('www.trendforce.com')).toMatchObject({ domain: 'trendforce.com', tier: 'NAMED', label: 'TrendForce' });
-    expect(findWebSource('news.skhynix.com', ['news.skhynix.com'])).toMatchObject({ tier: 'PRIMARY' });
-    expect(findWebSource('news.skhynix.com')).toBeNull();
-    expect(findWebSource('fool.com', ['fool.com'])).toBeNull();
+    // T68（confirm_audit_design §1.6）：網站上給評級表時，句子後面加級別；還沒評的寫評級之前不算數（「可以指名的來源」的清單拿掉了，級別查詢在 t68 測）
+    expect(confirmText(row(['web:trendforce.com']), new Map())).toBe('審查時用 TrendForce 的網頁檢查（產業研究機構）');
+    expect(confirmText(row(['web:news.skhynix.com']), new Map())).toBe('審查時用 news.skhynix.com 的網頁檢查（來源還沒評級，評級之前不算數）');
     expect(sameWebDomain('www.trendforce.com', 'trendforce.com')).toBe(true);
     expect(sameWebDomain('nottrendforce.com', 'trendforce.com')).toBe(false);
   });
 
-  it('AI 提的條件：指名清單內的來源 → 通過檢查；清單外的、證據包沒有列來源的 → 擋下（只記錄）', async () => {
+  it('AI 提的條件：指名網頁來源 → 通過檢查（T68：不再限清單內）；排除列表的 → 擋下（只記錄）', async () => {
     await withWorld(async (c) => {
       const prop = (by: string[]) => ({ id: 'N1', direction: 'DOWN', kind: 'EVENT', text: 'TrendForce 的新聞稿寫 DRAM 合約價季跌', check: { type: 'event', confirm_by: by }, tier_if_met: 'HALF' });
       const run = (pack: EvidencePack, by: string[]) => judge(pack, three(vote(pack, 'HOLD', [['P1', 'HOLDS', ['E9']]], [E_REV], { proposed_conditions: [prop(by)] })), HOOK).samples[0].conditions[0];
@@ -592,54 +591,54 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
       expect(run(listed, ['web:trendforce.com'])).toMatchObject({ auto: true });
       expect(run(listed, ['web:www.trendforce.com'])).toMatchObject({ auto: true });
       expect(run(listed, ['8-K', 'web:news.skhynix.com'])).toMatchObject({ auto: true });
-      expect(run(listed, ['web:fool.com'])).toMatchObject({ auto: false, why: '指名的網頁來源 fool.com 不在清單或這檔的來源裡（清單外的網站不能當確認來源）' });
-      expect(run(listed, ['web:eviltrendforce.com'])).toMatchObject({ auto: false });
+      expect(run(listed, ['web:fool.com'])).toMatchObject({ auto: false, why: '指名的網頁來源 fool.com 在排除列表裡（評論、預測、社群網站不能當確認來源）' });
+      // T68（confirm_audit_design §1.6）：不在清單的網域也收（能不能確認成立看審查時的級別）
+      expect(run(listed, ['web:eviltrendforce.com'])).toMatchObject({ auto: true });
       expect(run(listed, ['tweets'])).toMatchObject({ auto: false, why: '事件條件要寫確認來源（confirm_by）' });
-      // 沒有列來源的證據包（舊的、只有預設前提的股票）：指名任何網頁來源都擋下
-      expect(run(packOf(c, c.acct), ['web:trendforce.com'])).toMatchObject({ auto: false });
+      // 沒有列來源的證據包也一樣（不再看 rule.detail.webDomains）
+      expect(run(packOf(c, c.acct), ['web:trendforce.com'])).toMatchObject({ auto: true });
       // 三票一致時寫成建議中的條件，確認方式照它寫的
       const d = reviewDecision(judge(listed, three(vote(listed, 'HOLD', [['P1', 'HOLDS', ['E9']]], [E_REV], { proposed_conditions: [prop(['web:trendforce.com'])] })), HOOK), c.acct, 'NVDA', c.view.date, listed);
       expect(d.proposed).toMatchObject([{ kind: 'EVENT', manual: false, check: { confirm_by: ['web:trendforce.com'] } }]);
     });
   });
 
-  it('勾選時改來源（純函式）：不指名、換成清單內的、清單外的擋下、只有預設前提的股票不能指名', () => {
-    const meta = { premises: USER_PREMISES, webSources: { peers: [], domains: ['news.skhynix.com'] } };
-    const c = (by: unknown[]) => ({ kind: 'EVENT', check: { type: 'event', confirm_by: by } });
-    expect(withWebSource(c(['web:trendforce.com']), undefined, meta)).toEqual({ type: 'event', confirm_by: ['web:trendforce.com'] });
-    expect(withWebSource(c(['web:trendforce.com']), '', meta)).toEqual({ type: 'event', confirm_by: ['major_news'] });
-    expect(withWebSource(c(['earnings_call', 'web:trendforce.com']), '', meta)).toEqual({ type: 'event', confirm_by: ['earnings_call'] });
-    expect(withWebSource(c(['web:trendforce.com']), 'News.SKhynix.com', meta)).toEqual({ type: 'event', confirm_by: ['web:news.skhynix.com'] });
-    expect(withWebSource(c(['major_news']), 'www.dramexchange.com', meta)).toEqual({ type: 'event', confirm_by: ['major_news', 'web:dramexchange.com'] });
-    expect(() => withWebSource(c(['web:trendforce.com']), 'example.org', meta)).toThrow(CondError);
-    expect(() => withWebSource(c(['web:trendforce.com']), 'fool.com', meta)).toThrow('不在清單或這檔的來源裡');
-    // 條件原本指名的來源已經不在這檔的來源裡 → 不改就勾會被擋下
-    expect(() => withWebSource(c(['web:news.skhynix.com']), undefined, { premises: USER_PREMISES, webSources: null })).toThrow('不在清單或這檔的來源裡');
-    // 由申報確認的條件不能改成網頁來源；財報條件、只記錄的不管
-    expect(() => withWebSource(c(['8-K']), 'trendforce.com', meta)).toThrow('由申報或財報確認');
-    expect(withWebSource({ kind: 'XBRL', check: { type: 'xbrl_metric_below' } }, 'trendforce.com', meta)).toEqual({ type: 'xbrl_metric_below' });
-    // 只有系統預設前提：審查不用網頁證據
-    const def = { premises: [{ id: 'P1', text: '財報可信', origin: 'SYSTEM_DEFAULT' as const }], webSources: { peers: [], domains: ['news.skhynix.com'] } };
-    expect(condSources(def)).toEqual([]);
-    expect(() => withWebSource(c(['web:trendforce.com']), undefined, def)).toThrow('只有系統預設前提');
-    expect(withWebSource(c(['web:trendforce.com']), '', def)).toEqual({ type: 'event', confirm_by: ['major_news'] });
-    expect(condSources(meta).map((s) => [s.domain, s.tier])).toContainEqual(['news.skhynix.com', 'PRIMARY']);
+  // T68（confirm_audit_design §1.6）拿掉了「勾選時改來源」（withWebSource、condSources）：使用者沒有判斷網站的依據，條件寫的 web:<網域> 原樣存。
+  // 原本那個純函式的測試換成：勾選時送來源也不會改條件（API 的測試在下面的「出場條件改寫」）。
+  it('勾選建議的條件：不在這檔 domains 的來源照樣可以勾，條件寫的 web: 原樣存；只有預設前提的股票也可以勾，「怎麼確認」寫明現在不取網頁', async () => {
+    await withWorld(
+      async (c) => {
+        const p = await seed(c.db, { condId: 'N1', status: 'PROPOSED', origin: 'AI', acceptedAt: null, text: 'SK 海力士宣布 HBM 產能倍增', check: { type: 'event', confirm_by: ['web:news.skhynix.com'] } });
+        const r = await conditionOp(c.db, c.acct, 'NVDA', p, 'accept', 'HALF', c.view.date, new Date('2026-11-20T02:00:00Z'));
+        expect(r).toMatchObject({ status: 'REVIEW_ONLY', action: 'HALF' });
+        expect((await loadConditions(c.db, 'NVDA')).find((x) => x.id === p)).toMatchObject({ check: { confirm_by: ['web:news.skhynix.com'] } });
+      },
+      { sources: false },
+    );
+    await withWorld(
+      async (c) => {
+        const p = await seed(c.db, { condId: 'N1', status: 'PROPOSED', origin: 'AI', acceptedAt: null, text: 'TrendForce 的新聞稿寫 HBM 合約價下跌' });
+        expect((await monitorView(c.env, 'NVDA')).find((x) => x.id === p)!.confirm).toBe('審查時用 TrendForce 的網頁檢查（產業研究機構）（這檔只有系統預設前提，審查不取網頁；寫下你自己的前提之後才會用這個來源）');
+        expect((await conditionOp(c.db, c.acct, 'NVDA', p, 'accept', 'HALF', c.view.date, new Date('2026-11-20T02:00:00Z'))).status).toBe('REVIEW_ONLY');
+      },
+      { defaults: true },
+    );
   });
 
-  it('指名的來源後來從這檔的來源拿掉了：持股頁的「怎麼確認」寫明現在取不到', async () => {
+  it('指名的來源不在這檔的 domains 也照樣用（T68）：持股頁的「怎麼確認」寫級別，還沒評的寫評級之前不算數', async () => {
     await withWorld(
       async (c) => {
         const gone = await seed(c.db, { text: 'SK 海力士宣布 HBM 產能倍增', check: { type: 'event', confirm_by: ['web:news.skhynix.com'] } });
         const kept = await seed(c.db, { condId: 'U2' });
         const rows = await monitorView(c.env, 'NVDA');
-        expect(rows.find((x) => x.id === gone)!.confirm).toBe('審查時用 news.skhynix.com 的網頁檢查（news.skhynix.com 現在不在清單或這檔的來源裡，審查取不到它的網頁；到「編輯論點」把它加回這檔的來源，或撤下這一條）');
-        expect(rows.find((x) => x.id === kept)!.confirm).toBe('審查時用 TrendForce 的網頁檢查');
+        expect(rows.find((x) => x.id === gone)!.confirm).toBe('審查時用 news.skhynix.com 的網頁檢查（來源還沒評級，評級之前不算數）');
+        expect(rows.find((x) => x.id === kept)!.confirm).toBe('審查時用 TrendForce 的網頁檢查（產業研究機構）');
       },
       { sources: false },
     );
   });
 
-  it('出場條件改寫：證據包列出可以指名的來源；持股頁看得到來源、可以改；清單外的回 422；勾選 AI 建議的條件也一樣', async () => {
+  it('出場條件改寫：證據包列出種子；持股頁看得到來源與級別（T68：勾選時不能改來源，送了也不理）；排除列表的只記錄', async () => {
     await withWorld(async (c) => {
       const save = await c.call<{ rewrite: { status: string; runId: string } }>('POST', '/api/ops/own-thesis', {
         ticker: 'NVDA',
@@ -656,22 +655,22 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
       const run = (await getRun(c.db, save.body.rewrite.runId))!;
       expect(run.pack.prompt_version).toBe('own_check_v5');
       const s = run.pack.facts.filter((f) => /^S\d+$/.test(f.id));
+      // T68（confirm_audit_design §1.3、§1.7）：S 是種子（路徑限制只留有理由的）；這檔的 domains 不再列
       expect(s.map((f) => f.value)).toEqual([
-        'nvidianews.nvidia.com｜NVIDIA 新聞室｜一手｜只收 /news/',
+        'nvidianews.nvidia.com｜NVIDIA 新聞室｜一手',
         'semiconductors.org｜SIA 美國半導體產業協會｜一手',
-        'trendforce.com｜TrendForce｜指名的產業來源｜只收 /presscenter/、/news/',
-        'dramexchange.com｜DRAMeXchange（TrendForce）｜指名的產業來源｜只收 /WeeklyResearch/Post/',
+        'trendforce.com｜TrendForce｜產業研究機構｜不收 /research/',
+        'dramexchange.com｜DRAMeXchange（TrendForce）｜產業研究機構',
         'techpowerup.com｜TechPowerUp｜媒體',
         // T64（composite_layer_design §0.4 的 Y2、§5.1）：共用清單多了四個媒體與兩個官方來源
         'cnbc.com｜CNBC｜媒體',
-        'finance.yahoo.com｜Yahoo Finance｜媒體｜只收 /news/',
+        'finance.yahoo.com｜Yahoo Finance｜媒體',
         'npr.org｜NPR｜媒體',
         'fortune.com｜Fortune｜媒體',
         'federalreserve.gov｜聯準會（Federal Reserve Board）｜一手｜只收 /newsevents/pressreleases/、/newsevents/speech/、/newsevents/testimony/',
         'bls.gov｜美國勞工統計局（BLS）｜一手｜只收 /news.release/',
-        'news.skhynix.com｜news.skhynix.com｜一手',
       ]);
-      expect((run.pack.rule.detail as { webDomains: string[] }).webDomains).toEqual(['nvidianews.nvidia.com', 'semiconductors.org', 'trendforce.com', 'dramexchange.com', 'techpowerup.com', 'cnbc.com', 'finance.yahoo.com', 'npr.org', 'fortune.com', 'federalreserve.gov', 'bls.gov', 'news.skhynix.com']);
+      expect((run.pack.rule.detail as { webDomains: string[] }).webDomains).toEqual(['nvidianews.nvidia.com', 'semiconductors.org', 'trendforce.com', 'dramexchange.com', 'techpowerup.com', 'cnbc.com', 'finance.yahoo.com', 'npr.org', 'fortune.com', 'federalreserve.gov', 'bls.gov']);
       expect(run.pack.question).toContain('web:<網域>');
       // 改寫回來（一票，假的）
       const price = run.pack.documents.find((d) => d.source_id === 'price:NVDA')!;
@@ -683,44 +682,34 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
         { samples: [{ run_id: run.runId, verdict: 'DONE', evidence: [{ id: 'E1', source_id: 'price:NVDA', date: price.date, quote: price.text.split('\n').at(-1)!, claim: '最新收盤' }], payload: { conditions: [cond('C1', 'U1', 'TrendForce 的新聞稿寫 DRAM 合約價季跌超過 10%', ['web:trendforce.com'], 'HALF'), cond('C2', 'U2', 'fool.com 的文章說該賣了', ['web:fool.com']), cond('C3', 'U3', '公司在 8-K 下修全年財測', ['8-K'], 'EXIT')] }, report: '改寫好了。' }] },
         new Date('2026-11-20T01:05:00Z'),
       );
-      type Hd = { condSources: { domain: string; label: string; tier: string }[]; rewrites: { results: { runId: string; conditions: { condId: string; then: string; web: string[]; canSource: boolean; manual: boolean }[] }[] }; monitor: { id: number; text: string; code: string; confirm: string; web: string[]; canSource: boolean }[] };
+      type Hd = { condSources?: unknown; rewrites: { results: { runId: string; conditions: { condId: string; then: string; web: string[]; canSource?: boolean; manual: boolean }[] }[] }; monitor: { id: number; text: string; code: string; confirm: string; web: string[]; canSource?: boolean }[] };
       const hd = (await c.call<Hd>('GET', '/api/holding/NVDA')).body;
-      expect(hd.condSources.map((x) => x.domain)).toEqual(['nvidianews.nvidia.com', 'semiconductors.org', 'trendforce.com', 'dramexchange.com', 'techpowerup.com', 'cnbc.com', 'finance.yahoo.com', 'npr.org', 'fortune.com', 'federalreserve.gov', 'bls.gov', 'news.skhynix.com']);
+      // T68：來源選單拿掉了（持股頁不再帶 condSources，條件不再有 canSource）
+      expect(hd.condSources).toBeUndefined();
       const rw = hd.rewrites.results[0];
       expect(rw.conditions.map((x) => [x.condId, x.then, x.web, x.canSource, x.manual])).toEqual([
-        ['U1', '審查時用 TrendForce 的網頁檢查', ['trendforce.com'], true, false],
-        ['U2', '只記錄：指名的網頁來源 fool.com 不在清單或這檔的來源裡（清單外的網站不能當確認來源）', [], false, true],
-        ['U3', '新申報出來時由 AI 確認', [], false, false],
+        ['U1', '審查時用 TrendForce 的網頁檢查（產業研究機構）', ['trendforce.com'], undefined, false],
+        ['U2', '只記錄：指名的網頁來源 fool.com 在排除列表裡（評論、預測、社群網站不能當確認來源）', [], undefined, true],
+        ['U3', '新申報出來時由 AI 確認', [], undefined, false],
       ]);
-      // 勾選時把來源改成清單外的 → 422，什麼都沒寫
-      const bad = await c.call<{ error: string }>('POST', '/api/ops/own-conditions', { ticker: 'NVDA', runId: rw.runId, ids: ['U1', 'U3'], sources: { U1: 'example.org' } });
-      expect(bad.status).toBe(422);
-      expect(JSON.stringify(bad.body)).toContain('example.org 不在清單或這檔的來源裡');
-      expect(await loadConditions(c.db, 'NVDA')).toEqual([]);
-      // 改成清單內的另一個來源 → 存的是改過的
-      const ok = await c.call('POST', '/api/ops/own-conditions', { ticker: 'NVDA', runId: rw.runId, ids: ['U1', 'U3'], sources: { U1: 'dramexchange.com' } });
+      // 勾選時送來源（舊的畫面）也不理：存的是 AI 寫的
+      const ok = await c.call('POST', '/api/ops/own-conditions', { ticker: 'NVDA', runId: rw.runId, ids: ['U1', 'U3'], sources: { U1: 'example.org' } });
       expect(ok.status).toBe(200);
       const rows = await loadConditions(c.db, 'NVDA');
       expect(rows.map((x) => [x.text, x.status, (x.check as { confirm_by: string[] }).confirm_by])).toEqual([
-        ['TrendForce 的新聞稿寫 DRAM 合約價季跌超過 10%', 'REVIEW_ONLY', ['web:dramexchange.com']],
+        ['TrendForce 的新聞稿寫 DRAM 合約價季跌超過 10%', 'REVIEW_ONLY', ['web:trendforce.com']],
         ['公司在 8-K 下修全年財測', 'ACTIVE', ['8-K']],
       ]);
       const mon = (await c.call<Hd>('GET', '/api/holding/NVDA')).body.monitor;
-      expect(mon.find((x) => x.code === 'REVIEW_ONLY')).toMatchObject({ confirm: '審查時用 DRAMeXchange（TrendForce） 的網頁檢查', web: ['dramexchange.com'], canSource: false });
+      expect(mon.find((x) => x.code === 'REVIEW_ONLY')).toMatchObject({ confirm: '審查時用 TrendForce 的網頁檢查（產業研究機構）', web: ['trendforce.com'] });
 
-      // 審查建議的條件（建議中）：看得到來源、勾選時可以改成不指名；清單外的擋下
+      // 審查建議的條件（建議中）：看得到來源與級別；勾選時送來源也不理
       const p1 = await seed(c.db, { condId: 'N1', status: 'PROPOSED', origin: 'AI', acceptedAt: null, text: 'SK 海力士宣布 HBM 產能倍增', check: { type: 'event', confirm_by: ['web:news.skhynix.com'] } });
-      const p2 = await seed(c.db, { condId: 'N2', status: 'PROPOSED', origin: 'AI', acceptedAt: null, text: 'TrendForce 的新聞稿寫 HBM 合約價下跌' });
       const mon2 = (await c.call<Hd>('GET', '/api/holding/NVDA')).body.monitor;
-      expect(mon2.find((x) => x.id === p1)).toMatchObject({ code: 'PROPOSED', confirm: '審查時用 news.skhynix.com 的網頁檢查', web: ['news.skhynix.com'], canSource: true });
-      const refused = await c.call('POST', '/api/ops/own-condition', { ticker: 'NVDA', id: p1, op: 'accept', action: 'HALF', source: 'reuters.com' });
-      expect(refused.status).toBe(422);
-      expect((await loadConditions(c.db, 'NVDA')).find((x) => x.id === p1)!.status).toBe('PROPOSED');
-      expect((await c.call('POST', '/api/ops/own-condition', { ticker: 'NVDA', id: p1, op: 'accept', action: 'HALF', source: '' })).status).toBe(200);
-      expect((await c.call('POST', '/api/ops/own-condition', { ticker: 'NVDA', id: p2, op: 'accept', action: 'HALF' })).status).toBe(200);
-      const after = await loadConditions(c.db, 'NVDA');
-      expect(after.find((x) => x.id === p1)).toMatchObject({ status: 'REVIEW_ONLY', check: { confirm_by: ['major_news'] } });
-      expect(after.find((x) => x.id === p2)).toMatchObject({ status: 'REVIEW_ONLY', check: { confirm_by: ['web:trendforce.com'] } });
+      expect(mon2.find((x) => x.id === p1)).toMatchObject({ code: 'PROPOSED', confirm: '審查時用 news.skhynix.com 的網頁檢查（來源還沒評級，評級之前不算數）', web: ['news.skhynix.com'] });
+      expect(mon2.find((x) => x.id === p1)!.canSource).toBeUndefined();
+      expect((await c.call('POST', '/api/ops/own-condition', { ticker: 'NVDA', id: p1, op: 'accept', action: 'HALF', source: 'reuters.com' })).status).toBe(200);
+      expect((await loadConditions(c.db, 'NVDA')).find((x) => x.id === p1)).toMatchObject({ status: 'REVIEW_ONLY', check: { confirm_by: ['web:news.skhynix.com'] } });
     });
   });
 });
@@ -733,14 +722,14 @@ interface FoundBody {
 }
 
 describe('T53：分析師找資料的紀錄（§1.5 的 lookups、G22）', () => {
-  it('證據包列出清單內的來源；取回的文件記下來源；送回的 lookups 存進執行紀錄；審查紀錄頁列「AI 另外找了什麼」與沒取到的', async () => {
+  it('證據包列出種子；取回的文件記下來源；送回的 lookups 存進執行紀錄；審查紀錄頁列「AI 另外找了什麼」與沒取到的', async () => {
     await withWorld(async (c) => {
       const r = await startOwnReview(c.env, c.fetcher, c.acct, c.view, c.axis, 'NVDA', 'MANUAL', T0);
       expect(r.promptVersion).toBe('own_review_v4');
-      // 清單內的網頁來源（S）接在目錄（M）後面；網域清單記在 rule.detail
-      expect(r.pack.facts.filter((f) => /^[MS]\d+$/.test(f.id)).map((f) => f.id)).toEqual(['M1', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12']); // T64：共用清單多了 6 個來源
-      expect(r.pack.facts.find((f) => f.id === 'S3')).toMatchObject({ label: '清單內的網頁來源', value: 'trendforce.com｜TrendForce｜指名的產業來源｜只收 /presscenter/、/news/' });
-      expect((r.pack.rule.detail as { webDomains: string[] }).webDomains).toContain('news.skhynix.com');
+      // 種子（S）接在目錄（M）後面；網域清單記在 rule.detail（T68：這檔的 domains 不再列進來）
+      expect(r.pack.facts.filter((f) => /^[MS]\d+$/.test(f.id)).map((f) => f.id)).toEqual(['M1', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11']); // T64：共用清單多了 6 個來源
+      expect(r.pack.facts.find((f) => f.id === 'S3')).toMatchObject({ label: '已有級別的網頁來源', value: 'trendforce.com｜TrendForce｜產業研究機構｜不收 /research/' });
+      expect((r.pack.rule.detail as { webDomains: string[] }).webDomains).not.toContain('news.skhynix.com');
       // 還在等結果：這一塊寫「還沒有結果」
       expect(foundView(r)).toMatchObject({ state: 'PENDING', docs: [], missed: [] });
 
@@ -786,12 +775,15 @@ describe('T53：分析師找資料的紀錄（§1.5 的 lookups、G22）', () =>
       const f = (await c.call<FoundBody>('GET', `/api/ai/run/${r.runId}`)).body.found!;
       expect(f.state).toBe('GOT');
       expect(f.line).toBe('分析師另外取回 1 份文件，三票和原本的證據包一起讀。另外 2 份沒有取到。');
+      // T68：取回的文件每份記判的時候的級別
+      expect(done.added!.docs[0]).toMatchObject({ rating: 'NAMED', rated_here: null });
       expect(f.questions).toEqual([{ about: 'P2', ask: 'HBM 供給是不是還吃緊：公司的申報只寫自己的產能，要找合約價的走勢。' }, { about: null, ask: 'P1 的需求有沒有同業的數字可以對照' }]);
       expect(f.queries).toEqual(['TrendForce DRAM contract price 4Q26', 'NVDA demand 2027']);
-      expect(f.docs).toEqual([{ title: 'TrendForce story 1', source: 'TrendForce', level: '網頁（指名的產業來源）', published: '2026-11-18', fetched: '2026-11-20', url: TF(1), about: 'P2', why: 'TrendForce 的合約價', via: '從目錄挑的', cut: null, votes: 3, quotes: [quote] }]);
+      expect(f.docs).toEqual([{ title: 'TrendForce story 1', source: 'TrendForce', level: '網頁（產業研究機構）', published: '2026-11-18', fetched: '2026-11-20', url: TF(1), about: 'P2', why: 'TrendForce 的合約價', via: '從目錄挑的', cut: null, votes: 3, quotes: [quote] }]);
+      // T68：不在種子的網址也去抓了（這個假網站回 404）
       expect(f.missed).toEqual([
-        { what: FOOL, url: FOOL, reason: '評論、預測或社群網站：抓得到也不當證據', about: 'P1', why: '看多的文章' },
-        { what: OTHER, url: OTHER, reason: '不在清單內', about: 'P2', why: '報導提到砍單' },
+        { what: FOOL, url: FOOL, reason: '排除列表裡的網站（評論、預測或社群）：抓得到也不當證據', about: 'P1', why: '看多的文章' },
+        { what: OTHER, url: OTHER, reason: '網站擋下（HTTP 404）', about: 'P2', why: '報導提到砍單' },
       ]);
       // 畫面的文字不出現程式的代號
       expect(JSON.stringify(f)).not.toMatch(/NOT_LISTED|EXCLUDED|NAMED|PRIMARY|MEDIA|SEARCH|MENU/);
@@ -799,8 +791,8 @@ describe('T53：分析師找資料的紀錄（§1.5 的 lookups、G22）', () =>
       const md = await handle(new Request(`https://bot.example/api/ai/run/${r.runId}/md`), c.env, c.fetcher, new Date('2026-11-20T01:20:00Z'));
       const text = await md.text();
       expect(text).toContain('## AI 這次另外找了什麼');
-      expect(text).toContain('- TrendForce story 1（TrendForce，網頁（指名的產業來源），發布 2026-11-18，2026-11-20 抓）');
-      expect(text).toContain(`- ${OTHER}：不在清單內；為什麼要：報導提到砍單`);
+      expect(text).toContain('- TrendForce story 1（TrendForce，網頁（產業研究機構），發布 2026-11-18，2026-11-20 抓）');
+      expect(text).toContain(`- ${OTHER}：網站擋下（HTTP 404）；為什麼要：報導提到砍單`);
       // 網頁的全文不放在網站與匯出檔（著作權）：只有被引用的片段與連結
       const page = (await c.call<{ documents: { kind: string; url: string | null; chars: number; preview: string; hidden?: string }[] }>('GET', `/api/ai/run/${r.runId}`)).body.documents;
       expect(page.find((x) => x.kind === 'web')).toMatchObject({ url: TF(1), preview: '', hidden: '網頁的全文不在這裡顯示：被引用的片段列在「AI 這次另外找了什麼」與每一票的引用，要看全文請開原始網址。' });
@@ -836,7 +828,7 @@ describe('T53：分析師找資料的紀錄（§1.5 的 lookups、G22）', () =>
       expect(d1.pack.documents.some((x) => x.kind === 'web')).toBe(false);
       const f1 = foundView(d1)!;
       expect(f1.state).toBe('ZERO');
-      expect(f1.line).toBe('想找 2 份，取到 0 份：不在清單內 2 份。審查照原本的證據包進行。');
+      expect(f1.line).toBe('想找 2 份，取到 0 份：排除或路徑不收 1 份、網站擋下 1 份。審查照原本的證據包進行。');
       expect(f1.missed).toHaveLength(2);
 
       // ② 沒有要找的（分析師交了空的 lookups）

@@ -834,8 +834,6 @@ a.rv:hover { background: var(--wash); }
 .found-doc p, .found-doc blockquote { overflow-wrap: anywhere; }
 .found-what { font-size: 14px; }
 /* 勾選條件時的網頁來源（T53）：說明在上、選單在下；選單不比外框寬（手機上選項的字很長） */
-.cond-src { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin-top: 8px; }
-.cond-src select { width: 100%; max-width: 30rem; min-width: 0; min-height: 36px; padding: 4px 10px; }
 .cond-ctl { margin-top: 8px; gap: 8px; }
 .cond-ctl select { width: auto; min-height: 36px; padding: 4px 10px; }
 /* 財報條件的進度：一季一段，已符合的那幾季是紅的（和門檻條「會觸發的範圍」同一個意思），每一段寫那一季的數值或「下一季」 */

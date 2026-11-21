@@ -119,6 +119,8 @@ function fetcherOf(w: World, log: W): Fetcher {
     if (url.startsWith('https://feeds.finance.yahoo.com/rss/2.0/headline')) return new Response(url.includes('000660.KS') ? HYNIX_RSS : '<rss><channel></channel></rss>');
     if (url === 'https://news.skhynix.com/') return new Response('<html>home</html>', { headers: { 'content-type': 'text/html' } });
     if (url === 'https://ir.example-memory.com/') return new Response('denied', { status: 403 });
+    // T68：不在種子的網址也會去抓；這個假網站回 404
+    if (url === OTHER) return new Response('nf', { status: 404 });
     const p = PAGES[url];
     if (p) return new Response(p(), { headers: { 'content-type': 'text/html; charset=utf-8' } });
     return base(url, init);
@@ -212,23 +214,26 @@ describe('T52 目錄（§1.2）', () => {
         'Micron｜8-K 2.02（財報新聞稿）｜2026-09-25',
         'Micron｜8-K 7.01（公開說明）｜2026-11-05',
         'Micron｜8-K 5.02（高層異動）｜2026-10-20',
-        'TrendForce｜指名的產業來源｜2026-11-18｜DRAM contract prices rise again',
-        'news.skhynix.com｜一手｜2026-11-16｜SK hynix posts Q3 results',
-        'TrendForce｜指名的產業來源｜2026-11-15｜HBM supply tight',
+        // T68（confirm_audit_design §1.3、§1.7）：排除列表以外的連結都列、標上現在的級別；這檔的 domains 不再讀（news.skhynix.com 是還沒評級）；
+        // 一手與產業研究機構在前、還沒評級的最後
+        'TrendForce｜產業研究機構｜2026-11-18｜DRAM contract prices rise again',
+        'TrendForce｜產業研究機構｜2026-11-15｜HBM supply tight',
+        'nasdaq.com｜還沒評級｜2026-11-16｜Nasdaq article',
+        'news.skhynix.com｜還沒評級｜2026-11-16｜SK hynix posts Q3 results',
       ]);
-      expect(m.map((f) => f.id)).toEqual(['M1', 'M2', 'M3', 'M4', 'M5', 'M6']);
-      // 只有標題：每一項都很短；不在清單的（fool.com、付費報告頁、nasdaq.com）沒有列
+      expect(m.map((f) => f.id)).toEqual(['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7']);
+      // 只有標題：每一項都很短；排除列表（fool.com）與路徑不收（付費報告頁）的沒有列
       for (const f of m) expect(f.value.length).toBeLessThan(250);
-      expect(JSON.stringify(m)).not.toMatch(/fool\.com|Is NVDA a buy|paid report|Nasdaq article/);
-      // 沒有指定來源時：只有這檔自己 RSS 裡清單內的連結
-      expect(menuOf(plain.pack).map((f) => f.value)).toEqual(['TrendForce｜指名的產業來源｜2026-11-18｜DRAM contract prices rise again']);
+      expect(JSON.stringify(m)).not.toMatch(/fool\.com|Is NVDA a buy|paid report/);
+      // 沒有指定同業時：只有這檔自己 RSS 裡的連結
+      expect(menuOf(plain.pack).map((f) => f.value)).toEqual(['TrendForce｜產業研究機構｜2026-11-18｜DRAM contract prices rise again', 'nasdaq.com｜還沒評級｜2026-11-16｜Nasdaq article']);
       // 證據包整份只多了目錄那幾行
       const grow = JSON.stringify(r.pack).length - JSON.stringify(plain.pack).length;
       expect(grow).toBeLessThan(m.reduce((s, f) => s + f.value.length + 120, 0));
       // 執行紀錄記下可以取什麼
-      expect(r.docCtx).toMatchObject({ notBefore: '2025-11-19', domains: ['news.skhynix.com'], fileId: 'NVDA@2026-11-19' });
+      expect(r.docCtx).toMatchObject({ notBefore: '2025-11-19', domains: [], fileId: 'NVDA@2026-11-19' });
       expect(r.docCtx!.menu[0]).toMatchObject({ id: 'M1', kind: 'filing', peer: 'Micron', cik: '0000723125', filing: { accession: '0000723125-26-000001' } });
-      expect(r.docCtx!.menu[4]).toMatchObject({ id: 'M5', kind: 'web', url: SKH, published: '2026-11-16' });
+      expect(r.docCtx!.menu[6]).toMatchObject({ id: 'M7', kind: 'web', url: SKH, published: '2026-11-16' });
     });
   });
 
@@ -242,7 +247,7 @@ describe('T52 目錄（§1.2）', () => {
     expect(out.facts[0].value).toContain('Story 24'); // 新的在前
     expect(out.ctx.menu).toHaveLength(MENU_MAX);
     // RSS：決策日之後、早於下限的不列；同一個網址只列一次
-    const l = listedHeadlines([...heads.slice(0, 2), { ...heads[0] }, { date: '2026-11-25', at: '2026-11-25T00:00:00Z', title: 'future', link: TF(1) }, { date: '2025-01-01', at: '2025-01-01T00:00:00Z', title: 'old', link: TF(2) }], [], '2026-11-19', '2025-11-19');
+    const l = listedHeadlines([...heads.slice(0, 2), { ...heads[0] }, { date: '2026-11-25', at: '2026-11-25T00:00:00Z', title: 'future', link: TF(1) }, { date: '2025-01-01', at: '2025-01-01T00:00:00Z', title: 'old', link: TF(2) }], new Map(), '2026-11-19', '2025-11-19');
     expect(l.map((e) => e.title)).toEqual(['Story 1', 'Story 0']);
     // 同業：上次有結論的審查之後的 8-K，2.02 先
     const F = (acc: string, date: string, items: string[], form = '8-K') => ({ accession: acc, form, items, filingDate: date, acceptedAt: `${date}T21:00:00.000Z`, primaryDocument: 'x.htm' });
@@ -298,11 +303,15 @@ describe('T52 取文件的端點（§1.5）', () => {
         expect(a.body.docs[0]).toMatchObject({ source_id: 'edgar:0000723125-26-000001', date: '2026-09-25', truncated: true });
         expect(a.body.docs[0].text).toHaveLength(15_000);
         expect(a.body.docs[0].title).toMatch(/^〔同業申報｜Micron〕8-K.*（只取開頭 15,000 字）$/);
-        expect(a.body.docs[1].title).toBe('〔網頁｜指名的產業來源｜TrendForce〕TrendForce story 1（發布 2026-11-18，2026-11-20 抓）');
+        expect(a.body.docs[1].title).toBe('〔網頁｜產業研究機構｜TrendForce〕TrendForce story 1（發布 2026-11-18，2026-11-20 抓）');
+        // T68：每份多帶網域與級別
+        expect(a.body.docs[1]).toMatchObject({ domain: 'trendforce.com', rating: 'NAMED' });
+        expect(a.body.docs[0]).toMatchObject({ domain: null, rating: null });
         // 網頁寫 11-11、RSS 寫 11-18：差超過 3 天用比較晚的（T51 的規則）
+        // T68：不在種子的網址（example.org）也去抓了（這裡的假網站回 404）
         expect(a.body.refused).toEqual([
           { url: FOOL, reason: 'NOT_LISTED', detail: 'EXCLUDED' },
-          { url: OTHER, reason: 'NOT_LISTED', detail: 'NOT_LISTED' },
+          { url: OTHER, reason: 'BLOCKED', detail: 'HTTP 404' },
           { url: NODATE, reason: 'NO_DATE', detail: '認不出發布日' },
           { url: OLD, reason: 'TOO_OLD', detail: '發布日 2025-06-01 早於 2025-11-19' },
           { menu: 'M99', reason: 'ERROR', detail: '目錄沒有 M99' },
@@ -320,7 +329,7 @@ describe('T52 取文件的端點（§1.5）', () => {
 
         // 每一筆網頁（含被拒絕的）都寫進 web_docs；取回的記 used_by
         const rows = (await c.db.prepare('SELECT url, status, via, ref, premise_id, used_by FROM web_docs ORDER BY row_id').all<Record<string, string | null>>()).results;
-        expect(rows.map((x) => [x.url, x.status])).toEqual([[TF(1), 'OK'], [FOOL, 'NOT_LISTED'], [OTHER, 'NOT_LISTED'], [NODATE, 'NO_DATE'], [OLD, 'TOO_OLD'], [TF(2), 'OK'], [TF(3), 'OK'], [TF(4), 'OK'], [TPU(1), 'OK'], [TPU(2), 'OK'], [TPU(3), 'OK']]);
+        expect(rows.map((x) => [x.url, x.status])).toEqual([[TF(1), 'OK'], [FOOL, 'NOT_LISTED'], [OTHER, 'BLOCKED'], [NODATE, 'NO_DATE'], [OLD, 'TOO_OLD'], [TF(2), 'OK'], [TF(3), 'OK'], [TF(4), 'OK'], [TPU(1), 'OK'], [TPU(2), 'OK'], [TPU(3), 'OK']]);
         expect(rows[0]).toMatchObject({ via: 'MENU', ref: r.runId, premise_id: 'P2', used_by: r.runId });
         expect(rows[5]).toMatchObject({ via: 'SEARCH', used_by: r.runId });
         expect(rows[1].used_by).toBeNull();
@@ -441,31 +450,31 @@ describe('T52 每檔的來源（§1.3）', () => {
     expect(() => parseWebSources({ domains: ['not a domain'] }, 'MU')).toThrow('不是可以用的網域');
   });
 
-  it('編輯論點頁存來源：存檔前試抓（抓不到的仍存、標出來）；預覽不試抓；沒送就不動；不合格的回 422；試抓端點不存', async () => {
+  it('編輯論點頁存來源：存檔前核對同業的 EDGAR 代號（T68：只剩這一項；找不到的仍存、標出來）；預覽不核對；沒送就不動；不合格的回 422；試抓端點不存', async () => {
     await withWorld(async (c) => {
       const base = { ticker: 'NVDA', thesis: '論點', premises: [{ id: 'P1', text: '資料中心需求延續到 2027' }, { id: 'P2', text: 'HBM 供給持續吃緊' }], exitConditions: [], source: 'TYPED' };
-      const ws = { peers: [{ name: 'Micron', edgar: 'MU' }, { name: 'SK hynix', yahoo: '000660.KS' }], domains: ['news.skhynix.com', 'ir.example-memory.com'] };
-      // 預覽：說有改動，但不試抓
+      const ws = { peers: [{ name: 'Micron', edgar: 'MU' }, { name: 'SK hynix', yahoo: '000660.KS' }, { name: 'Nobody', edgar: 'ZZZQ' }], domains: ['news.skhynix.com', 'ir.example-memory.com'] };
+      // 預覽：說有改動，但不核對
       const n0 = c.log.calls.length;
       const dry = await c.call<{ preview: { sources: { changed: boolean; checked: unknown } } }>('POST', '/api/ops/own-thesis', { ...base, webSources: ws, dry: true });
       expect(dry.body.preview.sources).toMatchObject({ changed: true, checked: null });
-      expect(c.log.calls.slice(n0)).not.toContain('https://news.skhynix.com/');
-      // 試抓端點：回結果、不存
+      expect(c.log.calls.slice(n0).some((u) => u.includes('company_tickers'))).toBe(false);
+      // 試抓端點：回結果、不存。T68（confirm_audit_design §1.7）：只核對同業的 EDGAR 代號；Yahoo 代號與網域不再試抓（網域不再讀）
+      const n1 = c.log.calls.length;
       const pr = await c.call<{ items: { key: string; ok: boolean | null; why: string }[] }>('POST', '/api/ops/own-sources/probe', { ticker: 'NVDA', webSources: ws });
       expect(pr.body.items.map((i) => [i.key, i.ok])).toEqual([
         ['edgar:MU', true],
-        ['yahoo:000660.KS', true],
-        ['domain:news.skhynix.com', true],
-        ['domain:ir.example-memory.com', false],
+        ['edgar:ZZZQ', false],
       ]);
-      expect(pr.body.items[3].why).toBe('目前抓不到（HTTP 403）');
+      expect(pr.body.items[1].why).toContain('目前抓不到');
+      expect(c.log.calls.slice(n1).filter((u) => u.startsWith('https://news.skhynix.com') || u.startsWith('https://ir.example-memory.com') || u.includes('feeds.finance.yahoo.com'))).toEqual([]);
       expect((await loadAccount(c.db))!.acct.own.NVDA.webSources ?? null).toBeNull();
-      // 存檔：試抓一次，抓不到的仍存
+      // 存檔：核對一次，找不到的仍存
       const saved = await c.call<{ preview: { sources: { changed: boolean; checked: { ok: boolean }[] } } }>('POST', '/api/ops/own-thesis', { ...base, webSources: ws }, new Date('2026-11-20T02:00:00Z'));
       expect(saved.status).toBe(200);
       expect(saved.body.preview.sources.changed).toBe(true);
       const meta = (await loadAccount(c.db))!.acct.own.NVDA;
-      expect(meta.webSources).toMatchObject({ peers: ws.peers, domains: ws.domains, checked: { items: [{ key: 'edgar:MU', ok: true }, { ok: true }, { ok: true }, { key: 'domain:ir.example-memory.com', ok: false, why: '目前抓不到（HTTP 403）' }] } });
+      expect(meta.webSources).toMatchObject({ peers: ws.peers, domains: ws.domains, checked: { items: [{ key: 'edgar:MU', ok: true }, { key: 'edgar:ZZZQ', ok: false }] } });
       const logRow = await c.db.prepare("SELECT body FROM own_thesis_log WHERE kind = 'THESIS' ORDER BY id DESC LIMIT 1").first<{ body: string }>();
       expect(JSON.parse(logRow!.body).webSources).toEqual({ peers: ws.peers, domains: ws.domains });
       // 持股頁資料帶著來源（編輯論點頁「現在的」那一欄）
@@ -486,14 +495,14 @@ describe('T52 每檔的來源（§1.3）', () => {
     });
   });
 
-  it('存好的網域在審查時算這檔的一手網域（目錄與取文件都認）；取文件寫了 used_by 之後，每日流程清掉沒被用過、超過 180 天的快照全文', async () => {
+  it('存好的網域不再讀（T68，confirm_audit_design §1.7）：這檔的網域照抓、級別是還沒評級（不再一律一手）；取文件寫了 used_by 之後，每日流程清掉沒被用過、超過 180 天的快照全文', async () => {
     await withWorld(
       async (c) => {
         const r = await review(c);
         await fetchEvidence(c, r);
-        const res = await docsCall(c, r, [{ menu: 'M5' }]);
-        expect(res.body.docs[0]).toMatchObject({ kind: 'web', tier: 'PRIMARY', date: '2026-11-16' });
-        expect(res.body.docs[0].title).toContain('〔網頁｜一手｜news.skhynix.com〕SK hynix Q3 results');
+        const res = await docsCall(c, r, [{ menu: 'M7' }]);
+        expect(res.body.docs[0]).toMatchObject({ kind: 'web', tier: 'UNRATED', rating: 'UNRATED', domain: 'news.skhynix.com', date: '2026-11-16' });
+        expect(res.body.docs[0].title).toContain('〔網頁｜還沒評級｜news.skhynix.com〕SK hynix Q3 results');
         // 清全文：沒被用過、抓了超過 180 天的清掉；被用過的留著
         await c.db.prepare("UPDATE web_docs SET fetched_at = '2026-01-01T00:00:00.000Z'").run();
         await c.db.prepare("INSERT INTO web_docs (id, url, ticker, via, fetched_at, status, text) VALUES ('web:old', 'https://www.trendforce.com/news/old', 'NVDA', 'SEARCH', '2026-01-01T00:00:00.000Z', 'OK', 'old text')").run();

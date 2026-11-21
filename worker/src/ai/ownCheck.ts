@@ -8,6 +8,7 @@ import type { CheckedSample, EvidencePack, Outcome, PackDoc, PackPremise } from 
 import type { EntryHit } from './momEntry';
 import { checkOwnReviewPayload, confirmMode, namedWebDomains, webConfirmText, type ConditionDraft } from './ownReview';
 import { buildPack } from './pack';
+import type { WebRatingRow } from '../data/webSources';
 import type { CondAction } from '../app/thesis';
 
 export const OWN_CHECK = 'OWN_CHECK';
@@ -114,28 +115,25 @@ export interface OwnCheckResult {
    * same（T42）：和哪一條監測中的條件是同一件事（列編號）：不新增、舊的保留。AI 寫的 same，或文字和那一條相同（程式的後備）。
    * line：對到使用者寫的第幾條（0 起；對不到是 null）。
    */
-  /** web（T53）：這條指名的網頁來源（網域）；canSource：勾選時可以改來源（事件條件、通過檢查、只在審查時檢查或已經指名了來源）。 */
-  conditions: (ConditionDraft & { then: string; action: CondAction; from: string | null; supersedes: number | null; same: number | null; line: number | null; web: string[]; canSource: boolean })[];
+  /** web（T53）：這條指名的網頁來源（網域）。T68 起勾選時不能改來源（選單拿掉）。 */
+  conditions: (ConditionDraft & { then: string; action: CondAction; from: string | null; supersedes: number | null; same: number | null; line: number | null; web: string[] })[];
   summary: string | null;
 }
 
-const confirmOf = (kind: string, check: Record<string, unknown>): string => {
+const confirmOf = (kind: string, check: Record<string, unknown>, ratings?: ReadonlyMap<string, WebRatingRow> | null): string => {
   if (kind === 'XBRL') return '新財報出來時比對';
-  const web = webConfirmText(check);
+  const web = webConfirmText(check, ratings);
   if (confirmMode({ kind, check }) === 'REVIEW_ONLY') return web ?? '只在定期審查時檢查';
   return web ? `新申報出來時由 AI 確認；${web.replace('審查時用', '審查時也用')}` : '新申報出來時由 AI 確認';
 };
-
-/** 勾選時可以改網頁來源的條件（§1.6「使用者勾選條件時看得到並可以改」）：通過檢查的事件條件，只在審查時檢查的，或已經指名了來源的。 */
-export const canPickSource = (c: { kind: string; check: Record<string, unknown>; manual?: boolean }): boolean => !c.manual && c.kind === 'EVENT' && (confirmMode(c) === 'REVIEW_ONLY' || namedWebDomains(c.check).length > 0);
 
 /**
  * 改寫的結果（網站顯示，讓使用者勾選）。exits：送去改寫的那幾條（證據包的 rule.detail.exits）；
  * condMap：證據包的條件編號 → 列編號（rule.detail.condMap，T40），把 supersedes、same 換成列編號；
  * sameByText：文字和監測中的一條相同的 U（rule.detail.sameByText，T42）：AI 沒標 same、也沒標 supersedes 時當成 same。
- * live：same 只認這幾條（存檔時監測中的；沒給 = 不限）。
+ * live：same 只認這幾條（存檔時監測中的；沒給 = 不限）。ratings（T68）：評級表，「成立時怎麼確認」的來源後面加級別。
  */
-export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: ExitLine[] = [], condMap: Record<string, number> = {}, sameByText: Record<string, number> = {}, live: number[] | null = null): OwnCheckResult {
+export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: ExitLine[] = [], condMap: Record<string, number> = {}, sameByText: Record<string, number> = {}, live: number[] | null = null, ratings?: ReadonlyMap<string, WebRatingRow> | null): OwnCheckResult {
   const s = outcome?.samples.find((x) => x.valid && x.verdict === 'DONE');
   if (!s) return { conditions: [], summary: outcome?.reason ?? null };
   const conditions = s.conditions
@@ -171,9 +169,8 @@ export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: E
         supersedes: same === null ? supId : null,
         same,
         line: src ? Number(line![1]) - 1 : null,
-        then: c.auto ? confirmOf(kind, check) : `只記錄：${c.why ?? ''}`,
+        then: c.auto ? confirmOf(kind, check, ratings) : `只記錄：${c.why ?? ''}`,
         web: c.auto && kind === 'EVENT' ? namedWebDomains(check) : [],
-        canSource: canPickSource({ kind, check, manual: !c.auto }),
       };
     });
   return { conditions, summary: s.report?.split(/\n\s*\n/)[0]?.slice(0, 400) ?? null };

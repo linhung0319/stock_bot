@@ -1,14 +1,16 @@
 // T52：每檔的網頁證據來源、證據包的目錄、取文件的端點（web_evidence_design §1.2、§1.3、§1.5）。
 //
-//   每檔的來源（OwnMeta.webSources）：同業 { name, edgar?, yahoo? } 最多 4 家、這檔專用的一手網域最多 6 個。
-//     使用者在編輯論點頁填（POST /api/ops/own-thesis 的 webSources），存檔前程式先試抓一次（抓不到的仍存，寫「目前抓不到」，G24）。
+//   每檔的來源（OwnMeta.webSources）：同業 { name, edgar?, yahoo? } 最多 4 家。T68 起 domains 不再讀（confirm_audit_design §1.7：
+//     抓取、取文件、條件來源都不看；已經存的留在資料裡）。存檔前程式核對同業的 EDGAR 代號（抓不到的仍存，寫「目前抓不到」，G24）。
 //   目錄（facts 的 M 開頭，§1.2）：只有標題，不帶全文，證據包不因同業與網頁變大。
 //     S1 同業在 EDGAR 的 8-K（上次有結論的審查之後，最新的 2.02 排最前面，每家最多 3 份）；
-//     S2 這檔與同業 Yahoo 代號的 RSS 裡，連結在清單內（共用清單或這檔的網域）的標題。最多 20 項，S1 在前、新的在前。
+//     S2 這檔與同業 Yahoo 代號的 RSS 裡，連結不在排除列表的標題（T68 起不限清單內），標上網域現在的級別。最多 20 項，S1 在前。
 //     只有系統預設前提的股票沒有目錄，也不能取文件。
 //   取文件（POST /ai/task/<編號>/docs，§1.5）：分析師（審查、減半檢視）或研究員（草稿）讀完證據包後，送目錄編號或網址；
-//     Worker 檢查清單、當場抓（src/data/webDoc.ts）、存快照、記進這次執行的 added_docs、把原文回給它。
+//     Worker 檢查排除列表、當場抓（src/data/webDoc.ts）、存快照、記進這次執行的 added_docs、把原文連同網域與級別回給它。
 //     表決時 check.ts 比對的原文＝證據包的文件＋取回的文件（src/ai/added.ts 的 withAdded；check.ts 本身不改）。
+//   來源評級（T68，confirm_audit_design §1.4）：GET /ai/task/<編號>/unrated 回這次取回的文件裡還沒評級的網域與網站名稱；
+//     POST /ai/task/<編號>/ratings 收另一個子代理「來源評級」的結果，寫進 web_source_ratings（src/app/webRatings.ts）。
 import { DOCS_MAX, DOCS_MAX_CALLS, DOCS_MAX_CHARS, DOCS_PER_CALL, DOC_FNS, FILING_GIVE, REFUSED_KEEP, WEB_GIVE, addedHash, parseAdded, withAdded, type AddedDoc, type AddedRecord, type DocCtx, type MenuEntry, type RefuseReason } from '../ai/added';
 import type { EvidencePack } from '../ai/check';
 import { FRESH_ROLE, freshView } from '../ai/freshEyes';
@@ -17,13 +19,14 @@ import { NEWS_SOURCES, fetchFilingDoc, tryHeadlineSource, type Headline } from '
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { errText } from '../data/util';
 import { markWebDocUsed, normalizeWebUrl, obtainWebDoc, safeWebUrl, webDocId } from '../data/webDoc';
-import { TIER_TEXT, WEB_EXCLUDED, WEB_SOURCES, hostMatches, listedWebSources, matchWebSource, type WebTier } from '../data/webSources';
+import { AI_TIERS, TIER_TEXT, WEB_EXCLUDED, WEB_SOURCES, aiExcludedOf, hostMatches, isExcluded, rateDomain, seedOf, seedSources, webDomainOf, webFetchRule, type AiTier, type WebRating, type WebRatingRow } from '../data/webSources';
 import type { OwnMeta, OwnWebSources, WebPeer, WebSourceCheck } from '../engine';
 import { TASK_TIMEOUT_MS, getTask } from './aiTasks';
 import { json, type Env, type Fetcher } from './env';
 import { cikFor } from './filings';
 import { loadAccount } from './ledgerStore';
 import { afterLastReview, fileKind, type ThesisFile } from './thesis';
+import { insertRating, loadRatings } from './webRatings';
 
 type Fact = EvidencePack['facts'][number];
 
@@ -109,36 +112,28 @@ export function sameWebSources(a: OwnWebSources | null | undefined, b: OwnWebSou
   return key(a) === key(b);
 }
 
-/** 試抓的每一項（順序：同業的 EDGAR、Yahoo，再來是網域）。 */
+/**
+ * 存檔前核對的每一項（T68，confirm_audit_design §1.7：只剩同業的 EDGAR 代號存在不存在）。
+ * Yahoo 代號與網域不再試抓：網域不再讀；Yahoo 代號照舊用來列同業新聞裡的連結，抓不到時組目錄會記在 notes。
+ */
 export function webSourceKeys(ws: OwnWebSources): string[] {
-  return [...ws.peers.flatMap((p) => [...(p.edgar ? [`edgar:${p.edgar}`] : []), ...(p.yahoo ? [`yahoo:${p.yahoo}`] : [])]), ...ws.domains.map((d) => `domain:${d}`)];
+  return ws.peers.flatMap((p) => (p.edgar ? [`edgar:${p.edgar}`] : []));
 }
 
-const PROBE_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36', Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9' };
 const YAHOO = NEWS_SOURCES.find((s) => s.key === 'yahoo-rss')!;
 
 async function probeOne(env: Env, fetcher: Fetcher, key: string): Promise<WebSourceCheck> {
-  const [kind, v] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+  const v = key.slice(key.indexOf(':') + 1);
   try {
-    if (kind === 'edgar') {
-      if (!env.EDGAR_USER_AGENT) return { key, ok: null, why: '沒有設定 EDGAR 的 User-Agent，沒有試' };
-      const cik = await cikFor(env, fetcher, v);
-      return cik ? { key, ok: true, why: `EDGAR 找得到（CIK ${cik}）` } : { key, ok: false, why: 'EDGAR 找不到這個代號（不在美國申報的公司多半沒有，可以只填 Yahoo 代號）' };
-    }
-    if (kind === 'yahoo') {
-      const r = await tryHeadlineSource(fetcher, YAHOO, v);
-      if (!r.ok) return { key, ok: false, why: `目前抓不到（${r.error}）` };
-      return r.items.length ? { key, ok: true, why: `Yahoo RSS 抓得到（${r.items.length} 則標題）` } : { key, ok: false, why: 'Yahoo RSS 沒有任何標題（代號可能打錯）' };
-    }
-    const res = await fetcher(`https://${v}/`, { headers: PROBE_HEADERS, signal: AbortSignal.timeout(10_000) });
-    await res.body?.cancel().catch(() => undefined);
-    return res.status < 400 ? { key, ok: true, why: `首頁抓得到（HTTP ${res.status}）；文章頁要實際取的時候才知道` } : { key, ok: false, why: `目前抓不到（HTTP ${res.status}）` };
+    if (!env.EDGAR_USER_AGENT) return { key, ok: null, why: '沒有設定 EDGAR 的 User-Agent，沒有試' };
+    const cik = await cikFor(env, fetcher, v);
+    return cik ? { key, ok: true, why: `EDGAR 找得到（CIK ${cik}）` } : { key, ok: false, why: 'EDGAR 找不到這個代號（不在美國申報的公司多半沒有，可以只填 Yahoo 代號）' };
   } catch (e) {
     return { key, ok: false, why: `目前抓不到（${errText(e).slice(0, 120)}）` };
   }
 }
 
-/** 試抓每一項（存檔前、編輯論點頁的「試抓」）：抓不到的只標出來，不擋存檔。 */
+/** 核對每一項（存檔前、編輯論點頁的「試抓」）：抓不到的只標出來，不擋存檔。 */
 export async function probeWebSources(env: Env, fetcher: Fetcher, ws: OwnWebSources): Promise<WebSourceCheck[]> {
   return Promise.all(webSourceKeys(ws).map((k) => probeOne(env, fetcher, k)));
 }
@@ -186,26 +181,32 @@ export async function fetchPeerFilings(env: Env, fetcher: Fetcher, ws: OwnWebSou
   return ok ? out : null;
 }
 
+/** 目錄的排序（T68）：一手與產業研究機構在前、媒體其次、只當線索與還沒評級的最後。 */
+const RANK: Record<string, number> = { PRIMARY: 0, NAMED: 0, MEDIA: 1, LEAD: 2, UNRATED: 2 };
+
 /**
- * RSS 標題裡連結在清單內的（S2）：決策日以前、不早於 notBefore；同一個網址只留一則。
- * 一手與指名的產業來源排在媒體前面，同一級裡新的在前（T64：共用清單加了 Yahoo Finance 等財經媒體之後，RSS 的連結大多是媒體級的，
- * 目錄只列 20 項，不讓它們把一手與指名的來源擠出去）。
+ * RSS 標題裡的連結（S2）：決策日以前、不早於 notBefore；排除列表與種子的路徑不收的不列；同一個網址只留一則。
+ * 每一項標上網域現在的級別（ratings：評級表）。一手與產業研究機構排在媒體前面、還沒評級的最後，同一級裡新的在前
+ * （T64：RSS 的連結大多是媒體級的，目錄只列 20 項，不讓它們把一手與產業研究機構擠出去）。
  */
-export function listedHeadlines(items: Headline[], domains: readonly string[], asOf: string, notBefore: string): MenuEntry[] {
+export function listedHeadlines(items: Headline[], ratings: ReadonlyMap<string, WebRatingRow>, asOf: string, notBefore: string): MenuEntry[] {
   const seen = new Set<string>();
-  const out: (MenuEntry & { at: string; media: number })[] = [];
+  const aiEx = aiExcludedOf(ratings);
+  const out: (MenuEntry & { at: string; rank: number })[] = [];
   for (const h of items) {
     const u = safeWebUrl(h.link);
     if (!u || h.date > asOf || h.date < notBefore) continue;
-    const m = matchWebSource(u, domains);
+    const m = webFetchRule(u, aiEx);
     if ('miss' in m) continue;
+    const r = rateDomain(m.domain, ratings);
+    if (r.rating === 'EXCLUDED') continue;
     const url = normalizeWebUrl(u);
     if (seen.has(url)) continue;
     seen.add(url);
     const title = h.title.replace(/\s+/g, ' ').trim().slice(0, 160);
-    out.push({ id: '', kind: 'web', text: `${m.label}｜${TIER_TEXT[m.tier]}｜${h.date}｜${title}`, url, title, published: h.date, at: h.at, media: m.tier === 'MEDIA' ? 1 : 0 });
+    out.push({ id: '', kind: 'web', text: `${r.label}｜${TIER_TEXT[r.rating]}｜${h.date}｜${title}`, url, title, published: h.date, at: h.at, rank: RANK[r.rating] ?? 2 });
   }
-  return out.sort((a, b) => a.media - b.media || b.at.localeCompare(a.at)).map(({ at: _at, media: _media, ...e }) => e);
+  return out.sort((a, b) => a.rank - b.rank || b.at.localeCompare(a.at)).map(({ at: _at, rank: _rank, ...e }) => e);
 }
 
 export interface MenuInput {
@@ -230,7 +231,6 @@ export async function buildDocMenu(env: Env, fetcher: Fetcher, inp: MenuInput): 
   const { tf, asOf } = inp;
   const notBefore = tf.lastReview ? minusDays(tf.lastReview.asOf, TOO_OLD_DAYS) : minusDays(asOf, NO_REVIEW_WEB_DAYS);
   const ws = inp.meta.webSources ?? null;
-  const domains = ws?.domains ?? [];
   if (!inp.anyKind && fileKind(inp.meta) === 'DEFAULT_ONLY') return { facts: [], ctx: { menu: [], notBefore, domains: [], fileId: tf.fileId, off: '只有系統預設前提：不用網頁證據' }, notes: [], sources: { facts: [], domains: [] } };
   const notes: string[] = [];
   const ua = env.EDGAR_USER_AGENT ?? '';
@@ -248,7 +248,7 @@ export async function buildDocMenu(env: Env, fetcher: Fetcher, inp: MenuInput): 
       notes.push(`目錄：同業 ${p.name}（${p.edgar}）的申報抓不到：${errText(e)}`);
     }
   }
-  // S2：這檔與同業的 RSS 裡清單內的連結
+  // S2：這檔與同業的 RSS 裡的連結（排除列表的不列；標上現在的級別）
   const items: Headline[] = [...(inp.headlines ?? [])];
   for (const p of (ws?.peers ?? []).slice(0, PEERS_MAX)) {
     if (!p.yahoo) continue;
@@ -256,27 +256,28 @@ export async function buildDocMenu(env: Env, fetcher: Fetcher, inp: MenuInput): 
     if (r.ok) items.push(...r.items);
     else notes.push(`目錄：同業 ${p.name}（${p.yahoo}）的 RSS 抓不到：${r.error}`);
   }
-  const s2 = listedHeadlines(items, domains, asOf, notBefore);
+  const s2 = listedHeadlines(items, env.DB ? await loadRatings(env.DB) : new Map(), asOf, notBefore);
   const all = [...s1, ...s2];
   const menu = all.slice(0, MENU_MAX).map((e, k) => ({ ...e, id: `M${k + 1}` }));
   const facts: Fact[] = menu.map((e, k) => ({ id: e.id, label: '可以取的文件', value: e.text, ...(k === 0 ? { note: '目錄只有標題；要讀全文，向 Worker 的取文件端點送這個編號' } : {}) }));
   if (all.length > MENU_MAX) facts.push({ id: 'M+', label: '可以取的文件', value: `另有 ${all.length - MENU_MAX} 項沒有列出` });
-  // sources（T53）：清單內的網頁來源（facts 的 S 開頭）和目錄分開回傳，呼叫的地方接在目錄後面
-  return { facts, ctx: { menu, notBefore, domains, fileId: tf.fileId }, notes, sources: sourceFacts(domains) };
+  // sources（T53）：種子（facts 的 S 開頭）和目錄分開回傳，呼叫的地方接在目錄後面。T68 起 domains 不再讀，ctx.domains 寫空的
+  return { facts, ctx: { menu, notBefore, domains: [], fileId: tf.fileId }, notes, sources: sourceFacts() };
 }
 
 /**
- * 可以當證據的網頁來源（facts 的 S 開頭，T53；§1.5 的分析師步驟「優先挑證據包裡列出的清單內網域」、§1.6 條件指名來源時只能指名這些）：
- * 共用清單＋這檔自己的一手網域，一行一個（網域、名稱、級別、只收哪些路徑）。domains 是同一份的網域清單（記在 rule.detail.webDomains）。
+ * 已經有級別的網頁來源（facts 的 S 開頭，T53；T68 起是「種子」，confirm_audit_design §1.1 第 5 點）：分析師搜尋時可以優先挑，
+ * 一行一個（網域、名稱、級別、只收或不收哪些路徑）。T68 起不在這裡的網站也取得到全文，級別由來源評級決定（還沒評的只當線索）；
+ * 條件的 web:<網域> 也不再限這幾個（只擋排除列表）。domains 是同一份的網域清單（記在 rule.detail.webDomains，只是紀錄）。
  * 只有系統預設前提的股票不用網頁證據：呼叫的地方不要放。
  */
-export function sourceFacts(extraDomains: readonly string[]): { facts: Fact[]; domains: string[] } {
-  const list = listedWebSources(extraDomains);
+export function sourceFacts(): { facts: Fact[]; domains: string[] } {
+  const list = seedSources();
   const facts: Fact[] = list.map((s, k) => ({
     id: `S${k + 1}`,
-    label: '清單內的網頁來源',
-    value: `${s.domain}｜${s.label}｜${TIER_TEXT[s.tier]}${s.paths ? `｜只收 ${s.paths.join('、')}` : ''}`,
-    ...(k === 0 ? { note: '只有這些網域的網頁取得到全文；其他網站的標題只能當線索' } : {}),
+    label: '已有級別的網頁來源',
+    value: `${s.domain}｜${s.label}｜${TIER_TEXT[s.tier]}${s.onlyPaths ? `｜只收 ${s.onlyPaths.join('、')}` : ''}${s.skipPaths ? `｜不收 ${s.skipPaths.join('、')}` : ''}`,
+    ...(k === 0 ? { note: '這些是人定好級別的種子；其他網站（排除列表以外）也取得到全文，級別由來源評級決定，還沒評級的只當線索' } : {}),
   }));
   return { facts, domains: list.map((s) => s.domain) };
 }
@@ -293,20 +294,50 @@ interface RunRow {
   added_docs: string | null;
 }
 
-/** 沒有記下 doc_ctx 的執行（減半檢視等，T54、T55 之前）：照現在的帳戶算這檔的網域與論點檔，發布日下限用決策日前 365 天。 */
+/** 沒有記下 doc_ctx 的執行（減半檢視等，T54、T55 之前）：照現在的帳戶算論點檔，發布日下限用決策日前 365 天（T68 起不讀這檔的網域）。 */
 async function fallbackCtx(db: D1Database, ticker: string | null, asOf: string): Promise<DocCtx> {
   const meta = ticker ? (await loadAccount(db))?.acct.own[ticker] : undefined;
   const notBefore = minusDays(asOf, NO_REVIEW_WEB_DAYS);
   if (!meta) return { menu: [], notBefore, domains: [], fileId: null, off: '已經不是自選股' };
   if (fileKind(meta) === 'DEFAULT_ONLY') return { menu: [], notBefore, domains: [], fileId: meta.fileId ?? null, off: '只有系統預設前提：不用網頁證據' };
-  return { menu: [], notBefore, domains: meta.webSources?.domains ?? [], fileId: meta.fileId ?? null };
+  return { menu: [], notBefore, domains: [], fileId: meta.fileId ?? null };
 }
 
 const forOf = (v: unknown) => (typeof v === 'string' && /^[A-Z]{1,2}\d{1,4}$/.test(v.trim()) ? v.trim() : null);
 const nf = (n: number) => n.toLocaleString('en-US');
 
+/**
+ * 取文件、來源評級的端點共用的檢查（§1.5「哪些任務可以用」「什麼時候可以用」；T68 的兩個端點照同樣的規則）：
+ *   沒有這個任務 → 404；別的功能、只有系統預設前提 → 403；送回結果之後、逾時 → 410；還沒取證據包 → 409。
+ */
+async function openDocTask(env: Env, id: string, now: Date): Promise<{ t: NonNullable<Awaited<ReturnType<typeof getTask>>>; run: RunRow; ctx: DocCtx } | Response> {
+  const db = env.DB;
+  const t = await getTask(db, id);
+  if (!t) return json({ error: 'not_found' }, 404);
+  const run = t.kind === 'RUN' ? await db.prepare('SELECT run_id, fn, ticker, as_of, status, doc_ctx, added_docs FROM ai_runs WHERE task_id = ?').bind(id).first<RunRow>() : null;
+  if (!run || !(DOC_FNS as readonly string[]).includes(run.fn)) return json({ error: 'not_allowed', why: '這個任務不能取文件（只有定期審查、減半檢視、論點草稿、市場摘要可以）' }, 403);
+  if (!['PENDING', 'FETCHED'].includes(t.status) || run.status !== 'PENDING' || now.getTime() - Date.parse(t.created_at) > TASK_TIMEOUT_MS) return json({ error: 'task_closed', status: t.status }, 410);
+  if (t.status === 'PENDING') return json({ error: 'evidence_not_fetched', why: '先取證據包，讀完再取文件' }, 409);
+  const ctx = run.doc_ctx ? (JSON.parse(run.doc_ctx) as DocCtx) : await fallbackCtx(db, run.ticker, run.as_of);
+  if (ctx.off) return json({ error: 'not_allowed', why: ctx.off }, 403);
+  return { t, run, ctx };
+}
+
+/** 讀 JSON 物件的請求本文（太大 → 413、不是物件 → 400）。 */
+function bodyObject(bodyText: string, hint: string): Record<string, unknown> | Response {
+  if (new TextEncoder().encode(bodyText).length > 16_384) return json({ error: 'too_large' }, 413);
+  try {
+    const p = JSON.parse(bodyText) as unknown;
+    if (typeof p !== 'object' || p === null || Array.isArray(p)) throw new Error();
+    return p as Record<string, unknown>;
+  } catch {
+    return json({ error: 'bad_request', why: `要是 JSON 物件：${hint}` }, 400);
+  }
+}
+
 export interface DocsReply {
-  docs: { id: string; source_id: string; kind: 'web' | 'filing'; tier: WebTier | null; date: string; title: string; url: string | null; text: string; truncated: boolean }[];
+  /** domain、rating（T68）：網頁的網域與取回這一刻的級別（PRIMARY／NAMED／MEDIA／LEAD／UNRATED）；同業申報是 null。tier 是同一個值（舊欄位）。 */
+  docs: { id: string; source_id: string; kind: 'web' | 'filing'; tier: WebRating | null; domain: string | null; rating: WebRating | null; date: string; title: string; url: string | null; text: string; truncated: boolean }[];
   refused: { url?: string; menu?: string; reason: RefuseReason; detail: string | null }[];
   left: { docs: number; chars: number; calls: number };
 }
@@ -321,23 +352,11 @@ export interface DocsReply {
  */
 export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bodyText: string, now: Date): Promise<Response> {
   const db = env.DB;
-  const t = await getTask(db, id);
-  if (!t) return json({ error: 'not_found' }, 404);
-  const run = t.kind === 'RUN' ? await db.prepare('SELECT run_id, fn, ticker, as_of, status, doc_ctx, added_docs FROM ai_runs WHERE task_id = ?').bind(id).first<RunRow>() : null;
-  if (!run || !(DOC_FNS as readonly string[]).includes(run.fn)) return json({ error: 'not_allowed', why: '這個任務不能取文件（只有定期審查、減半檢視、論點草稿、市場摘要可以）' }, 403);
-  if (!['PENDING', 'FETCHED'].includes(t.status) || run.status !== 'PENDING' || now.getTime() - Date.parse(t.created_at) > TASK_TIMEOUT_MS) return json({ error: 'task_closed', status: t.status }, 410);
-  if (t.status === 'PENDING') return json({ error: 'evidence_not_fetched', why: '先取證據包，讀完再取文件' }, 409);
-  const ctx = run.doc_ctx ? (JSON.parse(run.doc_ctx) as DocCtx) : await fallbackCtx(db, run.ticker, run.as_of);
-  if (ctx.off) return json({ error: 'not_allowed', why: ctx.off }, 403);
-  if (new TextEncoder().encode(bodyText).length > 16_384) return json({ error: 'too_large' }, 413);
-  let body: Record<string, unknown>;
-  try {
-    const p = JSON.parse(bodyText) as unknown;
-    if (typeof p !== 'object' || p === null || Array.isArray(p)) throw new Error();
-    body = p as Record<string, unknown>;
-  } catch {
-    return json({ error: 'bad_request', why: '要是 JSON 物件：{ "want": [...] }' }, 400);
-  }
+  const open = await openDocTask(env, id, now);
+  if (open instanceof Response) return open;
+  const { run, ctx } = open;
+  const body = bodyObject(bodyText, '{ "want": [...] }');
+  if (body instanceof Response) return body;
   if (!Array.isArray(body.want)) return json({ error: 'bad_request', why: 'want 要是陣列' }, 400);
   const role = typeof body.role === 'string' ? body.role.slice(0, 40) : null;
   const rec: AddedRecord = parseAdded(run.added_docs);
@@ -373,6 +392,9 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
     return doc;
   };
   const siteCount = new Map(Object.entries(rec.sites));
+  // 評級表（T68）：抓取時查級別、AI 評成 EXCLUDE 的不抓；取回的每一份回網域與這一刻的級別
+  const ratings = await loadRatings(db);
+  const aiEx = aiExcludedOf(ratings);
 
   for (const [k, raw] of body.want.entries()) {
     const o = (raw ?? {}) as Record<string, unknown>;
@@ -438,7 +460,7 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
       // 市場摘要（T64）不屬於任何一檔：快照記在固定的代號下
       { url: url!, ticker: run.ticker ?? (run.fn === MARKET_BRIEF ? MARKET_DOC_TICKER : ''), fileId: ctx.fileId, via, ref: run.run_id, premiseId: w.for?.startsWith('P') ? w.for : null, condId: w.for && !w.for.startsWith('P') ? w.for : null, session: run.as_of },
       now,
-      { extraDomains: ctx.domains, title: entry?.title ?? (typeof o.title === 'string' ? o.title.slice(0, 300) : null), rssPublished: entry?.published ?? null, siteCount, decisionDate: run.as_of, notBefore: ctx.notBefore },
+      { ratings, title: entry?.title ?? (typeof o.title === 'string' ? o.title.slice(0, 300) : null), rssPublished: entry?.published ?? null, siteCount, decisionDate: run.as_of, notBefore: ctx.notBefore },
     );
     if (got.fetched?.status === 'LIMIT') {
       refuse(w, 'LIMIT', got.fetched.error);
@@ -449,12 +471,20 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
       refuse(w, (row?.status ?? 'ERROR') as RefuseReason, row?.error ?? null);
       continue;
     }
-    // 之前抓過的快照：清單與日期照這次的規則再看一次
-    const hit = matchWebSource(new URL(row.url), ctx.domains);
+    // 之前抓過的快照：排除列表、路徑與日期照這次的規則再看一次（網址與轉址後的網址都看）
+    const hit0 = webFetchRule(new URL(row.url), aiEx);
+    const fin = row.final_url ? safeWebUrl(row.final_url) : null;
+    const hit = 'miss' in hit0 || !fin ? hit0 : webFetchRule(fin, aiEx);
     if ('miss' in hit) {
       refuse(w, 'NOT_LISTED', hit.miss);
       continue;
     }
+    const rated = rateDomain(hit.domain, ratings);
+    if (rated.rating === 'EXCLUDED') {
+      refuse(w, 'NOT_LISTED', 'EXCLUDED');
+      continue;
+    }
+    const rating = rated.rating;
     if (!row.published) {
       refuse(w, 'NO_DATE', '認不出發布日');
       continue;
@@ -467,7 +497,7 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
       refuse(w, 'TOO_OLD', `發布日 ${row.published} 早於 ${ctx.notBefore}`);
       continue;
     }
-    const doc = give({ source_id: row.id, kind: 'web', tier: hit.tier, date: row.published, title: `〔網頁｜${TIER_TEXT[hit.tier]}｜${hit.label}〕${row.title ?? row.url}（發布 ${row.published}，${row.fetched_at.slice(0, 10)} 抓）`, url: row.final_url ?? row.url, text: row.text, truncated: !!row.truncated, cap: WEB_GIVE, fetched_at: row.fetched_at, via, menu: w.menu, for: w.for, why: w.why, role, at, row_id: row.row_id, domain: hit.domain, label: hit.label });
+    const doc = give({ source_id: row.id, kind: 'web', tier: rating, date: row.published, title: `〔網頁｜${TIER_TEXT[rating]}｜${rated.label}〕${row.title ?? row.url}（發布 ${row.published}，${row.fetched_at.slice(0, 10)} 抓）`, url: row.final_url ?? row.url, text: row.text, truncated: !!row.truncated, cap: WEB_GIVE, fetched_at: row.fetched_at, via, menu: w.menu, for: w.for, why: w.why, role, at, row_id: row.row_id, domain: rated.domain, label: rated.label, site: row.site_name ?? null });
     await markWebDocUsed(db, row.row_id, run.run_id);
     reply.docs.push(docReply(doc));
   }
@@ -500,4 +530,109 @@ export async function handleTaskFresh(env: Env, id: string, now: Date): Promise<
   return json({ task_id: t.id, kind: t.kind, fresh: freshView(withAdded(pack, parseAdded(run.added_docs).docs)) });
 }
 
-const docReply = (d: AddedDoc): DocsReply['docs'][number] => ({ id: d.id, source_id: d.source_id, kind: d.kind, tier: d.tier, date: d.date, title: d.title, url: d.url, text: d.text, truncated: d.truncated });
+const docReply = (d: AddedDoc): DocsReply['docs'][number] => ({ id: d.id, source_id: d.source_id, kind: d.kind, tier: d.tier, domain: d.kind === 'web' ? (d.domain ?? null) : null, rating: d.kind === 'web' ? d.tier : null, date: d.date, title: d.title, url: d.url, text: d.text, truncated: d.truncated });
+
+// ---------------------------------------------------------------- 來源評級的端點（T68，confirm_audit_design §1.4）
+
+/** 一次最多送回幾個評級；理由最多幾個字（§1.4）。 */
+export const RATINGS_PER_CALL = 12;
+export const RATING_REASON_MAX = 100;
+
+/** 這次執行取回的網頁裡，現在還沒評級的網域（照取回的順序，不重複）與 Worker 取的網站名稱。 */
+function unratedOf(rec: AddedRecord, ratings: ReadonlyMap<string, WebRatingRow>): { domain: string; site_name: string | null }[] {
+  const out = new Map<string, string | null>();
+  for (const d of rec.docs) {
+    if (d.kind !== 'web' || !d.domain) continue;
+    const r = rateDomain(d.domain, ratings);
+    if (r.rating !== 'UNRATED') continue;
+    if (!out.has(r.domain) || (!out.get(r.domain) && d.site)) out.set(r.domain, d.site ?? null);
+  }
+  return [...out].map(([domain, site_name]) => ({ domain, site_name }));
+}
+
+/** 寫回 added_docs（只在沒有被別的請求改過、結果還沒送回時）；寫不進去回 false。 */
+async function saveAdded(db: D1Database, runId: string, rec: AddedRecord, prevRaw: string | null): Promise<boolean> {
+  const saved = await db.prepare("UPDATE ai_runs SET added_docs = ? WHERE run_id = ? AND status = 'PENDING' AND added_docs IS ?").bind(JSON.stringify(rec), runId, prevRaw).run();
+  return (saved.meta.changes ?? 0) > 0;
+}
+
+/**
+ * GET /ai/task/<編號>/unrated：這次取回的文件裡還沒評級的網域 → { unrated: [{ domain, site_name }] }。
+ *   只給網域與 Worker 取的網站名稱（§1.1 第 3 點：不給網頁內文、標題、分析師的理由）。給過的記在 added_docs.unrated，POST /ratings 只收這些。
+ *   哪些任務可以用、什麼時候可以用和取文件的端點相同（openDocTask）。
+ */
+export async function handleTaskUnrated(env: Env, id: string, now: Date): Promise<Response> {
+  const open = await openDocTask(env, id, now);
+  if (open instanceof Response) return open;
+  const { run } = open;
+  const rec = parseAdded(run.added_docs);
+  const list = unratedOf(rec, await loadRatings(env.DB));
+  const given = [...new Set([...(rec.unrated ?? []), ...list.map((x) => x.domain)])];
+  if (given.length !== (rec.unrated ?? []).length && !(await saveAdded(env.DB, run.run_id, { ...rec, unrated: given }, run.added_docs ?? null))) return json({ error: 'conflict', why: '同時有另一個請求，或結果已經送回；請重試一次' }, 409);
+  return json({ unrated: list });
+}
+
+export type RatingRefuse = 'NOT_GIVEN' | 'SEED' | 'EXCLUDED' | 'BAD_TIER' | 'BAD_REASON' | 'ALREADY_RATED' | 'LIMIT' | 'ERROR';
+
+/**
+ * POST /ai/task/<編號>/ratings：{ role: "來源評級", ratings: [{ domain, tier, reason }] } → { saved: [{ domain, tier }], refused: [{ domain, reason, detail }] }。
+ *   檢查（§1.4）：網域要是這次 /unrated 給過的（NOT_GIVEN）；種子（SEED）與排除列表（EXCLUDED）的不收；一次最多 12 個（之後的 LIMIT）；
+ *   tier 只能是 PRIMARY／NAMED／MEDIA／LEAD／EXCLUDE（BAD_TIER）；reason 一句、100 字以內（BAD_REASON）；已經評過的不覆寫（ALREADY_RATED）。
+ *   收下的寫進 web_source_ratings（之後所有股票、所有執行共用）。哪些任務可以用、什麼時候可以用和取文件的端點相同。
+ */
+export async function handleTaskRatings(env: Env, id: string, bodyText: string, now: Date): Promise<Response> {
+  const open = await openDocTask(env, id, now);
+  if (open instanceof Response) return open;
+  const { run } = open;
+  const body = bodyObject(bodyText, '{ "role": "來源評級", "ratings": [...] }');
+  if (body instanceof Response) return body;
+  if (!Array.isArray(body.ratings)) return json({ error: 'bad_request', why: 'ratings 要是陣列' }, 400);
+  const rec = parseAdded(run.added_docs);
+  const given = new Set(rec.unrated ?? []);
+  const sites = new Map(unratedOf(rec, new Map()).map((x) => [x.domain, x.site_name]));
+  const saved: { domain: string; tier: AiTier }[] = [];
+  const refused: { domain: string | null; reason: RatingRefuse; detail: string }[] = [];
+  for (const [k, raw] of body.ratings.entries()) {
+    const o = (raw ?? {}) as Record<string, unknown>;
+    const rawDomain = typeof o.domain === 'string' ? o.domain.trim().slice(0, 200) : '';
+    const domain = rawDomain ? webDomainOf(rawDomain.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '')) : null;
+    const no = (reason: RatingRefuse, detail: string) => void refused.push({ domain: domain || rawDomain || null, reason, detail });
+    if (k >= RATINGS_PER_CALL) {
+      no('LIMIT', `一次最多 ${RATINGS_PER_CALL} 個`);
+      continue;
+    }
+    if (!domain) {
+      no('ERROR', '每一項要有 domain');
+      continue;
+    }
+    if (isExcluded(domain)) {
+      no('EXCLUDED', '排除列表裡的網站評不上去');
+      continue;
+    }
+    const seed = seedOf(domain);
+    if (seed) {
+      no('SEED', `種子（${seed.label}）的級別由人定，AI 不能改`);
+      continue;
+    }
+    if (!given.has(domain)) {
+      no('NOT_GIVEN', '不是這次 /unrated 給過的網域');
+      continue;
+    }
+    const tier = typeof o.tier === 'string' ? (o.tier.trim().toUpperCase() as AiTier) : null;
+    if (!tier || !AI_TIERS.includes(tier)) {
+      no('BAD_TIER', `tier 要是 ${AI_TIERS.join('、')} 其中之一`);
+      continue;
+    }
+    const reason = typeof o.reason === 'string' ? o.reason.replace(/\s+/g, ' ').trim() : '';
+    if (!reason || [...reason].length > RATING_REASON_MAX) {
+      no('BAD_REASON', `reason 要寫一句，${RATING_REASON_MAX} 字以內`);
+      continue;
+    }
+    if (!(await insertRating(env.DB, { domain, tier, siteName: sites.get(domain) ?? null, reason, runId: run.run_id }, now))) {
+      no('ALREADY_RATED', '這個網域已經評過（不會重評；覺得不對請主持者改種子）');
+      continue;
+    }
+    saved.push({ domain, tier });
+  }
+  return json({ saved, refused });
+}

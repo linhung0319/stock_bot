@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EXPORT_TABLES } from '../src/app/export';
 import { WEB_DOC_MAX_TEXT, dateLine, fetchWebDoc, findPublishedInText, obtainWebDoc, purgeUnusedWebText, markWebDocUsed, resolvePublished, webDocId, type WebDocRow } from '../src/data/webDoc';
-import { WEB_EXCLUDED, WEB_SOURCES, matchWebSource } from '../src/data/webSources';
+import { WEB_EXCLUDED, WEB_SOURCES, webFetchRule } from '../src/data/webSources';
 import { freshDb } from './helpers/d1';
 
 const NOW = new Date('2026-11-20T23:40:00Z');
@@ -29,22 +29,24 @@ function fakeFetcher(routes: Record<string, Route>) {
 const html = (s: string, status = 200, type = 'text/html; charset=utf-8') => new Response(s, { status, headers: { 'content-type': type } });
 const TF = 'https://www.trendforce.com/presscenter/news/20261119-1.html';
 
-describe('T51 網域清單（§1.3）', () => {
-  it('比對主機名稱的結尾；子網域涵蓋、相似的網域不算', () => {
-    expect(matchWebSource(new URL('https://www.trendforce.com/news/2026/11/20/x/'))).toEqual({ domain: 'trendforce.com', tier: 'NAMED', label: 'TrendForce' });
-    expect(matchWebSource(new URL('https://faketrendforce.com/news/x'))).toEqual({ miss: 'NOT_LISTED' });
-    expect(matchWebSource(new URL('https://trendforce.com.evil.example/news/x'))).toEqual({ miss: 'NOT_LISTED' });
+// T68（confirm_audit_design §1.3）改了這一段：清單變成種子，不在種子的網域也抓（只擋排除列表）；路徑限制改成 onlyPaths／skipPaths。
+// 種子與級別查詢的完整測試在 t68-web-ratings.test.ts。
+describe('T51 網域清單（§1.3；T68 起是種子）', () => {
+  it('比對主機名稱的結尾；子網域對到種子、相似的網域不是種子（T68：不是種子也照抓，網域照主機名稱）', () => {
+    expect(webFetchRule(new URL('https://www.trendforce.com/news/2026/11/20/x/'))).toEqual({ domain: 'trendforce.com', label: 'TrendForce', seed: true });
+    expect(webFetchRule(new URL('https://faketrendforce.com/news/x'))).toEqual({ domain: 'faketrendforce.com', label: 'faketrendforce.com', seed: false });
+    expect(webFetchRule(new URL('https://trendforce.com.evil.example/news/x'))).toEqual({ domain: 'trendforce.com.evil.example', label: 'trendforce.com.evil.example', seed: false });
   });
 
-  it('NAMED 的路徑限制：TrendForce 的付費報告頁不收', () => {
-    expect(matchWebSource(new URL('https://www.trendforce.com/research/download/RP123'))).toEqual({ miss: 'PATH' });
-    expect(matchWebSource(new URL('https://www.dramexchange.com/WeeklyResearch/Post/2/1.html'))).toMatchObject({ tier: 'NAMED' });
-    expect(matchWebSource(new URL('https://www.dramexchange.com/Price/Dram_Spot'))).toEqual({ miss: 'PATH' });
+  it('種子的路徑限制：TrendForce 的付費報告頁不收（T68：skipPaths）；DRAMeXchange 的路徑限制拿掉了', () => {
+    expect(webFetchRule(new URL('https://www.trendforce.com/research/download/RP123'))).toEqual({ miss: 'PATH' });
+    expect(webFetchRule(new URL('https://www.dramexchange.com/WeeklyResearch/Post/2/1.html'))).toMatchObject({ domain: 'dramexchange.com', seed: true });
+    expect(webFetchRule(new URL('https://www.dramexchange.com/Price/Dram_Spot'))).toMatchObject({ domain: 'dramexchange.com', seed: true });
   });
 
-  it('這檔自己的網域一律 PRIMARY；不列入的網域就算加在這檔也不收', () => {
-    expect(matchWebSource(new URL('https://news.example-memory.com/en/q3-results/'), ['example-memory.com'])).toEqual({ domain: 'example-memory.com', tier: 'PRIMARY', label: 'example-memory.com' });
-    expect(matchWebSource(new URL('https://www.fool.com/investing/2026/11/20/x/'), ['fool.com'])).toEqual({ miss: 'EXCLUDED' });
+  it('排除列表的網域不收（T68：每檔的 domains 不再讀）', () => {
+    expect(webFetchRule(new URL('https://news.example-memory.com/en/q3-results/'))).toEqual({ domain: 'news.example-memory.com', label: 'news.example-memory.com', seed: false });
+    expect(webFetchRule(new URL('https://www.fool.com/investing/2026/11/20/x/'))).toEqual({ miss: 'EXCLUDED' });
   });
 
   it('清單本身：網域小寫、級別合法、沒有和不列入的重疊、每個都有說明', () => {
@@ -87,9 +89,9 @@ describe('T51 發布日（§1.4）', () => {
 });
 
 describe('T51 抓取（§1.4）', () => {
-  it('清單外的網址不抓，回 NOT_LISTED（不列入、路徑不收也是）', async () => {
+  it('排除列表、路徑不收的網址不抓，回 NOT_LISTED（T68：不在種子的網址照抓，在 t68 測）', async () => {
     const { fetcher, calls } = fakeFetcher({});
-    for (const u of ['https://www.example.com/a', 'https://www.fool.com/x', 'https://www.trendforce.com/research/download/1'])
+    for (const u of ['https://www.fool.com/x', 'https://www.trendforce.com/research/download/1'])
       expect(await fetchWebDoc(fetcher, u, NOW, { title: '搜尋結果的標題' })).toMatchObject({ status: 'NOT_LISTED', text: null, title: '搜尋結果的標題' });
     expect(calls).toEqual([]);
     expect((await fetchWebDoc(fetcher, 'http://www.trendforce.com/news/x', NOW)).status).toBe('ERROR');
@@ -123,19 +125,20 @@ describe('T51 抓取（§1.4）', () => {
     expect(await fetchWebDoc(fetcher, u, NOW)).toMatchObject({ status: 'OK', published: '2026-11-17', publishedFrom: 'text' });
   });
 
-  it('轉址：留在清單內照抓；轉到清單外當失敗（不去抓那一頁）', async () => {
+  it('轉址：照抓；轉到排除列表當失敗（不去抓那一頁）', async () => {
     const inside = 'https://www.trendforce.com/news/2026/11/19/x/';
     const ok = fakeFetcher({
       [TF]: new Response(null, { status: 301, headers: { location: '/news/2026/11/19/x/' } }),
       [inside]: html(page({ head: META('2026-11-19') })),
     });
     expect(await fetchWebDoc(ok.fetcher, TF, NOW)).toMatchObject({ status: 'OK', finalUrl: inside });
-    const out = fakeFetcher({ [TF]: new Response(null, { status: 302, headers: { location: 'https://consent.example.com/?next=1' } }) });
+    // T68：轉址的每一站只要不在排除列表（confirm_audit_design §1.3）
+    const out = fakeFetcher({ [TF]: new Response(null, { status: 302, headers: { location: 'https://www.fool.com/?next=1' } }) });
     const r = await fetchWebDoc(out.fetcher, TF, NOW);
     expect(r).toMatchObject({ status: 'ERROR', text: null, httpStatus: 302 });
-    expect(r.error).toMatch(/轉址到清單外.*consent\.example\.com/);
+    expect(r.error).toMatch(/轉址到排除列表裡的網址.*www\.fool\.com/);
     expect(out.calls.map((c) => c.url)).toEqual([TF]);
-    // 轉到同一個網域的付費頁（路徑不收）也算清單外
+    // 轉到同一個網域的付費頁（路徑不收）也當失敗
     const paid = fakeFetcher({ [TF]: new Response(null, { status: 301, headers: { location: '/research/download/1' } }) });
     expect((await fetchWebDoc(paid.fetcher, TF, NOW)).status).toBe('ERROR');
   });
@@ -218,13 +221,13 @@ describe('T51 快照 web_docs（§1.4）', () => {
     }
   });
 
-  it('清單外的網址只記一列 NOT_LISTED（網址與標題，沒有全文），而且沒有去抓', async () => {
+  it('排除列表的網址只記一列 NOT_LISTED（網址與標題，沒有全文），而且沒有去抓', async () => {
     const d = await freshDb();
     try {
       const { fetcher, calls } = fakeFetcher({});
-      const r = await obtainWebDoc(d.db, fetcher, { ...req, url: 'https://www.example.com/story' }, NOW, { title: 'Peer expands capacity' });
+      const r = await obtainWebDoc(d.db, fetcher, { ...req, url: 'https://www.fool.com/story' }, NOW, { title: 'Peer expands capacity' });
       expect(calls).toEqual([]);
-      expect(r.row).toMatchObject({ status: 'NOT_LISTED', url: 'https://www.example.com/story', title: 'Peer expands capacity', text: null, domain: null, error: 'NOT_LISTED' });
+      expect(r.row).toMatchObject({ status: 'NOT_LISTED', url: 'https://www.fool.com/story', title: 'Peer expands capacity', text: null, domain: null, error: 'EXCLUDED' });
     } finally {
       await d.dispose();
     }

@@ -643,7 +643,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     const peersDoms = [
       ...items.peers.map((it) => pickRow('peer', it, [h('p', null, `同業：${it.name}`), h('p', { class: 'small faint' }, [it.edgar ? `EDGAR ${it.edgar}（申報）` : null, it.yahoo ? `Yahoo ${it.yahoo}（新聞連結）` : null].filter(Boolean).join('、'))], tickPeer)),
       ...items.domains.map((it) =>
-        it.checkable ? pickRow('dom', it, [h('p', null, `網站：${it.domain}`), h('p', { class: 'small faint' }, it.note)], tickDom) : h('li', { class: 'dr-item dr-off' }, h('span', { class: 'dr-pick' }), h('div', { class: 'dr-body' }, h('p', null, `網站：${it.domain}`), h('p', { class: 'small faint' }, it.state === 'LISTED' ? '已經在清單裡，不用加' : '不列入的網站（評論、預測、社群），加不進來'))),
+        it.checkable ? pickRow('dom', it, [h('p', null, `網站：${it.domain}`), h('p', { class: 'small faint' }, it.note)], tickDom) : h('li', { class: 'dr-item dr-off' }, h('span', { class: 'dr-pick' }), h('div', { class: 'dr-body' }, h('p', null, `網站：${it.domain}`), h('p', { class: 'small faint' }, it.state === 'EXCLUDED' ? '不列入的網站（評論、預測、社群），加不進來' : '網站不用加：AI 取得到這個網站，能不能當證據由來源評級決定'))),
       ),
     ];
     const el = glass(

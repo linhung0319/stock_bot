@@ -31,7 +31,13 @@ import { buildMarketView } from '../src/data/marketView';
 import { loadSeries, saveRanking } from '../src/data/store';
 import { extractPage, fetchWebDoc, findPublishedInText, findReleaseDate, reflowPre, urlDate, WEB_BOT_UA } from '../src/data/webDoc';
 import { probeWebPage } from '../src/data/webProbe';
-import { WEB_SOURCES, matchWebSource } from '../src/data/webSources';
+import { WEB_SOURCES, rateDomain, webFetchRule } from '../src/data/webSources';
+
+/** T68 之前的 matchWebSource 的樣子：抓取規則（排除、路徑）＋級別查詢（種子 → 評級表 → UNRATED）。 */
+const matchWebSource = (u: URL) => {
+  const r = webFetchRule(u);
+  return 'miss' in r ? r : { domain: r.domain, tier: rateDomain(r.domain).rating, ...(r.extract ? { extract: r.extract } : {}) };
+};
 import { htmlToText } from '../src/data/edgar';
 import { createAccount, type Account, type MarketView } from '../src/engine';
 import { exportMd, foundView, runDetail, runRow } from '../src/app/site/aiViews';
@@ -126,17 +132,17 @@ ${wrap(BLS_P3)}
 // ---------------------------------------------------------------- 共用清單（Y2、§5.1）
 
 describe('T64 共用清單：四個媒體與兩個官方來源（§0.4 Y2、§5.1）', () => {
-  it('cnbc.com、finance.yahoo.com、npr.org、fortune.com 都是媒體級；Yahoo Finance 只收文章路徑', () => {
+  it('cnbc.com、finance.yahoo.com、npr.org、fortune.com 都是媒體級；Yahoo Finance 的路徑限制拿掉了（T68）', () => {
     const of = (u: string) => matchWebSource(new URL(u));
     expect(of(CNBC)).toMatchObject({ domain: 'cnbc.com', tier: 'MEDIA' });
     expect(of(NPR)).toMatchObject({ domain: 'npr.org', tier: 'MEDIA' });
     expect(of('https://fortune.com/2026/11/05/stocks-selloff/')).toMatchObject({ domain: 'fortune.com', tier: 'MEDIA' });
     expect(of(YAHOO)).toMatchObject({ domain: 'finance.yahoo.com', tier: 'MEDIA' });
-    // 報價頁、列表頁不是文章
-    expect(of('https://finance.yahoo.com/quote/MU/')).toEqual({ miss: 'PATH' });
-    expect(of('https://finance.yahoo.com/markets/stocks/most-active/')).toEqual({ miss: 'PATH' });
-    // Yahoo 的其他子網域不算
-    expect(of('https://sports.yahoo.com/news/x.html')).toEqual({ miss: 'NOT_LISTED' });
+    // T68（confirm_audit_design §1.3）：路徑限制拿掉；報價頁、列表頁照抓，會被 NO_DATE／THIN 擋下。M7 被擋的 /markets/…/articles/ 文章收得到
+    expect(of('https://finance.yahoo.com/quote/MU/')).toMatchObject({ domain: 'finance.yahoo.com', tier: 'MEDIA' });
+    expect(of('https://finance.yahoo.com/markets/stocks/articles/mu-rally-123.html')).toMatchObject({ domain: 'finance.yahoo.com', tier: 'MEDIA' });
+    // Yahoo 的其他子網域不是種子：照抓，級別是還沒評級
+    expect(of('https://sports.yahoo.com/news/x.html')).toEqual({ domain: 'sports.yahoo.com', tier: 'UNRATED' });
   });
 
   it('M5 抓不到的（Axios、Nasdaq.com、美聯社、MarketWatch）沒有列入', () => {
@@ -147,7 +153,7 @@ describe('T64 共用清單：四個媒體與兩個官方來源（§0.4 Y2、§5.
     const h = (link: string, at: string, title: string) => ({ link, at, date: at.slice(0, 10), title });
     const menu = listedHeadlines(
       [h(CNBC, '2026-11-05T21:10:00Z', 'cnbc new'), h('https://www.trendforce.com/presscenter/news/20261101-1.html', '2026-11-01T02:00:00Z', 'tf old'), h(YAHOO, '2026-11-05T21:00:00Z', 'yahoo'), h(FED_STMT_URL, '2026-10-29T18:00:00Z', 'fomc'), h('https://www.trendforce.com/news/2026/11/04/x/', '2026-11-04T02:00:00Z', 'tf new')],
-      [],
+      new Map(),
       '2026-11-05',
       '2026-10-01',
     );
@@ -837,10 +843,10 @@ describe('T64 觸發與開執行（§1.2；假的 D1）', () => {
       expect(val(/^K/)).toEqual(expect.arrayContaining([`VOO ${D} 單日 -3.0%`, `股票池 10 檔裡，${D} 下跌的有 80%`, `XLK ${D} 單日 -7.0%，比 VOO 多跌 4.0 個百分點`, `XLE ${after(D, -1)}～${D} 漲跌 -3.0%，和 VOO 相同`]));
       expect(val(/^G/)).toEqual(['XLE：XOM（動能）', 'XLK：NVDA（自選）、MU（動能）']);
       expect(val(/^H/)[0]).toBe(`MU（XLK） ${after(D, -1)}～${D} 漲跌 -12.0%`);
-      // 目錄：標題裡連結在清單內、期間內的文章（fool.com 不列入、Reuters 不在清單、兩個月前的太舊）
-      expect(val(/^M/)).toEqual([`CNBC｜媒體｜${D}｜Stocks tumble as rate cut hopes fade`, `Yahoo Finance｜媒體｜${D}｜Chip stocks slide`]);
-      expect(val(/^S/)).toEqual(expect.arrayContaining(['cnbc.com｜CNBC｜媒體', 'npr.org｜NPR｜媒體', 'finance.yahoo.com｜Yahoo Finance｜媒體｜只收 /news/', 'bls.gov｜美國勞工統計局（BLS）｜一手｜只收 /news.release/']));
-      expect(run.docCtx).toMatchObject({ domains: [], fileId: null, notBefore: '2026-10-28', menu: [{ id: 'M1', kind: 'web', url: CNBC }, { id: 'M2', kind: 'web', url: YAHOO }] });
+      // 目錄：標題裡的連結、期間內的文章（fool.com 是排除列表、兩個月前的太舊）；T68：Reuters 不是種子也列，標「還沒評級」排在最後
+      expect(val(/^M/)).toEqual([`CNBC｜媒體｜${D}｜Stocks tumble as rate cut hopes fade`, `Yahoo Finance｜媒體｜${D}｜Chip stocks slide`, `reuters.com｜還沒評級｜${D}｜Wall Street slides`]);
+      expect(val(/^S/)).toEqual(expect.arrayContaining(['cnbc.com｜CNBC｜媒體', 'npr.org｜NPR｜媒體', 'finance.yahoo.com｜Yahoo Finance｜媒體', 'bls.gov｜美國勞工統計局（BLS）｜一手｜只收 /news.release/']));
+      expect(run.docCtx).toMatchObject({ domains: [], fileId: null, notBefore: '2026-10-28', menu: [{ id: 'M1', kind: 'web', url: CNBC }, { id: 'M2', kind: 'web', url: YAHOO }, { id: 'M3', kind: 'web' }] });
       expect(run.docCtx?.off ?? null).toBeNull();
       // 文件：核心 ETF、兩個產業 ETF、漲跌最大的持股的價格表；總經儀表板；大盤與各族群的新聞標題
       const ids = pack.documents.map((d) => d.source_id);
@@ -1060,7 +1066,7 @@ describe('T64 研究員取文件、送回、結算（§1.4、§1.5）', () => {
       const got = await c.call<{ docs: { source_id: string; date: string; text: string; tier: string }[]; refused: { reason: string; detail: string }[] }>(
         'POST',
         `/ai/task/${run.taskId}/docs`,
-        { role: '研究員', want: [{ menu: 'M1', why: '支持：當天的市場報導' }, { url: NPR, title: 'Stocks fall on Fed doubts', why: '相反：另一家媒體怎麼說' }, { url: 'https://www.fool.com/investing/2026/11/05/why-market-down/', why: '支持：評論' }, { url: 'https://finance.yahoo.com/quote/SPY/', why: '支持：報價頁' }] },
+        { role: '研究員', want: [{ menu: 'M1', why: '支持：當天的市場報導' }, { url: NPR, title: 'Stocks fall on Fed doubts', why: '相反：另一家媒體怎麼說' }, { url: 'https://www.fool.com/investing/2026/11/05/why-market-down/', why: '支持：評論' }, { url: 'https://www.federalreserve.gov/monetarypolicy/fomcminutes20261029.htm', why: '支持：會議紀錄（T68：Yahoo 的路徑限制拿掉了，改用聯準會的 onlyPaths 測路徑不收）' }] },
         at(D, 0, 3),
         's',
       );

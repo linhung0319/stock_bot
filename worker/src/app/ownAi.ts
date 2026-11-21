@@ -15,7 +15,7 @@
 import { webMetaOf } from '../ai/added';
 import type { CheckedSample, EvidencePack, PackDoc } from '../ai/check';
 import { MEDIA_MIN_DOMAINS, OWN_CONDITION, OWN_REVIEW, citedSources, condCite, confirmMode, conditionDecision, conditionPack, namedWebDomains, ownReviewPack, packSources, reviewDecision, type ConditionDraft, type ProposedDraft } from '../ai/ownReview';
-import { sameWebDomain } from '../data/webSources';
+import { STRONG_RATINGS, sameWebDomain } from '../data/webSources';
 import { newRunId } from '../ai/pack';
 import { TIER_NAME, clone, condMetNotice, ownHeld, routeReview, type Account, type CondNotice, type MarketView, type OwnMeta, type ReviewTrigger } from '../engine';
 import { ConflictError, loadAccount, saveAccount, thesisLogStmt } from './ledgerStore';
@@ -288,8 +288,8 @@ export const BASIS_NOTE = { filing: '引用在網站', web: '網頁；引用與�
 
 /**
  * 三票裡第一張有合格引用的票，它引用的依據（乙類的「依據：…」、甲類 WEB_VOTE 的理由）：
- *   申報或財報表寫在前面（第一份）；網頁接在後面——判前提不成立時取第一份一手或指名的產業來源，沒有的話取媒體的前兩個不同網域；
- *   確認條件成立時（named = 條件指名的網域）只取那個來源的第一份。
+ *   申報或財報表寫在前面（第一份）；網頁接在後面——判前提不成立時取第一份一手或產業研究機構，沒有的話取媒體的前兩個不同網域；
+ *   確認條件成立時（named = 條件指名的網域）只取那個來源、級別是一手或產業研究機構的第一份。級別都是判的時候的（T68）；只當線索、還沒評級的不取。
  * pick：從一票裡取出那件事的引用編號（某條前提或某條條件的 evidence_ids）。
  */
 export function citedBasis(run: { outcome: AiRun['outcome']; pack: Pick<EvidencePack, 'documents'> }, pick: (s: CheckedSample) => unknown, named?: readonly string[]): CitedBasis | null {
@@ -300,13 +300,14 @@ export function citedBasis(run: { outcome: AiRun['outcome']; pack: Pick<Evidence
     const hard = from.find((id) => src.hard.has(id));
     const webs = from.filter((id) => src.web.has(id));
     let web: string[] = [];
-    if (named) web = webs.filter((id) => named.some((n) => sameWebDomain(src.web.get(id)!.domain, n))).slice(0, 1);
+    if (named) web = webs.filter((id) => STRONG_RATINGS.includes(src.web.get(id)!.tier) && named.some((n) => sameWebDomain(src.web.get(id)!.domain, n))).slice(0, 1);
     else {
-      const strong = webs.find((id) => src.web.get(id)!.tier !== 'MEDIA');
+      const strong = webs.find((id) => STRONG_RATINGS.includes(src.web.get(id)!.tier));
       if (strong) web = [strong];
       else {
         const seen = new Set<string>();
         const media = webs.filter((id) => {
+          if (src.web.get(id)!.tier !== 'MEDIA') return false;
           const dom = src.web.get(id)!.domain;
           if (seen.has(dom)) return false;
           seen.add(dom);
@@ -426,7 +427,7 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
     const named = namedWebDomains(c.check);
     const bases = votes.map((s) => condCite(s, condIds(s), src, named));
     if (bases.some((b) => !b)) {
-      ctx.log.push(`${run.runId}：你定的條件 ${c.condId} 3 票認為成立，但引用的網頁不是這條條件現在指名的來源，不算成立`);
+      ctx.log.push(`${run.runId}：你定的條件 ${c.condId} 3 票認為成立，但引用的網頁不是這條條件現在指名的來源、或那個來源不是一手或產業研究機構，不算成立`);
       continue;
     }
     // 至少一票靠的是指名的網頁來源 → WEB_VOTE，理由寫那一份（靠網頁的那一票排前面）

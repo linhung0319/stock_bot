@@ -465,26 +465,8 @@ function actionSelect(value, onchange) {
   return h('select', { style: 'width:auto;min-height:36px;padding:4px 10px', onchange }, COND_ACTIONS.map(([v, t]) => h('option', { value: v, selected: v === value }, t)));
 }
 
-const TIER_NAME = { PRIMARY: '一手', NAMED: '指名的產業來源', MEDIA: '媒體' };
-/**
- * 勾選條件時的網頁來源（T53，web_evidence_design §1.6）：審查時用哪個來源的網頁檢查這一條；可以改，也可以不指名。
- * sources：這檔可以指名的來源（共用清單＋這檔自己的一手網域）；current：AI 寫的來源（網域）。回傳 { el, value() }；
- * value() 是 undefined 表示沒有動（照 AI 寫的）。沒有可以指名的來源、或這一條不能指名 → null。
- */
-function sourcePick(sources, current) {
-  if (!sources?.length) return null;
-  const cur = current?.[0] ?? '';
-  let v = cur;
-  const known = sources.some((s) => s.domain === cur);
-  const sel = h(
-    'select',
-    { 'aria-label': '審查時用哪個來源的網頁檢查', onchange: (e) => (v = e.target.value) },
-    h('option', { value: '', selected: !cur }, '不指名（要申報或財報的引用才算成立）'),
-    !known && cur ? h('option', { value: cur, selected: true }, `${cur}（不在清單內）`) : null,
-    sources.map((s) => h('option', { value: s.domain, selected: s.domain === cur }, `${s.label}（${TIER_NAME[s.tier] ?? ''}）`)),
-  );
-  return { el: h('div', { class: 'cond-src' }, h('span', { class: 'small' }, '審查時用這個來源的網頁檢查（可以改）'), sel), value: () => (v === cur ? undefined : v) };
-}
+// T68（confirm_audit_design §1.6）：勾選條件時選「用哪個網頁來源確認」的選單拿掉了；
+// 條件寫的來源與它的級別寫在「怎麼確認」那一句裡（「審查時用 TrendForce（產業研究機構）的網頁檢查」）。
 
 /**
  * 一條條件：文字與狀態、誰定的與怎麼確認、進度條、說明；controls 是這一條能做的事。
@@ -554,12 +536,10 @@ export function ownMonitor(ctx, d) {
       h('p', { class: 'small dim' }, `沒勾選的不會自己發通知，只給下一次審查參考；勾選之後才監測，成立時通知你。下一次審查寫了新的建議時，沒勾的會過期。${live >= MAX_OWNED ? `你定的條件已經 ${MAX_OWNED} 條，要先撤下一條才能再勾。` : ''}`),
       proposed.map((c) => {
         let act = c.action;
-        // 指名了網頁來源的（或只在審查時檢查的）事件條件：勾選時看得到來源、可以改
-        const src = c.canSource ? sourcePick(d.condSources, c.web) : null;
         return condRow(c, [
           ...(c.recordOnly ? [h('span', { class: 'small dim' }, '勾選後只記錄，不會通知')] : [h('span', { class: 'small' }, '成立時'), actionSelect(act, (e) => (act = e.target.value))]),
-          h('button', { class: 'btn', type: 'button', onclick: () => condOp(ctx, d.ticker, msg, { id: c.id, op: 'accept', action: act, ...(src && src.value() !== undefined ? { source: src.value() } : {}) }, c.recordOnly ? '已勾選（只記錄）' : '已勾選，開始監測') }, c.recordOnly ? '勾選' : '勾選，開始監測'),
-        ], src?.el);
+          h('button', { class: 'btn', type: 'button', onclick: () => condOp(ctx, d.ticker, msg, { id: c.id, op: 'accept', action: act }, c.recordOnly ? '已勾選（只記錄）' : '已勾選，開始監測') }, c.recordOnly ? '勾選' : '勾選，開始監測'),
+        ]);
       }),
     );
   if (owned.length || proposed.length) out.push(msg);
@@ -661,9 +641,7 @@ function rewriteBlock(ctx, d) {
       const same = c.sames?.[x.condId] ?? null;
       let act = x.action;
       const box = same ? null : h('input', { type: 'checkbox', checked: !x.manual, 'aria-label': '勾選：開始監測' });
-      // 指名了網頁來源的（或只在審查時檢查的）事件條件：確認時看得到來源、可以改（T53）
-      const src = !same && x.canSource ? sourcePick(d.condSources, x.web) : null;
-      return { x, same, box, src, get act() { return act; }, sel: same || x.manual ? null : actionSelect(act, (e) => (act = e.target.value)) };
+      return { x, same, box, get act() { return act; }, sel: same || x.manual ? null : actionSelect(act, (e) => (act = e.target.value)) };
     });
     const tag = (r) => {
       if (r.same) return h('span', { class: 'rw-tag same' }, `和現在的「${r.same.text}」相同：不新增，舊的接著監測${r.same.actionTo ? `（成立時改成${ACTION_NAME[r.same.actionTo]}）` : ''}`);
@@ -691,7 +669,6 @@ function rewriteBlock(ctx, d) {
               tag(r),
             ),
           ),
-          r.src?.el ?? null,
           r.sel ? h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, '成立時'), r.sel) : null,
         ),
       ),
@@ -704,8 +681,7 @@ function rewriteBlock(ctx, d) {
         busyButton('確認', async () => {
           const pick = rows.filter((r) => r.box?.checked);
           try {
-            const sources = Object.fromEntries(pick.filter((p) => p.src && p.src.value() !== undefined).map((p) => [p.x.condId, p.src.value()]));
-            const r = await api.post('/ops/own-conditions', { ticker: d.ticker, runId: c.runId, ids: pick.map((p) => p.x.condId), actions: Object.fromEntries(pick.map((p) => [p.x.condId, p.act])), ...(Object.keys(sources).length ? { sources } : {}) });
+            const r = await api.post('/ops/own-conditions', { ticker: d.ticker, runId: c.runId, ids: pick.map((p) => p.x.condId), actions: Object.fromEntries(pick.map((p) => [p.x.condId, p.act])) });
             toast([`開始監測 ${r.added} 條`, r.retired?.length ? `撤下 ${r.retired.length} 條` : '', r.actionChanged?.length ? `${r.actionChanged.length} 條改了成立時的動作` : ''].filter(Boolean).join('，'));
             ctx.refresh();
           } catch (e) {

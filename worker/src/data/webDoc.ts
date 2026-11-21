@@ -1,9 +1,11 @@
 // T51：Worker 抓網頁全文、存快照（設計 docs/design/web_evidence_design_2026-11-20.md §1.4）。
-// 從量測用的 webProbe.ts 改：只抓清單內的 https 網址、轉址也要留在清單內、只收 HTML、內文太短不收、認不出發布日不收。
+// 從量測用的 webProbe.ts 改：只收 HTML、內文太短不收、認不出發布日不收。
+// T68（confirm_audit_design §1.3）：不在排除列表的公開 https 主機都抓（不再要求在清單內），轉址的每一站也不能在排除列表；
+// 種子寫了 onlyPaths／skipPaths 的照它。級別是抓的那一刻查的（種子 → AI 評級 → UNRATED），網站名稱存著給來源評級用。
 // 快照只存在 D1 的 web_docs（repo 是公開的）。取文件的端點與證據包的接法在 T52。
 import { htmlToText } from './edgar';
 import type { Fetcher } from './sources';
-import { matchWebSource, type WebExtract, type WebSourceMatch, type WebTier } from './webSources';
+import { aiExcludedOf, rateDomain, webFetchRule, type WebExtract, type WebFetchRule, type WebRating, type WebRatingRow } from './webSources';
 
 export const WEB_DOC_TIMEOUT_MS = 15_000;
 export const WEB_DOC_MAX_BYTES = 2_000_000;
@@ -37,8 +39,11 @@ export interface WebDocFetched {
   status: WebDocStatus | 'LIMIT';
   finalUrl: string | null;
   domain: string | null;
-  tier: WebTier | null;
+  /** 抓的那一刻這個網域的級別（判的時候另外再查一次當下的，§1.4）。 */
+  tier: WebRating | null;
   label: string | null;
+  /** 網站自稱的名稱（og:site_name 或 <title>，最多 60 字；§1.1 第 3 點：來源評級只看網域與它）。 */
+  siteName: string | null;
   httpStatus: number | null;
   title: string | null;
   published: string | null;
@@ -53,8 +58,8 @@ export interface WebDocFetched {
 }
 
 export interface WebDocOptions {
-  /** 這檔自己的一手網域（OwnMeta.webSources.domains）。 */
-  extraDomains?: readonly string[];
+  /** 評級表（web_source_ratings；網域 → 列）：查級別、AI 評成 EXCLUDE 的不抓。沒給 = 空的。 */
+  ratings?: ReadonlyMap<string, WebRatingRow>;
   /** RSS 或搜尋結果給的標題（網頁沒有標題、或沒去抓時用）。 */
   title?: string | null;
   /** RSS 的發布時間（YYYY-MM-DD 或 ISO）。 */
@@ -284,6 +289,16 @@ export function titleCandidates(html: string): { og: string; h1: string; title: 
   return { og, h1: h1s[0] ?? '', title, all: [...all].filter((t) => t.length >= 8) };
 }
 
+/** 網站名稱的上限（§1.1 第 3 點）。 */
+export const SITE_NAME_MAX = 60;
+
+/** 網站自稱的名稱：og:site_name，沒有就用 <title>（最多 60 字）；都沒有是 null。只給來源評級看，不當證據。 */
+export function siteNameOf(html: string): string | null {
+  const og = clean(/<meta[^>]+property=["']og:site_name["'][^>]*content=["']([^"']+)["']/i.exec(html)?.[1] ?? /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']/i.exec(html)?.[1] ?? '');
+  const name = og || clean(/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? '');
+  return name ? name.slice(0, SITE_NAME_MAX) : null;
+}
+
 /**
  * 快照的文字：從第一段內文之前、最靠近它的標題那一行開始（去掉前面的選單）；找不到就從頭。
  * 回傳文字與對到的標題（網頁上看得到的那一行，比 <title> 少了網站名稱）。
@@ -326,18 +341,24 @@ async function readCapped(res: Response, max: number): Promise<Uint8Array> {
 // ---------------------------------------------------------------- 抓取
 
 /**
- * 抓一個網址（設計 §1.4 的抓取規則）。不寫資料庫；寫的是 obtainWebDoc。
- * 不在清單（或不列入、路徑不收）的不去抓，回 NOT_LISTED；轉址到清單外的當成失敗（ERROR）。
+ * 抓一個網址（web_evidence_design §1.4 的抓取規則，T68 改了第一條：confirm_audit_design §1.3）。不寫資料庫；寫的是 obtainWebDoc。
+ * 在排除列表（或種子的路徑不收）的不去抓，回 NOT_LISTED（error 是 EXCLUDED 或 PATH）；轉址到排除列表或路徑不收的當成失敗（ERROR）。
  */
 export async function fetchWebDoc(fetcher: Fetcher, raw: string, now: Date, opt: WebDocOptions = {}): Promise<WebDocFetched> {
   const u0 = safeWebUrl(raw);
   const url = u0 ? normalizeWebUrl(u0) : raw;
-  const base: WebDocFetched = { url, id: await webDocId(url), status: 'ERROR', finalUrl: null, domain: null, tier: null, label: null, httpStatus: null, title: opt.title?.trim().slice(0, 300) || null, published: null, publishedFrom: null, dateConflict: false, chars: null, truncated: false, text: null, textSha256: null, error: null };
+  const base: WebDocFetched = { url, id: await webDocId(url), status: 'ERROR', finalUrl: null, domain: null, tier: null, label: null, siteName: null, httpStatus: null, title: opt.title?.trim().slice(0, 300) || null, published: null, publishedFrom: null, dateConflict: false, chars: null, truncated: false, text: null, textSha256: null, error: null };
   if (!u0) return { ...base, error: '只收 https 的公開網址' };
-  const hit = matchWebSource(new URL(url), opt.extraDomains);
+  const table = opt.ratings ?? new Map<string, WebRatingRow>();
+  const aiEx = aiExcludedOf(table);
+  const hit = webFetchRule(new URL(url), aiEx);
   if ('miss' in hit) return { ...base, status: 'NOT_LISTED', error: hit.miss };
-  let src: WebSourceMatch = hit;
-  const listed = { ...base, domain: src.domain, tier: src.tier, label: src.label };
+  let src: WebFetchRule = hit;
+  const tierOf = (r: WebFetchRule): WebRating | null => {
+    const x = rateDomain(r.domain, table).rating;
+    return x === 'EXCLUDED' ? null : x;
+  };
+  const listed = { ...base, domain: src.domain, tier: tierOf(src), label: src.label };
   if (opt.siteCount) {
     const n = opt.siteCount.get(src.domain) ?? 0;
     if (n >= WEB_DOC_PER_SITE) return { ...listed, status: 'LIMIT', error: `同一個網站一次執行最多抓 ${WEB_DOC_PER_SITE} 篇` };
@@ -352,14 +373,14 @@ export async function fetchWebDoc(fetcher: Fetcher, raw: string, now: Date, opt:
       const loc = res.headers.get('location');
       if (!loc) break;
       const next = safeWebUrl(new URL(loc, cur).toString());
-      const m = next && matchWebSource(next, opt.extraDomains);
-      if (!next || !m || 'miss' in m) return { ...listed, finalUrl: next?.toString() ?? loc, httpStatus: res.status, error: `轉址到清單外的網址（${next?.hostname ?? loc}）` };
+      const m = next && webFetchRule(next, aiEx);
+      if (!next || !m || 'miss' in m) return { ...listed, finalUrl: next?.toString() ?? loc, httpStatus: res.status, error: `轉址到${!next ? '不是公開 https 的' : m && 'miss' in m && m.miss === 'PATH' ? '路徑不收的' : '排除列表裡的'}網址（${next?.hostname ?? loc}）` };
       src = m;
       cur = next;
       res = null;
     }
     if (!res) return { ...listed, error: `轉址超過 ${MAX_REDIRECTS} 次` };
-    const got = { ...listed, domain: src.domain, tier: src.tier, label: src.label, finalUrl: cur.toString(), httpStatus: res.status };
+    const got = { ...listed, domain: src.domain, tier: tierOf(src), label: src.label, finalUrl: cur.toString(), httpStatus: res.status };
     if (res.status >= 400) return { ...got, status: 'BLOCKED', error: `HTTP ${res.status}` };
     if (res.status >= 300 || res.status < 200) return { ...got, error: `HTTP ${res.status}` };
     const buf = await readCapped(res, WEB_DOC_MAX_BYTES);
@@ -368,6 +389,7 @@ export async function fetchWebDoc(fetcher: Fetcher, raw: string, now: Date, opt:
     const isHtml = /text\/html|application\/xhtml\+xml/i.test(ctype) || (!ctype && /<html|<!doctype html/i.test(head));
     if (!isHtml || head.startsWith('%PDF')) return { ...got, status: 'UNSUPPORTED', error: `不是網頁（${ctype || '沒有 content-type'}）` };
     const html = new TextDecoder().decode(buf);
+    got.siteName = siteNameOf(html);
     // 內文與發布日：一般的規則；官方來源照清單上寫的擷取方式（T64：<pre> 接回段落、較低的內文門檻、發布時間那一行、網址裡的日期）
     const page = extractPage(html, cur, src.extract);
     const text = page.text;
@@ -398,7 +420,7 @@ export interface WebDocRow {
   url: string;
   final_url: string | null;
   domain: string | null;
-  tier: WebTier | null;
+  tier: WebRating | null;
   ticker: string;
   file_id: string | null;
   via: WebDocVia;
@@ -419,6 +441,8 @@ export interface WebDocRow {
   text_sha256: string | null;
   text: string | null;
   used_by: string | null;
+  /** 網站自稱的名稱（T68；之前的列沒有）。 */
+  site_name?: string | null;
 }
 
 export interface WebDocRequest {
@@ -451,11 +475,11 @@ export async function obtainWebDoc(db: D1Database, fetcher: Fetcher, req: WebDoc
   const ok = f.status === 'OK';
   const row = await db
     .prepare(
-      `INSERT INTO web_docs (id, url, final_url, domain, tier, ticker, file_id, via, ref, premise_id, cond_id, title, published, published_from, date_conflict, fetched_at, session, status, error, http_status, chars, truncated, text_sha256, text)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO web_docs (id, url, final_url, domain, tier, ticker, file_id, via, ref, premise_id, cond_id, title, published, published_from, date_conflict, fetched_at, session, status, error, http_status, chars, truncated, text_sha256, text, site_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT DO NOTHING RETURNING *`,
     )
-    .bind(f.id, f.url, f.finalUrl, f.domain, f.tier, req.ticker, req.fileId ?? null, req.via, req.ref ?? null, req.premiseId ?? null, req.condId ?? null, f.title, f.published, f.publishedFrom, f.dateConflict ? 1 : 0, now.toISOString(), req.session ?? null, f.status, f.error, f.httpStatus, f.chars, f.truncated ? 1 : 0, ok ? f.textSha256 : null, ok ? f.text : null)
+    .bind(f.id, f.url, f.finalUrl, f.domain, f.tier, req.ticker, req.fileId ?? null, req.via, req.ref ?? null, req.premiseId ?? null, req.condId ?? null, f.title, f.published, f.publishedFrom, f.dateConflict ? 1 : 0, now.toISOString(), req.session ?? null, f.status, f.error, f.httpStatus, f.chars, f.truncated ? 1 : 0, ok ? f.textSha256 : null, ok ? f.text : null, f.siteName)
     .first<WebDocRow>();
   // 同時有另一個請求先存了同一份 OK：用先存的那一份
   if (!row && ok) return { row: await getWebDoc(db, req.ticker, id), fetched: f, reused: true };

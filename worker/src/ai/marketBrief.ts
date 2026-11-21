@@ -8,6 +8,7 @@
 //   證據包（§1.3、§1.4）：briefFacts（程式算的數字，K 開頭）＋排程端準備的價格表、總經儀表板、新聞標題、目錄；marketBriefPack。
 //   輸出檢查（§1.5）：checkBrief。引用照 check.ts 的同一個逐字檢查（check.ts 沒有動）；這裡只檢查 payload 的固定欄位。
 import { webMetaOf } from './added';
+import { GRADED_RATINGS, type WebRating } from '../data/webSources';
 import { normalizeText, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
 import { buildPack } from './pack';
 
@@ -422,8 +423,8 @@ export interface BriefEvidence {
   kind: PackDoc['kind'];
   title: string;
   url: string | null;
-  /** 網頁的級別與網域（不是網頁是 null）。 */
-  tier: 'PRIMARY' | 'NAMED' | 'MEDIA' | null;
+  /** 網頁判的時候的級別（T68 起含只當線索、還沒評級）與網域；不是網頁是 null。 */
+  tier: WebRating | 'EXCLUDED' | null;
   domain: string | null;
 }
 
@@ -496,7 +497,9 @@ export function checkBrief(s: Pick<CheckedSample, 'payload' | 'evidence' | 'repo
   const cite = new Map(s.evidence.filter((e) => e.ok && docs.has(e.source_id) && docs.get(e.source_id)!.kind !== 'note').map((e) => [e.id, e]));
   const domainOf = (id: string): string | null => {
     const doc = docs.get(cite.get(id)?.source_id ?? '');
-    return doc ? (webMetaOf(doc)?.domain ?? null) : null;
+    // 「兩個不同網域」只算有級別的網頁（T68：只當線索、還沒評級的不算，confirm_audit_design §1.2）
+    const w = doc ? webMetaOf(doc) : null;
+    return w && GRADED_RATINGS.includes(w.tier) ? w.domain : null;
   };
   const groups = new Set(d.groups ?? []);
   const causes: BriefCause[] = [];

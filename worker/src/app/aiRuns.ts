@@ -1,11 +1,12 @@
 // AI 執行（T9）：存證據包 → 建任務、觸發雲端排程 → 收到結果後檢查每一票、表決 → 存結論。
 // 沒有結果（觸發失敗、逾時、結果被退回）也存一份「照規則」的結論，所以每一次執行最後都有結論可以看。
-import { cleanLookups, parseAdded, parseLookups, withAdded, type AddedRecord, type DocCtx, type Lookups } from '../ai/added';
+import { cleanLookups, parseAdded, parseLookups, rateAdded, withAdded, type AddedRecord, type DocCtx, type Lookups } from '../ai/added';
 import { judge, noResult, packHash, type EvidencePack, type Outcome } from '../ai/check';
 import { checkNewRisks, parseNewRisks, type NewRisksRecord } from '../ai/freshEyes';
 import { PAYLOAD_HOOKS } from '../ai/hooks';
 import { LATE_FETCH_ERROR, TASK_TIMEOUT_MS, createTask, fireRoutine, timeoutReason, type AiTaskRow } from './aiTasks';
 import type { Env, Fetcher } from './env';
+import { loadRatings } from './webRatings';
 
 export interface ProcessStep {
   role: string;
@@ -131,10 +132,19 @@ export async function startRun(env: Env, fetcher: Fetcher, pack: EvidencePack, n
 /**
  * 雲端排程送回的結果通過格式檢查之後（aiTasks.acceptResult）：逐票檢查、表決、存結論。
  * 比對的原文＝證據包的文件＋分析師取回的文件（toRun 已經用 withAdded 合起來，T52）。
+ * T68（confirm_audit_design §1.4）：表決之前，取回的每一份網頁照評級表查「當下」的級別、記進 added_docs 的 rating
+ * （同一次執行裡剛評好的就算數；之後套用結論、重看紀錄都用這個）。
  */
 export async function finalizeRun(db: D1Database, task: AiTaskRow, result: Record<string, unknown>, now: Date): Promise<Outcome | null> {
   const row = await db.prepare('SELECT * FROM ai_runs WHERE task_id = ?').bind(task.id).first<Row>();
   if (!row || row.status !== 'PENDING') return null;
+  const added = parseAdded(row.added_docs);
+  if (added.docs.some((d) => d.kind === 'web')) {
+    const rated: AddedRecord = { ...added, docs: rateAdded(added.docs, await loadRatings(db), row.run_id) };
+    const raw = JSON.stringify(rated);
+    await db.prepare("UPDATE ai_runs SET added_docs = ? WHERE run_id = ? AND status = 'PENDING'").bind(raw, row.run_id).run();
+    row.added_docs = raw;
+  }
   const run = toRun(row);
   const outcome = judge(run.pack, result.samples as unknown[], PAYLOAD_HOOKS[run.fn]);
   // 新眼光的 new_risks（T63）：和三票分開檢查、分開存；不影響上面的結論。這次沒有請它跑的（pack.fresh_eyes）送回了也不看
