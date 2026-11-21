@@ -78,6 +78,8 @@ export interface OwnReviewInput {
   early?: { reason: string; events: number[] };
   /** 月底檢查點因為同業的新申報或「要上網查」開的審查（T54）：題目加的那一句（ownAi.ts 的 lookForText）。 */
   lookFor?: string;
+  /** 新眼光這次跑不跑（T63，composite_layer_design §3；freshEyes.ts 的 freshPlan）。沒給 = 證據包沒有這個欄位（不跑）。 */
+  freshEyes?: EvidencePack['fresh_eyes'];
   now: Date;
 }
 
@@ -118,6 +120,7 @@ export function ownReviewPack(inp: OwnReviewInput) {
     premises: ownPremises(acct, ticker),
     documents: docs,
     dataQuality: inp.dataQuality,
+    freshEyes: inp.freshEyes,
     now: inp.now,
   });
 }

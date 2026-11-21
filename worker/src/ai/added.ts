@@ -43,6 +43,11 @@ export interface DocCtx {
   domains: string[];
   fileId: string | null;
   off?: string | null;
+  /**
+   * 這次執行有新眼光（T63，composite_layer_design §3）：分析師替它留的額度（份數、字數、呼叫次數；freshEyes.ts 的 FRESH_RESERVE）。
+   * 沒有這個欄位 = 沒有新眼光：分析師可以用完全部的額度，角色寫「新眼光」的請求不給。
+   */
+  fresh?: { docs: number; chars: number; calls: number };
 }
 
 export type RefuseReason = 'NOT_LISTED' | 'BLOCKED' | 'THIN' | 'UNSUPPORTED' | 'NO_DATE' | 'TOO_OLD' | 'LIMIT' | 'ERROR';
@@ -95,6 +100,8 @@ export interface AddedRecord {
   refusedTotal: number;
   /** 這次執行每個網站已經抓了幾篇（同一個網站最多 4 篇，§1.4）。 */
   sites: Record<string, number>;
+  /** 其中新眼光呼叫了幾次（T63；沒有這個欄位 = 0）。 */
+  freshCalls?: number;
 }
 
 export const emptyAdded = (): AddedRecord => ({ calls: 0, chars: 0, docs: [], refused: [], refusedTotal: 0, sites: {} });
@@ -104,7 +111,7 @@ export function parseAdded(raw: string | null | undefined): AddedRecord {
   if (!raw) return emptyAdded();
   try {
     const o = JSON.parse(raw) as Partial<AddedRecord>;
-    return { calls: Number(o.calls) || 0, chars: Number(o.chars) || 0, docs: Array.isArray(o.docs) ? o.docs : [], refused: Array.isArray(o.refused) ? o.refused : [], refusedTotal: Number(o.refusedTotal) || 0, sites: o.sites && typeof o.sites === 'object' ? o.sites : {} };
+    return { calls: Number(o.calls) || 0, chars: Number(o.chars) || 0, docs: Array.isArray(o.docs) ? o.docs : [], refused: Array.isArray(o.refused) ? o.refused : [], refusedTotal: Number(o.refusedTotal) || 0, sites: o.sites && typeof o.sites === 'object' ? o.sites : {}, ...(Number(o.freshCalls) ? { freshCalls: Number(o.freshCalls) } : {}) };
   } catch {
     return emptyAdded();
   }

@@ -9,8 +9,9 @@
 //   取文件（POST /ai/task/<編號>/docs，§1.5）：分析師（審查、減半檢視）或研究員（草稿）讀完證據包後，送目錄編號或網址；
 //     Worker 檢查清單、當場抓（src/data/webDoc.ts）、存快照、記進這次執行的 added_docs、把原文回給它。
 //     表決時 check.ts 比對的原文＝證據包的文件＋取回的文件（src/ai/added.ts 的 withAdded；check.ts 本身不改）。
-import { DOCS_MAX, DOCS_MAX_CALLS, DOCS_MAX_CHARS, DOCS_PER_CALL, DOC_FNS, FILING_GIVE, REFUSED_KEEP, WEB_GIVE, addedHash, parseAdded, type AddedDoc, type AddedRecord, type DocCtx, type MenuEntry, type RefuseReason } from '../ai/added';
+import { DOCS_MAX, DOCS_MAX_CALLS, DOCS_MAX_CHARS, DOCS_PER_CALL, DOC_FNS, FILING_GIVE, REFUSED_KEEP, WEB_GIVE, addedHash, parseAdded, withAdded, type AddedDoc, type AddedRecord, type DocCtx, type MenuEntry, type RefuseReason } from '../ai/added';
 import type { EvidencePack } from '../ai/check';
+import { FRESH_ROLE, freshView } from '../ai/freshEyes';
 import { NEWS_SOURCES, fetchFilingDoc, tryHeadlineSource, type Headline } from '../data/edgar';
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { errText } from '../data/util';
@@ -310,6 +311,8 @@ export interface DocsReply {
  *   別的功能 → 403；還沒取證據包 → 409；送回結果之後、逾時 → 410。
  *   每次執行最多取回 8 份、合計 60,000 字、呼叫 6 次，超過的回 LIMIT（記在執行紀錄）；網頁每份開頭 12,000 字、同業申報 15,000 字。
  *   每一筆網頁（含被拒絕的）寫進 web_docs；取回的記進 ai_runs.added_docs、web_docs.used_by。
+ *   有新眼光的執行（T63，composite_layer_design §3；doc_ctx.fresh）：分析師的上限少掉留給它的額度（1 份、6,000 字、1 次呼叫，
+ *   新眼光用掉之後就不再留）；role 寫「新眼光」的請求只能指定目錄（M）裡的文件、這次執行最多 1 份。沒有新眼光的執行不收它的請求。
  */
 export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bodyText: string, now: Date): Promise<Response> {
   const db = env.DB;
@@ -334,7 +337,15 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
   const role = typeof body.role === 'string' ? body.role.slice(0, 40) : null;
   const rec: AddedRecord = parseAdded(run.added_docs);
   const prevRaw = run.added_docs ?? null;
+  // 新眼光的額度（T63）：這次執行有新眼光時，分析師的上限扣掉還沒被新眼光用掉的那一份
+  const isFresh = role?.trim() === FRESH_ROLE;
+  if (isFresh && !ctx.fresh) return json({ error: 'not_allowed', why: '這次執行沒有新眼光，不能用這個角色取文件' }, 403);
+  const freshUsed = () => rec.docs.filter((d) => d.role?.trim() === FRESH_ROLE).length;
+  const held = !ctx.fresh || isFresh ? { docs: 0, chars: 0, calls: 0 } : { docs: Math.max(0, ctx.fresh.docs - freshUsed()), chars: freshUsed() >= ctx.fresh.docs ? 0 : ctx.fresh.chars, calls: Math.max(0, ctx.fresh.calls - (rec.freshCalls ?? 0)) };
+  const cap = { docs: DOCS_MAX - held.docs, chars: DOCS_MAX_CHARS - held.chars, calls: DOCS_MAX_CALLS - held.calls };
+  const heldNote = (n: number, unit: string) => (n ? `（其中 ${nf(n)} ${unit}留給新眼光）` : '');
   rec.calls += 1;
+  if (isFresh) rec.freshCalls = (rec.freshCalls ?? 0) + 1;
   const at = now.toISOString();
   const reply: DocsReply = { docs: [], refused: [], left: { docs: 0, chars: 0, calls: 0 } };
   const refuse = (w: { url: string | null; menu: string | null; for: string | null; why: string | null }, reason: RefuseReason, detail: string | null) => {
@@ -343,7 +354,7 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
     if (rec.refused.length < REFUSED_KEEP) rec.refused.push({ url: w.url, menu: w.menu, reason, detail, for: w.for, why: w.why, at });
   };
   const give = (d: Omit<AddedDoc, 'id' | 'truncated' | 'text'> & { text: string; truncated: boolean; cap: number }) => {
-    const left = DOCS_MAX_CHARS - rec.chars;
+    const left = cap.chars - rec.chars;
     let text = d.text.slice(0, d.cap);
     let truncated = d.truncated || d.text.length > d.cap;
     if (text.length > left) {
@@ -365,8 +376,12 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
       refuse(w, 'ERROR', '每一項要有 menu（目錄編號）或 url');
       continue;
     }
-    if (rec.calls > DOCS_MAX_CALLS) {
-      refuse(w, 'LIMIT', `每次執行最多呼叫 ${DOCS_MAX_CALLS} 次`);
+    if (rec.calls > cap.calls) {
+      refuse(w, 'LIMIT', `每次執行最多呼叫 ${DOCS_MAX_CALLS} 次${heldNote(held.calls, '次')}`);
+      continue;
+    }
+    if (isFresh && !w.menu) {
+      refuse(w, 'ERROR', '新眼光只能指定目錄（M 開頭）裡的文件，不能給網址');
       continue;
     }
     if (k >= DOCS_PER_CALL) {
@@ -386,12 +401,16 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
       reply.docs.push(docReply(again));
       continue;
     }
-    if (rec.docs.length >= DOCS_MAX) {
-      refuse(w, 'LIMIT', `每次執行最多取回 ${DOCS_MAX} 份`);
+    if (isFresh && freshUsed() >= ctx.fresh!.docs) {
+      refuse(w, 'LIMIT', `新眼光這次執行最多指定 ${ctx.fresh!.docs} 份`);
       continue;
     }
-    if (rec.chars >= DOCS_MAX_CHARS) {
-      refuse(w, 'LIMIT', `每次執行合計最多 ${nf(DOCS_MAX_CHARS)} 字，已經用完`);
+    if (rec.docs.length >= cap.docs) {
+      refuse(w, 'LIMIT', `每次執行最多取回 ${DOCS_MAX} 份${heldNote(held.docs, '份')}`);
+      continue;
+    }
+    if (rec.chars >= cap.chars) {
+      refuse(w, 'LIMIT', `每次執行合計最多 ${nf(DOCS_MAX_CHARS)} 字${heldNote(held.chars, '字')}，已經用完`);
       continue;
     }
     // S1：同業的申報（和自己的申報同級，不寫 web_docs）。8-K 本文抓的時候就只留 15,000 字（edgar.ts），剛好 15,000 字的也標截掉
@@ -452,8 +471,27 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
     .bind(JSON.stringify(rec), await addedHash(rec.docs), run.run_id, prevRaw)
     .run();
   if (!saved.meta.changes) return json({ error: 'conflict', why: '同時有另一個取文件的請求，或結果已經送回；請重試一次' }, 409);
-  reply.left = { docs: Math.max(0, DOCS_MAX - rec.docs.length), chars: Math.max(0, DOCS_MAX_CHARS - rec.chars), calls: Math.max(0, DOCS_MAX_CALLS - rec.calls) };
+  // left：這個角色還可以取多少（有新眼光時，分析師看到的已經扣掉留給它的；新眼光看到的是它自己那一份）
+  reply.left = { docs: Math.max(0, isFresh ? Math.min(ctx.fresh!.docs - freshUsed(), DOCS_MAX - rec.docs.length) : cap.docs - rec.docs.length), chars: Math.max(0, cap.chars - rec.chars), calls: Math.max(0, cap.calls - rec.calls) };
   return json(reply);
+}
+
+/**
+ * GET /ai/task/<編號>/fresh：給新眼光的那一份（T63，composite_layer_design §3；組法在 src/ai/freshEyes.ts 的 freshView）。
+ *   沒有前提、論點本文、歷次審查、條件與事件清單；有價格與跌幅拆解的數字、清單內的來源與目錄、申報與財報表的原文、新聞標題，
+ *   以及到這一刻為止分析師取回的文件。協調的主代理在分析師做完之後取，原樣交給新眼光那個子代理。
+ *   這次沒有請新眼光跑（證據包的 fresh_eyes.run 不是 true）、別的功能 → 403；還沒取證據包 → 409；送回結果之後、逾時 → 410。
+ */
+export async function handleTaskFresh(env: Env, id: string, now: Date): Promise<Response> {
+  const db = env.DB;
+  const t = await getTask(db, id);
+  if (!t) return json({ error: 'not_found' }, 404);
+  const run = t.kind === 'RUN' ? await db.prepare('SELECT run_id, fn, status, pack, added_docs FROM ai_runs WHERE task_id = ?').bind(id).first<{ run_id: string; fn: string; status: string; pack: string; added_docs: string | null }>() : null;
+  const pack = run ? (JSON.parse(run.pack) as EvidencePack) : null;
+  if (!run || !pack || pack.fresh_eyes?.run !== true) return json({ error: 'not_allowed', why: '這次執行沒有新眼光' }, 403);
+  if (!['PENDING', 'FETCHED'].includes(t.status) || run.status !== 'PENDING' || now.getTime() - Date.parse(t.created_at) > TASK_TIMEOUT_MS) return json({ error: 'task_closed', status: t.status }, 410);
+  if (t.status === 'PENDING') return json({ error: 'evidence_not_fetched', why: '先取證據包' }, 409);
+  return json({ task_id: t.id, kind: t.kind, fresh: freshView(withAdded(pack, parseAdded(run.added_docs).docs)) });
 }
 
 const docReply = (d: AddedDoc): DocsReply['docs'][number] => ({ id: d.id, source_id: d.source_id, kind: d.kind, tier: d.tier, date: d.date, title: d.title, url: d.url, text: d.text, truncated: d.truncated });

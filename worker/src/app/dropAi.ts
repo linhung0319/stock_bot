@@ -9,6 +9,7 @@ import { verdictText } from '../ai/functions';
 import type { PackDoc } from '../ai/check';
 import { attribution, highIndex, idioDrop, idioDropText } from '../ai/detect';
 import { OWN_DROP, dropDecision, ownDropPack } from '../ai/drops';
+import { FRESH_RESERVE, freshPlan } from '../ai/freshEyes';
 import { newRunId } from '../ai/pack';
 import { clone, newNotif, notifName, recordAiTier, refreshOwnAiChoice, routeReview, type Account, type DropReview, type MarketView, type Notif } from '../engine';
 import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlineFeed, quarterTable, type QuarterRow } from '../data/edgar';
@@ -96,8 +97,12 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
           res.log.push(`${t} 的減半檢視：目錄沒有組成（${errText(e)}），這次分析師不能另外找資料`);
         }
       }
-      const docCtx = menu?.ctx ?? { menu: [], notBefore: view.date, domains: [], fileId: tf?.fileId ?? null, off: '目錄沒有組成：這次不能另外找資料' };
-      const { pack, notes } = ownDropPack({ acct, view, axis, ticker: t, runId: newRunId(session, OWN_DROP, t), attr, base: baseDoc(base, t), baseRunId: base?.runId ?? null, docs, urgent, dataQuality: { filings: 'ok', news: 'partial', ...(base ? {} : { review: 'partial' }) }, extraFacts: [...extraFacts, ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: note ? [note] : [], now });
+      // 新眼光（T63，composite_layer_design §3）：減半檢視每次都跑（只有預設前提的不跑）；能取文件時替它留 1 份額度
+      const canFetch = !!menu && !menu.ctx.off;
+      const fresh = tf ? freshPlan(OWN_DROP, view.date, { defaultOnly: tf.kind === 'DEFAULT_ONLY', canFetch }) : undefined;
+      const baseCtx = menu?.ctx ?? { menu: [], notBefore: view.date, domains: [], fileId: tf?.fileId ?? null, off: '目錄沒有組成：這次不能另外找資料' };
+      const docCtx = fresh?.run && canFetch ? { ...baseCtx, fresh: { ...FRESH_RESERVE } } : baseCtx;
+      const { pack, notes } = ownDropPack({ acct, view, axis, ticker: t, runId: newRunId(session, OWN_DROP, t), attr, base: baseDoc(base, t), baseRunId: base?.runId ?? null, docs, urgent, dataQuality: { filings: 'ok', news: 'partial', ...(base ? {} : { review: 'partial' }) }, extraFacts: [...extraFacts, ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: note ? [note] : [], ...(fresh ? { freshEyes: fresh } : {}), now });
       const run = await startRun(env, fetcher, pack, now, [...notes, ...(menu?.notes ?? [])], docCtx);
       res.started.push(run.runId);
       // 雲端排程沒有觸發成功時，這次執行已經用「沒有結果」結束

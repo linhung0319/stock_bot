@@ -1,6 +1,7 @@
 // 網站的 AI 紀錄（T9；design_v2 §6.6）：每一次 AI 執行一頁（輸入、每一票、檢查、結論、過程），「匯出 md 拿去問 AI」，
 // 以及把 AI 紀錄轉成建議單上的 AI 說明（AiNote）。
 import { DOC_FNS, LOOKUP_QUERIES, questionsCap, type RefuseReason } from '../../ai/added';
+import { FRESH_ROLE } from '../../ai/freshEyes';
 import { keptByChoice, type CheckedPremise, type CheckedSample, type Outcome } from '../../ai/check';
 import { TIER_TEXT } from '../../data/webSources';
 import { CRASH_REVIEW } from '../../ai/crash';
@@ -88,6 +89,42 @@ export interface RunDetail extends RunRow {
   followUp: { label: string; text: string }[];
   /** 「AI 這次另外找了什麼」（T53，web_evidence_design §1.4、§1.5）；不能取文件的功能是 null。 */
   found: FoundView | null;
+  /** 新眼光：前提以外的風險（T63，composite_layer_design §3）；沒有新眼光的功能、T63 之前的執行是 null。 */
+  risks: RisksView | null;
+}
+
+/**
+ * 紀錄頁的「新眼光：前提以外的風險」（T63）：這次有沒有跑、列了幾件、哪幾件被程式拿掉與原因。
+ * 只當建議：和三票的結論無關。state：OFF 這次沒有跑／PENDING 還沒有結果／NONE 沒有結果或沒有交清單／LISTED 有列（含全部被拿掉）。
+ */
+export interface RisksView {
+  state: 'OFF' | 'PENDING' | 'NONE' | 'LISTED';
+  line: string;
+  items: { text: string; kept: boolean; note: string | null; quote: string; source: string | null; date: string | null; url: string | null }[];
+}
+
+export function risksView(run: AiRun): RisksView | null {
+  const plan = run.pack.fresh_eyes;
+  if (!plan) return null;
+  if (!plan.run) return { state: 'OFF', line: `這次沒有跑新眼光：${plan.why}。`, items: [] };
+  if (run.status === 'PENDING') return { state: 'PENDING', line: '這次有跑新眼光（不看你的前提，找前提以外的風險），還沒有結果。', items: [] };
+  const rec = run.newRisks ?? null;
+  if (!rec) return { state: 'NONE', line: '這次有請新眼光跑，但這次執行沒有結果（逾時或被退回）。', items: [] };
+  if (!rec.returned) return { state: 'NONE', line: '這次有請新眼光跑，但送回的結果裡沒有它的清單。', items: [] };
+  const docs = new Map(run.pack.documents.map((d) => [d.source_id, d]));
+  const items = rec.items.map((x) => {
+    const d = docs.get(x.source_id);
+    return { text: x.text, kept: x.ok, note: x.ok ? null : (x.why ?? '沒有通過檢查'), quote: x.quote, source: d?.title ?? null, date: d?.date ?? null, url: d?.url ?? null };
+  });
+  const kept = items.filter((x) => x.kept).length;
+  const dropped = items.length - kept;
+  const tail = '只當建議：不影響三票的結論、不影響檔位、不發通知。';
+  const line = !items.length
+    ? `新眼光沒有列出前提以外的風險。${tail}`
+    : kept
+      ? `新眼光列了 ${items.length} 件前提以外的風險，${kept} 件通過程式檢查、列進「要看的事」${dropped ? `，${dropped} 件被拿掉` : ''}。${tail}`
+      : `新眼光列了 ${items.length} 件，都被程式拿掉（原因在下面），沒有列進「要看的事」。${tail}`;
+  return { state: 'LISTED', line, items };
 }
 
 /**
@@ -155,7 +192,8 @@ export function foundView(run: AiRun): FoundView | null {
       url: d.url,
       about: d.for,
       why: d.why,
-      via: d.via === 'MENU' ? '從目錄挑的' : '分析師搜尋到的',
+      // 新眼光指定的那一份（T63）另外標出來：不是分析師為了某一條前提取的
+      via: d.role?.trim() === FRESH_ROLE ? '新眼光從目錄指定的' : d.via === 'MENU' ? '從目錄挑的' : '分析師搜尋到的',
       cut: d.truncated ? `只給 AI 開頭 ${d.text.length.toLocaleString('en-US')} 字` : null,
       votes: run.outcome ? cites.filter((c) => c.length).length : null,
       quotes: [...new Set(cites.flat().map((e) => e.quote))].slice(0, 2),
@@ -325,6 +363,7 @@ export function runDetail(run: AiRun, followUp: Record<string, { ret: number; be
         })
       : [],
     found: foundView(run),
+    risks: risksView(run),
   };
 }
 
@@ -417,6 +456,10 @@ export function exportMd(run: AiRun, ctx: ExportContext): string {
     if (d.found.queries.length) L.push('搜尋的字：', ...d.found.queries.map((q) => `- ${q}`), '');
     if (d.found.docs.length) L.push('取回的文件：', ...d.found.docs.map((x) => `- ${x.title}（${x.source}，${x.level}，發布 ${x.published}，${x.fetched} 抓${x.cut ? `，${x.cut}` : ''}）${x.url ? ` ${x.url}` : ''}${x.why ? `；為什麼要：${x.why}` : ''}；${x.votes ? `${x.votes} 票引用` : '沒有被引用'}`), '');
     if (d.found.missed.length) L.push('沒有讀到的：', ...d.found.missed.map((x) => `- ${x.what}：${x.reason}${x.why ? `；為什麼要：${x.why}` : ''}`), '');
+  }
+  if (d.risks) {
+    L.push('## 新眼光：前提以外的風險', '', d.risks.line, '');
+    if (d.risks.items.length) L.push(...d.risks.items.map((x) => `- ${x.kept ? '列入' : `拿掉（${x.note}）`}：${x.text}${x.quote ? `｜引用：「${x.quote}」${x.source ? `（${x.source}）` : ''}` : ''}`), '');
   }
   L.push('## 證據包', '');
   for (const doc of run.pack.documents) {

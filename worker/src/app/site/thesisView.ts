@@ -4,7 +4,7 @@ import { verdictText } from '../../ai/functions';
 import { DROP_CAUSE_TEXT, isBelief, notifName, verifyEvery, type Account, type Attention, type MarketView, type OwnMeta } from '../../engine';
 import { concentrationHits } from '../concentration';
 import { CODE_TEXT, eventDetail, eventLabel, eventSource, eventStatus, eventVia } from '../eventText';
-import { UNVERIFIED_AFTER, metaFile, outcomeText, ownAttention, premiseStanding, toAttention, type PremiseStanding, type ThesisFile, type ThesisReview } from '../thesis';
+import { UNVERIFIED_AFTER, metaFile, openRisks, outcomeText, ownAttention, premiseStanding, toAttention, type OpenRisk, type PremiseStanding, type ThesisFile, type ThesisReview } from '../thesis';
 
 /**
  * 一條前提最近一次的結果（T61，composite_layer_design §2.1 的「顯示」）：由歷次定期審查算出來（thesis.ts 的 premiseStanding），
@@ -74,7 +74,30 @@ export interface ThesisView {
   dropReviewNotifName: string | null;
   /** 示範模式：論點檔只有帳戶狀態（沒有條件、事件、審查紀錄）。 */
   partial: boolean;
+  /**
+   * 審查提到、你的前提沒有涵蓋的事（T63，composite_layer_design §3）：現在還列著的（和「要看的事」同一份）。
+   * 編輯論點頁用：一鍵帶進右欄再改字，或按「看過了，不加」。只當建議。
+   */
+  risks: RiskView[];
 }
+
+/** 一件「前提以外的風險」給畫面的樣子：那一句、哪一次執行（日期與種類）、引用的原文與出處。 */
+export interface RiskView {
+  runId: string;
+  k: number;
+  date: string;
+  /** 「審查」「減半檢視」。 */
+  label: string;
+  text: string;
+  quote: string;
+  /** 引用出自哪一份（標題與日期）；headline = 只有新聞標題，沒有全文。 */
+  source: string;
+  sourceDate: string;
+  url: string | null;
+  headline: boolean;
+}
+
+export const riskView = (r: OpenRisk): RiskView => ({ runId: r.runId, k: r.k, date: r.date, label: r.label, text: r.text, quote: r.quote, source: r.doc.title, sourceDate: r.doc.date, url: r.doc.url, headline: r.doc.headline });
 
 /** 持股頁列幾件事件、幾次審查（其餘看 AI 紀錄頁）。 */
 export const VIEW_EVENTS = 12;
@@ -197,6 +220,7 @@ export function thesisView(file: ThesisFile, meta: OwnMeta, acct: Pick<Account, 
     dropReview: dr ? { ...dropText(dr), notif: pendingRuleNotif(acct, file.ticker) } : null,
     dropReviewNotifName: dr ? nameOf(pendingRuleNotif(acct, file.ticker)) : null,
     partial,
+    risks: openRisks(file, meta, date).map(riskView),
   };
 }
 

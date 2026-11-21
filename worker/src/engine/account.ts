@@ -208,6 +208,21 @@ export interface OwnMeta {
    * 沒有這個欄位或 null = 沒有指定（目錄只有這檔自己的 RSS 連結）。只有系統預設前提的股票不用網頁證據（存了也不用）。
    */
   webSources?: OwnWebSources | null;
+  /**
+   * 「新眼光」提到的前提以外的風險裡，你已經處理過的（T63，composite_layer_design §3；比照靜默期 G18）：
+   * DISMISSED 看過、不採用；ADOPTED 帶進論點存了檔。at 是訊號日：之後 180 個日曆天內，同一件事（字很像的）不再列進「要看的事」。
+   * 寫入時把超過 180 天的拿掉。沒有這個欄位（舊資料）= 都還沒處理過。
+   */
+  riskSeen?: RiskSeen[];
+}
+
+/** 處理過的一件「前提以外的風險」（OwnMeta.riskSeen）：那一句、哪一次執行的第幾條、哪天處理、怎麼處理。 */
+export interface RiskSeen {
+  text: string;
+  at: string;
+  runId: string;
+  k: number;
+  outcome: 'DISMISSED' | 'ADOPTED';
 }
 
 /** 同業（web_evidence_design §1.3）：edgar 是 EDGAR 的代號（列同業的申報），yahoo 是 Yahoo 的代號（含 `000660.KS` 這類，看 RSS 連結）。 */

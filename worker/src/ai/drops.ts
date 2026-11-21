@@ -53,6 +53,8 @@ export interface OwnDropInput {
   extraFacts?: EvidencePack['facts'];
   /** 由論點檔組的原文（論點那一份 note），放在最後。 */
   extraDocs?: PackDoc[];
+  /** 新眼光這次跑不跑（T63，composite_layer_design §3：減半檢視每次都跑；只有預設前提的不跑）。沒給 = 證據包沒有這個欄位（不跑）。 */
+  freshEyes?: EvidencePack['fresh_eyes'];
   now: Date;
 }
 
@@ -84,6 +86,7 @@ export function ownDropPack(inp: OwnDropInput) {
     premises: ownPremises(acct, ticker),
     documents: [inp.base, ...inp.docs, priceDoc(view, inp.axis, ticker, 120), ...(inp.extraDocs ?? [])].filter((d): d is PackDoc => !!d),
     dataQuality: inp.dataQuality,
+    freshEyes: inp.freshEyes,
     now: inp.now,
   });
 }

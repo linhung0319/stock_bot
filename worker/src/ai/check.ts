@@ -82,6 +82,12 @@ export interface EvidencePack {
   data_quality: Record<string, DataQuality>;
   /** 條件可以用的類型（§2.3）。 */
   condition_types: string[];
+  /**
+   * 新眼光（composite_layer_design §3，T63）：這次要不要多跑「新眼光」那個角色，由程式決定、告訴 prompt。
+   * 只有定期審查與減半檢視的證據包有；沒有這個欄位、或 run 是 false = 這次不跑（送回的 new_risks 不看）。
+   * max_risks：最多列幾條；docs：新眼光可以指定幾份目錄裡的文件（分析師要替它留的額度；不能取文件時是 0）。
+   */
+  fresh_eyes?: { run: boolean; why: string; max_risks: number; docs: number };
 }
 
 /** 條件可以用的類型（§2.3：價格、均線、日期、申報事件、XBRL 指標門檻、事件描述＋確認來源；F5／F6 的總經門檻）。 */
@@ -213,6 +219,14 @@ function checkEvidence(raw: unknown, pack: EvidencePack, docs: Map<string, strin
   if (q.length < MIN_QUOTE) return { ...ev, why: `引用太短（至少 ${MIN_QUOTE} 個字）` };
   if (!text.includes(q)) return { ...ev, why: '引用不是原文的子字串' };
   return { ...ev, ok: true };
+}
+
+/**
+ * 一條引用的逐字檢查，單獨拿出來用（T63：新眼光的 new_risks 每條一個引用，composite_layer_design §3）。
+ * 和每一票的 evidence 是同一個函式、同一套規則：來源要在證據包裡、日期不晚於決策日、引用是原文一字不差的片段。
+ */
+export function checkQuote(pack: EvidencePack, raw: unknown): CheckedEvidence {
+  return checkEvidence(raw, pack, new Map(pack.documents.map((d) => [d.source_id, normalizeText(d.text)])));
 }
 
 function checkConditions(list: unknown, from: CheckedCondition['from'], okIds: Set<string>, types: Set<string>, issues: string[]): CheckedCondition[] {

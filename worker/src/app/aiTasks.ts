@@ -72,7 +72,9 @@ const validatePing: ResultValidator = (r, ev) => {
 const validateRun: ResultValidator = (r, ev) => {
   // lookups（T53）：分析師自己回報的找資料紀錄。只是附帶的紀錄，這裡不檢查內容：存之前整理成固定的形狀（src/ai/added.ts 的 cleanLookups），
   // 格式不對的當成沒有回報，不因此退回三票的結論
-  const extra = onlyKeys(r, ['task_id', 'kind', 'run_id', 'repo_commit', 'samples', 'process', 'lookups']);
+  // new_risks（T63）：新眼光找到的前提以外的風險。一樣是附帶的：內容由 src/ai/freshEyes.ts 的 checkNewRisks 逐條檢查，
+  // 格式不對的那一條拿掉，不因此退回三票的結論
+  const extra = onlyKeys(r, ['task_id', 'kind', 'run_id', 'repo_commit', 'samples', 'process', 'lookups', 'new_risks']);
   if (extra) return extra;
   if (r.run_id !== ev.run_id) return 'run_id 和證據包不同';
   // 雲端排程跑的 repo commit（T13）：沒回報或 null 都收；格式不像 commit 的不擋結果，存成 NULL（aiRuns.commitOf）

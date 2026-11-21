@@ -21,6 +21,7 @@ import { TIER_NAME, clone, condMetNotice, ownHeld, routeReview, type Account, ty
 import { ConflictError, loadAccount, saveAccount, thesisLogStmt } from './ledgerStore';
 import { isLastTradingDayOfMonth, nextTradingDay, type CalendarOverrides } from '../data/calendar';
 import { attribution } from '../ai/detect';
+import { FRESH_RESERVE, freshPlan } from '../ai/freshEyes';
 import { attrFacts } from '../ai/drops';
 import { isAdvanceable } from '../data/secEvents';
 import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlineFeed, isEarningsFiling, quarterTable, quarterTableText, xbrlConditionMet, XBRL_METRICS, type Headline, type HeadlineFeed, type QuarterRow } from '../data/edgar';
@@ -28,7 +29,7 @@ import { buildDocMenu, fetchPeerFilings } from './webEvidence';
 import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { errText } from '../data/util';
 import type { ApplyCtx, StartCtx } from './aiCtx';
-import { getRun, startRun, type AiRun } from './aiRuns';
+import { getRun, lastFreshReview, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { accOf, cikFor, fetchFilingChecks, handledStmt, loadEvents, sectorEtfs, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
@@ -235,8 +236,13 @@ export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, 
   const menu = tf && acct.own[ticker] ? await buildDocMenu(env, fetcher, { ticker, tf, meta: acct.own[ticker], asOf: view.date, headlines: ev.headlines ?? null }) : null;
   // 月底檢查點因為同業的新申報或「要上網查」開的審查（T54，web_evidence_design §1.7）：題目寫明要分析師找什麼
   const lookFor = tf && reasons && menu && !menu.ctx.off ? lookForText(reasons, tf, conds?.map ?? {}) : null;
-  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, webDomains: menu?.sources.domains ?? [], dataQuality: ev.dataQuality, extraFacts: [...extra.facts, ...(early?.facts ?? []), ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: extra.docs, reasons, ...(early ? { early: { reason: early.reason, events: early.events } } : {}), ...(lookFor ? { lookFor } : {}), now });
-  return startRun(env, fetcher, pack, now, [...ev.notes, ...extra.notes, ...(menu?.notes ?? []), ...notes], menu?.ctx ?? null);
+  // 新眼光（T63，composite_layer_design §3）：定期審查每檔每 90 個日曆天最多一次，由程式決定這次跑不跑、寫進證據包告訴 prompt；
+  // 跑的那一次，取文件的額度替它留 1 份（doc_ctx.fresh）。只有預設前提的不跑
+  const canFetch = !!menu && !menu.ctx.off;
+  const fresh = tf ? freshPlan(OWN_REVIEW, view.date, { defaultOnly: tf.kind === 'DEFAULT_ONLY', lastFresh: await lastFreshReview(env.DB, ticker, view.date), canFetch }) : undefined;
+  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, webDomains: menu?.sources.domains ?? [], dataQuality: ev.dataQuality, extraFacts: [...extra.facts, ...(early?.facts ?? []), ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: extra.docs, reasons, ...(early ? { early: { reason: early.reason, events: early.events } } : {}), ...(lookFor ? { lookFor } : {}), ...(fresh ? { freshEyes: fresh } : {}), now });
+  const docCtx = menu ? (fresh?.run && canFetch ? { ...menu.ctx, fresh: { ...FRESH_RESERVE } } : menu.ctx) : null;
+  return startRun(env, fetcher, pack, now, [...ev.notes, ...extra.notes, ...(menu?.notes ?? []), ...notes], docCtx);
 }
 
 // ---------------------------------------------------------------- 套用結論

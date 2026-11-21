@@ -122,6 +122,29 @@ function foundBlock(f) {
   );
 }
 
+/**
+ * 「新眼光：前提以外的風險」（T63，composite_layer_design §3）：這次有沒有跑、列了哪幾件、哪幾件被程式拿掉與原因。
+ * 只當建議，和上面三票的結論無關。
+ */
+function risksBlock(r) {
+  if (!r) return null;
+  return glass(
+    'pad',
+    h('h2', { class: 'panel-h' }, '新眼光：前提以外的風險'),
+    h('p', { class: r.state === 'NONE' ? 'notice' : null }, r.line),
+    r.items.map((x) =>
+      h(
+        'div',
+        { class: 'cond found-doc' },
+        h('div', { class: 'cond-h' }, h('b', null, x.text || '（沒有寫）'), h('span', { class: 'chip ' + (x.kept ? 'ok' : 'warn') }, x.kept ? '列入' : '拿掉')),
+        x.note ? h('p', { class: 'small', style: 'margin-top:2px;color:var(--warn)' }, `拿掉的原因：${x.note}`) : null,
+        x.quote ? h('blockquote', { class: 'quote', style: 'margin-top:6px' }, `「${x.quote}」`) : null,
+        x.source ? h('p', { class: 'small dim', style: 'margin-top:2px' }, `${x.source}${x.date && !x.source.includes(x.date) ? `（${x.date}）` : ''}`, x.url ? ['；', h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer' }, '原始網址')] : null) : null,
+      ),
+    ),
+  );
+}
+
 export async function aiRunPage(ctx, id) {
   const d = await api.get('/ai/run/' + encodeURIComponent(id));
   const back = { href: '#/history', label: '紀錄' };
@@ -198,6 +221,7 @@ export async function aiRunPage(ctx, id) {
           )
         : null,
       foundBlock(d.found),
+      risksBlock(d.risks),
       d.samples.length ? [h('h2', { class: 'sec', style: 'margin:8px 0 0' }, '每一票'), ...d.samples.map((s) => sampleBlock(s, d))] : glass('empty', h('p', { class: 'dim' }, d.status === 'PENDING' ? '還沒有結果。' : '沒有任何一票：' + d.reason)),
       d.followUp.length ? glass('pad', h('h2', { class: 'panel-h' }, '之後的實際結果'), dl(d.followUp.map((f) => [f.label, f.text]))) : null,
       d.facts.length ? details('程式算好的數字（AI 只能用這些）', dl(d.facts.map((f) => [`${f.id} ${f.label}`, h('span', { class: 'num' }, f.value), f.note]))) : null,

@@ -7,10 +7,12 @@
 // L2 各功能的證據包（F24、F7、F25、自選股的 F19）都從這裡取資料；這裡也放組證據包要的純函式（事件 V、預設前提的 D1～D3、
 // 8-K 的挑選順序、論點那一份 note）。讀 D1，所以不在引擎裡。
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
+import { RISK_SEEN_DAYS, overlapsPremise, parseNewRisks, type NewRiskItem } from '../ai/freshEyes';
+import { likeText } from '../ai/ownDraft';
 import { ownCheckResult, type ExitLine } from '../ai/ownCheck';
 import { packPremise } from '../ai/pack';
 import { confirmMode, namedWebDomains, webConfirmText, type OwnCondition } from '../ai/ownReview';
-import { DEFAULT_CONFIG, breaksOf, clone, isBelief, premiseKey, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Premise, type PremiseVerify, type Thesis, type Tier } from '../engine';
+import { DEFAULT_CONFIG, breaksOf, clone, isBelief, premiseKey, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Premise, type PremiseVerify, type RiskSeen, type Thesis, type Tier } from '../engine';
 import { concentrationHits, sizeText } from './concentration';
 import type { ThesisLogInput } from './ledgerStore';
 import { XBRL_METRICS, type QuarterRow } from '../data/edgar';
@@ -205,6 +207,11 @@ export interface ThesisReview {
   premiseStale?: Record<string, number>;
   /** 和結論同檔位的第一張合格票的報告第一段（討論包用；沒有是 null）。 */
   summary: string | null;
+  /**
+   * 這次的新眼光列出、通過程式檢查的前提以外的風險（T63，composite_layer_design §3；ai_runs.new_risks 裡 ok 的那幾條）。
+   * 沒有請新眼光跑、沒有結果、T63 之前的執行沒有這個欄位。只當建議，和這次的結論無關。
+   */
+  newRisks?: NewRiskItem[];
 }
 
 export interface ThesisLogRow {
@@ -358,6 +365,7 @@ interface RunRow {
   status: string;
   outcome: string | null;
   detail: string | null;
+  new_risks?: string | null;
 }
 
 function toReview(r: RunRow): ThesisReview {
@@ -376,8 +384,9 @@ function toReview(r: RunRow): ThesisReview {
     .map(([id]) => id);
   const trigger = r.fn === 'OWN_REVIEW' ? String(detail.trigger ?? '') || null : r.fn === 'HARD_EVENT' ? ((detail.codes as string[] | undefined) ?? []).join('、') || null : r.fn === 'OWN_DROP' ? '慢規則減半' : r.fn === 'OWN_CONDITION' ? '新申報' : r.fn === 'OWN_EARNINGS' ? '財報新聞稿' : null;
   const rep = valid.find((s) => s.verdict === o?.verdict) ?? valid[0];
+  const newRisks = (parseNewRisks(r.new_risks)?.items ?? []).filter((x) => x.ok);
   const summary = rep?.report?.split(/\n\s*\n/)[0]?.trim().slice(0, 400) || null;
-  return { runId: r.run_id, date: r.as_of, fn: r.fn, label: FILE_FNS[r.fn] ?? r.fn, trigger, status: r.status === 'PENDING' || !o ? 'PENDING' : o.status, verdict: o?.verdict ?? null, votes: o?.votes ?? {}, brokenPremises, notif: null, response: null, premiseVotes, ...(Object.keys(premiseStale).length ? { premiseStale } : {}), summary };
+  return { runId: r.run_id, date: r.as_of, fn: r.fn, label: FILE_FNS[r.fn] ?? r.fn, trigger, status: r.status === 'PENDING' || !o ? 'PENDING' : o.status, verdict: o?.verdict ?? null, votes: o?.votes ?? {}, brokenPremises, notif: null, response: null, premiseVotes, ...(Object.keys(premiseStale).length ? { premiseStale } : {}), summary, ...(newRisks.length ? { newRisks } : {}) };
 }
 
 /**
@@ -405,7 +414,7 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
   // 歷次 L2：這份論點檔開檔之後的（同一天結案又重開的，前一份那天的執行也會算進來）
   const runs = (
     await db
-      .prepare(`SELECT run_id, fn, as_of, created_at, status, outcome, json_extract(pack, '$.rule.detail') AS detail FROM ai_runs WHERE ticker = ? AND as_of >= ? AND fn IN (${Object.keys(FILE_FNS).map(() => '?').join(',')}) ORDER BY as_of DESC, created_at DESC LIMIT 30`)
+      .prepare(`SELECT run_id, fn, as_of, created_at, status, outcome, new_risks, json_extract(pack, '$.rule.detail') AS detail FROM ai_runs WHERE ticker = ? AND as_of >= ? AND fn IN (${Object.keys(FILE_FNS).map(() => '?').join(',')}) ORDER BY as_of DESC, created_at DESC LIMIT 30`)
       .bind(ticker, openedAt ?? '0000-00-00', ...Object.keys(FILE_FNS))
       .all<RunRow>()
   ).results;
@@ -1139,6 +1148,60 @@ export function premiseStanding(file: Pick<ThesisFile, 'reviews' | 'log'>, premi
   };
 }
 
+// ---------------------------------------------------------------- 新眼光提到的前提以外的風險（T63，composite_layer_design §3；純函式）
+
+/** 現在還列著的一件「前提以外的風險」。 */
+export interface OpenRisk {
+  runId: string;
+  /** 那次執行送回的第幾條（0 起）；和 runId 一起是這一件的編號。 */
+  k: number;
+  /** 那次執行的決策日與種類（定期審查／減半檢視）。 */
+  date: string;
+  fn: string;
+  /** 寫給使用者看的：「審查」「減半檢視」。 */
+  label: string;
+  text: string;
+  quote: string;
+  /** 引用出自哪一份（標題、日期、連結；headline = 只有新聞標題，沒有全文）。 */
+  doc: NonNullable<NewRiskItem['doc']>;
+}
+
+const RISK_FN_TEXT: Record<string, string> = { OWN_REVIEW: '審查', OWN_DROP: '減半檢視' };
+
+/** 兩件是不是同一件事：同一次執行的同一條，或字很像（和草稿「文字很像」同一個比法）。 */
+export const sameRisk = (a: { runId: string; k: number; text: string }, b: { runId: string; k: number; text: string }): boolean => (a.runId === b.runId && a.k === b.k) || likeText(a.text, b.text);
+
+/**
+ * 這份論點檔現在還列著的「前提以外的風險」（設計 §3：只當建議；不影響三票、不影響檔位、不發通知）：
+ *   取最近一次有列出東西的新眼光（定期審查或減半檢視，已經有結果的）：之後的新眼光有列東西就換成新的那幾條，沒有列東西時舊的留著；
+ *   那次執行距今滿 180 天就不再列。
+ *   拿掉：和現在的前提（含信念；本文、怎樣算不成立的每一句、怎樣算證實）字重疊高的——之後才加的前提也算；
+ *         你處理過的（看過不採用、或已經帶進論點）同一件事，處理那天起 180 天內不再列。
+ * date：今天的訊號日。
+ */
+export function openRisks(file: Pick<ThesisFile, 'reviews' | 'premises'>, meta: Pick<OwnMeta, 'riskSeen'>, date: string): OpenRisk[] {
+  const src = file.reviews.find((r) => r.status !== 'PENDING' && (r.fn === 'OWN_REVIEW' || r.fn === 'OWN_DROP') && !!r.newRisks?.length);
+  if (!src || daysBetween(src.date, date) >= RISK_SEEN_DAYS) return [];
+  const seen = (meta.riskSeen ?? []).filter((s) => daysBetween(s.at, date) < RISK_SEEN_DAYS);
+  return (src.newRisks ?? [])
+    .filter((x) => x.ok && x.doc)
+    .filter((x) => !overlapsPremise(x.text, file.premises))
+    .filter((x) => !seen.some((s) => sameRisk(s, { runId: src.runId, k: x.k, text: x.text })))
+    .map((x) => ({ runId: src.runId, k: x.k, date: src.date, fn: src.fn, label: RISK_FN_TEXT[src.fn] ?? '審查', text: x.text, quote: x.quote, doc: x.doc! }));
+}
+
+/** 「要看的事」那一行（設計 §3 的文字）：`MU 的審查提到一件你的前提沒有涵蓋的事：NAND 現貨價兩週跌 20%。要不要加一條前提由你決定`。 */
+export const riskLine = (ticker: string, r: Pick<OpenRisk, 'label' | 'text'>): string => `${ticker} 的${r.label}提到一件你的前提沒有涵蓋的事：${r.text.replace(/[。．.！!；;\s]+$/u, '')}。要不要加一條前提由你決定`;
+
+/**
+ * 記下你處理過的幾件（看過不採用 DISMISSED、帶進論點 ADOPTED）：回傳新的 riskSeen（超過 180 天的順手拿掉，同一條只留最新的一筆）。
+ * 純函式；存進 OwnMeta.riskSeen 由呼叫的地方做。
+ */
+export function withRiskSeen(prev: readonly RiskSeen[] | undefined, add: RiskSeen[], date: string): RiskSeen[] {
+  const live = (prev ?? []).filter((s) => daysBetween(s.at, date) < RISK_SEEN_DAYS && !add.some((a) => a.runId === s.runId && a.k === s.k));
+  return [...live, ...add].slice(-30);
+}
+
 /**
  * 自選股的「要看的事」，一種一個物件。加一種 = 在這裡加一個物件（T29a 的 COND_MET_NO_SELL、T29b 的 PRICE_NO_FILING、
  * T29c 的 PRESS_MISMATCH、T31a 的 NO_CONSENSUS 已加；T35 的 SIZE_2X）；判斷需要的資料先放進論點檔或帳戶狀態。
@@ -1269,6 +1332,14 @@ export const OWN_ATTN: AttnKind[] = [
           if (s.count < UNVERIFIED_AFTER || !s.first || !s.reachedAt) return [];
           return [{ key: `PREMISE_UNVERIFIED:${p.id}@${s.first}`, every: 6, since: s.reachedAt, text: `${file.ticker} 的前提 ${p.id}「${short(p.text)}」已經連續 ${s.count} 次審查都沒驗到：${UNVERIFIED_TEXT}` }];
         });
+    },
+  },
+  {
+    // 新眼光提到的前提以外的風險（composite_layer_design §3，T63）：一條一件，只當建議。每一件在月報列一次（鍵帶那次執行與第幾條）；
+    // 持股頁列到你帶進論點、按「看過了，不加」、被之後的新眼光換掉，或滿 180 天為止
+    kind: 'NEW_RISK',
+    detect({ file, meta, view }) {
+      return openRisks(file, meta, view.date).map((r) => ({ key: `NEW_RISK@${r.runId}#${r.k}`, every: null, since: r.date, text: riskLine(file.ticker, r) }));
     },
   },
   {

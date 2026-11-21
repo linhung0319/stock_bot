@@ -57,7 +57,8 @@ import { DISCUSSION_MODES, LIVE_CONDITION_CODES, THESIS_LIMITS, parseThesisBlock
 import type { ExitLine } from '../../ai/ownCheck';
 import { demoDiscussion } from '../discussion';
 import type { ThesisLogInput } from '../ledgerStore';
-import { ruleResponseLogs, type CondAction } from '../thesis';
+import { ruleResponseLogs, withRiskSeen, type CondAction } from '../thesis';
+import { RISK_SEEN_DAYS } from '../../ai/freshEyes';
 import { StaleExitsError } from '../ownCheckAi';
 import { thesisReviewHeld } from '../ownAi';
 import { demoProbe, parseWebSources, sameWebSources } from '../webEvidence';
@@ -74,7 +75,7 @@ import { exportMd, rowOfNote, runDetail, runRow, vetoView } from './aiViews';
 import { choiceEffect } from './bubble';
 import { annotate } from './explain';
 import { accountView, composedView, crashLogView, ctxOf, historyView, withPreviewNote, holdingDetail, notifView, pendingBreakOf, snapshotForm, stateView, thesisTodoOf, newOwnDrafts } from './views';
-import { demoHolding } from './thesisView';
+import { demoHolding, type RiskView } from './thesisView';
 import { eventDetail, eventSource } from '../eventText';
 
 type Ready = SiteData & { acct: Account; view: MarketView };
@@ -404,6 +405,43 @@ async function liveConditions(backend: SiteBackend, tk: string): Promise<LiveCon
   return rows.filter((r) => r.id > 0 && r.owned && (LIVE_CONDITION_CODES as readonly string[]).includes(r.code)).map((r) => ({ id: r.id, text: r.text, action: r.action, status: r.status }));
 }
 
+/** 編輯論點頁送來的 risk：{ runId, k }（哪一次執行的第幾條「前提以外的風險」）；格式不對 → null。 */
+function riskRefOf(v: unknown): { runId: string; k: number } | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const o = v as Record<string, unknown>;
+  return typeof o.runId === 'string' && o.runId.length <= 120 && typeof o.k === 'number' && Number.isInteger(o.k) && o.k >= 0 && o.k < 10 ? { runId: o.runId, k: o.k } : null;
+}
+
+/** 這檔現在還列著的「前提以外的風險」（T63；和持股頁「要看的事」、編輯論點頁同一份）。示範模式沒有。 */
+async function openRisksOf(backend: SiteBackend, tk: string): Promise<RiskView[]> {
+  if (!backend.ai) return [];
+  const d = ready(await backend.load());
+  return (await backend.ai.thesis(tk, d.acct, d.view))?.risks ?? [];
+}
+
+/**
+ * POST /api/ops/own-risk：{ ticker, runId, k } → 「看過了，不加」（T63，composite_layer_design §3）。
+ * 那一件記進這檔的 riskSeen（DISMISSED）、論點檔的 log 寫 RISK_SEEN；之後 180 個日曆天內，同一件事不再列進「要看的事」。
+ * 不動論點、不動檔位、不發通知。那一件已經不在清單上（處理過、被新的審查換掉、過期）→ 409。
+ */
+async function dismissRisk(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
+  if (!backend.ai) throw new SiteError(400, '示範模式沒有審查紀錄。');
+  const tk = ticker(b.ticker);
+  const ref = riskRefOf({ runId: b.runId, k: b.k });
+  if (!ref) throw new SiteError(422, '沒有指定是哪一件');
+  const hit = (await openRisksOf(backend, tk)).find((r) => r.runId === ref.runId && r.k === ref.k);
+  if (!hit) throw new SiteError(409, '這一件已經不在清單上（處理過、被新的審查換掉，或超過 180 天），重新整理看看');
+  await mutate(backend, `${tk} 前提以外的風險：看過不加`, [], (d) => {
+    if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
+    const acct = clone(d.acct);
+    const meta = acct.own[tk];
+    meta.riskSeen = withRiskSeen(meta.riskSeen, [{ text: hit.text, at: d.view.date, runId: hit.runId, k: hit.k, outcome: 'DISMISSED' }], d.view.date);
+    const log: ThesisLogInput[] = meta.fileId ? [{ ticker: tk, fileId: meta.fileId, session: d.view.date, kind: 'RISK_SEEN', ref: hit.runId, body: { runId: hit.runId, k: hit.k, text: hit.text, outcome: 'DISMISSED' } }] : [];
+    return { acct, log };
+  });
+  return json({ ok: true, days: RISK_SEEN_DAYS });
+}
+
 /**
  * POST /api/ops/own-thesis：{ ticker, thesis, premises: [{ id?, text }], exitConditions: [{ text, action }], source, replyTo?, dry? }
  *   1. 論點與前提立刻存進帳戶狀態（version 加 1），log 寫 THESIS
@@ -438,6 +476,13 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
       };
     })
     .filter((p) => p.text);
+  // T63（composite_layer_design §3）：從「審查提到的前提以外的風險」帶進右欄的前提帶 risk（哪一次執行的第幾條）；
+  // 存檔後那幾件記成已經帶進論點（ADOPTED），180 天內同一件事不再列進「要看的事」
+  const riskRefs = rawPs
+    .map((p) => (p ?? {}) as Record<string, unknown>)
+    .filter((o) => String(o.text ?? '').trim())
+    .map((o) => riskRefOf(o.risk))
+    .filter((x): x is { runId: string; k: number } => !!x);
   const exitsIn = exitsOf(b.exitConditions);
   const exitDrafts = (Array.isArray(b.exitConditions) ? b.exitConditions : []).map((x) => (String((x as Record<string, unknown>)?.text ?? '').trim() ? idx((x as Record<string, unknown>)?.draft) : null)).filter((k): k is number => k !== null);
   const source0 = b.source === 'DISCUSSION' ? 'DISCUSSION' : 'TYPED';
@@ -458,6 +503,9 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
   // 之前那一版存的出場條件改動還沒確認（這次有改動的話，那一版的改寫結果就不再列）
   const prevSet = backend.ai ? await backend.ai.exitSet(tk) : null;
   const pendingVersion = prevSet && !prevSet.confirmed ? prevSet.version : null;
+  // 帶進來的那幾件現在還列著的才算（T63）；示範模式沒有審查紀錄
+  const openNow = riskRefs.length && backend.ai ? await openRisksOf(backend, tk) : [];
+  const adopted = riskRefs.map((ref) => openNow.find((r) => r.runId === ref.runId && r.k === ref.k)).filter((r): r is RiskView => !!r);
   let savedVersion = 0;
   const r = await mutate(backend, `${tk} 編輯論點`, [], (d) => {
     if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
@@ -489,6 +537,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
     const wsBefore = out.acct.own[tk].webSources ?? null;
     const wsChanged = wsIn !== undefined && !sameWebSources(wsBefore, wsIn);
     if (wsIn !== undefined) out.acct.own[tk].webSources = wsIn ? { ...wsIn, checked: wsChecked } : null;
+    if (adopted.length) out.acct.own[tk].riskSeen = withRiskSeen(out.acct.own[tk].riskSeen, adopted.map((r) => ({ text: r.text, at: d.view.date, runId: r.runId, k: r.k, outcome: 'ADOPTED' as const })), d.view.date);
     const meta = out.acct.own[tk];
     // 信念（T60）在 log 標出來：之後回頭看得到哪幾條當時是使用者選擇相信、不進審查的
     const brief = (ps: Premise[]) => ps.map((p) => ({ id: p.id, text: p.text, origin: p.origin, ...(isBelief(p) ? { belief: true } : {}) }));
@@ -526,6 +575,8 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
         draft: ds && dView
           ? { ...ds.use, used: draftUsed(ds.use), status: draftRow!.status, stale: dView.stale, basedOn: dView.basedOn, brokenOpen: !!dView.broken?.open, premiseId: dView.broken?.premiseId ?? null, afterBreakNo: draftBreak ? (d.acct.own[tk].thesis?.afterBreak ?? 0) + 1 : null }
           : null,
+        // 從審查提到的風險帶進來的（T63）：存檔後這幾件不再列進「要看的事」
+        risks: adopted.map((r) => ({ runId: r.runId, k: r.k, text: r.text })),
       },
     };
     const log: ThesisLogInput[] = meta.fileId
@@ -557,6 +608,8 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>): Pro
           },
           // 乙類的回應：修正論點（REVISE）；原封不動保留了那條前提 → 當成不同意（DISAGREE，理由固定）
           ...(rv?.ok ? [{ ticker: tk, fileId: meta.fileId, session: d.view.date, kind: 'RESPONSE' as const, ref: String(replyTo), body: { notif: replyTo, type: 'B', outcome: rv.kept ? 'DISAGREE' : 'REVISE', reason: rv.kept ? KEPT_REASON : null, premiseId: rv.premiseId } }] : []),
+          // 帶進論點的「前提以外的風險」（T63）
+          ...adopted.map((r) => ({ ticker: tk, fileId: meta.fileId!, session: d.view.date, kind: 'RISK_SEEN' as const, ref: r.runId, body: { runId: r.runId, k: r.k, text: r.text, outcome: 'ADOPTED', version } })),
         ]
       : [];
     const rn = replyTo === null ? undefined : d.acct.notifs.find((x) => x.id === replyTo);
@@ -686,6 +739,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     return json(parseThesisBlock(text(b.text, '貼上的內容', 30_000, false), tk));
   }
   if (rest === 'ops/own-thesis' && post) return saveThesis(backend, await body(req));
+  // 審查提到的前提以外的風險：「看過了，不加」（T63）
+  if (rest === 'ops/own-risk' && post) return dismissRisk(backend, await body(req));
   // 試抓這檔的網頁證據來源（T52；不存）：{ ticker, webSources } → { items }
   if (rest === 'ops/own-sources/probe' && post) {
     const b = await body(req);

@@ -2,6 +2,7 @@
 // 沒有結果（觸發失敗、逾時、結果被退回）也存一份「照規則」的結論，所以每一次執行最後都有結論可以看。
 import { cleanLookups, parseAdded, parseLookups, withAdded, type AddedRecord, type DocCtx, type Lookups } from '../ai/added';
 import { judge, noResult, packHash, type EvidencePack, type Outcome } from '../ai/check';
+import { checkNewRisks, parseNewRisks, type NewRisksRecord } from '../ai/freshEyes';
 import { PAYLOAD_HOOKS } from '../ai/hooks';
 import { LATE_FETCH_ERROR, TASK_TIMEOUT_MS, createTask, fireRoutine, timeoutReason, type AiTaskRow } from './aiTasks';
 import type { Env, Fetcher } from './env';
@@ -39,6 +40,11 @@ export interface AiRun {
   addedHash?: string | null;
   /** T53：分析師自己回報的找資料紀錄（要查的問題、搜尋的字、想取的每一份）；沒有回報、舊紀錄是 null。只用來顯示。 */
   lookups?: Lookups | null;
+  /**
+   * T63：新眼光找到的前提以外的風險，程式檢查之後的紀錄（composite_layer_design §3）。這次沒有請新眼光跑、沒有結果、舊紀錄是 null。
+   * 只當建議：不影響 outcome。
+   */
+  newRisks?: NewRisksRecord | null;
 }
 
 interface Row {
@@ -61,6 +67,7 @@ interface Row {
   added_docs?: string | null;
   added_hash?: string | null;
   lookups?: string | null;
+  new_risks?: string | null;
 }
 
 const toRun = (r: Row): AiRun => {
@@ -85,6 +92,7 @@ const toRun = (r: Row): AiRun => {
     added,
     addedHash: r.added_hash ?? null,
     lookups: parseLookups(r.lookups),
+    newRisks: parseNewRisks(r.new_risks),
   };
 };
 
@@ -95,10 +103,10 @@ export function commitOf(v: unknown): string | null {
   return /^[0-9a-f]{7,64}$/.test(c) ? c : null;
 }
 
-async function close(db: D1Database, runId: string, outcome: Outcome, now: Date, process: ProcessStep[] = [], repoCommit: string | null = null, lookups: Lookups | null = null): Promise<void> {
+async function close(db: D1Database, runId: string, outcome: Outcome, now: Date, process: ProcessStep[] = [], repoCommit: string | null = null, lookups: Lookups | null = null, newRisks: NewRisksRecord | null = null): Promise<void> {
   await db
-    .prepare("UPDATE ai_runs SET status = 'DONE', outcome = ?, process = ?, completed_at = ?, repo_commit = ?, lookups = ? WHERE run_id = ? AND status = 'PENDING'")
-    .bind(JSON.stringify(outcome), JSON.stringify(process), now.toISOString(), repoCommit, lookups ? JSON.stringify(lookups) : null, runId)
+    .prepare("UPDATE ai_runs SET status = 'DONE', outcome = ?, process = ?, completed_at = ?, repo_commit = ?, lookups = ?, new_risks = ? WHERE run_id = ? AND status = 'PENDING'")
+    .bind(JSON.stringify(outcome), JSON.stringify(process), now.toISOString(), repoCommit, lookups ? JSON.stringify(lookups) : null, newRisks ? JSON.stringify(newRisks) : null, runId)
     .run();
 }
 
@@ -129,8 +137,22 @@ export async function finalizeRun(db: D1Database, task: AiTaskRow, result: Recor
   if (!row || row.status !== 'PENDING') return null;
   const run = toRun(row);
   const outcome = judge(run.pack, result.samples as unknown[], PAYLOAD_HOOKS[run.fn]);
-  await close(db, run.runId, outcome, now, (result.process as ProcessStep[] | undefined) ?? [], commitOf(result.repo_commit), cleanLookups(result.lookups));
+  // 新眼光的 new_risks（T63）：和三票分開檢查、分開存；不影響上面的結論。這次沒有請它跑的（pack.fresh_eyes）送回了也不看
+  await close(db, run.runId, outcome, now, (result.process as ProcessStep[] | undefined) ?? [], commitOf(result.repo_commit), cleanLookups(result.lookups), checkNewRisks(run.pack, result.new_risks));
   return outcome;
+}
+
+/**
+ * 這檔上一次「有跑新眼光」的定期審查的決策日（T63，composite_layer_design §3：定期審查每檔每 90 個日曆天最多一次）。
+ * 算數的：還在等結果的，以及結果有回來的（new_risks 有紀錄，就算一條都沒列）；逾時、被退回、沒觸發成功的不算，下一次審查再跑。
+ * 減半檢視的新眼光不在這裡算（每次都跑）。沒有 → null。
+ */
+export async function lastFreshReview(db: D1Database, ticker: string, asOf: string): Promise<string | null> {
+  const r = await db
+    .prepare("SELECT as_of FROM ai_runs WHERE fn = 'OWN_REVIEW' AND ticker = ? AND as_of <= ? AND json_extract(pack, '$.fresh_eyes.run') = 1 AND (status = 'PENDING' OR new_risks IS NOT NULL) ORDER BY as_of DESC LIMIT 1")
+    .bind(ticker, asOf)
+    .first<{ as_of: string }>();
+  return r?.as_of ?? null;
 }
 
 /**

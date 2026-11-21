@@ -761,6 +761,14 @@ select option { background: #14162a; }
 .dr-ev-list { display: grid; gap: 8px; }
 .dr-ev-list blockquote { margin: 2px 0 0; padding-left: 10px; border-left: 2px solid var(--line-hi); color: var(--ink-2); overflow-wrap: anywhere; }
 .dr-plain { display: grid; gap: 4px; margin: 4px 0 0 1.2em; list-style: disc; }
+/* 審查提到、你的前提沒有涵蓋的事（T63）：一件一塊，下面是依據、引用與兩個按鈕 */
+.risk-list { display: grid; margin-top: 6px; }
+.risk-item { padding: 12px 0; border-top: 1px solid var(--line-2); }
+.risk-item:first-child { border-top: 0; }
+.risk-item > * + * { margin-top: 2px; }
+.risk-item p, .risk-quote { overflow-wrap: anywhere; }
+.risk-quote { margin: 2px 0 0; padding-left: 10px; border-left: 2px solid var(--line-hi); color: var(--ink-2); }
+.prem-from.prem-risk { margin-bottom: 6px; color: var(--warn); }
 .prem-row .prem-extra { display: grid; gap: 4px; margin-top: 4px; }
 .prem-bi { display: grid; gap: 2px; }
 .prem-from { color: var(--ink-3); }

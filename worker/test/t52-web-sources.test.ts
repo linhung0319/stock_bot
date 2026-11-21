@@ -272,7 +272,11 @@ describe('T52 取文件的端點（§1.5）', () => {
   it('目錄與網址取回文件；清單外、不列入、認不出日期、太舊各回原因；第 9 份 LIMIT；表決時取回的文件算進原文，沒取過的網址不算', async () => {
     await withWorld(
       async (c) => {
+        // T63（composite_layer_design §3）：這檔第一次定期審查會跑新眼光，分析師的額度要替它留 1 份（在 t63-fresh-eyes.test.ts 測）。
+        // 這裡測的是端點本身的上限，所以用同一天的第二次審查（未滿 90 天，沒有新眼光）
+        await review(c);
         const r = await review(c);
+        expect(r.pack.fresh_eyes?.run).toBe(false);
         // 還沒取證據包 → 409
         expect((await docsCall(c, r, [{ menu: 'M1' }])).status).toBe(409);
         await fetchEvidence(c, r);
@@ -367,7 +371,10 @@ describe('T52 取文件的端點（§1.5）', () => {
   it('合計 60,000 字：網頁每份開頭 12,000 字、用完前的那一份截到剩下的字數並標記，之後的 LIMIT；最多呼叫 6 次', async () => {
     await withWorld(
       async (c) => {
+        // T63：同上，用沒有新眼光的第二次審查測端點本身的上限（有新眼光時分析師少 6,000 字與 1 次呼叫，在 t63 測）
+        await review(c);
         const r = await review(c);
+        expect(r.pack.fresh_eyes?.run).toBe(false);
         await fetchEvidence(c, r);
         const a = await docsCall(c, r, [{ url: BIG(1) }, { url: BIG(2) }, { url: BIG(3) }, { url: BIG(4) }, { menu: 'M1' }, { menu: 'M4' }]);
         expect(a.body.docs.map((d) => [d.text.length, d.truncated])).toEqual([

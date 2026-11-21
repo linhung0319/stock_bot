@@ -21,7 +21,7 @@ export interface ExportTable {
 export const EXPORT_TABLES: Record<string, ExportTable> = {
   // AI 的判斷
   // T52：doc_ctx（目錄與可以取什麼）、added_docs（分析師取回的文件，最多 6 萬字）；T53：lookups（分析師回報的找資料紀錄）
-  ai_runs: { mode: 'replace', json: ['pack', 'pack_notes', 'outcome', 'process', 'doc_ctx', 'added_docs', 'lookups'], pageRows: 20 },
+  ai_runs: { mode: 'replace', json: ['pack', 'pack_notes', 'outcome', 'process', 'doc_ctx', 'added_docs', 'lookups', 'new_risks'], pageRows: 20 },
   ai_tasks: { mode: 'replace', json: ['result'], omit: ['evidence'], pageRows: 50 },
   ai_rejections: { mode: 'append', json: [], pageRows: 20 },
   mom_reviews: { mode: 'replace', json: ['hits'], pageRows: 500 },

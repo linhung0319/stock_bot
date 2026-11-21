@@ -23,6 +23,8 @@ export interface PackInput {
   documents?: PackDoc[];
   dataQuality?: Record<string, DataQuality>;
   conditionTypes?: string[];
+  /** 新眼光（T63，composite_layer_design §3）：這次跑不跑、為什麼；沒給 = 證據包沒有這個欄位（其他功能）。 */
+  freshEyes?: EvidencePack['fresh_eyes'];
   now: Date;
 }
 
@@ -81,6 +83,7 @@ export function buildPack(inp: PackInput): BuiltPack {
       documents: docs,
       data_quality: inp.dataQuality ?? {},
       condition_types: inp.conditionTypes ?? [...CONDITION_TYPES],
+      ...(inp.freshEyes ? { fresh_eyes: inp.freshEyes } : {}),
     },
     notes,
   };

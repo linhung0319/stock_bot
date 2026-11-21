@@ -2,6 +2,7 @@
 //   /health                      不需要驗證
 //   /ai/task/:id/evidence|result 雲端排程用，Bearer AI_TASK_SECRET
 //   /ai/task/:id/docs            分析師取文件（T52，web_evidence_design §1.5；src/app/webEvidence.ts），同一把金鑰
+//   /ai/task/:id/fresh           給新眼光的那一份證據（T63，composite_layer_design §3；沒有前提、論點本文與歷次審查），同一把金鑰
 //   /admin/*                     管理用，Bearer ADMIN_TOKEN（/admin/export：紀錄匯出到本機，src/app/export.ts；/admin/ops-report：運作統計，src/app/opsReport.ts；
 //                                /admin/own/*：在 repo 用 Claude Code 討論論點，src/app/site/api.ts 的 handleAdminThesis）
 //   /auth/line/login|callback    網站的 LINE 登入（src/app/site/lineLogin.ts）
@@ -26,7 +27,7 @@ import { probeSummary, runProbe, saveProbe } from './app/probe';
 import { NEWS_SOURCES, tryHeadlineSource } from './data/edgar';
 import { probeRss, probeWebPage } from './data/webProbe';
 import { handleAdminThesis, handleSite } from './app/site/api';
-import { handleTaskDocs } from './app/webEvidence';
+import { handleTaskDocs, handleTaskFresh } from './app/webEvidence';
 import { pushDraftLines, settleDrafts } from './app/ownDraft';
 import { handleLineLogin } from './app/site/lineLogin';
 import { APPLY_CRON, FINAL_CRON, INGEST_CRON, attemptOfCron } from './app/schedule';
@@ -64,11 +65,13 @@ export async function handle(request: Request, env: Env, fetcher: Fetcher = real
   const login = await handleLineLogin(request, env, fetcher, now);
   if (login) return login;
 
-  const ai = /^\/ai\/task\/([0-9a-f]{32})\/(evidence|result|docs)$/.exec(path);
+  const ai = /^\/ai\/task\/([0-9a-f]{32})\/(evidence|result|docs|fresh)$/.exec(path);
   if (ai) {
     if (!bearerOk(request, env.AI_TASK_SECRET)) return json({ error: 'unauthorized' }, 401);
     if (ai[2] === 'evidence' && request.method === 'GET') return readEvidence(env.DB, ai[1], now);
     if (ai[2] === 'docs' && request.method === 'POST') return handleTaskDocs(env, fetcher, ai[1], await request.text(), now);
+    // 給新眼光的那一份（T63，composite_layer_design §3）：沒有前提、論點本文與歷次審查
+    if (ai[2] === 'fresh' && request.method === 'GET') return handleTaskFresh(env, ai[1], now);
     // 論點草稿（T55）收下之後當場結算成 READY 或 FAILED（使用者在等的回覆不用等到下一次每日流程）
     // 使用者按的草稿回來或失敗：推 LINE 一行（T56，web_evidence_design §2.5）
     if (ai[2] === 'result' && request.method === 'POST')

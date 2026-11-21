@@ -41,16 +41,34 @@
 - 順序規則也寫進 `run.md`：Worker 照 `want` 的順序處理，同網站第 5 篇起回 `LIMIT`，所以順序決定被擋的是哪幾篇。
 - 便宜的核對只當紀錄：運作統計 `web_runs` 多 `clause_runs`、`clause_slots`、`clause_asked`，`clause_asked` 比 `clause_slots` 少表示分析師沒逐句問。「至少留 2 份給相反方向」程式看不出方向，只靠 prompt，M8 看紀錄。
 
+### T63（新眼光）
+
+- 給新眼光的那一份由 Worker 組（新端點 `GET /ai/task/<編號>/fresh`，白名單），不叫主代理自己刪欄位：能用程式測。事件清單與規則狀態也不給（每日掃描的說明帶條件的文字、`R5` 是上次審查的檔位）。
+- 新眼光不搜尋、只能從目錄指定 1 份（給網址會被擋），不擴大「只有分析師可以用 WebSearch」這條使用者決定過的事；代價是目錄裡沒有它想看的時候這一份用不上。
+- 額度除了 1 份，另外留 1 次呼叫與 6,000 字，免得字數或次數先用完；新眼光用掉之後就不再扣。
+- 只有系統預設前提的股票不跑（沒有「前提以外」可言）。90 天只算定期審查裡有請它跑、還在等或有回來的；逾時、退回的不算；減半檢視不占額度。
+- 只有新聞標題的引用可以收，但畫面標「只有新聞標題，沒有讀到全文：當成線索」（MU 那種最新壞消息只在標題裡的情況才列得出來）；引用論點 note 或審查摘要的拿掉。
+- 一句上限 120 字，超過不收不截斷；超過 3 條只看前 3 條。
+- 重疊用現成的 `likeText`（雙字組重疊 ≥ 0.6），比前提本文、每句 `breaksIf`、`confirmsIf`；收結果時比證據包的前提，列「要看的事」時再比現在的前提（之後才加的前提與信念也算）。
+- 列多久：取最近一次有列出東西的新眼光；之後的有列就換新的、沒列時舊的留著；那次執行滿 180 天不再列；月報每件列一次。
+- 「看過不採用」與「帶進論點存了檔」都記在 `OwnMeta.riskSeen` 與論點檔 log（`RISK_SEEN`），180 天內同一件事（同一條或字很像）不再列。
+- `new_risks` 不給多空與三票看；新眼光取回的那一份文件照樣給三票。
+- 紀錄頁多一塊「新眼光：前提以外的風險」，列出列入的與被拿掉的原因（設計沒要求）。運作統計沒加。
+- 留意：帶進右欄不改字也能存（會變成一條寫著風險的前提），現在只有提醒沒有擋；示範模式看不到這個功能。主代理有沒有真的只給新眼光 `fresh.json`、分析師摘要前三段有沒有不提前提，只靠 prompt，等 M8。
+- 範圍外看到沒修：`dropAi.ts` 的 `applyOwnDrop` 有一行 `if (meta0.dropReview && !mine) return …` 重複兩次，無害。
+
 ## 要使用者親手做的事
 
 - T60：部署前 `git push`（雲端排程從 repo 讀 `own_draft_v2.md`）；沒有新 migration；`run.md`、`ping.md` 沒改。部署集中在 T66。
 - T61：`git push` 後雲端排程才讀得到 `own_review_v4.md`、`own_drop_v4.md`；M8 重跑時看運作統計 `premise_prompt` 的 `no_confirm`，高表示模型沒照新格式寫。
 - T62：`run.md` 改了「取文件」那一段，**部署後**要重新貼到 claude.ai 的排程（T66 一起做）。M8 時看運作統計 `web_runs` 的 `clause_slots` 與 `clause_asked`。
+- T63：新的 migration `0021_ai_runs_new_risks.sql`，**部署前**對遠端 D1 套用；`run.md` 又改了（取新眼光的那一份、送 `new_risks`），**先部署再貼**（舊 Worker 沒有 `/fresh`、不認得 `new_risks`，會把整份結果退回）。M8 時看紀錄頁「新眼光」那一塊：主代理有沒有取 `/fresh`、送 `new_risks`，被拿掉的比例。
 
 ## 畫面截圖
 
 - `records/stage10/screens/T60/`：`edit-draft-*`（草稿回來）、`edit-draft-ticked-*`（勾了網站與信念各一條）、`edit-fields-*`（沒有草稿、預填收合）、`edit-belief-warn-*`（只剩 1 條查得到的提醒）、`holding-mu-*`（持股頁的信念）、`crop-*`（放大的局部）。草稿那一塊是用 CDP 換成假的 v2 草稿截的。
 - `records/stage10/screens/T61/`：`crop-premises-*`（持股頁前提的四種寫法加信念、還沒檢查過）、`crop-banner-*`（史萊姆那一句）、`holding-mu-*`、`ai-run-*`（審查紀錄頁的「引用逾期」「沒有指出正面的引用」）。資料用真的伺服器函式算、經 CDP 換進示範的 API。
+- `records/stage10/screens/T63/`：`crop-attention-*`（「要看的事」的三行）、`edit-risks-*`／`crop-risk-box-*`（編輯論點頁右欄上面那一塊）、`edit-risk-taken-*`（按了「帶進右欄」）、`edit-risk-reworded-*`／`crop-preview-*`（改字與預覽）、`crop-ai-run-risks-*`（紀錄頁）、`holding-mu-*`。同樣是真的函式算、CDP 換進示範 API。
 
 ## 卡住的任務
 
