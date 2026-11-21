@@ -7,6 +7,7 @@ import { HALF_START_TEXT, actParts, attentionList, bucketTag, chevron, headline,
 import { attnDraftAction, copyPackButton, newOwnBox } from './pages-thesis.js';
 import { say } from './slime.js';
 import { homeBriefText } from './brief-home.js';
+import { initialReason, needsTyping, reasonOptions, reasonValue } from './reason-pick.js';
 
 const errBox = (e) => h('p', { class: 'err', role: 'alert' }, e?.message ?? String(e));
 
@@ -377,12 +378,33 @@ function slip(it, v, ui) {
       const skipIt = it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做';
       const rt = it.reasonText;
       const ta = h('textarea', { rows: 2, maxlength: 200, 'aria-label': '一句理由', placeholder: rt ? rt.placeholder : rule ? '為什麼這次不照規則減半（1～200 字）' : skipIt ? '為什麼這次不照當時的決定做（1～200 字）' : '為什麼不同意（1～200 字）' });
-      // 崩盤項目：AI 檢視三票一致說延後時先填「照 AI 檢視：延後」，可以改（core_ai §3.6）
-      if (rt?.prefill && ui.reasons && !ui.reasons[it.key]) ui.reasons[it.key] = rt.prefill;
-      ta.value = ui.reasons?.[it.key] ?? '';
-      ta.addEventListener('input', () => {
-        if (ui.reasons) ui.reasons[it.key] = ta.value;
-      });
+      // 一鍵選（confirm_audit_design §6，T72）：點一個就是理由；選「其他」才出現打字欄。
+      // 崩盤項目：AI 檢視三票一致說延後時，「照 AI 檢視：延後」排第一個、先選好（core_ai §3.6）
+      const opts = reasonOptions(it.reasonPicks, rt?.prefill ?? '');
+      const st = initialReason(opts, ui.reasons?.[it.key] ?? '', rt?.prefill ?? '');
+      let sel = st.pick;
+      ta.value = st.typed;
+      const put1 = () => {
+        if (ui.reasons) ui.reasons[it.key] = reasonValue(sel, ta.value);
+      };
+      put1();
+      ta.hidden = opts.length > 0 && !needsTyping(sel);
+      const btns = opts.map((o) =>
+        h('button', {
+          type: 'button',
+          'aria-pressed': String(o === sel),
+          onclick: () => {
+            sel = o;
+            for (const b of btns) b.setAttribute('aria-pressed', String(b.dataset.v === sel));
+            ta.hidden = !needsTyping(sel);
+            put1();
+            if (!ta.hidden) ta.focus();
+          },
+          'data-v': o,
+        }, o),
+      );
+      const pickRow = opts.length ? h('div', { class: 'reason-picks', role: 'group', 'aria-label': '選一個理由' }, btns) : null;
+      ta.addEventListener('input', put1);
       const hint = rt
         ? rt.hint
         : rule
@@ -394,7 +416,8 @@ function slip(it, v, ui) {
             ? '下一次審查會看到這句話。不寫的話記成「月報裡沒有動它」。不管寫不寫，這條前提都會進靜默期：到下一季財報出來（最長 100 天）不再為它通知你。'
             : '下一次審查會看到這句話。這條前提會進靜默期：到下一季財報出來（最長 100 天）不再為它通知你。'
           : '下一次審查會看到這句話。';
-      reasonBox = h('label', { class: 'field', style: 'margin-top:10px' }, h('span', null, skipIt ? '這次不做的理由（必填）' : optional ? '不同意的理由（可以不寫）' : '不同意的理由（必填）'), ta, h('small', null, hint));
+      // 裡面有一排按鈕，外層不用 label（label 會把點標題轉給第一個按鈕）
+      reasonBox = h('div', { class: 'field reason-field', style: 'margin-top:10px' }, h('span', null, skipIt ? '這次不做的理由（必填）' : optional ? '不同意的理由（可以不寫）' : '不同意的理由（必填）'), pickRow, ta, h('small', null, hint));
     }
     function syncReason(id) {
       if (reasonBox) reasonBox.hidden = id !== 'SKIP';
@@ -578,7 +601,7 @@ export async function notifPage(ctx, id) {
       const miss = v.items.filter((it) => !it.cancelled && it.reasonRequired && (mode === 'SKIP' || choices[it.key] === 'SKIP') && !(reasons[it.key] ?? '').trim());
       if (miss.length) {
         const names = miss.map((it) => (it.reasonText ? '崩盤規則' : (it.ticker ?? it.headline))).join('、');
-        msg.replaceChildren(errBox({ message: mode === 'SKIP' ? `${names} 這次不做要寫一句理由：已經幫你打開${miss.length > 1 ? '第一項' : '那一項'}、選好不做，寫下理由再按一次「整則這次不做」。` : `${names} 選了不做，要寫一句理由。` }));
+        msg.replaceChildren(errBox({ message: mode === 'SKIP' ? `${names} 這次不做要寫一句理由：已經幫你打開${miss.length > 1 ? '第一項' : '那一項'}、選好不做，點一個理由（或選「其他」自己寫）再按一次「整則這次不做」。` : `${names} 選了不做，要點一個理由（或選「其他」自己寫一句）。` }));
         // 整則這次不做：直接打開那一項、選好「這次不做」（或「不同意，不動」），理由欄就會出現（T31b 留下的：原本只捲到錯誤訊息）
         const el = [...document.querySelectorAll('details.slip')][v.items.indexOf(miss[0])];
         if (el) {
@@ -590,7 +613,8 @@ export async function notifPage(ctx, id) {
             skip.dispatchEvent(new Event('change', { bubbles: true }));
           }
           el.scrollIntoView({ block: 'center' });
-          el.querySelector('textarea')?.focus();
+          // 打字欄只有選了「其他」才出現；沒出現就停在第一個理由按鈕上（T72）
+          (el.querySelector('.reason-field textarea:not([hidden])') ?? el.querySelector('.reason-picks button') ?? el.querySelector('textarea'))?.focus();
         }
         return;
       }

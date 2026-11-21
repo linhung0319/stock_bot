@@ -906,8 +906,12 @@ function linkBtn(label, fn) {
   return b;
 }
 
-/** 「要看的事」裡可以請 stock bot 草擬的那幾種（§2.5：論點滿一年、前提證據不足、連續沒有一致結論）。 */
-export const DRAFT_ATTN = ['THESIS_OLD', 'PREMISE_NO_DATA', 'NO_CONSENSUS'];
+/**
+ * 「要看的事」裡可以請 stock bot 草擬的那幾種（§2.5：論點滿一年、前提證據不足、連續沒有一致結論；T72 加減半中沒有出場條件、沒有論點）。
+ * T72（confirm_audit_design §5）起這幾種會自動草擬；已經自動請了的那一行帶 drafted，不放連結。還沒自動開的（有還沒回覆的乙類、
+ * 30 天內有前提被判不成立、7 天內已經草擬過）照舊可以自己按。
+ */
+export const DRAFT_ATTN = ['THESIS_OLD', 'PREMISE_NO_DATA', 'NO_CONSENSUS', 'HALF_NO_EXIT', 'NO_THESIS'];
 
 /**
  * 「要看的事」那一行後面的動作（持股頁、月報頁）：草稿好了 → 「看草稿」；論點滿一年、前提證據不足、連續沒有一致結論 → 「請 stock bot 草擬」。
@@ -915,6 +919,8 @@ export const DRAFT_ATTN = ['THESIS_OLD', 'PREMISE_NO_DATA', 'NO_CONSENSUS'];
  */
 export function attnDraftAction(x, state = null) {
   if ((x.src ?? 'own') !== 'own') return null;
+  // 已經自動請 stock bot 草擬（T72）：那一行寫了「好了會列在這裡」，不用再按
+  if (x.drafted) return null;
   if (x.kind === 'DRAFT_READY') return h('a', { class: 'linkbtn', href: `#/h/${encodeURIComponent(x.ticker)}/thesis` }, '看草稿');
   // 前提一直沒驗到（T60，composite §2.3）：改寫、配一個查得到的指標，或改標成信念，都在編輯論點頁做
   if (x.kind === 'PREMISE_UNVERIFIED') return h('a', { class: 'linkbtn', href: `#/h/${encodeURIComponent(x.ticker)}/thesis` }, '編輯論點');

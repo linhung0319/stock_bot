@@ -390,16 +390,21 @@ describe('T55 新的自選自動開一次（§2.5）', () => {
     });
   });
 
-  it('開檔超過 7 天的不再補開；現在 0 股的等持有後再開', async () => {
+  // T72（confirm_audit_design §5）改：開檔超過 7 天，新自選的那一次照舊不再補開，但「只有系統預設前提」（NO_THESIS）會自動開一次
+  // （§5 的表：新自選的那一次自動草擬沒有跑成）。所以這裡改成：0 股的先看（新自選與 NO_THESIS 都不開）；有持股、超過 7 天開的是 NO_THESIS 那一次
+  it('開檔超過 7 天的不再補開（改由 NO_THESIS 自動開）；現在 0 股的等持有後再開', async () => {
     await withWorld(async (c) => {
-      const late = await startCtx(c, at(T0, 8), '2026-11-27');
-      await startAutoDrafts(late);
-      expect(await draftRuns(c.db)).toEqual([]);
       await mutate(c.db, (a) => ({ ...a, lots: { ...a.lots, own: { ...a.lots.own, NVDA: 0 } } }));
       const sc = await startCtx(c, T0);
       await startAutoDrafts(sc);
       expect(await draftRuns(c.db)).toEqual([]);
       expect(sc.res.log).toContain('NVDA：新的自選現在 0 股，論點草稿等持有後再開');
+      await mutate(c.db, (a) => ({ ...a, lots: { ...a.lots, own: { ...a.lots.own, NVDA: c.shares } } }));
+      const late = await startCtx(c, at(T0, 8), '2026-11-27');
+      await startAutoDrafts(late);
+      expect(late.res.log.some((l) => l.includes('新的自選，自動草擬論點'))).toBe(false);
+      expect(late.res.log.some((l) => l.startsWith('NVDA：只有系統預設前提，自動草擬論點'))).toBe(true);
+      expect((await draftsOf(c.db)).map((d) => [d.trigger, d.attn_keys])).toEqual([['AUTO', '["NO_THESIS"]']]);
     });
   });
 

@@ -8,7 +8,7 @@
 //        F25／F24（自選）、財報新聞稿的數字擷取（OWN_EARNINGS，T29c）、F19 法庭與 F18 掃描、F1 否決法庭、進場前回看（月報前一天；
 //        月報當天才進榜的在月報之後開，T32b）、
 //        F5／F6 崩盤規則檢視（月報前一天；切換了卻沒預估到時補開）、F7 減半檢視、自選的個股自身大跌（PRICE_DROP）、
-//        F21 策略檢討說明、提前審查（T29b）、市場摘要（MARKET_BRIEF，T64）、新的自選自動草擬論點（OWN_DRAFT，T55）。擬事件打分與動能的 F20 大跌說明 T32d 拿掉（momentum_ai §3.6、§3.7）
+//        F21 策略檢討說明、提前審查（T29b）、市場摘要（MARKET_BRIEF，T64）、新的自選自動草擬論點（OWN_DRAFT，T55；T72 起「要看的事」的七種觸發也自動開，同一天最多 2 檔）。擬事件打分與動能的 F20 大跌說明 T32d 拿掉（momentum_ai §3.6、§3.7）
 //      沒有 startNew 時只開 afterApply 的那幾種（01:30 的 finalStarts，src/app/schedule.ts）；03:30 兩者都沒有，只套用
 //   策略檢討的提醒（startNew 才有）：套用之前抓 French 動能因子，歷史對照接在提醒的文字後面（momentum_ai §3.8），開 AI 時沿用
 // 每一段出錯只記在紀錄裡，不擋其他段；規則的部分在這之前已經照常做完。
@@ -191,7 +191,7 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
   // 放在減半檢視與提前審查之後，才知道今天有沒有開
   await guard(res, '市場摘要', () => startMarketBrief(sc));
   await guard(res, '策略檢討說明', () => startStrategyRun(sc));
-  // 新的自選自動草擬論點一次（web_evidence_design §2.5，T55）；放在最後：今天的審查與其他執行先開
+  // 新的自選自動草擬論點一次（web_evidence_design §2.5，T55），接著「要看的事」觸發的（confirm_audit_design §5，T72）；放在最後：今天的審查與其他執行先開
   await guard(res, '論點草稿', () => startAutoDrafts(sc));
   return res;
 }

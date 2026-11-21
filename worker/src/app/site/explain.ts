@@ -490,6 +490,20 @@ export function liveCrash(ctx: ExplainContext, n: Notif, it: ItemX): Explain {
   return { ...x, short, facts, ai: note, aiMissing: !!it.aiLine && !note };
 }
 
+/** 「這次不做」的一鍵理由（confirm_audit_design §6，T72）：甲類、慢規則減半、崩盤項目。網站最後再加一個「其他」（選了才要自己打字）。 */
+export const REASON_PICKS_SKIP = ['價格已經反映', '想再觀察一陣子', '這檔對我有其他用途（避險、配置）'] as const;
+/** 乙類「不同意，不動」的一鍵理由（§6）。 */
+export const REASON_PICKS_DISAGREE = ['我認為這條前提還成立', '報導不可信', '想等下一份財報'] as const;
+
+/**
+ * 這一項理由欄的一鍵選項（§6）：乙類（AI 判斷前提不成立，不是附在慢規則減半上的；當天的必填、月報裡的可以不寫）→ 不同意的三個；
+ * 其他要寫理由的（甲類、慢規則減半、崩盤）→ 這次不做的三個；不用寫理由的是 null。選項的字就是理由（照舊存進論點檔、進下一次審查與靜默期）。
+ */
+export function reasonPicksOf(it: Item): string[] | null {
+  if (it.brk?.type === 'B' && !it.brk.withRule) return [...REASON_PICKS_DISAGREE];
+  return it.reasonRequired ? [...REASON_PICKS_SKIP] : null;
+}
+
 /** 崩盤項目「這次不做」的說明（core_ai §3.6）。 */
 const CRASH_SKIP = '要寫一句理由。等於延後一個月：下個月規則還在同一個狀態，核心的單會再列一次；已經翻回去就不用做。動能那幾檔的差額照樣下個月再列。';
 

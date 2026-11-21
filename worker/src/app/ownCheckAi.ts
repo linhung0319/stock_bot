@@ -86,7 +86,7 @@ export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, v
   })();
   const facts = [
     ...priceFacts(view, ticker),
-    ...(rec ? [{ id: 'W1', label: '建議的標準比重', value: `${(rec * 100).toFixed(1)}%` }] : []),
+    ...(rec ? [{ id: 'R1', label: '建議的標準比重', value: `${(rec * 100).toFixed(1)}%` }] : []),
     ...overlap.map((x, k) => ({ id: `O${k + 1}`, label: `和 ${x.t} 的一年日報酬相關係數`, value: x.c.toFixed(2), note: x.c >= CONC.corr ? '高度相關：可能是同一個題材' : undefined })).map((f) => (f.note === undefined ? { id: f.id, label: f.label, value: f.value } : f)),
   ];
   const docs = [priceDoc(view, axis, ticker, 60), ev.xbrl, ...ev.docs, ev.news, thesisDoc].filter((d): d is PackDoc => !!d);

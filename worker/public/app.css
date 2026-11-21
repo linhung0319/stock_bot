@@ -879,3 +879,10 @@ a.rv:hover { background: var(--wash); }
 .brief-home .brief-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; }
 .brief-home .brief-h b { font-weight: 500; }
 .brief-home .brief-t { margin: 6px 0 4px; }
+
+/* T72（confirm_audit_design §6）：「這次不做」「不同意，不動」的理由一鍵選；選「其他」才出現打字欄 */
+.reason-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+.reason-picks button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, 0.03); color: var(--ink-2); font-size: 13.5px; line-height: 1.4; text-align: left; cursor: pointer; transition: border-color 0.15s, background-color 0.15s, color 0.15s; }
+.reason-picks button:hover { border-color: var(--line-hi); color: var(--ink); }
+.reason-picks button[aria-pressed="true"] { border-color: #6d84ff; background: rgba(90, 110, 255, 0.16); color: var(--ink); }
+.reason-field textarea[hidden] { display: none; }

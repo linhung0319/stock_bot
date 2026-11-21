@@ -7,7 +7,7 @@
 // L2 各功能的證據包（F24、F7、F25、自選股的 F19）都從這裡取資料；這裡也放組證據包要的純函式（事件 V、預設前提的 D1～D3、
 // 8-K 的挑選順序、論點那一份 note）。讀 D1，所以不在引擎裡。
 import type { EvidencePack, Outcome, PackDoc, PackPremise } from '../ai/check';
-import { RISK_SEEN_DAYS, overlapsPremise, parseNewRisks, type NewRiskItem } from '../ai/freshEyes';
+import { RISK_SEEN_DAYS, overlapsPremise, parseNewRisks, repeatedRisks, type NewRiskItem } from '../ai/freshEyes';
 import { likeText } from '../ai/ownDraft';
 import { ownCheckResult, type ExitLine } from '../ai/ownCheck';
 import { packPremise } from '../ai/pack';
@@ -265,6 +265,19 @@ export interface ThesisFile {
    * at：回來的時間；until：哪天之後不再列（回來後 30 天就過期）。沒有是 null（舊的呼叫端、示範模式：undefined）。
    */
   draft?: { runId: string; at: string; until: string; trigger: 'AUTO' | 'MANUAL' } | null;
+  /**
+   * 「要看的事」觸發的自動草稿（T72，confirm_audit_design §5；own_drafts 有 attn_keys 的列，新到舊）：
+   * keys 是哪幾件觸發的（draftKeyOf 的鍵）；at 開的時間；status 那一次草稿現在的狀態。沒有是空陣列（舊的呼叫端、示範模式：undefined）。
+   */
+  autoDrafts?: AutoDraftRec[];
+}
+
+/** 一次「要看的事」觸發的自動草稿（T72）。 */
+export interface AutoDraftRec {
+  runId: string;
+  keys: string[];
+  at: string;
+  status: string;
 }
 
 /** READY 的草稿幾天沒處理 → EXPIRED（web_evidence_design §2.3；src/app/ownDraft.ts 也用這個數字）。 */
@@ -282,6 +295,22 @@ async function readyDraftOf(db: D1Database, fileId: string | null): Promise<Thes
   if (!r) return null;
   const at = r.settled_at ?? r.created_at;
   return { runId: r.run_id, at, until: draftUntil(at), trigger: r.trigger === 'AUTO' ? 'AUTO' : 'MANUAL' };
+}
+
+/** 這份論點檔「要看的事」觸發的自動草稿（T72；新到舊）。attn_keys 壞掉的當成沒有鍵。 */
+export async function loadAutoDrafts(db: D1Database, fileId: string | null): Promise<AutoDraftRec[]> {
+  if (!fileId) return [];
+  const rows = (await db.prepare('SELECT run_id, created_at, status, attn_keys FROM own_drafts WHERE file_id = ? AND attn_keys IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 50').bind(fileId).all<{ run_id: string; created_at: string; status: string; attn_keys: string }>()).results;
+  return rows.map((r) => {
+    let keys: string[] = [];
+    try {
+      const v = JSON.parse(r.attn_keys) as unknown;
+      if (Array.isArray(v)) keys = v.filter((x): x is string => typeof x === 'string');
+    } catch {
+      /* 壞掉的當成沒有鍵 */
+    }
+    return { runId: r.run_id, keys, at: r.created_at, status: r.status };
+  });
 }
 
 /** 持股頁列出多少天內的出場條件改寫結果（own_thesis §1.8 確認的第 4 點）。 */
@@ -497,6 +526,7 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     splits: await loadSplits(db, ticker, fileId),
     unchecked,
     draft: await readyDraftOf(db, fileId),
+    autoDrafts: await loadAutoDrafts(db, fileId),
   };
 }
 
@@ -1377,6 +1407,25 @@ export const OWN_ATTN: AttnKind[] = [
   },
   // T71（confirm_audit_design §4）：NEW_RISK 拿掉——新風險只放審查紀錄頁、持股頁的審查那一塊，並帶進下一份草稿（openRisks 照舊）
   {
+    // 同一件新風險反覆出現（confirm_audit_design §4、§5，T72）：最近 180 天、兩次不同的審查（或減半檢視）的新眼光引用了同一份文件的同一段原文
+    // （T71 的 repeatedRisks）→ 自動草擬的觸發。一件一個鍵（文件與原文的雜湊；第三次出現還是同一件）。
+    // 和現在的前提字重疊高的不算（已經寫進前提了）。新風險本身不列「要看的事」（§4），所以這一件只在已經請 stock bot 草擬時列出（withDraftNotes）
+    kind: 'RISK_REPEAT',
+    detect({ file, view }) {
+      const runs = file.reviews
+        .filter((r) => r.status !== 'PENDING' && (r.fn === 'OWN_REVIEW' || r.fn === 'OWN_DROP') && !!r.newRisks?.length && daysBetween(r.date, view.date) < RISK_REPEAT_DAYS)
+        .reverse() // 舊到新：runIds[1] 是第二次出現的那一次
+        .map((r) => ({ ticker: file.ticker, runId: r.runId, items: r.newRisks ?? [] }));
+      return repeatedRisks(runs).flatMap((x) => {
+        const second = file.reviews.find((r) => r.runId === x.runIds[1]);
+        const latest = file.reviews.find((r) => r.runId === x.runIds.at(-1));
+        const item = latest?.newRisks?.find((it) => it.source_id === x.sourceId && it.quote.replace(/\s+/g, ' ').trim() === x.quote);
+        if (!second || !item || overlapsPremise(item.text, file.premises)) return [];
+        return [{ key: `RISK_REPEAT:${shortHash(`${x.sourceId}\n${x.quote}`)}`, every: null, since: second.date, text: `${file.ticker} 的 AI 審查${x.runIds.length === 2 ? '兩' : ` ${x.runIds.length} `}次引用同一段原文，提到一件你的前提沒有涵蓋的事：${item.text.replace(/[。．.！!；;\s]+$/u, '')}` }];
+      });
+    },
+  },
+  {
     // 你定的條件成立、但換算出來不用賣（§1.10 甲類）：沒有發通知（log 沒有這條的 BREAK_NOTICE）、也不是等著進月報的。
     // 成立後的第一份月報列一次；持股頁列到那份月報產生為止（之後有成立日之後的月報就不再算）
     kind: 'COND_MET_NO_SELL',
@@ -1545,16 +1594,112 @@ export function ruleResponseLogs(acct: Pick<Account, 'own'>, n: Notif, session: 
   return out;
 }
 
+// ---------------------------------------------------------------- 自動草擬的觸發（T72，confirm_audit_design §5；純函式）
+
+/** 同一件新風險反覆出現看多少天內的審查（和草稿帶的新風險、持股頁列的新風險同一個期間）。 */
+export const RISK_REPEAT_DAYS = RISK_SEEN_DAYS;
+
+/**
+ * 會自動開草稿的「要看的事」（§5 的表），照**優先順序**排：同一天超過 2 檔時先開排在前面的（其餘排到之後的日子，
+ * 那時還成立就開）。順序的理由：減半中沒有出場條件（錢已經動了、規則之後不會再有動作）→ 同一件新風險反覆出現（具體的新事）→
+ * 前提一直沒驗到 → 前提證據不足 → 審查沒有一致結論 → 沒有論點 → 論點滿一年（最不急）。
+ */
+export const DRAFT_TRIGGER_KINDS = ['HALF_NO_EXIT', 'RISK_REPEAT', 'PREMISE_UNVERIFIED', 'PREMISE_NO_DATA', 'NO_CONSENSUS', 'NO_THESIS', 'THESIS_OLD'] as const;
+const TRIGGER_SET = new Set<string>(DRAFT_TRIGGER_KINDS);
+/** 一種觸發的優先順序（越小越先）；不是觸發的是 Infinity。 */
+export const triggerRank = (kind: string): number => {
+  const i = (DRAFT_TRIGGER_KINDS as readonly string[]).indexOf(kind);
+  return i < 0 ? Infinity : i;
+};
+
+/**
+ * 「只自動開一次」記的鍵：「要看的事」的鍵；論點滿一年、減半中沒有出場條件的鍵是固定的（每年／每 3 個月再列），
+ * 所以加上 @<從哪天起>——改過論點之後又滿一年、加回之後又減半，是新的一件，可以再自動開一次。
+ */
+export const draftKeyOf = (x: Pick<AttnHit, 'kind' | 'key' | 'since'>): string => (x.kind === 'THESIS_OLD' || x.kind === 'HALF_NO_EXIT' ? `${x.key}@${x.since}` : x.key);
+
+/** 自動的失敗了重試幾次（第一次＋重試一次，和新自選的那一次相同，G22）。 */
+export const AUTO_KEY_TRIES = 2;
+
+/** 這個鍵已經自動開過（有一次不是失敗的，或失敗了 2 次）→ 不再自動開。 */
+export function autoKeyUsed(recs: readonly AutoDraftRec[], key: string): boolean {
+  const mine = recs.filter((r) => r.keys.includes(key));
+  return mine.some((r) => r.status !== 'FAILED') || mine.length >= AUTO_KEY_TRIES;
+}
+
+/** 前提被判不成立之後多少個日曆天內不自動草擬（§5；web_evidence §2.4 第 6 點的防線）。 */
+export const BROKEN_QUIET_DAYS = 30;
+
+/** 最近 30 個日曆天內有前提被判不成立（某次審查或減半檢視每一票都判那條不成立）：回傳最近的那一次；沒有是 null。 */
+export function recentBroken(file: Pick<ThesisFile, 'reviews'>, session: string): { runId: string; date: string; premiseId: string } | null {
+  const r = file.reviews.find((x) => x.status !== 'PENDING' && x.brokenPremises.length && daysBetween(x.date, session) <= BROKEN_QUIET_DAYS && daysBetween(x.date, session) >= 0);
+  return r ? { runId: r.runId, date: r.date, premiseId: r.brokenPremises[0] } : null;
+}
+
+/** 那一行的事實部分（拿掉「可以拿去討論」「可以改寫」這類要你去做的話；已經請 stock bot 草擬時接在後面的是新的那句）。 */
+function attnFact(x: Pick<AttnHit, 'kind' | 'text'>): string {
+  const t = x.text;
+  if (x.kind === 'NO_CONSENSUS') return t.replace(/，論點可能寫得不夠具體，可以拿去討論$/, '');
+  if (x.kind === 'PREMISE_UNVERIFIED') return t.endsWith(`：${UNVERIFIED_TEXT}`) ? t.slice(0, -(UNVERIFIED_TEXT.length + 1)) : t;
+  if (x.kind === 'PREMISE_NO_DATA') {
+    const mark = '3 票都是證據不足';
+    const i = t.indexOf(mark);
+    return i < 0 ? t : t.slice(0, i + mark.length);
+  }
+  return t.replace(/[。．.]+$/u, '');
+}
+
+/** 「已經請 stock bot 草擬（M/D），好了會列在這裡」（§5）。at：開的時間（日期照台北）。 */
+export const draftAskedText = (at: string): string => {
+  const d = taipeiDay(at);
+  return `已經請 stock bot 草擬（${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}），好了會列在這裡`;
+};
+
+/**
+ * 已經自動請 stock bot 草擬的那幾件，那一行改寫成「<事實>。已經請 stock bot 草擬（M/D），好了會列在這裡」，不再要你去按（§5）；
+ * 帶 drafted（開的時間），網站就不放「請 stock bot 草擬」的連結。只在那一次草稿還在準備中或好了等你看時改寫；
+ * 失敗、用過、不用、過期的照原本的寫法（你可以自己按）。新風險反覆出現（RISK_REPEAT）只在這時候列（§4：新風險不列「要看的事」）。
+ */
+export function withDraftNotes(hits: AttnHit[], file: Pick<ThesisFile, 'autoDrafts'>): AttnHit[] {
+  const recs = file.autoDrafts ?? [];
+  return hits.flatMap((x) => {
+    if (!TRIGGER_SET.has(x.kind)) return [x];
+    const key = draftKeyOf(x);
+    const rec = recs.find((r) => r.keys.includes(key) && (r.status === 'PENDING' || r.status === 'READY'));
+    if (!rec) return x.kind === 'RISK_REPEAT' ? [] : [x];
+    return [{ ...x, text: `${attnFact(x)}。${draftAskedText(rec.at)}`, drafted: rec.at }];
+  });
+}
+
+/** 這一檔現在成立的自動草擬觸發（還沒套 withDraftNotes；排程用，src/app/ownDraft.ts 的 startTriggerDrafts）。 */
+export function draftTriggers(file: ThesisFile, acct: AttnCtx['acct'], view: AttnCtx['view']): AttnHit[] {
+  const meta = acct.own[file.ticker];
+  if (!meta) return [];
+  return OWN_ATTN.filter((k) => TRIGGER_SET.has(k.kind)).flatMap((k) => k.detect({ file, meta, acct, view }).map((x) => ({ ticker: file.ticker, kind: k.kind, src: 'own' as const, ...x })));
+}
+
+/** 短的雜湊（「要看的事」的鍵用；FNV-1a 32 位元，36 進位）。 */
+function shortHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
+
 /**
  * 自選股的「要看的事」（own_thesis §3.6.6）：每份論點檔逐種判斷，回傳現在成立的全部（不看頻率；持股頁就是這一份）。
- * files：各檔的論點檔（thesisFile 組好的）；本身不讀資料庫。
+ * files：各檔的論點檔（thesisFile 組好的）；本身不讀資料庫。已經自動請 stock bot 草擬的改寫那一行（T72，withDraftNotes）。
  */
 export function ownAttention(files: ThesisFile[], acct: AttnCtx['acct'], view: AttnCtx['view'], kinds: AttnKind[] = OWN_ATTN): AttnHit[] {
   const out: AttnHit[] = [];
   for (const file of files) {
     const meta = acct.own[file.ticker];
     if (!meta) continue;
-    for (const k of kinds) for (const x of k.detect({ file, meta, acct, view })) out.push({ ticker: file.ticker, kind: k.kind, src: 'own', ...x });
+    const hits: AttnHit[] = [];
+    for (const k of kinds) for (const x of k.detect({ file, meta, acct, view })) hits.push({ ticker: file.ticker, kind: k.kind, src: 'own', ...x });
+    out.push(...withDraftNotes(hits, file));
   }
   return out;
 }
@@ -1579,7 +1724,7 @@ export function dueAttention(hits: AttnHit[], shown: Record<string, Record<strin
 }
 
 /** 存進月報、給畫面的形狀（拿掉頻率用的欄位）。 */
-export const toAttention = (x: AttnHit): Attention => ({ ticker: x.ticker, kind: x.kind, text: x.text, since: x.since, src: x.src ?? 'own', ...(x.link ? { link: x.link } : {}) });
+export const toAttention = (x: AttnHit): Attention => ({ ticker: x.ticker, kind: x.kind, text: x.text, since: x.since, src: x.src ?? 'own', ...(x.link ? { link: x.link } : {}), ...(x.drafted ? { drafted: x.drafted } : {}) });
 
 /**
  * 每日流程在產生月報前（own_thesis §3.6.6）：組每檔自選的論點檔、算這個月該列的，並更新 attnShown。

@@ -47,7 +47,7 @@ import { draftStateOf, type DraftState } from '../ownDraft';
 import type { SiteData } from './backend';
 import type { HomeBrief } from '../marketBrief';
 import { accountBubble, todoBubble, type Bubble } from './bubble';
-import { coreLineWhy, crashReasonText, explainItem, findNote, liveCashflow, liveCrash, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
+import { coreLineWhy, crashReasonText, explainItem, reasonPicksOf, findNote, liveCashflow, liveCrash, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
 import { labelOf, meter, place, scaleOf, type Meter } from './meter';
 import { BUCKET_NAME, type AiNote, type Explain, type Gauge, type RankRow } from './types';
 
@@ -186,6 +186,8 @@ export interface ItemView {
   reason: string | null;
   /** 理由欄的提示文字與先填的字（崩盤項目，core_ai §3.6）；沒有 = 用網頁預設的文字。 */
   reasonText: { placeholder: string; hint: string; prefill: string } | null;
+  /** 理由欄的一鍵選項（confirm_audit_design §6，T72；網站最後加「其他」）；不用寫理由的是 null。 */
+  reasonPicks: string[] | null;
   /** 乙類、慢規則減半項目上帶「AI 建議出清」的：可以「拿去討論」（複製 BREAK 討論包）。 */
   discuss: boolean;
   /** 慢規則項目上 AI 的那一行（減半：論點檢查的結果；加回：審查認為前提不成立時的建議；own_thesis §3.4）。沒有是 null。 */
@@ -471,6 +473,7 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
     reasonRequired: !!it.reasonRequired,
     reason: it.reason ?? null,
     reasonText: crashReasonText(it),
+    reasonPicks: reasonPicksOf(it),
     discuss: it.brk?.type === 'B' && !!it.ticker && !!d.acct.own[it.ticker],
     // 只有預設前提的股票：那一行後面接「這檔還沒有你的論點，AI 只檢查系統預設前提。」（引擎寫在這一項的理由裡）
     aiLine: (it.kind === 'OWN_RULE' || it.lateVeto) && it.aiLine ? `${it.aiLine}${it.why?.includes(DEFAULT_ONLY_WHY) ? `。${DEFAULT_ONLY_WHY}` : ''}` : null,

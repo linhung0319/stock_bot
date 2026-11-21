@@ -10,6 +10,10 @@
 //     使用者按「請 stock bot 草擬」→ 立刻開；每檔 7 個日曆天最多 1 次（失敗的不算）；有還在跑的不重開。
 //       有還沒回覆的乙類通知時照樣可以按：草稿最上面固定寫那句話、不能沿用被判不成立的那一條（程式檢查，src/ai/ownDraft.ts）。
 //     定期：不做（§2.4 第 5 點）。
+//     T72（confirm_audit_design §5）：「要看的事」的七種觸發（減半中沒有出場條件、同一件新風險出現兩次、前提一直沒驗到、前提證據不足、
+//       審查沒有一致結論、只有系統預設前提、論點滿一年）→ 每日第一次流程自動開（startTriggerDrafts）。同一個鍵只開一次（own_drafts.attn_keys；
+//       失敗的重試一次）、每檔 7 天一次（和手動共用）、同一天最多 2 檔（照優先順序，其餘之後還成立再開）；有還沒回覆的乙類、
+//       30 天內有前提被判不成立時不開。自動開的不推 LINE。
 //   結果：結果送回時（index.ts 收下結果之後）與每日流程套用時都會結算：PENDING → READY（檢查過的草稿）或 FAILED（原因）。
 //     新的 READY 回來時同一檔舊的 READY 標 EXPIRED；READY 30 天沒處理 → EXPIRED。
 //     自動開的連續 2 次失敗 → 告警 DRAFT_FAILED（G22）；使用者按的：回來（READY）或失敗推 LINE 一行，網站的按鈕旁邊寫原因與「再試一次」（T56）。
@@ -29,7 +33,7 @@ import type { ApplyCtx, StartCtx } from './aiCtx';
 import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { gatherOwnEvidence, reviewThesisEvidence, routineReady } from './ownAi';
-import { DRAFT_EXPIRE_DAYS, OWNED_LIVE, acceptStatus, condFacts, draftUntil, fileKind, loadPrevFile, thesisFile, type CondAction, type PrevFile } from './thesis';
+import { AUTO_KEY_TRIES, BROKEN_QUIET_DAYS, DRAFT_EXPIRE_DAYS, OWNED_LIVE, acceptStatus, autoKeyUsed, condFacts, draftKeyOf, draftTriggers, draftUntil, fileKind, loadPrevFile, recentBroken, thesisFile, triggerRank, type CondAction, type PrevFile, type ThesisFile } from './thesis';
 import { buildDocMenu, sourceFacts } from './webEvidence';
 import type { DocCtx } from '../ai/added';
 
@@ -69,6 +73,8 @@ export interface DraftRow {
   pushed_at?: string | null;
   /** T56：存檔時用了這份草稿的哪些（USED 才有）。 */
   used_json?: string | null;
+  /** T72：「要看的事」觸發的自動草稿是哪幾件（JSON 字串陣列）；新自選的那一次與使用者按的是 null。舊列沒有這一欄。 */
+  attn_keys?: string | null;
 }
 
 /** 使用者按的草稿開不成（網站回 status）：還在跑 409、7 天內已經草擬過 409、不是自選 422、雲端排程沒設定 400。 */
@@ -202,7 +208,7 @@ export function weightFacts(acct: Account, view: MarketView, ticker: string): Fa
  * 價格與規則狀態（只有比重）、XBRL、最近一份 10-Q／10-K 的 MD&A、最近的 8-K、目錄與清單內的網頁來源。
  * 寫一列 own_drafts（PENDING）；沒觸發成的當場結算成 FAILED。
  */
-export async function startOwnDraft(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: DraftTrigger, now: Date): Promise<AiRun> {
+export async function startOwnDraft(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: DraftTrigger, now: Date, attnKeys: string[] | null = null): Promise<AiRun> {
   const meta = acct.own[ticker];
   if (!meta) throw new DraftError(422, `${ticker} 不在自選裡`);
   if (!routineReady(env)) throw new DraftError(400, 'AI 層的雲端排程還沒設定（SETUP.md 的 T5），沒辦法草擬');
@@ -212,8 +218,8 @@ export async function startOwnDraft(env: Env, fetcher: Fetcher, acct: Account, v
   const at = now.toISOString();
   // 先佔一列 PENDING（T56）：同一檔同時只能有一列（own_drafts_one_pending）。兩個分頁同時按、或按的時候自動的那一次剛好在開 → 第二個停在這裡
   try {
-    await env.DB.prepare("INSERT INTO own_drafts (ticker, file_id, run_id, trigger, session, created_at, status, based_on_version, broken, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)")
-      .bind(ticker, meta.fileId ?? null, runId, trigger, asOf, at, meta.thesis?.version ?? 0, broken ? JSON.stringify(broken) : null, at)
+    await env.DB.prepare("INSERT INTO own_drafts (ticker, file_id, run_id, trigger, session, created_at, status, based_on_version, broken, updated_at, attn_keys) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)")
+      .bind(ticker, meta.fileId ?? null, runId, trigger, asOf, at, meta.thesis?.version ?? 0, broken ? JSON.stringify(broken) : null, at, attnKeys?.length ? JSON.stringify(attnKeys) : null)
       .run();
   } catch (e) {
     if (/UNIQUE constraint/i.test(errText(e))) throw new DraftError(409, `${ticker} 的草稿還在準備中，回來之前不重開`);
@@ -330,9 +336,9 @@ export async function startAutoDrafts(sc: StartCtx): Promise<void> {
     const opened = openedOf(t, fileId);
     if (!fileId || !opened || daysApart(opened, session) > DRAFT_AUTO_WINDOW_DAYS || daysApart(opened, session) < 0) continue;
     if (hasThesis(meta)) continue;
-    const rows = (await env.DB.prepare('SELECT trigger, status FROM own_drafts WHERE file_id = ?').bind(fileId).all<{ trigger: DraftTrigger; status: DraftStatus }>()).results;
+    const rows = (await env.DB.prepare('SELECT trigger, status, attn_keys FROM own_drafts WHERE file_id = ?').bind(fileId).all<{ trigger: DraftTrigger; status: DraftStatus; attn_keys: string | null }>()).results;
     if (rows.some((r) => r.status !== 'FAILED')) continue;
-    if (rows.filter((r) => r.trigger === 'AUTO').length >= DRAFT_AUTO_TRIES) continue;
+    if (rows.filter((r) => r.trigger === 'AUTO' && !r.attn_keys).length >= DRAFT_AUTO_TRIES) continue;
     if (!ownHeld(acct, t)) {
       res.log.push(`${t}：新的自選現在 0 股，論點草稿等持有後再開`);
       continue;
@@ -350,7 +356,97 @@ export async function startAutoDrafts(sc: StartCtx): Promise<void> {
       res.log.push(`${t} 的論點草稿沒有開成：${errText(e)}`);
     }
   }
+  await startTriggerDrafts(sc);
 }
+
+/** 「要看的事」觸發的自動草稿：同一天最多幾檔（新自選的那一次也算在裡面；控制雲端次數，§5）。 */
+export const DRAFT_AUTO_DAILY = 2;
+
+/**
+ * 「要看的事」觸發的自動草稿（T72，confirm_audit_design §5；每日第一次流程，接在新自選的那一次後面）。
+ * 每檔自選（有論點檔編號、現在有持股）算現在成立的觸發（thesis.ts 的 draftTriggers：七種），拿掉已經自動開過的鍵（autoKeyUsed：
+ * 同一份論點檔、同一個鍵只開一次，失敗的重試一次），剩下的照優先順序（DRAFT_TRIGGER_KINDS；同一種先成立的先）排，一檔一次草稿涵蓋它所有的新鍵。
+ *   不開：有還沒回覆的乙類通知；最近 30 個日曆天內有前提被判不成立（§2.4 第 6 點的防線；使用者自己按照舊可以）；
+ *         還有準備中的草稿；7 個日曆天內已經草擬過（自動與手動共用，失敗的不算）。這幾種只記在紀錄裡，之後還成立就會開。
+ *   沒有論點（NO_THESIS）另外要：開檔滿 7 天（之前由新自選的那一次負責）、這份論點檔沒有回來過的草稿（你看過一份了就不再自動開）、
+ *         新自選的那一次沒有已經失敗 2 次（那時已經告警「不再自動草擬」）。
+ *   同一天最多 2 檔（含今天新自選開的）；超過的排到之後的日子——不另外排隊，之後每天重算，那時還成立就開。
+ * 自動開的不推 LINE（pushDraftLines 只推 MANUAL）；回來照舊列 DRAFT_READY；「要看的事」那一行改寫（thesis.ts 的 withDraftNotes）。
+ */
+export async function startTriggerDrafts(sc: StartCtx): Promise<void> {
+  const { env, fetcher, acct, view, axis, session, now, res } = sc;
+  const today = (await env.DB.prepare("SELECT COUNT(DISTINCT ticker) AS n FROM own_drafts WHERE trigger = 'AUTO' AND session = ?").bind(session).first<{ n: number }>())?.n ?? 0;
+  let left = DRAFT_AUTO_DAILY - today;
+  type Cand = { ticker: string; file: ThesisFile; keys: string[]; kinds: string[]; rank: number; since: string };
+  const cands: Cand[] = [];
+  for (const [t, meta] of Object.entries(acct.own)) {
+    const fileId = meta.fileId ?? null;
+    if (!fileId || !ownHeld(acct, t)) continue;
+    const file = await thesisFile(env.DB, acct, t, session);
+    if (!file) continue;
+    const recs = file.autoDrafts ?? [];
+    let hits = draftTriggers(file, acct, view).filter((x) => !autoKeyUsed(recs, draftKeyOf(x)));
+    if (hits.some((x) => x.kind === 'NO_THESIS')) {
+      const rows = (await env.DB.prepare('SELECT trigger, status, attn_keys FROM own_drafts WHERE file_id = ?').bind(fileId).all<{ trigger: DraftTrigger; status: DraftStatus; attn_keys: string | null }>()).results;
+      const opened = openedOf(t, fileId);
+      const young = !!opened && daysApart(opened, session) <= DRAFT_AUTO_WINDOW_DAYS;
+      const seen = rows.some((r) => r.status !== 'FAILED' && r.status !== 'PENDING');
+      const gaveUp = rows.filter((r) => r.trigger === 'AUTO' && !r.attn_keys && r.status === 'FAILED').length >= DRAFT_AUTO_TRIES;
+      if (young || seen || gaveUp) hits = hits.filter((x) => x.kind !== 'NO_THESIS');
+    }
+    if (!hits.length) continue;
+    hits.sort((a, b) => triggerRank(a.kind) - triggerRank(b.kind) || a.since.localeCompare(b.since));
+    cands.push({ ticker: t, file, keys: [...new Set(hits.map(draftKeyOf))], kinds: [...new Set(hits.map((x) => x.kind))], rank: triggerRank(hits[0].kind), since: hits[0].since });
+  }
+  cands.sort((a, b) => a.rank - b.rank || a.since.localeCompare(b.since) || a.ticker.localeCompare(b.ticker));
+  for (const c of cands) {
+    const t = c.ticker;
+    const what = c.kinds.map((k) => TRIGGER_TEXT[k] ?? k).join('、');
+    const brk = pendingBreak(acct, t);
+    if (brk) {
+      res.log.push(`${t}：${what}，但有還沒回覆的乙類通知（#${brk.notif}，前提 ${brk.premiseId}），不自動草擬論點`);
+      continue;
+    }
+    const rb = recentBroken(c.file, session);
+    if (rb) {
+      res.log.push(`${t}：${what}，但 ${rb.date} 的審查判前提 ${rb.premiseId} 不成立（${BROKEN_QUIET_DAYS} 天內），不自動草擬論點`);
+      continue;
+    }
+    const drafts = await loadDrafts(env.DB, t, 20);
+    if (drafts.some((d) => d.status === 'PENDING')) {
+      res.log.push(`${t}：${what}，論點草稿還在準備中，不另外開`);
+      continue;
+    }
+    const last = drafts.find((d) => d.status !== 'FAILED');
+    if (last && now.getTime() - Date.parse(last.created_at) < DRAFT_GAP_DAYS * DAY) {
+      res.log.push(`${t}：${what}，${md(last.created_at)} 已經草擬過（每檔 ${DRAFT_GAP_DAYS} 天最多一次），之後還成立再自動開`);
+      continue;
+    }
+    if (left <= 0) {
+      res.log.push(`${t}：${what}，今天已經自動草擬 ${DRAFT_AUTO_DAILY} 檔，排到之後的日子`);
+      continue;
+    }
+    try {
+      const run = await startOwnDraft(env, fetcher, acct, view, axis, t, 'AUTO', now, c.keys);
+      left--;
+      res.started.push(run.runId);
+      res.log.push(`${t}：${what}，自動草擬論點 ${run.runId}`);
+    } catch (e) {
+      res.log.push(`${t} 的論點草稿（${what}）沒有開成：${errText(e)}`);
+    }
+  }
+}
+
+/** 紀錄與告警裡觸發的白話。 */
+const TRIGGER_TEXT: Record<string, string> = {
+  HALF_NO_EXIT: '減半中而沒有出場條件',
+  RISK_REPEAT: '同一件新風險出現兩次',
+  PREMISE_UNVERIFIED: '前提連續 3 次審查沒驗到',
+  PREMISE_NO_DATA: '前提最近一次審查 3 票都是證據不足',
+  NO_CONSENSUS: '最近幾次審查都沒有一致結論',
+  NO_THESIS: '只有系統預設前提',
+  THESIS_OLD: '論點滿一年',
+};
 
 /** READY 超過 30 天沒處理 → EXPIRED（§2.3）。回傳標了幾筆。 */
 export async function expireDrafts(db: D1Database, now: Date): Promise<number> {
@@ -400,7 +496,9 @@ export async function applyOwnDraft(ctx: ApplyCtx, run: AiRun): Promise<void> {
   if (row.status !== 'FAILED') return void ctx.log.push(`${run.runId}：${run.ticker} 的論點草稿${row.status === 'READY' ? '好了，等使用者看' : `是 ${row.status}`}`);
   ctx.log.push(`${run.runId}：${run.ticker} 的論點草稿沒有成功（${row.error ?? '—'}）`);
   if (row.trigger !== 'AUTO' || !row.file_id) return;
-  const fails = (await ctx.db.prepare("SELECT session, error FROM own_drafts WHERE file_id = ? AND trigger = 'AUTO' AND status = 'FAILED' ORDER BY created_at").bind(row.file_id).all<{ session: string; error: string | null }>()).results;
+  // 「要看的事」觸發的（T72）：同一個鍵失敗 2 次 → 告警、這件事不再自動開（新自選的那一次另外算，下面）
+  if (row.attn_keys) return triggerDraftFailed(ctx, run, row);
+  const fails = (await ctx.db.prepare("SELECT session, error FROM own_drafts WHERE file_id = ? AND trigger = 'AUTO' AND attn_keys IS NULL AND status = 'FAILED' ORDER BY created_at").bind(row.file_id).all<{ session: string; error: string | null }>()).results;
   if (fails.length < DRAFT_AUTO_TRIES) return void ctx.log.push(`${run.ticker}：自動的論點草稿第 ${fails.length} 次失敗，下一次每日流程重試一次`);
   (ctx.alerts ??= []).push({
     kind: 'DRAFT_FAILED',
@@ -409,14 +507,37 @@ export async function applyOwnDraft(ctx: ApplyCtx, run: AiRun): Promise<void> {
   });
 }
 
+/** 「要看的事」觸發的自動草稿失敗了（T72）：這幾個鍵有一個已經失敗 2 次 → 告警 DRAFT_FAILED；否則下一次每日流程重試一次。 */
+async function triggerDraftFailed(ctx: ApplyCtx, run: AiRun, row: DraftRow): Promise<void> {
+  const keys = keysOf(row.attn_keys);
+  const rows = (await ctx.db.prepare("SELECT session, error, attn_keys FROM own_drafts WHERE file_id = ? AND trigger = 'AUTO' AND attn_keys IS NOT NULL AND status = 'FAILED' ORDER BY created_at").bind(row.file_id).all<{ session: string; error: string | null; attn_keys: string }>()).results;
+  const fails = rows.filter((r) => keysOf(r.attn_keys).some((k) => keys.includes(k)));
+  if (fails.length < AUTO_KEY_TRIES) return void ctx.log.push(`${run.ticker}：「要看的事」觸發的論點草稿第 ${fails.length} 次失敗，下一次每日流程重試一次`);
+  (ctx.alerts ??= []).push({
+    kind: 'DRAFT_FAILED',
+    message: `${run.ticker} 的論點草稿（「要看的事」觸發的）自動試了 ${fails.length} 次都沒有成功（${fails.slice(-2).map((f) => `${f.session.slice(5)} ${(f.error ?? '—').slice(0, 80)}`).join('、')}），這件事不再自動草擬；可以在網站按「請 stock bot 草擬」再試，或自己改論點。`,
+    detail: { ticker: run.ticker, fileId: row.file_id, runId: run.runId, keys },
+  });
+}
+
+/** own_drafts.attn_keys → 鍵（壞掉的當成沒有）。 */
+function keysOf(raw: string | null | undefined): string[] {
+  try {
+    const v = JSON.parse(raw ?? 'null') as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------- T56：網站的草稿狀態、讀草稿、用過／不用、LINE
 
 /** 一檔的草稿狀態（網站各入口的「請 stock bot 草擬」按鈕與編輯論點頁用；web_evidence_design §2.3、§2.5、§2.6）。 */
 export interface DraftState {
   /** 這份論點檔等你看的草稿（READY）：until 哪天之後不再列；stale = 照的論點版本（basedOn）和現在（version）不同。 */
   ready: { id: number; runId: string; trigger: DraftTrigger; createdAt: string; at: string; until: string; basedOn: number; version: number; stale: boolean } | null;
-  /** 還在準備中（PENDING）。 */
-  pending: { runId: string; trigger: DraftTrigger; createdAt: string } | null;
+  /** 還在準備中（PENDING）。attn：「要看的事」觸發的自動草稿（T72；不是新自選的那一次）。 */
+  pending: { runId: string; trigger: DraftTrigger; createdAt: string; attn?: true } | null;
   /** 這份論點檔最近一次草稿是失敗、過期、用過或不用（why：失敗的原因）。最近一次是 READY、PENDING 或沒有草稿時是 null。 */
   last: { id: number; status: 'FAILED' | 'EXPIRED' | 'USED' | 'DISMISSED'; trigger: DraftTrigger; createdAt: string; at: string; why: string | null } | null;
   /** 每檔 7 天一次（失敗的不算）：lastAt 那一次開的時間、nextAt 之後才能再按；現在就能按是 null。 */
@@ -445,7 +566,7 @@ export function draftStateOf(rows: DraftRow[], acct: Pick<Account, 'own' | 'noti
     ? { id: r0.id, runId: r0.run_id, trigger: r0.trigger, createdAt: r0.created_at, at: r0.settled_at ?? r0.created_at, until: draftUntil(r0.settled_at ?? r0.created_at), basedOn: r0.based_on_version, version, stale: r0.based_on_version !== version }
     : null;
   const p0 = rows.find((r) => r.status === 'PENDING');
-  const pending = p0 ? { runId: p0.run_id, trigger: p0.trigger, createdAt: p0.created_at } : null;
+  const pending = p0 ? { runId: p0.run_id, trigger: p0.trigger, createdAt: p0.created_at, ...(p0.attn_keys ? { attn: true as const } : {}) } : null;
   const l0 = mine[0];
   const last = l0 && (LAST_STATES as readonly string[]).includes(l0.status) ? { id: l0.id, status: l0.status as LastStatus, trigger: l0.trigger, createdAt: l0.created_at, at: l0.updated_at ?? l0.settled_at ?? l0.created_at, why: l0.error } : null;
   const done = rows.find((r) => r.status !== 'FAILED');
@@ -462,7 +583,7 @@ export function draftStateOf(rows: DraftRow[], acct: Pick<Account, 'own' | 'noti
     (acct.lots.own[ticker] ?? 0) > 0 &&
     !pendingBreak(acct, ticker) &&
     !mine.some((r) => r.status !== 'FAILED') &&
-    mine.filter((r) => r.trigger === 'AUTO').length < DRAFT_AUTO_TRIES;
+    mine.filter((r) => r.trigger === 'AUTO' && !r.attn_keys).length < DRAFT_AUTO_TRIES;
   return {
     ready,
     pending,

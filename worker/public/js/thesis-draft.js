@@ -12,7 +12,8 @@ export function md(s) {
 /** ISO 時間 → 台北時間的 12/20 14:05（準備中那一行用）。 */
 export function hm(iso) {
   const t = new Date(Date.parse(iso) + 8 * 3600_000).toISOString();
-  return `${md(t)} ${t.slice(11, 16)}`;
+  // t 已經是台北時間：日期直接取前 10 碼（交給 md() 會再加 8 小時，台北下午 4 點以後會多一天）
+  return `${md(t.slice(0, 10))} ${t.slice(11, 16)}`;
 }
 
 import { BELIEF_TEXT, VERIFY_TEXT, draftPremiseFields, verifyText } from './thesis-fields.js';
@@ -178,7 +179,7 @@ export function adoptResultLines(r, at) {
 export function draftButtonState(state, now = new Date()) {
   if (!state) return { mode: 'ASK', button: '請 stock bot 草擬', text: null };
   if (state.ready) return { mode: 'READY', button: null, text: `草稿好了（${md(state.ready.at)}），${md(state.ready.until)} 之後不再列` };
-  if (state.pending) return { mode: 'PENDING', button: null, text: `${state.pending.trigger === 'AUTO' ? '新加進自選，stock bot 正在自動草擬' : '草稿準備中'}（${hm(state.pending.createdAt)} 開始，通常 10 分鐘左右；好了${state.pending.trigger === 'AUTO' ? '會列在「要看的事」' : '推 LINE'}）` };
+  if (state.pending) return { mode: 'PENDING', button: null, text: `${state.pending.trigger === 'AUTO' ? (state.pending.attn ? '為了「要看的事」裡列的事，stock bot 正在自動草擬' : '新加進自選，stock bot 正在自動草擬') : '草稿準備中'}（${hm(state.pending.createdAt)} 開始，通常 10 分鐘左右；好了${state.pending.trigger === 'AUTO' ? '會列在「要看的事」' : '推 LINE'}）` };
   if (!state.aiReady) return { mode: 'OFF', button: null, text: 'AI 層的雲端排程還沒設定，現在沒辦法草擬' };
   if (state.nextAt && Date.parse(state.nextAt) > now.getTime()) return { mode: 'WAIT', button: null, text: `${md(state.lastAt)} 已經草擬過一次（每檔 7 天一次），${md(state.nextAt)} 之後可以再按${state.last?.status === 'USED' ? '；那一份你已經用過' : state.last?.status === 'DISMISSED' ? '；那一份你標了不用' : state.last?.status === 'EXPIRED' ? '；那一份已經過期' : ''}` };
   if (state.last?.status === 'FAILED') return { mode: 'FAILED', button: '再試一次', text: `上次草擬沒有成功（${state.last.why ?? '原因不明'}）` };

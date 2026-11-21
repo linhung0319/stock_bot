@@ -274,6 +274,8 @@ export interface Attention {
   src?: 'own' | 'mom';
   /** 點這一件要去哪一檔的持股頁（沒有 = ticker）。集中度那一件掛在字母排第一的自選股上（頻率用），但文字以占比最大的開頭，連到占比最大的那檔（T34）。 */
   link?: string;
+  /** 已經自動請 stock bot 草擬（T72，confirm_audit_design §5）：開的時間。有的話網站不放「請 stock bot 草擬」的連結。 */
+  drafted?: string;
 }
 
 export interface Lots {
