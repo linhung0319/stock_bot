@@ -572,7 +572,11 @@ export async function handleTaskUnrated(env: Env, id: string, now: Date): Promis
   return json({ unrated: list });
 }
 
-export type RatingRefuse = 'NOT_GIVEN' | 'SEED' | 'EXCLUDED' | 'BAD_TIER' | 'BAD_REASON' | 'ALREADY_RATED' | 'LIMIT' | 'ERROR';
+/** 來源評級的角色名稱（prompt 的 ai/prompts/source_rating.md 寫同樣的字；程式不檢查它，只用在格式提示）。 */
+export const RATING_ROLE = '來源評級';
+/** /ratings 拒絕的原因（source_rating.md 列同樣的值，T69 的測試比對）。 */
+export const RATING_REFUSES = ['NOT_GIVEN', 'SEED', 'EXCLUDED', 'BAD_TIER', 'BAD_REASON', 'ALREADY_RATED', 'LIMIT', 'ERROR'] as const;
+export type RatingRefuse = (typeof RATING_REFUSES)[number];
 
 /**
  * POST /ai/task/<編號>/ratings：{ role: "來源評級", ratings: [{ domain, tier, reason }] } → { saved: [{ domain, tier }], refused: [{ domain, reason, detail }] }。
@@ -584,7 +588,7 @@ export async function handleTaskRatings(env: Env, id: string, bodyText: string, 
   const open = await openDocTask(env, id, now);
   if (open instanceof Response) return open;
   const { run } = open;
-  const body = bodyObject(bodyText, '{ "role": "來源評級", "ratings": [...] }');
+  const body = bodyObject(bodyText, `{ "role": "${RATING_ROLE}", "ratings": [...] }`);
   if (body instanceof Response) return body;
   if (!Array.isArray(body.ratings)) return json({ error: 'bad_request', why: 'ratings 要是陣列' }, 400);
   const rec = parseAdded(run.added_docs);

@@ -12,7 +12,8 @@ import type { WebRatingRow } from '../data/webSources';
 import type { CondAction } from '../app/thesis';
 
 export const OWN_CHECK = 'OWN_CHECK';
-export const OWN_CHECK_PROMPT = 'own_check_v5';
+/** T69：v6 的 web:<網域> 不再限 S 列出的網域，只擋排除列表；能不能用來確認看網域的級別（confirm_audit_design §1.6）。 */
+export const OWN_CHECK_PROMPT = 'own_check_v6';
 
 /** 使用者寫的一條出場條件與選的成立時動作。 */
 export interface ExitLine {
@@ -50,8 +51,9 @@ export interface OwnCheckInput {
   live?: number[];
   sameByText?: Record<string, number>;
   /**
-   * 可以指名的網頁來源（T53，web_evidence_design §1.6）：facts 的 S 開頭那幾行與網域清單（webEvidence.ts 的 sourceFacts）；
-   * 事件條件的確認來源可以寫 `web:<網域>`，只能指名這些。只有系統預設前提的股票不給（它的審查不用網頁證據）。記在 rule.detail.webDomains。
+   * 已有級別的網頁來源（T53，web_evidence_design §1.6；T68 起是種子）：facts 的 S 開頭那幾行與網域清單（webEvidence.ts 的 sourceFacts）。
+   * 事件條件的確認來源可以寫 `web:<網域>`：T69（own_check_v6，confirm_audit_design §1.6）起不限這些，只擋排除列表（checkOwnReviewPayload）；
+   * 能不能用來確認看審查時網域的級別。只有系統預設前提的股票不給（它的審查不用網頁證據）。記在 rule.detail.webDomains（只是紀錄）。
    */
   sources?: { facts: EvidencePack['facts']; domains: string[] };
   now: Date;
@@ -73,7 +75,7 @@ export function ownCheckPack(inp: OwnCheckInput) {
       'U 是使用者這次要的全部出場條件（整組取代 facts 的 C 開頭：目前監測中的條件）。每一條 U 都要標出和既有條件的關係：' +
       '和某條 C 是同一件事、門檻也一樣 → 寫 same（那條 C 的編號），不會新增、舊的保留；是在更新某條 C 或 W（例如門檻改了）→ 寫 supersedes（被更新的編號），使用者確認後舊的撤下；都不是就兩個都不寫（新的）。' +
       '沒有被任何 U 標成 same 或 supersedes 的 C，使用者確認後會撤下。現行的論點、前提（premises）是背景：不用逐條檢查前提。不要評論該不該買。' +
-      (inp.sources?.domains.length ? '使用者的條件寫明要看某個產業來源或公司新聞室、而那個來源在 facts 的 S 開頭裡時，確認來源寫 web:<網域>（只能指名 S 列出的網域）。' : ''),
+      (inp.sources?.domains.length ? '使用者的條件寫明要看某個產業來源或公司新聞室時，確認來源寫 web:<網域>（facts 的 S 開頭有那個來源就用那一行的網域；不能指名排除列表的網站；能不能用來確認看網域的級別，審查時一手或產業研究機構才算）。' : ''),
     policy: { level: 'A1', verdicts: ['DONE', 'INSUFFICIENT'], abstain: 'INSUFFICIENT', min_evidence: 0, samples: 1 },
     rule: {
       action: '只提供資訊（不給買或不買的結論）',

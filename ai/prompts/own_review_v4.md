@@ -1,3 +1,5 @@
+> 不再使用（2026-11-21）：T69 起改用 `own_review_v5.md`（取完文件之後照 `source_rating.md` 開來源評級；網頁看網域現在的級別，只當線索與還沒評級的不能當依據；確認條件的 `web:` 來源要一手或產業研究機構；建議的條件可以指名排除列表以外的網域）。
+
 # own_review_v4：自選定期審查（F24）
 
 共用的取證據包、取文件、外殼格式與送回方式見 `run.md`；這份只寫這個功能怎麼判斷。設計依據：`docs/design/own_thesis_design_2026-11-15.md` 的 §1.5、§1.6，`docs/design/web_evidence_design_2026-11-20.md` 的 §1.5、§1.6，以及 `docs/design/composite_layer_design_2026-11-21.md` 的 §2.1～§2.3（和 `ai_layer_design_2026-11-08.md` 的 F24、F23 卡片不同時以前三份為準）。

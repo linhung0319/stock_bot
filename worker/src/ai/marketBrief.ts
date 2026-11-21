@@ -13,7 +13,8 @@ import { normalizeText, type CheckedSample, type EvidencePack, type Outcome, typ
 import { buildPack } from './pack';
 
 export const MARKET_BRIEF = 'MARKET_BRIEF';
-export const MARKET_BRIEF_PROMPT = 'market_brief_v1';
+/** T69：v2 取完文件之後照 ai/prompts/source_rating.md 開來源評級；「兩個不同網域」只算有級別的網頁（confirm_audit_design §1.2、§1.4）。 */
+export const MARKET_BRIEF_PROMPT = 'market_brief_v2';
 /** 研究員取的網頁存進 web_docs 時的「代號」：市場摘要不屬於任何一檔。 */
 export const MARKET_DOC_TICKER = '_MARKET';
 

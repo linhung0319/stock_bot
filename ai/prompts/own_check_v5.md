@@ -1,3 +1,5 @@
+> 不再使用（2026-11-21）：T69 起改用 `own_check_v6.md`（`web:<網域>` 不再限 `S` 列出的網域，只擋排除列表；能不能用來確認看網域的級別）。
+
 # own_check_v5：出場條件改寫與對照（F14）
 
 共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`docs/design/own_thesis_design_2026-11-15.md` 的 §1.8、`docs/design/web_evidence_design_2026-11-20.md` 的 §1.6（和 `ai_layer_design_2026-11-08.md` 的 F14 卡片不同時以前兩份為準）。

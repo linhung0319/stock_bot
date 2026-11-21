@@ -407,7 +407,7 @@ describe('大跌無申報、有論點、月審在 3 個交易日內（留給月�
 describe('減半檢視：分析師可以另外找資料（web_evidence_design §1.7、§1.8）', () => {
   it('prompt 升成 own_drop_v3：多分析師找資料、三票不上網、送回 lookups；v2 標不再使用', () => {
     // T61 升成 v4（判成立要有正面的引用）：T54 的這些內容 v4 要照樣有
-    expect(OWN_DROP_PROMPT).toBe('own_drop_v4');
+    expect(OWN_DROP_PROMPT).toBe('own_drop_v5');
     const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'ai', 'prompts');
     const v3 = readFileSync(join(root, `${OWN_DROP_PROMPT}.md`), 'utf8');
     expect(v3).toContain('**只有分析師可以用 WebSearch、可以取文件。**');
@@ -425,7 +425,7 @@ describe('減半檢視：分析師可以另外找資料（web_evidence_design §
         await startDropRuns(sc);
         const drop = (await listRuns(c.db, new Date('2026-11-20T00:00:00Z'), { limit: 50 })).find((x) => x.fn === 'OWN_DROP')!;
         expect(sc.res.started).toContain(drop.runId);
-        expect(drop.promptVersion).toBe('own_drop_v4');
+        expect(drop.promptVersion).toBe('own_drop_v5');
         expect(drop.pack.facts.some((f) => /^S\d+$/.test(f.id))).toBe(true);
         expect(drop.pack.facts.find((f) => f.id === 'M1')!.value).toBe('Micron｜8-K 2.02（財報新聞稿）｜2026-11-05');
         expect(drop.docCtx).toMatchObject({ menu: [{ id: 'M1', kind: 'filing', peer: 'Micron' }] });
@@ -459,7 +459,7 @@ describe('減半檢視：分析師可以另外找資料（web_evidence_design §
         const sc = await startCtx(c, '2026-11-19', { reduced: [{ ticker: 'NVDA', session: '2026-11-19' }] });
         await startDropRuns(sc);
         const drop = (await listRuns(c.db, new Date('2026-11-20T00:00:00Z'), { limit: 50 })).find((x) => x.fn === 'OWN_DROP')!;
-        expect(drop.promptVersion).toBe('own_drop_v4');
+        expect(drop.promptVersion).toBe('own_drop_v5');
         expect(drop.pack.facts.some((f) => /^[SM]\d+$/.test(f.id))).toBe(false);
         expect(drop.docCtx!.off).toBe('只有系統預設前提：不用網頁證據');
         await c.call('GET', `/ai/task/${drop.taskId}/evidence`);

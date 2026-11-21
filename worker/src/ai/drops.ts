@@ -14,8 +14,9 @@ export const OWN_DROP = 'OWN_DROP';
 /**
  * T54：v3 多分析師找資料的步驟（web_evidence_design §1.7、§1.8）；判前提不成立的來源規則和定期審查相同（T53）。
  * T61：v4 判前提成立要有正面的引用，標準和定期審查相同（composite_layer_design §2.1）。
+ * T69：v5 取完文件之後照 ai/prompts/source_rating.md 開來源評級；網頁看網域現在的級別（confirm_audit_design §1.2、§1.4）。
  */
-export const OWN_DROP_PROMPT = 'own_drop_v4';
+export const OWN_DROP_PROMPT = 'own_drop_v5';
 /** F7 獨立跑幾次。 */
 export const OWN_DROP_SAMPLES = 3;
 

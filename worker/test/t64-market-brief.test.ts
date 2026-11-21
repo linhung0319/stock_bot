@@ -1287,7 +1287,7 @@ describe('T64 匯出、records_guide.md、prompt', () => {
   });
 
   it('prompt：market_brief_v1 是新檔；只有研究員可以上網與取文件；原因是報導的說法、不明是合格的答案、不能當前提不成立的依據', () => {
-    expect(MARKET_BRIEF_PROMPT).toBe('market_brief_v1');
+    expect(MARKET_BRIEF_PROMPT).toBe('market_brief_v2');
     const p = readFileSync(join(ROOT, 'ai', 'prompts', `${MARKET_BRIEF_PROMPT}.md`), 'utf8');
     expect(p).toContain('只有研究員可以用 WebSearch、可以取文件');
     expect(p).toContain('主筆不要用 WebSearch、不要取文件');

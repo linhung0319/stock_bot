@@ -1,3 +1,5 @@
+> 不再使用（2026-11-21）：T69 起改用 `own_drop_v5.md`（取完文件之後照 `source_rating.md` 開來源評級；網頁看網域現在的級別，只當線索與還沒評級的不能當依據）。
+
 # own_drop_v4：自選慢規則減半的 AI 論點檢查（減半檢視，F7）
 
 共用的取證據包、取文件、外殼格式與送回方式見 `run.md`；這份只寫這個功能怎麼判斷。設計依據：`docs/design/own_thesis_design_2026-11-15.md` 的 §3.2～§3.4，`docs/design/web_evidence_design_2026-11-20.md` 的 §1.5～§1.8，以及 `docs/design/composite_layer_design_2026-11-21.md` 的 §2.1～§2.3（和 `ai_layer_design_2026-11-08.md` 的 F7 卡片不同時以前三份為準）。

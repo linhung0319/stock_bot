@@ -247,7 +247,7 @@ function good(): Record<string, unknown> {
     ],
     exits: [
       { text: '毛利率連兩季低於 55%（最新一季 60%）', action: 'HALF', kind: 'XBRL', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55, quarters: 2 }, premise_index: 1, evidence_ids: ['E1'] },
-      { text: '公司在 8-K 宣布下修本季營收財測', action: 'REVIEW', kind: 'EVENT', check: null, premise_index: null, evidence_ids: [] },
+      { text: '公司在 8-K 宣布下修本季營收財測', action: 'REVIEW', kind: 'EVENT', check: { type: 'event', confirm_by: ['8-K'] }, premise_index: null, evidence_ids: [] },
     ],
     sources: { peers: [], domains: [] },
     against: [
@@ -282,13 +282,13 @@ const withP = (k: number, field: string, value: unknown) => {
 
 describe('T60 草稿的格式（own_draft_v2）', () => {
   it('prompt 升版：own_draft_v2 寫明 confirms_if、verify、breaks_if 最多 3 句、信念與至少 2 條；v1 留著、開頭寫不再使用', () => {
-    expect(OWN_DRAFT_PROMPT).toBe('own_draft_v2');
+    expect(OWN_DRAFT_PROMPT).toBe('own_draft_v3');
     const v2 = readFileSync(join(ROOT, 'ai', 'prompts', 'own_draft_v2.md'), 'utf8');
     for (const s of ['`confirms_if`', '`verify`', '1～3 句，一句寫一件事', '**至少要有 2 條不是信念的前提**', '配一個之後會出現在申報裡的替代指標', '**本文不放會過時的數字**', '寫之前先對證據包的 XBRL 季度表']) expect(v2).toContain(s);
     expect(v2).not.toContain('`NONE` 最多 1 條；');
     const v1 = readFileSync(join(ROOT, 'ai', 'prompts', 'own_draft_v1.md'), 'utf8');
     expect(v1.startsWith('> 不再使用（2026-11-21）')).toBe(true);
-    expect(pack().prompt_version).toBe('own_draft_v2');
+    expect(pack().prompt_version).toBe('own_draft_v3');
   });
 
   it('通過的草稿整理成新的形狀：confirms_if、breaks_if 陣列、verify（信念不存來源與天數）；證據包帶季度數字給程式比對', () => {

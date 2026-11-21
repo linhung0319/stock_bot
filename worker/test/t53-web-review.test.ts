@@ -653,7 +653,7 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
       });
       expect(save.body.rewrite.status).toBe('SENT');
       const run = (await getRun(c.db, save.body.rewrite.runId))!;
-      expect(run.pack.prompt_version).toBe('own_check_v5');
+      expect(run.pack.prompt_version).toBe('own_check_v6');
       const s = run.pack.facts.filter((f) => /^S\d+$/.test(f.id));
       // T68（confirm_audit_design §1.3、§1.7）：S 是種子（路徑限制只留有理由的）；這檔的 domains 不再列
       expect(s.map((f) => f.value)).toEqual([
@@ -725,7 +725,7 @@ describe('T53：分析師找資料的紀錄（§1.5 的 lookups、G22）', () =>
   it('證據包列出種子；取回的文件記下來源；送回的 lookups 存進執行紀錄；審查紀錄頁列「AI 另外找了什麼」與沒取到的', async () => {
     await withWorld(async (c) => {
       const r = await startOwnReview(c.env, c.fetcher, c.acct, c.view, c.axis, 'NVDA', 'MANUAL', T0);
-      expect(r.promptVersion).toBe('own_review_v4');
+      expect(r.promptVersion).toBe('own_review_v5');
       // 種子（S）接在目錄（M）後面；網域清單記在 rule.detail（T68：這檔的 domains 不再列進來）
       expect(r.pack.facts.filter((f) => /^[MS]\d+$/.test(f.id)).map((f) => f.id)).toEqual(['M1', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11']); // T64：共用清單多了 6 個來源
       expect(r.pack.facts.find((f) => f.id === 'S3')).toMatchObject({ label: '已有級別的網頁來源', value: 'trendforce.com｜TrendForce｜產業研究機構｜不收 /research/' });
@@ -896,7 +896,7 @@ describe('T53：prompt', () => {
 
   it('own_review_v3：分析師的找資料步驟、哪些引用算數、lookups；v2 開頭標「不再使用」', () => {
     // T61 升成 v4（判成立要有正面的引用）：T53 的這些內容 v4 要照樣有
-    expect(OWN_REVIEW_PROMPT).toBe('own_review_v4');
+    expect(OWN_REVIEW_PROMPT).toBe('own_review_v5');
     const v3 = read(`${OWN_REVIEW_PROMPT}.md`);
     expect(v3).toContain('**只有分析師可以用 WebSearch、可以取文件。**');
     expect(v3).toContain('最多 6 個');
@@ -913,7 +913,7 @@ describe('T53：prompt', () => {
   });
 
   it('own_check_v5：可以指名清單內的網頁來源；v4 開頭標「不再使用」', () => {
-    expect(OWN_CHECK_PROMPT).toBe('own_check_v5');
+    expect(OWN_CHECK_PROMPT).toBe('own_check_v6');
     const v5 = read('own_check_v5.md');
     expect(v5).toContain('`["web:trendforce.com"]`');
     expect(v5).toContain('**只能指名這裡列出的網域**');

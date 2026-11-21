@@ -161,7 +161,7 @@ describe('T61 判「成立」要有正面的引用（composite_layer_design §2.
   // ------------------------------------------------------------ 1 prompt 升版
 
   it('prompt 升成 own_review_v4、own_drop_v4：§2.1 的表、confirm_ids、逾期、breaksIf 任一句成立就算；v3 開頭標「不再使用（2026-11-21）」；v3 的內容 v4 照樣有', () => {
-    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_review_v4', 'own_drop_v4']);
+    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_review_v5', 'own_drop_v5']);
     for (const [cur, old] of [['own_review_v4.md', 'own_review_v3.md'], ['own_drop_v4.md', 'own_drop_v3.md']]) {
       const v4 = readPrompt(cur);
       // §2.1 的表：四種情況
@@ -197,7 +197,7 @@ describe('T61 判「成立」要有正面的引用（composite_layer_design §2.
 
   it('審查與減半檢視的證據包：prompt_version 是 v4、policy.holds_fresh_days = 100；前提帶 breaksIf、confirmsIf、verify，信念不在裡面', () => {
     const rev = reviewPack(w.c.acct, []);
-    expect(rev.prompt_version).toBe('own_review_v4');
+    expect(rev.prompt_version).toBe('own_review_v5');
     expect(rev.policy.holds_fresh_days).toBe(100);
     expect(VERIFY_EVERY_DEFAULT).toBe(100);
     expect(rev.premises.map((p) => [p.id, p.breaksIf?.length ?? 0, p.confirmsIf ?? null, p.verify?.every ?? null])).toEqual([
@@ -206,7 +206,7 @@ describe('T61 判「成立」要有正面的引用（composite_layer_design §2.
       ['P3', 0, null, null],
     ]);
     const drop = ownDropPack({ acct: w.c.acct, view: w.c.view, axis: w.c.axis, ticker: 'NVDA', runId: 'drop-1', attr: null, base: null, baseRunId: null, docs: [TENQ], urgent: false, dataQuality: { filings: 'ok' }, now: new Date('2026-11-20T01:00:00Z') }).pack;
-    expect(drop.prompt_version).toBe('own_drop_v4');
+    expect(drop.prompt_version).toBe('own_drop_v5');
     expect(drop.policy.holds_fresh_days).toBe(100);
     expect(drop.premises.map((p) => p.id)).toEqual(['P1', 'P2', 'P3']);
   });
@@ -459,7 +459,7 @@ describe('T61 整條流程（假的 AI 回覆）', () => {
       const acct = (await loadAccount(c.db))!.acct;
       const rr = await startOwnReview(c.env, c.fetcher, acct, c.view, c.axis, 'NVDA', 'MANUAL', new Date('2026-11-20T01:00:00Z'));
       const run = (await getRun(c.db, rr.runId))!;
-      expect(run.promptVersion).toBe('own_review_v4');
+      expect(run.promptVersion).toBe('own_review_v5');
       expect(run.pack.policy.holds_fresh_days).toBe(100);
       expect(run.pack.premises.map((p) => p.id)).toEqual(['P1', 'P2', 'P3']);
       const xbrl = run.pack.documents.find((d) => d.kind === 'xbrl')!;

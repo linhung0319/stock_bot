@@ -240,7 +240,7 @@ describe('T42 ②：出場條件沒改不送改寫、有改動整組送（own_th
       expect(s.body.exits.map((x) => x.text)).toEqual(['毛利率連兩季低於 55%', '公司在 8-K 下修全年財測']);
       const run = (await getRun(c.db, s.body.rewrite.runId!))!;
       expect(run.pack.prompt_version).toBe(OWN_CHECK_PROMPT);
-      expect(OWN_CHECK_PROMPT).toBe('own_check_v5'); // T53：可以指名網頁來源（v5；整組取代的寫法和 v4 相同）
+      expect(OWN_CHECK_PROMPT).toBe('own_check_v6'); // T53：可以指名網頁來源（v5；整組取代的寫法和 v4 相同）
       expect(run.pack.facts.filter((f) => f.id.startsWith('U')).map((f) => f.value)).toEqual(['毛利率連兩季低於 55%', '公司在 8-K 下修全年財測']);
       expect(run.pack.facts.filter((f) => /^C\d/.test(f.id)).map((f) => f.value)).toEqual(['毛利率連兩季低於 58%', '公司在 8-K 下修全年財測']);
       expect(run.pack.question).toContain('same');

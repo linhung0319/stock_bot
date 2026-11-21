@@ -69,7 +69,7 @@ function goodPayload(): Record<string, unknown> {
     ],
     exits: [
       { text: '毛利率連兩季低於 55%（最新一季 60%）', action: 'HALF', kind: 'XBRL', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55, quarters: 2 }, premise_index: 2, evidence_ids: ['E1'] },
-      { text: '公司在 8-K 宣布下修本季營收財測', action: 'REVIEW', kind: 'EVENT', check: null, premise_index: null, evidence_ids: [] },
+      { text: '公司在 8-K 宣布下修本季營收財測', action: 'REVIEW', kind: 'EVENT', check: { type: 'event', confirm_by: ['8-K'] }, premise_index: null, evidence_ids: [] },
     ],
     sources: { peers: [{ name: 'SK hynix', edgar: null, yahoo: '000660.KS' }], domains: ['news.skhynix.com', 'www.micron.com', 'fool.com'] },
     against: [
@@ -122,12 +122,8 @@ describe('T55 程式檢查（§2.2）：通過的草稿', () => {
       ['REVIEW', false],
     ]);
     expect(d.against.map((a) => a.evidence_ids)).toEqual([['E3'], ['E4'], ['E5']]);
-    expect(d.sources.domains).toEqual([
-      { domain: 'news.skhynix.com', state: 'LISTED', note: '已經在清單裡' },
-      { domain: 'www.micron.com', state: 'NEW', note: '新的來源，存檔前會先試抓' },
-      { domain: 'fool.com', state: 'EXCLUDED', note: '不列入的網站（評論、預測、社群）：加不進來' },
-    ]);
-    expect(d.sources.peers).toEqual([{ name: 'SK hynix', yahoo: '000660.KS' }]);
+    // T69（confirm_audit_design §2.3）：草稿不再提網域；送回的 sources.domains 不看、不存，只留同業
+    expect(d.sources).toEqual({ peers: [{ name: 'SK hynix', yahoo: '000660.KS' }] });
     expect(d.would_buy_today).toEqual({ answer: 'UNSURE', why: '需求還在，但客戶集中與存貨的風險都在上升' });
     expect(d.evidence.find((e) => e.id === 'E3')).toMatchObject({ source_id: 'edgar:q', title: '10-Q 2026-10-30：MD&A' });
     expect(d.premises.some((p) => p.like_broken)).toBe(false);
@@ -216,15 +212,14 @@ describe('T55 程式檢查（§2.2）：每一條各一個不過的例子（整�
     expect(failWhy(withField('would_buy_today.answer', 'MAYBE'))).toContain('would_buy_today 要有 answer');
   });
 
-  it('來源的網域要通過 safeWebUrl：IP、localhost、http 的內部主機、沒有點的名稱都不過；同業代號格式不對也不過', () => {
-    expect(failWhy(withField('sources.domains', ['192.168.0.1']))).toContain('來源的網域「192.168.0.1」不是公開的 https 網站');
-    expect(failWhy(withField('sources.domains', ['localhost']))).toContain('不是公開的 https 網站');
-    expect(failWhy(withField('sources.domains', ['http://intranet.local/x']))).toContain('不是公開的 https 網站');
-    expect(failWhy(withField('sources.domains', ['https://news.example.com:8443/']))).toContain('不是公開的 https 網站');
+  // T69（confirm_audit_design §2.3）改：草稿的網域拿掉，送回的 sources.domains 不檢查、不存（原本 IP、localhost 等不過）；同業照舊檢查
+  it('同業代號格式不對不過；網域不再檢查：送回 IP、localhost、不是陣列也照樣通過，存下來的草稿沒有 domains', () => {
     expect(failWhy(withField('sources.peers', [{ name: 'SK hynix', yahoo: '000 660' }]))).toContain('同業「SK hynix」要有名稱，與格式正確的 EDGAR 或 Yahoo 代號');
-    // 網址也收（只取主機）
-    const ok = draftOf(withField('sources.domains', ['https://www.trendforce.com/presscenter/news/x']));
-    expect((ok.result as { draft: OwnDraft }).draft.sources.domains).toEqual([{ domain: 'www.trendforce.com', state: 'LISTED', note: '已經在清單裡' }]);
+    for (const v of [['192.168.0.1'], ['localhost'], ['http://intranet.local/x'], 'news.example.com', undefined]) {
+      const ok = draftOf(withField('sources.domains', v));
+      expect(ok.result.ok, JSON.stringify(v)).toBe(true);
+      expect((ok.result as { draft: OwnDraft }).draft.sources.domains).toBeUndefined();
+    }
   });
 
   it('keep_id：沿用現行一字沒改的前提可以；字改了、不是現行的前提都不過', () => {
@@ -604,7 +599,7 @@ describe('T55 own_drafts：結算、過期、匯出', () => {
 
   it('prompt：own_draft_v2 存在（T60 升版），寫明研究員可以找、其他角色不上網，反方先寫', () => {
     const p = readFileSync(join(ROOT, 'ai', 'prompts', `${OWN_DRAFT_PROMPT}.md`), 'utf8');
-    expect(OWN_DRAFT_PROMPT).toBe('own_draft_v2');
+    expect(OWN_DRAFT_PROMPT).toBe('own_draft_v3');
     expect(p).toContain('只有研究員可以用 WebSearch、可以取文件');
     expect(p).toContain('**反方**（Sonnet，**先寫**');
     expect(p).toContain('反方、正方、主筆不要用 WebSearch、不要取文件');

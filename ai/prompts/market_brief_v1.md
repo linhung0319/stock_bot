@@ -1,3 +1,5 @@
+> 不再使用（2026-11-21）：T69 起改用 `market_brief_v2.md`（取完文件之後照 `source_rating.md` 開來源評級；兩個不同網域只算有級別的網頁）。
+
 # market_brief_v1：市場摘要（MARKET_BRIEF）
 
 共用的取證據包、取文件、外殼格式與送回方式見 `run.md`；這份只寫這個功能怎麼做。設計依據：`docs/design/composite_layer_design_2026-11-21.md` 第 1 章（§1.1 定位、§1.2 什麼時候開、§1.3 範圍、§1.4 證據與找資料、§1.5 輸出格式）與第 6 章（市場摘要不能當前提不成立的依據）；`docs/design/web_evidence_design_2026-11-20.md` §1.5（找資料的步驟）；`docs/design/own_thesis_design_2026-11-15.md` G12（新聞的引用只證明報導這樣寫）。

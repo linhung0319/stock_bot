@@ -230,7 +230,7 @@ describe('T26：審查只寫建議，你定的條件換不掉', () => {
         ['W1', '舊的建議'],
       ]);
       expect((pack.rule.detail as { conds: Record<string, number> }).conds).toEqual({ C1: mine, W1: oldW });
-      expect(pack.prompt_version).toBe('own_review_v4'); // T53：分析師可以另外找資料、網頁證據（v3）；T61：判成立要有正面的引用（v4）
+      expect(pack.prompt_version).toBe('own_review_v5'); // T53：分析師可以另外找資料、網頁證據（v3）；T61：判成立要有正面的引用（v4）
       expect(pack.question).toContain('payload.condition_checks');
       expect(pack.question).toContain('payload.proposed_conditions');
 

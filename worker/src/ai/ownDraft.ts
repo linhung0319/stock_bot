@@ -6,7 +6,7 @@
 //   程式檢查（§2.2）不過的整份退回（這一票改成 INSUFFICIENT、原因寫進 issues），不給使用者半份草稿：
 //     外殼與 evidence 照 check.ts（引用逐字出自證據包）；前提 3～5 條、出場條件 2～6 條、字數上限同 parseThesisBlock；
 //     至少一條出清或減半的出場條件是財報數字門檻（數字有通過檢查的引用）；
-//     反方 3 點、每點至少一條通過檢查的引用；來源的網域要是公開的 https 主機（safeWebUrl）；
+//     反方 3 點、每點至少一條通過檢查的引用；來源的網域要是公開的 https 主機（safeWebUrl；T69 起網域拿掉、不檢查）；
 //     這檔有還沒回覆的乙類通知時（§2.4 第 6 點）keep_id 不能是被判不成立的那一條，文字很像的標出來。
 //   T60（composite_layer_design §2.2、§2.3；prompt 升成 own_draft_v2）：前提的欄位改成
 //     confirms_if（怎樣算證實）、breaks_if（1～3 句）、verify { by, source, every }（by = NONE 是信念）。檢查多四條、拿掉一條：
@@ -14,17 +14,20 @@
 //     2. 前提的本文不放會過時的字樣（「最新一季」「財測約」…）
 //     3. verify.by 不是 NONE 時 confirms_if 必填
 //     4. 至少 2 條不是信念的前提；拿掉「NONE 最多 1 條」（信念不限條數）
+//   T69（confirm_audit_design §2.2、§2.3；prompt 升成 own_draft_v3）：
+//     EVENT 出場條件的 check 要寫確認來源 { type: 'event', confirm_by: [...] }，用改寫（own_check）送回時的同一個格式檢查函式
+//     （src/ai/ownReview.ts 的 conditionFormatIssue）；不合格的整份退回。XBRL 照舊（財報門檻的檢查）、PRICE 照舊只記錄。
+//     sources 只剩 peers：送回的 sources.domains 不看、不存；T69 以前存的舊草稿有 domains 的照樣讀得出來（型別裡是可選的）。
 import type { CheckedEvidence, CheckedSample, EvidencePack, Outcome, PackDoc, PackPremise } from './check';
 import { buildPack } from './pack';
 import { PREMISE_FIELD_LIMITS, VERIFY_BY, premiseKey, type VerifyBy } from '../engine';
 import type { CondAction } from '../app/thesis';
 import type { QuarterRow } from '../data/edgar';
-import { safeWebUrl } from '../data/webDoc';
-import { WEB_EXCLUDED, hostMatches } from '../data/webSources';
+import { conditionFormatIssue, webRefDomain } from './ownReview';
 import { clauseMetNow, type ClauseQuarter } from './xbrlClause';
 
 export const OWN_DRAFT = 'OWN_DRAFT';
-export const OWN_DRAFT_PROMPT = 'own_draft_v2';
+export const OWN_DRAFT_PROMPT = 'own_draft_v3';
 
 /**
  * 程式檢查的數字（§2.2）。條數上限與字數上限同 parseThesisBlock 的 THESIS_LIMITS（src/ai/discussion.ts；這裡不 import 它，
@@ -52,7 +55,6 @@ export const DRAFT_LIMITS = {
   line: 300,
   notCheckable: 5,
   peers: 4,
-  domains: 6,
 } as const;
 
 /** 前提用什麼查（T55 叫 checkable_by；T60 起是 verify.by）：同 engine 的 VERIFY_BY。 */
@@ -104,12 +106,18 @@ export interface DraftExit {
   premise_index: number | null;
   evidence_ids: string[];
   kind: 'XBRL' | 'EVENT' | 'PRICE' | null;
-  /** 財報門檻的格式（kind = XBRL）：{ type, metric, level, quarters? }；其他是 null。 */
+  /**
+   * 監測的格式：kind = XBRL 是財報門檻 { type, metric, level, quarters? }；kind = EVENT 是確認來源 { type: 'event', confirm_by }
+   * （T69 起，和改寫送回的條件同一個格式，web:<網域> 寫成小寫）；PRICE 與 T69 以前的舊草稿的事件條件是 null。
+   */
   check: Record<string, unknown> | null;
   /** 這一條是程式比對得到的財報數字門檻（檢查過：指標程式算得出來、門檻有通過檢查的引用）。 */
   threshold: boolean;
 }
-/** 草稿提的網域：LISTED 已經在共用清單或這檔的來源裡／NEW 新的來源（存檔前會先試抓）／EXCLUDED 不列入的網站（加不進來）。 */
+/**
+ * 草稿提的網域（own_draft_v1、v2 才有；T69 的 v3 拿掉，confirm_audit_design §2.3）：LISTED 已經在共用清單或這檔的來源裡／
+ * NEW 新的來源／EXCLUDED 不列入的網站。只留給讀舊草稿用。
+ */
 export interface DraftDomain {
   domain: string;
   state: 'LISTED' | 'NEW' | 'EXCLUDED';
@@ -125,7 +133,8 @@ export interface OwnDraft {
   thesis: string;
   premises: DraftPremise[];
   exits: DraftExit[];
-  sources: { peers: DraftPeer[]; domains: DraftDomain[] };
+  /** domains：T69 以前的舊草稿才有（讀的地方當成可能沒有）；新的草稿只有 peers。 */
+  sources: { peers: DraftPeer[]; domains?: DraftDomain[] };
   against: { text: string; evidence_ids: string[] }[];
   would_buy_today: { answer: (typeof ANSWERS)[number]; why: string };
   not_checkable: string[];
@@ -151,7 +160,7 @@ export interface OwnDraftInput {
   thesisVersion: number;
   fileId: string | null;
   broken: DraftBroken | null;
-  /** 可以當證據的網頁來源（共用清單＋這檔的一手網域；webEvidence.ts 的 sourceFacts）。記在 rule.detail.webDomains。 */
+  /** 種子的網域（webEvidence.ts 的 sourceFacts；T68 起只是紀錄，不限制取得到什麼）。記在 rule.detail.webDomains。 */
   webDomains: string[];
   /**
    * XBRL 的季度數字（新的在前；T60）：記在 rule.detail.quarters，給程式檢查第 1 條比對「怎樣算不成立」是不是已經成立。
@@ -230,13 +239,21 @@ export function likeText(a: string, b: string): boolean {
 const EDGAR_CODE = /^[A-Z][A-Z0-9.-]{0,9}$/;
 const YAHOO_CODE = /^[A-Z0-9^][A-Z0-9.=^-]{0,19}$/;
 
-/** 網域（或網址）→ 主機名稱；不是公開的 https 主機（safeWebUrl 不收）→ null。 */
-function hostOf(raw: string): string | null {
-  let s = raw.trim().toLowerCase();
-  if (!s) return null;
-  if (!/^[a-z][a-z0-9+.-]*:\/\//.test(s)) s = `https://${s}`;
-  const u = safeWebUrl(s);
-  return u ? u.hostname.replace(/\.$/, '') : null;
+/**
+ * 事件出場條件的監測格式（T69，confirm_audit_design §2.2）：check 要有確認來源（confirm_by），用改寫送回時的同一個檢查（conditionFormatIssue）。
+ * check.type 沒寫當成 event（prompt 照改寫的格式寫 { type: 'event', confirm_by }，少寫 type 不算錯）；寫了別的類型照樣不過。
+ * 合格 → { check：整理好的格式（web:<網域> 寫成小寫） }；不合格 → { issue：原因 }。
+ */
+export function draftEventCheck(raw: unknown, metrics: ReadonlySet<string>): { check: Record<string, unknown>; issue: null } | { check: null; issue: string } {
+  const c = isObj(raw) ? raw : {};
+  const type = c.type === undefined || c.type === null ? 'event' : c.type;
+  const issue = conditionFormatIssue('EVENT', { ...c, type }, metrics, type);
+  if (issue) return { check: null, issue };
+  const by = (c.confirm_by as unknown[]).map((x) => {
+    const d = webRefDomain(x);
+    return d ? `web:${d}` : String(x);
+  });
+  return { check: { type: 'event', confirm_by: [...new Set(by)] }, issue: null };
 }
 
 interface PackDetail {
@@ -350,6 +367,9 @@ export function checkDraft(s: CheckedSample, pack: Pick<EvidencePack, 'documents
     const kind = ['XBRL', 'EVENT', 'PRICE'].includes(txt(raw.kind).toUpperCase()) ? (txt(raw.kind).toUpperCase() as DraftExit['kind']) : null;
     const check = isObj(raw.check) ? raw.check : null;
     const ev = ids(raw.evidence_ids).filter((id) => okIds.has(id));
+    // 事件條件（T69）：確認來源的格式和改寫送回的條件一樣（同一個檢查函式）；不合格整份退回
+    const event = kind === 'EVENT' ? draftEventCheck(raw.check, metrics) : null;
+    if (event?.issue) errors.push(`${n}（事件條件）：${event.issue}；check 要寫 { "type": "event", "confirm_by": [...] }，確認來源用 8-K、10-Q、10-K、SEC、earnings_call、major_news 或 web:<網域>（不能是排除列表的網站）`);
     // 財報數字門檻：指標程式算得出來、門檻是數字、季數合理、門檻有通過檢查的引用（check.ts 對數字門檻的同一條規則）
     const threshold =
       kind === 'XBRL' &&
@@ -360,7 +380,7 @@ export function checkDraft(s: CheckedSample, pack: Pick<EvidencePack, 'documents
       Number.isFinite(check.level) &&
       (check.quarters === undefined || (Number.isInteger(check.quarters) && Number(check.quarters) >= 1 && Number(check.quarters) <= 8)) &&
       ev.some((id) => goodIds.has(id));
-    exits.push({ text, action, premise_index: premiseIndex, evidence_ids: ev, kind, check: kind === 'XBRL' && check ? check : null, threshold });
+    exits.push({ text, action, premise_index: premiseIndex, evidence_ids: ev, kind, check: kind === 'XBRL' && check ? check : (event?.check ?? null), threshold });
   });
   if (!exits.some((x) => (x.action === 'EXIT' || x.action === 'HALF') && x.threshold)) errors.push('至少要一條動作是出清或減半、而且是財報數字門檻的出場條件（kind XBRL、指標程式算得出來、門檻有通過檢查的引用）');
 
@@ -397,12 +417,10 @@ export function checkDraft(s: CheckedSample, pack: Pick<EvidencePack, 'documents
       else if (x.trim()) notCheckable.push(x.trim());
     }
 
-  // 來源
+  // 來源：只看同業（T69：sources.domains 拿掉，送回了也不看、不存）
   const src = isObj(p.sources) ? p.sources : {};
   const rawPeers = src.peers === undefined ? [] : src.peers;
-  const rawDomains = src.domains === undefined ? [] : src.domains;
   const peers: DraftPeer[] = [];
-  const domains: DraftDomain[] = [];
   if (!Array.isArray(rawPeers) || rawPeers.length > L.peers) errors.push(`sources.peers 要是陣列、最多 ${L.peers} 家`);
   else
     for (const raw of rawPeers) {
@@ -415,20 +433,6 @@ export function checkDraft(s: CheckedSample, pack: Pick<EvidencePack, 'documents
       }
       peers.push({ name, ...(edgar ? { edgar } : {}), ...(yahoo ? { yahoo } : {}) });
     }
-  const listed = detail.webDomains ?? [];
-  if (!Array.isArray(rawDomains) || rawDomains.length > L.domains) errors.push(`sources.domains 要是陣列、最多 ${L.domains} 個`);
-  else
-    for (const raw of rawDomains) {
-      const host = typeof raw === 'string' ? hostOf(raw) : null;
-      if (!host) {
-        errors.push(`來源的網域「${typeof raw === 'string' ? raw.slice(0, 80) : '（不是字串）'}」不是公開的 https 網站`);
-        continue;
-      }
-      if (domains.some((d) => d.domain === host)) continue;
-      if (WEB_EXCLUDED.some((x) => hostMatches(host, x))) domains.push({ domain: host, state: 'EXCLUDED', note: '不列入的網站（評論、預測、社群）：加不進來' });
-      else if (listed.some((x) => hostMatches(host, x))) domains.push({ domain: host, state: 'LISTED', note: '已經在清單裡' });
-      else domains.push({ domain: host, state: 'NEW', note: '新的來源，存檔前會先試抓' });
-    }
 
   if (errors.length) return { draft: null, errors };
   return {
@@ -437,7 +441,7 @@ export function checkDraft(s: CheckedSample, pack: Pick<EvidencePack, 'documents
       thesis,
       premises,
       exits,
-      sources: { peers, domains },
+      sources: { peers },
       against,
       would_buy_today: { answer: answer as OwnDraft['would_buy_today']['answer'], why },
       not_checkable: notCheckable,

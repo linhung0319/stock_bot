@@ -78,7 +78,7 @@ function goodPayload(): Record<string, unknown> {
     ],
     exits: [
       { text: X0, action: 'HALF', kind: 'XBRL', check: { type: 'xbrl_metric_below', metric: 'GrossMarginPct', level: 0.55, quarters: 2 }, premise_index: 2, evidence_ids: ['E1'] },
-      { text: '公司在 8-K 宣布下修本季營收財測', action: 'REVIEW', kind: 'EVENT', check: null, premise_index: null, evidence_ids: [] },
+      { text: '公司在 8-K 宣布下修本季營收財測', action: 'REVIEW', kind: 'EVENT', check: { type: 'event', confirm_by: ['8-K'] }, premise_index: null, evidence_ids: [] },
     ],
     sources: { peers: [{ name: 'SK hynix', edgar: null, yahoo: '000660.KS' }], domains: ['www.micron.com', 'fool.com'] },
     against: [
@@ -106,7 +106,14 @@ const viewOf = (d: OwnDraft, o: Partial<DraftView> = {}): DraftView => ({ id: 7,
 
 describe('T56 草稿的每一項預設都不勾（§2.3）', () => {
   it('前提、出場條件、同業、網站全部 checked = false；網站都不能勾（T68：每檔的網站不再讀，confirm_audit_design §1.7）', () => {
-    const items = draftItems(okDraft());
+    // T69：新的草稿不再有 domains（§2.3）；這裡模擬 T69 以前存的舊草稿（有 domains），畫面照樣讀得出來
+    const old = okDraft();
+    old.sources.domains = [
+      { domain: 'www.micron.com', state: 'NEW', note: '新的來源，存檔前會先試抓' },
+      { domain: 'fool.com', state: 'EXCLUDED', note: '不列入的網站（評論、預測、社群）：加不進來' },
+    ];
+    expect(draftItems(okDraft()).domains).toEqual([]);
+    const items = draftItems(old);
     const all = [...items.premises, ...items.exits, ...items.peers, ...items.domains];
     expect(all.length).toBe(3 + 2 + 1 + 2);
     expect(all.every((x) => x.checked === false)).toBe(true);
@@ -201,7 +208,17 @@ describe('T56 前提的來源與 breaksIf（引擎 mapPremises）', () => {
 });
 
 describe('T56 存檔時怎麼用這份草稿（draftSave）', () => {
-  const d = okDraft();
+  // T69：新的草稿沒有 domains（confirm_audit_design §2.3）；這裡用 T69 以前存的舊草稿（有 domains）照舊算勾了幾個網站
+  const d: OwnDraft = {
+    ...okDraft(),
+    sources: {
+      peers: okDraft().sources.peers,
+      domains: [
+        { domain: 'www.micron.com', state: 'NEW', note: '新的來源，存檔前會先試抓' },
+        { domain: 'fool.com', state: 'EXCLUDED', note: '不列入的網站（評論、預測、社群）：加不進來' },
+      ],
+    },
+  };
   const ws = { peers: [{ name: 'SK hynix', yahoo: '000660.KS' }], domains: ['www.micron.com'] };
   it('原樣勾選 → AI_DRAFT_ACCEPTED；改字 → USER；breaks_if 預設用草稿的、你改了用你的；論點一字沒改 → DRAFT；沒勾的有幾條', () => {
     const r = draftSave(viewOf(d), { thesis: DRAFT_THESIS, thesisPressed: true, premises: [{ id: null, text: P0, draft: 0 }, { id: null, text: 'HBM 的合約價到 2027 年仍然上漲', breaksIf: ['合約價連兩季下跌'], draft: 1 }, { id: 'P1', text: '資料中心需求延續到 2027', draft: null }], exits: [0], peers: [0], domains: [0, 1], webSources: ws }, 3);

@@ -8,8 +8,11 @@ import { buildPack, ownPremises, ownRuleFacts, priceDoc, priceFacts } from './pa
 
 export const OWN_REVIEW = 'OWN_REVIEW';
 export const OWN_CONDITION = 'OWN_CONDITION';
-/** T61：v4 判前提成立要有正面的引用（composite_layer_design §2.1）；前提的子句、怎樣算證實、怎麼驗證也在這一版說明。 */
-export const OWN_REVIEW_PROMPT = 'own_review_v4';
+/**
+ * T61：v4 判前提成立要有正面的引用（composite_layer_design §2.1）；前提的子句、怎樣算證實、怎麼驗證也在這一版說明。
+ * T69：v5 取完文件之後照 ai/prompts/source_rating.md 開來源評級；網頁看網域現在的級別（confirm_audit_design §1.2、§1.4、§1.6）。
+ */
+export const OWN_REVIEW_PROMPT = 'own_review_v5';
 /** F24 獨立跑幾次。 */
 export const OWN_REVIEW_SAMPLES = 3;
 export const OWN_CONDITION_PROMPT = 'own_condition_v1';
@@ -202,6 +205,22 @@ function confirmByIssue(by: unknown): string | null {
 }
 
 /**
+ * 一條條件的格式哪裡不合格（null = 合格），照 kind 看：
+ *   XBRL  條件類型是 xbrl_…、指標程式算得出來
+ *   EVENT 條件類型是 event、確認來源合格（confirmByIssue：固定的幾種，或 `web:<網域>` 而且不在排除列表）
+ *   PRICE 只記錄、不通知（回原因，呼叫的地方改標人工）
+ * 審查建議的條件、改寫（own_check）送回的條件（checkOwnReviewPayload）與草稿的 EVENT 出場條件（own_draft_v3，
+ * src/ai/ownDraft.ts 的 checkDraft；T69，confirm_audit_design §2.2）共用這一個函式。
+ * type：check.ts 認出的條件類型（CheckedCondition.type）；沒給就看 check.type。
+ */
+export function conditionFormatIssue(kind: unknown, check: Record<string, unknown>, metrics: ReadonlySet<string>, type: unknown = check.type): string | null {
+  if (kind === 'XBRL') return !String(type).startsWith('xbrl_') || !metrics.has(String(check.metric)) ? `財報條件的指標 ${String(check.metric)} 程式算不出來` : null;
+  if (kind === 'EVENT') return type !== 'event' ? '事件條件要寫確認來源（confirm_by）' : confirmByIssue(check.confirm_by);
+  if (kind === 'PRICE') return '價格條件只記錄、不通知（B-1：價格面交給慢規則）';
+  return 'kind 要是 XBRL、EVENT 或 PRICE';
+}
+
+/**
  * F24 的 payload 逐欄檢查（ai_layer F24 卡片；own_review_v2）：tier 要和 verdict 一致；建議新增的條件（proposed_conditions）最多 3 條，
  * kind 只能是 XBRL（指標要是程式算得出來的）／EVENT（要寫確認來源）／PRICE（只記錄，不通知），tier_if_met 要是合法檔位。
  * 事件條件的確認來源可以指名網頁來源（`web:<網域>`，T53；T68 起只擋排除列表），排除列表裡的改標人工。
@@ -216,20 +235,7 @@ export function checkOwnReviewPayload(s: CheckedSample, pack: EvidencePack, metr
     if ((c.from !== 'payload.conditions' && c.from !== 'payload.proposed_conditions') || !c.auto) continue;
     const raw = c.raw;
     const check = (raw.check ?? {}) as Record<string, unknown>;
-    const why =
-      raw.direction !== 'UP' && raw.direction !== 'DOWN'
-        ? 'direction 要是 UP 或 DOWN'
-        : raw.kind === 'XBRL'
-          ? !String(c.type).startsWith('xbrl_') || !metrics.has(String(check.metric))
-            ? `財報條件的指標 ${String(check.metric)} 程式算不出來`
-            : null
-          : raw.kind === 'EVENT'
-            ? c.type !== 'event'
-              ? '事件條件要寫確認來源（confirm_by）'
-              : confirmByIssue(check.confirm_by)
-            : raw.kind === 'PRICE'
-              ? '價格條件只記錄、不通知（B-1：價格面交給慢規則）'
-              : 'kind 要是 XBRL、EVENT 或 PRICE';
+    const why = raw.direction !== 'UP' && raw.direction !== 'DOWN' ? 'direction 要是 UP 或 DOWN' : conditionFormatIssue(raw.kind, check, metrics, c.type);
     const tierOk = raw.tier_if_met === undefined || pack.policy.verdicts.includes(String(raw.tier_if_met)) || raw.tier_if_met === 'RAISE';
     if (why || !tierOk) {
       c.auto = false;
