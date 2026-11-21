@@ -61,6 +61,13 @@
 
 ## 部署與實測（主持者做，設計 §7）
 
+2026-11-21：`VERSION` 0.17.0，push 到 origin，遠端 D1 套 0023、0024，`wrangler deploy`，`/health` 回 0.17.0。最後的狀態：`npm test` 1209 通過、1 略過（開始時 1140），typecheck、lint 通過，重放 4 個通過。
+
+- **MU 定期審查**（`2026-11-20_OWN_REVIEW_MU_090d6d`，`own_review_v5`，repo commit `2860532`）：3 票 HOLD；P4、P5、P7、P8 成立，P6 照舊證據不足。分析師取回 7 份，全是種子網域（TrendForce、NVIDIA 新聞室、Yahoo Finance），沒有還沒評級的 → 來源評級那一步照規則跳過，`web_source_ratings` 還是空的。評級的端點與 prompt 的寫法由 t68、t69 的測試照 prompt 原文打過端點；真的第一次評級要等分析師取到種子以外的網域。
+- **AI 建議的條件自動監測**：手動跑一次每日流程（`/admin/flow`，那天已經處理過，只套用回來的結論）：這次的 3 條建議寫成 `ACTIVE`／`REVIEW_ONLY`、動作重新審查、`accepted_at` 空；M8 那次的 3 條與更早的 `PROPOSED` 標 `EXPIRED`。同一次也套用了 M7 的市場摘要。
+- **草稿一鍵採用**：MU 11/21 已經草擬過，每檔 7 天一次，11/28 之後才能再開。MU 的 P6 是「3 票都證據不足」，T72 的自動草擬會在 11/28 之後的每日流程自己開——那就是一鍵採用的實測。
+- 運作統計（`/admin/ops-report`）與網站狀態（`/api/state`）在正式環境回 200。
+
 ## 截圖
 
 - T72：`records/stage11/screens/T72/`：`crop-attention-*`（「已經請 stock bot 草擬」那一行）、`crop-reason-b-*`、`crop-reason-a-other-*`（一鍵理由）、`crop-thesis-pending-*`。主持者看過手機的乙類理由。
