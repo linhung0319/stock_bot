@@ -95,8 +95,10 @@ function buildPanel(ctx, d) {
   const msg = h('div');
   const post = (path, done) => async () => {
     try {
-      await api.post(path, { ticker: d.ticker });
-      toast(done);
+      const r = await api.post(path, { ticker: d.ticker });
+      // 還沒回覆的清單照新的目標重算了（T86 修正 P1）：同一句留在標準比重那一塊
+      if (r?.relisted?.length) relistFlash.set(d.ticker, r.relisted);
+      toast(r?.relisted?.length ? `${done}。${r.relisted.join('；')}` : done);
       ctx.refresh();
     } catch (e) {
       msg.replaceChildren(errBox(e));
@@ -392,6 +394,17 @@ function rulePanel(ctx, d, main) {
   );
 }
 
+/**
+ * 存了標準比重（或按了先買一半的兩個按鈕）之後，還沒回覆的清單照新的目標重算了哪幾項（T86 修正 P1）：代號 → 句子。
+ * 持股頁讀了就拿掉，重新整理之後不再出現（清單本身的股數與通知頁的說明已經是新的）。
+ */
+const relistFlash = new Map();
+function takeRelistFlash(ticker) {
+  const x = relistFlash.get(ticker) ?? null;
+  relistFlash.delete(ticker);
+  return x;
+}
+
 // 改標準比重（2026-11-15 起取代新增／移除自選兩頁；新增和賣光都在填快照做；前提在「編輯論點」頁，T27）
 function stdWeightEdit(ctx, d) {
   const msg = h('div');
@@ -410,13 +423,15 @@ function stdWeightEdit(ctx, d) {
         h('p', { class: 'small faint', style: 'margin-top:4px' }, '只在第一次設定時問。先買一半：目標是這個比例的一半，還沒買的部分留在核心；開檔之後的第一份財報過關，下一份月報列「補滿」（預設照做）。不選就是已經買到，系統不會因為你一次買足而提醒。'),
       )
     : null;
-  const saveStd = actionButton('改標準比重', '', async () => {
+  const saveStd = actionButton(ask ? '存' : '改標準比重', ask ? 'primary' : '', async () => {
     const v = Number(std.value.replace(/[%\s]/g, ''));
     // 填的是百分比：5 代表 5%（填成 0.05 會變成 0.05%，T34 走一遍的缺口）
     if (!(v >= 0.1 && v <= 50)) return fail(new Error('標準比重填百分比，0.1～50；例如 5 代表 5%'));
     const build = !!askBox?.querySelector('input[value="half"]')?.checked;
     try {
-      await api.post('/ops/std-weight', { ticker: d.ticker, stdWeight: v / 100, ...(ask ? { build } : {}) });
+      const r = await api.post('/ops/std-weight', { ticker: d.ticker, stdWeight: v / 100, ...(ask ? { build } : {}) });
+      // 還沒回覆的清單照新的目標重算了（T86 修正 P1）：重新整理之後在這一塊寫一次
+      if (r?.relisted?.length) relistFlash.set(d.ticker, r.relisted);
       toast(build ? `${d.ticker}：打算放到 ${v}%，先買一半，確認後再補滿` : `${d.ticker} 的標準比重改成 ${v}%`);
       ctx.refresh();
     } catch (e) {
@@ -424,14 +439,16 @@ function stdWeightEdit(ctx, d) {
     }
   });
   const o = d.own;
+  const relisted = takeRelistFlash(d.ticker);
   // T43：標準比重是看得見的目標——寫出現在占多少，以及它在什麼時候起作用
   const low = o.stdWeight - o.weight > 0.0025;
   return [
     h('h5', { style: 'margin-top:20px' }, `標準比重 ${pct(o.stdWeight)}`),
     h('p', { class: 'small', style: 'margin:2px 0 8px' }, `現在占總資產 ${pct(o.weight)}。`, low ? `比標準比重低：${refillText({ weight: o.weight, std: o.stdWeight, half: o.half, build: !!o.build, fill: o.fill, scaled: o.scaled })}。` : ''),
     ask ? h('p', { style: 'margin:8px 0 2px' }, '這檔打算放到總資產的') : null,
-    h('div', { class: 'btn-row', style: 'align-items:center' }, std, h('span', null, '%'), saveStd),
-    askBox,
+    // 第一次設定（T86 修正 P11）：輸入欄 → 兩個選項 → 「存」，選項不會排在按鈕下面；之後照舊一排
+    ask ? [h('div', { class: 'btn-row', style: 'align-items:center' }, std, h('span', null, '%')), askBox, h('div', { class: 'btn-row', style: 'margin-bottom:10px' }, saveStd)] : h('div', { class: 'btn-row', style: 'align-items:center' }, std, h('span', null, '%'), saveStd),
+    relisted?.length ? h('div', { class: 'notice relist-note', style: 'margin:10px 0' }, relisted.map((x) => h('p', null, x)), h('p', { class: 'small faint', style: 'margin-top:4px' }, '已經照做、等填快照的清單不會改（那時已經下單了）。')) : null,
     h(
       'p',
       { class: 'small faint' },

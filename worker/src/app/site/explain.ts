@@ -935,8 +935,9 @@ function addOwnExplain(ctx: ExplainContext, it: Item): Explain {
   const vol = c ? annualizedVol(c, view.i, 126) : NaN;
   const std = acct.rule.own[t]?.stdWeight ?? 0;
   const half = acct.rule.own[t]?.applied === 'HALF';
-  // 有論點、已跌 20% 以上：先買一半（allocation_redesign §4.1）
-  const build = acct.rule.own[t]?.applied === 'BUILD';
+  // 有論點、已跌 20% 以上：先買一半（allocation_redesign §4.1）；chose：不是跌深，是你在持股頁第一次設定標準比重時選的（清單照選擇重算過，T86 修正 P1）
+  const chose = acct.rule.own[t]?.applied === 'BUILD' && acct.own[t]?.opened?.startState !== 'BUILD';
+  const build = acct.rule.own[t]?.applied === 'BUILD' && !chose;
   const total = totalValue(acct, view);
   const sh = sharesOf(it.choices[0].lines, t);
   const rank = ctx.rankOrder.indexOf(t);
@@ -950,14 +951,14 @@ function addOwnExplain(ctx: ExplainContext, it: Item): Explain {
   if (momVal > 0) facts.push({ label: '動能桶已經持有', value: fmtMoney(momVal), note: `同一檔自選＋動能合計超過總資產 ${fmtPct(acct.cfg.crossCapHi)} 會被減回 ${fmtPct(acct.cfg.crossCapBuy ?? 0.1)}` });
   const adopted = /認養/.test(it.title);
   return {
-    short: half ? '已比高點低 20% 以上，先買標準比重的一半' : `買到標準比重 ${fmtPct(std, 1)}`,
+    short: half ? '已比高點低 20% 以上，先買標準比重的一半' : chose ? `你選了先買一半：先買標準比重 ${fmtPct(std, 1)} 的一半` : `買到標準比重 ${fmtPct(std, 1)}`,
     why: adopted
       ? `你認養了動能選出的 ${t}：照常買進，但記在自選桶。之後動能就算把它排除，也不會叫你賣；改由自選的慢規則管。`
-      : `你把 ${t} 加進自選。建議的標準比重是 ${fmtPct(std, 1)}（自選預算 ${fmtPct(acct.cfg.ratio.own)} 內，波動越大的比重越小）。${half ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，已經在慢規則「減半」的範圍內，所以一開始只買標準比重的一半，等它站回 200 日均線連續 10 天再補足。這樣不會一買進就收到減半通知。` : ''}${build ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，有你的論點：先買標準比重的一半，開檔之後的第一份財報的審查過關（3 票一致、沒有前提被判不成立）再補滿，不看 200 日線。` : ''}錢從核心出。`,
+      : `你把 ${t} 加進自選。建議的標準比重是 ${fmtPct(std, 1)}（自選預算 ${fmtPct(acct.cfg.ratio.own)} 內，波動越大的比重越小）。${half ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，已經在慢規則「減半」的範圍內，所以一開始只買標準比重的一半，等它站回 200 日均線連續 10 天再補足。這樣不會一買進就收到減半通知。` : ''}${build ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，有你的論點：先買標準比重的一半，開檔之後的第一份財報的審查過關（3 票一致、沒有前提被判不成立）再補滿，不看 200 日線。` : ''}${chose ? `你在持股頁選了先買一半：先買標準比重的一半，開檔之後的第一份財報的審查過關再補滿（下一份月報列「補滿」，預設照做）。` : ''}錢從核心出。`,
     gauge: Number.isFinite(dd) && !adopted ? drawdownGauge(dd) : undefined,
     rule: RULE.addOwn,
     facts,
-    math: adopted ? undefined : [`標準比重 ${fmtPct(std, 1)}${half || build ? ' × 一半' : ''} × 總資產 ${fmtMoney(total)} ÷ 前一日收盤 ${fmtPx(px)} = ${sh} 股`],
+    math: adopted ? undefined : [`標準比重 ${fmtPct(std, 1)}${half || build || chose ? ' × 一半' : ''} × 總資產 ${fmtMoney(total)} ÷ 前一日收盤 ${fmtPx(px)} = ${sh} 股`],
     chart: t,
     choiceNotes: { DO: '系統不替你決定要不要買；這只是照比重算出來的股數。', SKIP: '不買的話，這檔仍然在自選名單上（0 股），可以之後再移除。' },
   };

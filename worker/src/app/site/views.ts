@@ -419,7 +419,9 @@ export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: st
       zone = '減半';
       capText = '收盤距 52 週高點（越右邊跌越多、越接近減半）';
       const hit = g.value <= sc.th;
-      say = hit ? `已經比高點低 ${pctTxt(g.value)}（超過 20%）→ 先買標準比重的一半，${n0} 股` : `比高點低 ${pctTxt(g.value)}，還沒到減半的範圍 → 買到標準比重，${n0} 股`;
+      // 你在持股頁選了先買一半（清單照選擇重算過，T86 修正 P1）
+      const chose = d.acct.rule.own[it.ticker ?? '']?.applied === 'BUILD' && d.acct.own[it.ticker ?? '']?.opened?.startState !== 'BUILD';
+      say = hit ? `已經比高點低 ${pctTxt(g.value)}（超過 20%）→ 先買標準比重的一半，${n0} 股` : chose ? `比高點低 ${pctTxt(g.value)}，還沒到減半的範圍；你選了先買一半 → 先買標準比重的一半，${n0} 股` : `比高點低 ${pctTxt(g.value)}，還沒到減半的範圍 → 買到標準比重，${n0} 股`;
       break;
     }
     case 'F24':

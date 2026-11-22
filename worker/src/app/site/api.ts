@@ -13,6 +13,7 @@ import {
   monthlyWait,
   setStdWeight,
   endBuild,
+  relistedSince,
   type BucketShares,
   changeRatio,
   classify,
@@ -205,6 +206,11 @@ interface Mutation {
   snapshot?: Snapshot;
   /** 和這一版帳戶一起寫的論點檔紀錄（own_thesis_log）。 */
   log?: ThesisLogInput[];
+}
+
+/** 還沒回覆的清單照新的目標重算了哪幾項（T86 修正 P1）：「11/23 的清單「新增自選 AAPL」已經改成先買一半：買 AAPL 11 股（原本 22 股）」。 */
+function relistedText(before: Account, after: Account, tk: string, what: string): string[] {
+  return relistedSince(before, after, tk).map((x) => `${x.name}已經${what}：${x.to ? `買 ${tk} ${x.to} 股` : `不用買 ${tk} 了`}（原本 ${x.from} 股）`);
 }
 
 async function mutate(backend: SiteBackend, cause: string, extra: string[], fn: (d: Ready) => Mutation): Promise<{ after: Ready; result: Record<string, unknown> }> {
@@ -1297,11 +1303,14 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const w = stdWeightOf(b.stdWeight);
     // 開檔後第一次設定標準比重（allocation_redesign §4.1）：build = true「先買一半，確認後再補滿」；沒給或 false「已經買到這個比例」
     const build = b.build === true;
-    await mutate(backend, `改標準比重 ${tk} → ${pct(w)}${build ? '（先買一半）' : ''}`, [], (d) => {
+    const r = await mutate(backend, `改標準比重 ${tk} → ${pct(w)}${build ? '（先買一半）' : ''}`, [], (d) => {
       if (!d.acct.rule.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
-      return { acct: setStdWeight(d.acct, tk, w, { build, date: d.view.date }) };
+      // 還沒回覆、把這檔買到目標的清單照新的目標重算（T86 修正 P1）；存了之後持股頁寫一句「…已經改成先買一半：買 AAPL 11 股」
+      const acct = setStdWeight(d.acct, tk, w, { build, date: d.view.date, view: d.view });
+      const what = acct.rule.own[tk].applied === 'BUILD' && d.acct.rule.own[tk].applied !== 'BUILD' ? '改成先買一半' : `照新的標準比重 ${pct(w)} 重算`;
+      return { acct, result: { relisted: relistedText(d.acct, acct, tk, what) } };
     });
-    return json({ ok: true });
+    return json({ ok: true, ...r.result });
   }
 
   // ---- 持股頁：先買一半（allocation_redesign §4.1、§4.6）——「維持現在的大小」（標準比重改成實際比重）、「改成已經買到這個比例」（目標回到標準比重）
@@ -1309,11 +1318,12 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const b = await body(req);
     const tk = ticker(b.ticker);
     const keep = rest === 'ops/build-keep';
-    await mutate(backend, keep ? `${tk} 先買一半：維持現在的大小` : `${tk} 先買一半：改成已經買到這個比例`, [], (d) => {
+    const r = await mutate(backend, keep ? `${tk} 先買一半：維持現在的大小` : `${tk} 先買一半：改成已經買到這個比例`, [], (d) => {
       if (!d.acct.own[tk]?.build) throw new SiteError(422, `${tk} 不是先買一半的狀態`);
-      return { acct: endBuild(d.acct, d.view, tk, keep) };
+      const acct = endBuild(d.acct, d.view, tk, keep);
+      return { acct, result: { relisted: relistedText(d.acct, acct, tk, keep ? '改成維持現在的大小' : '改成買到標準比重') } };
     });
-    return json({ ok: true });
+    return json({ ok: true, ...r.result });
   }
 
   // ---- 你自己的操作：先試算（dry），確定了才存

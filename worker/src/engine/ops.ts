@@ -39,6 +39,7 @@ import {
   type Tier,
   usd,
   notifDay,
+  notifName,
 } from './account';
 import { momSlotTarget, ownDepositFill, ownDepositScale, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
@@ -1136,17 +1137,30 @@ export function addOwn(acct0: Account, view: MarketView, ticker: string, premise
     f: 'F14',
     kind: 'CASHFLOW',
     ticker,
-    title: half
-      ? `新增自選 ${ticker}：距高點已跌超過 20% → 一開始就是減半狀態，只買標準比重的一半`
-      : build
-        ? `新增自選 ${ticker}：距高點已跌超過 20%、有你的論點 → 先買標準比重的一半，開檔後第一份財報的審查過關再補滿`
-        : `新增自選 ${ticker}：買到標準比重 ${(std * 100).toFixed(1)}%`,
+    title: addOwnTitle(ticker, std, half ? 'HALF' : build ? 'BUILD_DROP' : 'STD'),
     choices: [{ id: 'DO', label: '照做', lines: sh ? [{ ticker, bucket: 'own', shares: sh, reason: '新增自選' }] : [] }],
     why: '錢從核心照比例拿（帳上現金先用）',
   });
   const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: `新增自選 ${ticker}`, items: [item] });
   notif.preview = composeNotif(acct, view, notif);
   return { acct, notif, recommended, startsHalved: half, crossRoom };
+}
+
+/**
+ * 新增自選（F14）的項目標題：一開始就是減半、跌深而且有論點的先買一半、你在持股頁選的先買一半（T86 修正 P1：還沒回覆的清單照選擇重算時換標題）、買到標準比重。
+ */
+function addOwnTitle(ticker: string, std: number, how: 'HALF' | 'BUILD_DROP' | 'BUILD' | 'STD'): string {
+  const p = `${(std * 100).toFixed(1)}%`;
+  switch (how) {
+    case 'HALF':
+      return `新增自選 ${ticker}：距高點已跌超過 20% → 一開始就是減半狀態，只買標準比重的一半`;
+    case 'BUILD_DROP':
+      return `新增自選 ${ticker}：距高點已跌超過 20%、有你的論點 → 先買標準比重的一半，開檔後第一份財報的審查過關再補滿`;
+    case 'BUILD':
+      return `新增自選 ${ticker}：你選了先買一半 → 先買標準比重 ${p} 的一半，開檔後第一份財報的審查過關再補滿`;
+    case 'STD':
+      return `新增自選 ${ticker}：買到標準比重 ${p}`;
+  }
 }
 
 /** 移除自選（F15）：全部賣出、錢回核心，這檔不再有規則或 AI 追蹤；影子組合繼續記「如果繼續持有」。 */
@@ -1480,21 +1494,113 @@ export function reviseBreak(acct0: Account, view: MarketView, id: number, ticker
  * 改一檔自選的標準比重（持股頁；設計 §2.2「系統推薦，使用者可改」）。只改之後加回、入金用的目標，不下單。
  * opt.build（allocation_redesign §4.1，T83）：開檔後第一次設定標準比重時（OwnMeta.buildAsk）的選擇——true「先買一半，確認後再補滿」→ 先買一半（BUILD），
  * false 或沒給「已經買到這個比例」→ 照舊（標準）。不論選哪個，存了之後就不再問。只有標準狀態的股票能選先買一半（減半中、審查後持有的不問）。
+ * opt.view（T86 修正 P1）：目標（標準比重 × 一半與否）變了 → 還沒回覆的清單上把這檔買到目標的單照新的目標重算（relistOwnBuys）。
+ * 沒給 view 就不重算（只改帳上的目標）。
  */
-export function setStdWeight(acct0: Account, ticker: string, stdWeight: number, opt: { build?: boolean; date?: string } = {}): Account {
+export function setStdWeight(acct0: Account, ticker: string, stdWeight: number, opt: { build?: boolean; date?: string; view?: MarketView } = {}): Account {
   const acct = clone(acct0);
   const meta = acct.own[ticker];
   if (!acct.rule.own[ticker] || !(stdWeight > 0)) return acct0;
-  acct.rule.own[ticker].stdWeight = stdWeight;
+  const rule = acct.rule.own[ticker];
+  const before = rule.stdWeight * pickFrac(rule);
+  rule.stdWeight = stdWeight;
+  let chose = false;
   if (meta?.buildAsk) {
     delete meta.buildAsk;
-    if (opt.build && meta.slow.state === 'STD' && acct.rule.own[ticker].applied === 'STD') {
+    if (opt.build && meta.slow.state === 'STD' && rule.applied === 'STD') {
       meta.slow = { ...meta.slow, state: 'BUILD' };
       meta.build = { since: openedOn(meta, ticker, opt.date), confirmBy: 'EARNINGS', misses: 0 };
-      acct.rule.own[ticker].applied = 'BUILD';
+      rule.applied = 'BUILD';
+      chose = true;
     }
   }
+  if (opt.view && Math.abs(rule.stdWeight * pickFrac(rule) - before) > 1e-12) {
+    relistOwnBuys(acct, opt.view, ticker, chose ? '你在持股頁選了先買一半' : `你在持股頁把標準比重改成 ${(stdWeight * 100).toFixed(1)}%`);
+  }
   return acct;
+}
+
+/** 照現在的目標重算過的一項（relistedSince 比對用）：哪一則、那一則的名稱、原本與重算後買幾股。 */
+export interface Relisted {
+  notif: number;
+  name: string;
+  from: number;
+  to: number;
+}
+
+/** 會「把這檔自選買到目標」的項目（T86 修正 P1，allocation_redesign §4.1 實作細節 9）：新增自選、補做差額、入金（入金只減不加）。 */
+const RELIST_F = new Set(['F14', 'F17', 'F11']);
+
+/** 一項照做時買這檔幾股（自選桶）。 */
+const doShares = (it: Item, ticker: string) => (it.choices.find((c) => c.id === 'DO')?.lines ?? []).filter((l) => l.bucket === 'own' && l.ticker === ticker).reduce((a, l) => a + l.shares, 0);
+
+/**
+ * 還沒回覆的清單上、把這檔自選買到目標的單，照現在的目標重算（T86 修正 P1，allocation_redesign §4.1 實作細節 9）。直接改傳進來的帳戶。
+ * 時機：持股頁第一次設定標準比重時選了先買一半、之後改標準比重、先買一半的兩個按鈕（改成已經買到這個比例、維持現在的大小）。
+ *   只看還沒回覆（PENDING）的清單：已經照做、等填快照的不動（那時已經下單了，照現有的快照比對處理）。
+ *   目標股數 = 標準比重 × pickFrac（標準 1、先買一半 0.5）× 總資產 ÷ 價格（無條件捨去，和新增自選同一個算法），用今天的總資產與價格
+ *   （和晚回覆重算相同）；已經決定、還沒填快照的清單先當成做完了（afterOpenLists），排在前面的清單已經要買的股數也扣掉。
+ *   新增自選（F14）、補做差額（F17）：改成「目標 − 已經有的」（可增可減；F14 的標題跟著換）。
+ *   入金（F11，單獨的或併進月報的）：只減不加——入金的現金在產生時已經分配好，少買的照比例進核心；併進月報的目標比例（targetW）
+ *   也跟著降，晚回覆時才不會重算回去。
+ *   有改的那一則照現有的合成（composeNotif）重算預覽：錢從核心照比例拿的行跟著變。項目寫一句說明；網站存著的理由拿掉、照新的股數重寫。
+ */
+export function relistOwnBuys(acct: Account, view: MarketView, ticker: string, why: string): void {
+  const base = afterOpenLists(acct, view);
+  const rule = base.rule.own[ticker];
+  const px = priceOf(view, ticker);
+  if (!rule || !(px > 0)) return;
+  const frac = pickFrac(rule);
+  const target = Math.floor((rule.stdWeight * totalValue(base, view) * frac) / px);
+  const goal = `標準比重 ${(rule.stdWeight * 100).toFixed(1)}%${frac === 0.5 ? ' 的一半' : frac === 0.25 ? ' 的四分之一' : ' '}`;
+  let held = base.lots.own[ticker] ?? 0;
+  for (const n of acct.notifs) {
+    if (n.status !== 'PENDING') continue;
+    let hit = false;
+    for (const it of n.items) {
+      if (it.cancelled || !RELIST_F.has(it.f)) continue;
+      const c = it.choices.find((x) => x.id === 'DO');
+      if (!c) continue;
+      if (it.f === 'F14' ? it.ticker !== ticker : !c.lines.some((l) => l.bucket === 'own' && l.ticker === ticker && l.shares > 0)) continue;
+      const from = doShares(it, ticker);
+      const want = Math.max(0, target - held);
+      const to = it.f === 'F11' ? Math.min(from, want) : want;
+      held += to;
+      if (to === from) continue;
+      const mine = c.lines.find((l) => l.bucket === 'own' && l.ticker === ticker);
+      const rest = c.lines.filter((l) => l !== mine);
+      c.lines = to ? [...rest, { ticker, bucket: 'own', shares: to, reason: mine?.reason ?? '新增自選' }] : rest;
+      if (it.f === 'F11' && it.targetW) {
+        const k = cellKey('own', ticker);
+        if (it.targetW[k] !== undefined) it.targetW[k] = Math.min(it.targetW[k], rule.stdWeight * frac);
+      }
+      if (it.f === 'F14') {
+        const meta = acct.own[ticker];
+        it.title = addOwnTitle(ticker, rule.stdWeight, rule.applied === 'HALF' ? 'HALF' : rule.applied === 'BUILD' ? (meta?.opened?.startState === 'BUILD' ? 'BUILD_DROP' : 'BUILD') : 'STD');
+      }
+      it.note = `${notifDay(view.date)} ${why}：照${goal}重算，${to ? `買 ${to} 股` : '不用買了'}（原本 ${from} 股）`;
+      delete (it as Item & { x?: unknown }).x;
+      hit = true;
+    }
+    if (hit) n.preview = composeNotif(acct, view, n);
+  }
+}
+
+/** before → after 之間，還沒回覆的清單上這檔改了股數的項目（持股頁存了之後寫的那一句；T86 修正 P1）。 */
+export function relistedSince(before: Account, after: Account, ticker: string): Relisted[] {
+  const out: Relisted[] = [];
+  for (const n of after.notifs) {
+    if (n.status !== 'PENDING') continue;
+    const old = before.notifs.find((x) => x.id === n.id);
+    for (const it of n.items) {
+      const o = old?.items.find((x) => x.key === it.key);
+      if (!o || it.cancelled || !RELIST_F.has(it.f)) continue;
+      const from = doShares(o, ticker);
+      const to = doShares(it, ticker);
+      if (from !== to) out.push({ notif: n.id, name: notifName(n), from, to });
+    }
+  }
+  return out;
 }
 
 /**
@@ -1528,6 +1634,9 @@ export function endBuild(acct0: Account, view: MarketView, ticker: string, keep:
       it.note = keep ? '你選了維持現在的大小，這一項取消' : '你改成已經買到這個比例，這一項取消';
     }
   }
+  // 還沒回覆、把這檔買到目標的單（例如還沒回覆的新增自選）照新的目標重算（T86 修正 P1）。
+  // 維持現在的大小但一股都沒有：標準比重沒改（clearBuild 只在有持股時改成實際比重），重算會變成買到標準比重、和「維持」相反 → 不動
+  if (!keep || (acct.lots.own[ticker] ?? 0) > 0) relistOwnBuys(acct, view, ticker, keep ? '你選了維持現在的大小' : '你改成已經買到這個比例');
   return acct;
 }
 
