@@ -11,6 +11,7 @@ import { attnDraftAction, copyPackButton, draftAction, takeAdoptFlash } from './
 import { BELIEF_TEXT } from './thesis-fields.js';
 import { CHECK_TONE, premiseChecks, premiseSummary } from './premise-check.js';
 import { RISK_TITLE, riskMeta } from './thesis-risks.js';
+import { watchPanel } from './watch.js';
 
 const em = (t) => ({ t, tone: 'em' });
 const panelTop = (title, ...right) => h('div', { class: 'panel-top' }, h('h2', { class: 'panel-h' }, title), ...right);
@@ -25,12 +26,35 @@ export async function holdingPage(ctx, ticker) {
     banner: {
       back: { href: '#/account', label: '帳戶' },
       title: h('span', { class: 'tk' }, d.ticker),
-      sub: d.positions.length ? d.positions.map((p) => `${p.bucketName} ${qty(p.shares)} 股（${money(p.value)}，占 ${pct(p.pct)}）`).join('；') : '目前沒有持有。',
-      bubble: d.own ? ownBubble(d, main) : ruleBubble(main),
+      sub: d.watch ? `候補：還沒持有${d.positions.length ? `（${d.positions.map((p) => `${p.bucketName} ${qty(p.shares)} 股`).join('、')}）` : ''}。` : d.positions.length ? d.positions.map((p) => `${p.bucketName} ${qty(p.shares)} 股（${money(p.value)}，占 ${pct(p.pct)}）`).join('；') : '目前沒有持有。',
+      bubble: d.watch ? watchBubble(d) : d.own ? ownBubble(d, main) : ruleBubble(main),
     },
-    pane: h('div', { class: 'stackv' }, d.own ? ownPanels(ctx, d, main) : otherPanels(d, main)),
+    pane: h('div', { class: 'stackv' }, d.watch ? watchPanels(ctx, d) : d.own ? ownPanels(ctx, d, main) : otherPanels(d, main)),
     rail: tiles(st),
   });
+}
+
+/** 候補的那一句（allocation_redesign §4.5）：還沒持有；有沒有論點。 */
+function watchBubble(d) {
+  const o = d.own;
+  const has = o.kind === 'THESIS' || !!o.thesis;
+  return { k: '這一檔現在', say: [em('候補，還沒持有'), has ? '。論點寫在下面，想改就按「編輯論點」。' : '。還沒有你的論點：可以先按「編輯論點」寫為什麼想買、什麼事要繼續成立。'], mood: 'watch' };
+}
+
+/**
+ * 候補的詳細頁（allocation_redesign §4.5 第 10 點）：候補那一塊（比重、那一句話、移除）→ 論點 → 條件（有寫才列）→ 走勢與數字 → 紀錄。
+ * 候補沒有慢規則、審查與「要看的事」。
+ */
+function watchPanels(ctx, d) {
+  const conds = ownMonitor(ctx, d).filter(Boolean);
+  return [
+    watchPanel(ctx, d),
+    thesisPanel(d, { watch: true }),
+    conds.length ? glass('pad hp', panelTop('條件'), h('p', { class: 'small dim', style: 'margin-bottom:8px' }, '出場與加碼條件在候補期間不監測（還沒有持股，一次性的條件不能先用掉），進場之後才開始。'), conds) : null,
+    d.chart ? glass('pad', chart(d.chart)) : null,
+    d.facts.length ? glass('pad', h('dl', { class: 'facts' }, d.facts.map((f) => [h('dt', null, f.label), h('dd', null, h('span', { class: 'num' }, f.value), f.note ? h('small', null, f.note) : null)]))) : null,
+    historyBlock(d),
+  ];
 }
 
 function ruleBubble(main) {
@@ -98,9 +122,10 @@ function buildPanel(ctx, d) {
   );
 }
 
-/** 論點、前提與最近一次檢查、編輯與討論的入口。 */
-function thesisPanel(d) {
+/** 論點、前提與最近一次檢查、編輯與討論的入口。opt.watch：候補（還沒持有；沒有審查，草擬是之後的事）。 */
+function thesisPanel(d, opt = {}) {
   const o = d.own;
+  const watch = !!opt.watch;
   const t = d.thesis;
   const th = o.thesis;
   const def = o.kind === 'DEFAULT_ONLY';
@@ -113,20 +138,22 @@ function thesisPanel(d) {
     pb ? h('p', { class: 'notice', style: 'margin:4px 0 12px' }, `${o.pendingBreakName ?? '一則通知'}等你決定：AI 審查認為前提${pb.premiseId ? ` ${pb.premiseId} ` : ''}不成立。`, h('a', { href: `#/n/${pb.notif}` }, '打開通知')) : null,
     th
       ? [h('p', { class: 'th-text' }, th.text), h('p', { class: 'small faint', style: 'margin-top:6px' }, `${day(th.setAt, true)} 定，${th.source}，第 ${th.version} 版${th.afterBreak ? `；失效後修改第 ${th.afterBreak} 次` : ''}`)]
-      : h('p', { class: 'dim' }, def ? '還沒有你的論點。AI 審查時用下面三條系統預設前提做一般健康檢查，它們不是你持有的理由。' : '還沒有論點本文（為什麼持有它的那一段話），只有下面你寫的前提；AI 審查照這些前提檢查。'),
-    // 買進時的一句話（T40，own_thesis §1.8）：不是前提，只當討論的開場
-    def && o.buyNote
+      : h('p', { class: 'dim' }, watch ? (def ? '還沒有你的論點。下面三條是系統預設前提（一般健康檢查），不是你想買的理由。' : '還沒有論點本文（為什麼想買它的那一段話），只有下面你寫的前提。') : def ? '還沒有你的論點。AI 審查時用下面三條系統預設前提做一般健康檢查，它們不是你持有的理由。' : '還沒有論點本文（為什麼持有它的那一段話），只有下面你寫的前提；AI 審查照這些前提檢查。'),
+    // 買進時的一句話（T40，own_thesis §1.8）：不是前提，只當討論的開場（候補的那一句在上面「候補」那一塊）
+    !watch && def && o.buyNote
       ? h('div', { class: 'buy-note' }, h('p', { class: 'small faint' }, `買進時的一句話（${day(o.buyNote.at, true)} 寫的）`), h('p', null, `「${o.buyNote.text}」`), h('p', { class: 'small faint' }, '只當討論論點時的開場，不是前提；AI 審查不看這句話。'))
       : null,
     // 賣光之後又買回（T44）：還沒有這一次的論點時，上一次持有時的論點整塊攤開放在這裡
     def && o.prev ? prevBlock(o.prev, true) : null,
     o.openNote ? h('p', { class: 'notice', style: 'margin-top:12px' }, o.openNote) : null,
-    h('h5', { style: 'margin-top:18px' }, def ? '前提（系統預設）' : `前提（${o.premises.length} 條，你為什麼持有它）`),
+    h('h5', { style: 'margin-top:18px' }, def ? '前提（系統預設）' : `前提（${o.premises.length} 條，你為什麼${watch ? '想買' : '持有'}它）`),
     premiseList(o, t, premiseChecks(d)),
     silencedRetired(o, t),
     o.reviewSkip ? h('p', { class: 'small dim', style: 'margin-top:10px' }, o.reviewSkip) : null,
     // 「請 stock bot 草擬」在前、「複製討論包」在後（T56，web_evidence_design §2.6）；草稿準備中、好了、要等幾天、上次失敗的原因寫在按鈕下面
-    h(
+    watch
+      ? h('div', { class: 'btn-row', style: 'margin-top:18px' }, h('a', { class: 'btn primary', href: edit }, '編輯論點'), copyPackButton(d.ticker))
+      : h(
       'div',
       { style: 'margin-top:18px' },
       def
@@ -134,7 +161,9 @@ function thesisPanel(d) {
         : draftAction(d.ticker, o.draft, { before: [h('a', { class: 'btn primary', href: edit }, '編輯論點')], after: [copyPackButton(d.ticker)] }),
     ),
     pb ? h('p', { class: 'small', style: 'margin-top:8px;color:var(--hot)' }, `前提 ${pb.premiseId ?? ''} 剛被 AI 判不成立：這時候請 stock bot 草擬，草稿最上面會提醒你別只是替繼續持有找新理由，也不能沿用那一條。`) : null,
-    h(
+    watch
+      ? h('p', { class: 'small faint', style: 'margin-top:8px' }, '按「編輯論點」寫下為什麼想買、什麼事要繼續成立（前提）。想先和 AI 討論，按「複製討論包」貼到 claude.ai 的新對話，說「收尾」後把結果貼回「編輯論點」。候補沒有定期審查。')
+      : h(
       'p',
       { class: 'small faint', style: 'margin-top:8px' },
       def

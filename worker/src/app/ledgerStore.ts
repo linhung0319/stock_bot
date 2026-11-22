@@ -17,7 +17,7 @@ export interface LoadedAccount {
   rev: number;
   /** 載入時每則通知的內容，存檔時只寫有變的。 */
   notifJson: Map<number, string>;
-  /** 載入時每檔自選的論點檔編號（存檔時比較，寫開檔與結案）。 */
+  /** 載入時每檔自選與候補的論點檔編號（存檔時比較，寫開檔與結案）。 */
   ownFiles?: Record<string, string | undefined>;
 }
 
@@ -50,7 +50,13 @@ async function withSplits(db: D1Database, acct: Account): Promise<Account> {
   return rows.length ? applySplits(acct, rows).acct : acct;
 }
 
-const ownFilesOf = (acct: Pick<Account, 'own'>): Record<string, string | undefined> => Object.fromEntries(Object.entries(acct.own ?? {}).map(([t, m]) => [t, m.fileId]));
+/**
+ * 每檔現在的論點檔編號：自選與候補（allocation_redesign §4.5 第 5 點）。同一個代號只會在其中一邊；兩邊都有時以自選為準。
+ */
+export const ownFilesOf = (acct: Pick<Account, 'own'> & Partial<Pick<Account, 'watch'>>): Record<string, string | undefined> => ({
+  ...Object.fromEntries(Object.entries(acct.watch ?? {}).map(([t, m]) => [t, m.fileId])),
+  ...Object.fromEntries(Object.entries(acct.own ?? {}).map(([t, m]) => [t, m.fileId])),
+});
 
 /** PRESS_CHECK：財報新聞稿成立的條件，10-Q／10-K 核對不一致（T29c，own_thesis §1.11 的「log 記一筆」）。 */
 /** RISK_SEEN：新眼光提到的前提以外的風險，你看過不採用、或帶進論點（T63，composite_layer_design §3）。 */
@@ -68,13 +74,15 @@ export const thesisLogStmt = (db: D1Database, l: ThesisLogInput, accountVersion:
   db.prepare('INSERT INTO own_thesis_log (ticker, file_id, at, session, kind, ref, body, account_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(l.ticker, l.fileId, at, l.session, l.kind, l.ref ?? null, JSON.stringify(l.body), accountVersion);
 
 /**
- * 存檔前後的自選比一比（own_thesis §1.2）：新的論點檔 → OPEN；不見的（移出、出清、股數改 0）→ CLOSE。
+ * 存檔前後的自選與候補比一比（own_thesis §1.2；候補是 allocation_redesign §4.5 第 5 點）：新的論點檔 → OPEN；
+ * 不見的（移出、出清、股數改 0、移除候補）→ CLOSE。同一個編號從候補搬到自選（進場）不寫 OPEN／CLOSE。
  * 沒有 fileId 的舊資料不寫。
  */
 export function fileChanges(before: Record<string, string | undefined>, acct: Account, now: Date): ThesisLogInput[] {
   const out: ThesisLogInput[] = [];
   const own = acct.own ?? {};
-  const after = new Set(Object.values(own).map((m) => m.fileId).filter(Boolean));
+  const watch = acct.watch ?? {};
+  const after = new Set([...Object.values(own), ...Object.values(watch)].map((m) => m.fileId).filter(Boolean));
   for (const [t, fid] of Object.entries(before)) {
     if (!fid || after.has(fid)) continue;
     const c = acct.ownClosed?.[t];
@@ -90,6 +98,17 @@ export function fileChanges(before: Record<string, string | undefined>, acct: Ac
       session: m.fileId.slice(t.length + 1, t.length + 11),
       kind: 'OPEN',
       body: { origin: m.origin, premises: m.premises, startState: m.opened?.startState ?? m.slow.state, drawdownAtOpen: m.opened?.drawdownAtOpen ?? null, ...(m.buyNote ? { buyNote: m.buyNote } : {}) },
+    });
+  }
+  // 加進候補：開一份論點檔（origin WATCH；沒有慢規則狀態）
+  for (const [t, m] of Object.entries(watch)) {
+    if (!m.fileId || had.has(m.fileId) || own[t]?.fileId === m.fileId) continue;
+    out.push({
+      ticker: t,
+      fileId: m.fileId,
+      session: m.fileId.slice(t.length + 1, t.length + 11),
+      kind: 'OPEN',
+      body: { origin: 'WATCH', premises: m.premises, stdWeight: m.stdWeight, ...(m.buyNote ? { buyNote: m.buyNote } : {}) },
     });
   }
   return out;

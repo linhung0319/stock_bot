@@ -40,12 +40,15 @@ import {
   buildStale,
   isBelief,
   type PremiseVerify,
+  MAX_WATCH,
+  watchRecWeight,
+  type WatchMeta,
 } from '../../engine';
 import { CRASH_REVIEW } from '../../ai/crash';
 import { HORIZONS, indexOn, type PriceBook } from '../../ai/shadow';
 import type { AiRun } from '../aiRuns';
 import type { RunRow } from './aiViews';
-import { buildStaleLine, prevFileOf, type PrevFile } from '../thesis';
+import { buildStaleLine, fileKind, prevFileOf, type PrevFile } from '../thesis';
 import { draftStateOf, type DraftState } from '../ownDraft';
 import type { SiteData } from './backend';
 import type { HomeBrief } from '../marketBrief';
@@ -677,6 +680,64 @@ export interface AccountView {
   ranking: RankRow[];
   ownTickers: string[];
   monthlyBlocked: boolean;
+  /** 候補名單（allocation_redesign §4.5，T85）：帳戶頁自選下面那一塊；watchMax 最多幾檔。 */
+  watch: WatchRow[];
+  watchMax: number;
+}
+
+/**
+ * 帳戶頁候補那一塊的一列（allocation_redesign §4.5 第 10 點）。
+ * stdWeight：你填的標準比重（null = 留空）；recWeight：推薦值（留空時列進場項目用它；自選預算內依波動度反比）。
+ * fromHigh：比 52 週高點低多少（負數）；priceMissing：這次沒有它的收盤價（抓不到的候補不擋整個帳戶，頁面寫「價格抓不到」）。
+ * entries（進場條件與現在的狀態）、blocked（條件成立但沒提的原因）、lastListed（上次列進月報）是 T85 乙段接上的；甲段是空的。
+ */
+export interface WatchRow {
+  ticker: string;
+  addedAt: string;
+  note: string | null;
+  stdWeight: number | null;
+  recWeight: number | null;
+  price: number | null;
+  fromHigh: number | null;
+  priceMissing: boolean;
+  kind: 'THESIS' | 'DEFAULT_ONLY';
+  hasThesisText: boolean;
+  draft: string | null;
+  entries: { text: string; state: string }[];
+  blocked: string | null;
+  lastListed: string | null;
+}
+
+/** 候補的草稿狀態一句（帳戶頁；沒有草稿是 null）。 */
+function watchDraftLine(st: DraftState | null | undefined): string | null {
+  if (!st) return null;
+  if (st.ready) return '草稿好了，等你看';
+  if (st.pending) return '草稿準備中';
+  return null;
+}
+
+/** 一檔候補 → 帳戶頁那一列。 */
+export function watchRowOf(d: Ready, ticker: string, meta: WatchMeta): WatchRow {
+  const { acct, view } = d;
+  const px = priceAt(view, ticker);
+  const c = view.close[ticker];
+  const hi = px !== null && c ? rollingMax(c, view.i, SLOW.highDays) : NaN;
+  return {
+    ticker,
+    addedAt: meta.addedAt,
+    note: meta.buyNote?.text ?? null,
+    stdWeight: meta.stdWeight,
+    recWeight: px !== null ? watchRecWeight(acct, view, ticker) : null,
+    price: px,
+    fromHigh: px !== null && Number.isFinite(hi) && hi > 0 ? px / hi - 1 : null,
+    priceMissing: px === null,
+    kind: fileKind(meta),
+    hasThesisText: !!meta.thesis?.text,
+    draft: watchDraftLine(d.drafts?.[ticker]),
+    entries: [],
+    blocked: meta.blocked?.text ?? null,
+    lastListed: meta.lastListed,
+  };
 }
 
 function ownHolding(d: Ready, t: string, total: number): HoldingView {
@@ -1028,6 +1089,10 @@ export function accountView(d: Ready): AccountView {
     ranking: rankingView(d),
     ownTickers: Object.keys(acct.own),
     monthlyBlocked: acct.monthlyBlocked,
+    watch: Object.entries(acct.watch ?? {})
+      .map(([t, m]) => watchRowOf(d, t, m))
+      .sort((a, b) => a.addedAt.localeCompare(b.addedAt) || a.ticker.localeCompare(b.ticker)),
+    watchMax: MAX_WATCH,
   };
 }
 
@@ -1370,6 +1435,11 @@ export interface HoldingDetail {
     /** stock bot 的論點草稿（T56，web_evidence_design §2.5、§2.6）：「請 stock bot 草擬」按鈕的狀態。示範模式是 null。 */
     draft: DraftState | null;
   } | null;
+  /**
+   * 候補（allocation_redesign §4.5 第 10 點）：詳細頁沿用持股頁，多這一塊；不是候補是 null。
+   * 候補時 own 也有（論點那一塊、編輯論點頁照用；慢規則的欄位是中性的值：沒有狀態、沒有先買一半、0 股）。
+   */
+  watch: (WatchRow & { max: number; count: number }) | null;
   ai: AiNote | null;
   history: { date: string; text: string; notif: number | null }[];
   canRemove: boolean;
@@ -1430,7 +1500,8 @@ function openNoteOf(acct: Account, ticker: string): string | null {
   const meta = acct.own[ticker];
   const o = meta?.opened;
   if (!meta || o?.startState !== 'HALF' || acct.rule.own[ticker]?.applied !== 'HALF') return null;
-  const since = meta.fileId?.slice(ticker.length + 1, ticker.length + 11) ?? '';
+  // 開始持有那天起（從候補進場的看 heldSince，allocation_redesign §4.5 第 4 點）
+  const since = meta.heldSince ?? meta.fileId?.slice(ticker.length + 1, ticker.length + 11) ?? '';
   if (acct.notifs.some((n) => n.date >= since && n.items.some((i) => i.f === 'F8' && i.ticker === ticker))) return null;
   const dd = o.drawdownAtOpen === null ? '' : `加入時比 52 週高點低 ${Math.round(-o.drawdownAtOpen * 100)}%，`;
   return `${dd}慢規則從減半開始：站回 200 日均線連續 ${SLOW.aboveRun} 天之前，規則不會再有動作。`;
@@ -1468,6 +1539,53 @@ export function pendingBreakOf(acct: Account, ticker: string): { notif: number; 
   return null;
 }
 
+/**
+ * 候補的詳細頁那一份 own（allocation_redesign §4.5 第 10 點）：論點那一塊與編輯論點頁要的欄位照填；
+ * 慢規則、先買一半、審查、靜默期這些只對持股有意義的給中性的值（候補沒有）。標準比重：你填的，留空用推薦值。
+ */
+function watchOwnOf(d: Ready, ticker: string, w: WatchMeta): NonNullable<HoldingDetail['own']> {
+  const { acct, view } = d;
+  const kind = fileKind(w);
+  return {
+    state: '候補',
+    thesisKind: kind === 'THESIS',
+    watch: null,
+    build: null,
+    askBuild: false,
+    buyBlocked: null,
+    stdWeight: w.stdWeight ?? watchRecWeight(acct, view, ticker) ?? 0,
+    weight: 0,
+    half: false,
+    fill: 0,
+    scaled: false,
+    premises: w.premises.map((p) => {
+      const breaks = breaksOf(p);
+      return {
+        id: p.id,
+        text: p.text + (breaks.length ? `（不成立的訊號：${breaks.join('；')}）` : ''),
+        origin: ORIGIN[p.origin] ?? p.origin,
+        system: p.origin === 'SYSTEM_DEFAULT',
+        silenced: null,
+        breaksIf: breaks,
+        confirmsIf: p.confirmsIf ?? null,
+        verify: p.verify ?? null,
+        belief: isBelief(p),
+      };
+    }),
+    lastReview: null,
+    reviewSkip: null,
+    thesis: w.thesis?.text ? { text: w.thesis.text, setAt: w.thesis.setAt, source: THESIS_SOURCE[w.thesis.source] ?? '在網站手寫', version: w.thesis.version, afterBreak: w.thesis.afterBreak } : null,
+    kind,
+    buyNote: w.buyNote ?? null,
+    openNote: null,
+    prev: prevFileOf(acct, ticker),
+    pendingBreak: null,
+    pendingBreakName: null,
+    webSources: w.webSources ?? null,
+    draft: d.drafts?.[ticker] ?? null,
+  };
+}
+
 export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
   const { acct, view } = d;
   const total = totalValue(acct, view);
@@ -1494,6 +1612,7 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
   if (idx >= 0) facts.push({ label: '動能排名', value: `第 ${idx + 1} 名`, note: '50 檔大型股裡照一年報酬排' });
   const meta = acct.own[ticker];
   const rule = acct.rule.own[ticker];
+  const wmeta = meta ? undefined : acct.watch?.[ticker];
   const note = findNote(d.aiNotes, 'REVIEW', ticker, view.date) ?? null;
   const events = [...d.events, ...acct.events].filter((e) => e.ticker === ticker);
   const history = [
@@ -1554,7 +1673,10 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
             webSources: meta.webSources ?? null,
             draft: d.drafts?.[ticker] ?? null,
           }
-        : null,
+        : wmeta
+          ? watchOwnOf(d, ticker, wmeta)
+          : null,
+    watch: wmeta ? { ...watchRowOf(d, ticker, wmeta), max: MAX_WATCH, count: Object.keys(acct.watch ?? {}).length } : null,
     ai: note,
     history: history.slice(0, 30),
     canRemove: !!meta,

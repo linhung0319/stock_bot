@@ -13,7 +13,7 @@ import { ownCheckResult, type ExitLine } from '../ai/ownCheck';
 import { packPremise } from '../ai/pack';
 import { confirmMode, namedWebDomains, webConfirmText, type OwnCondition, type RevenueCheck } from '../ai/ownReview';
 import type { WebRatingRow } from '../data/webSources';
-import { BUILD_MAX_DAYS, BUILD_MAX_EARNINGS, DEFAULT_CONFIG, breaksOf, buildStale, clone, isBelief, premiseKey, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Premise, type PremiseVerify, type RiskSeen, type Thesis, type Tier } from '../engine';
+import { BUILD_MAX_DAYS, BUILD_MAX_EARNINGS, DEFAULT_CONFIG, breaksOf, buildStale, clone, fileMeta, isBelief, premiseKey, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Premise, type PremiseVerify, type RiskSeen, type Thesis, type Tier } from '../engine';
 import { concentrationHits, sizeText } from './concentration';
 import { loadRunupHits } from './runup';
 import type { ThesisLogInput } from './ledgerStore';
@@ -146,9 +146,12 @@ export async function loadConditions(db: D1Database, ticker?: string, file?: str
   return (await db.prepare(`SELECT * FROM own_conditions WHERE ${where.join(' AND ')} ORDER BY id`).bind(...args).all<CondRow>()).results.map(toCond);
 }
 
-/** 這檔現在這份論點檔的條件（不是自選就沒有；T25 之前建立、沒有 fileId 的自選讀沒有編號的舊列）。 */
-export async function fileConditions(db: D1Database, acct: Pick<Account, 'own'>, ticker: string): Promise<FileCondition[]> {
-  const meta = acct.own[ticker];
+/**
+ * 這檔現在這份論點檔的條件（不是自選、也不是候補就沒有；T25 之前建立、沒有 fileId 的自選讀沒有編號的舊列）。
+ * 候補的論點檔也讀（allocation_redesign §4.5 第 3 點）；監測的地方都只跑自選的代號，候補的條件不會因此被監測。
+ */
+export async function fileConditions(db: D1Database, acct: Pick<Account, 'own'> & Partial<Pick<Account, 'watch'>>, ticker: string): Promise<FileCondition[]> {
+  const meta = fileMeta(acct, ticker)?.meta;
   return meta ? loadConditions(db, ticker, meta.fileId ?? null) : [];
 }
 
@@ -435,12 +438,15 @@ function toReview(r: RunRow): ThesisReview {
 }
 
 /**
- * 組出一檔自選的論點檔（own_thesis §1.3）。不是自選（已結案）就是 null。
+ * 組出一檔自選（或候補，allocation_redesign §4.5 第 3 點）的論點檔（own_thesis §1.3）。都不是（已結案）就是 null。
+ * 候補的 origin 是 WATCH、沒有靜默期與硬事件標記。
  * asOf：決策日，沒有上一次審查時「新的」事件從往前 120 天起算（不給就用開檔日）。
  */
-export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, ticker: string, asOf?: string): Promise<ThesisFile | null> {
-  const meta = acct.own[ticker];
-  if (!meta) return null;
+export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'> & Partial<Pick<Account, 'watch'>>, ticker: string, asOf?: string): Promise<ThesisFile | null> {
+  const fm = fileMeta(acct, ticker);
+  if (!fm) return null;
+  const meta = fm.meta;
+  const own = fm.held ? fm.meta : null;
   const fileId = meta.fileId ?? null;
   const log: ThesisLogRow[] = fileId
     ? (await db.prepare('SELECT * FROM own_thesis_log WHERE file_id = ? ORDER BY id').bind(fileId).all<{ id: number; kind: string; session: string; at: string; ref: string | null; body: string; account_version: number | null }>()).results.map((r) => ({
@@ -522,7 +528,7 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     ticker,
     fileId,
     openedAt,
-    origin: meta.origin,
+    origin: own ? own.origin : 'WATCH',
     kind: fileKind(meta),
     status: 'OPEN',
     thesis: meta.thesis ?? null,
@@ -531,8 +537,8 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
     conditions,
     events,
     reviews,
-    disputes: meta.disputes ?? [],
-    flags: meta.flags,
+    disputes: own?.disputes ?? [],
+    flags: own?.flags ?? [],
     lastReview,
     newSince,
     log,
@@ -546,16 +552,18 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'>, tic
 /**
  * 只用帳戶狀態組的論點檔（不讀資料庫：沒有條件、事件、審查與 log）。示範模式的討論包用：示範的帳戶不在 D1 的那幾張表裡。
  */
-export function metaFile(acct: Pick<Account, 'own'>, ticker: string, asOf: string): ThesisFile | null {
-  const meta = acct.own[ticker];
-  if (!meta) return null;
+export function metaFile(acct: Pick<Account, 'own'> & Partial<Pick<Account, 'watch'>>, ticker: string, asOf: string): ThesisFile | null {
+  const fm = fileMeta(acct, ticker);
+  if (!fm) return null;
+  const meta = fm.meta;
+  const own = fm.held ? fm.meta : null;
   const fileId = meta.fileId ?? null;
   const openedAt = fileDate(fileId, ticker);
   return {
     ticker,
     fileId,
     openedAt,
-    origin: meta.origin,
+    origin: own ? own.origin : 'WATCH',
     kind: fileKind(meta),
     status: 'OPEN',
     thesis: meta.thesis ?? null,
@@ -564,8 +572,8 @@ export function metaFile(acct: Pick<Account, 'own'>, ticker: string, asOf: strin
     conditions: [],
     events: [],
     reviews: [],
-    disputes: meta.disputes ?? [],
-    flags: meta.flags,
+    disputes: own?.disputes ?? [],
+    flags: own?.flags ?? [],
     lastReview: null,
     newSince: minusDays(asOf, NO_REVIEW_DAYS),
     log: [],
@@ -607,18 +615,21 @@ export interface PrevFile {
   conditions: PrevCondition[] | null;
 }
 
-export const CLOSE_TEXT: Record<CloseReason, string> = { SOLD_OUT: '自己賣光', REMOVED: '移出自選', EXIT_AI: 'AI 審查建議出清，你照做', EXIT_CONDITION: '你定的出場條件成立，出清', HARD_EVENT: '硬事件審查建議出清，你照做' };
-const CLOSE_VERB: Record<CloseReason, string> = { SOLD_OUT: '賣光', REMOVED: '移出自選', EXIT_AI: '出清', EXIT_CONDITION: '出清', HARD_EVENT: '出清' };
+export const CLOSE_TEXT: Record<CloseReason, string> = { SOLD_OUT: '自己賣光', REMOVED: '移出自選', EXIT_AI: 'AI 審查建議出清，你照做', EXIT_CONDITION: '你定的出場條件成立，出清', HARD_EVENT: '硬事件審查建議出清，你照做', WATCH_REMOVED: '從候補名單移除' };
+const CLOSE_VERB: Record<CloseReason, string> = { SOLD_OUT: '賣光', REMOVED: '移出自選', EXIT_AI: '出清', EXIT_CONDITION: '出清', HARD_EVENT: '出清', WATCH_REMOVED: '移出候補' };
 const LIVE_TEXT: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '只在定期審查時檢查', MANUAL: '只記錄' };
 
 /**
- * 上一份論點檔（純函式）：這檔現在是自選、而且 ownClosed 記著一份編號和現在不同的論點檔。沒有是 null。
+ * 上一份論點檔（純函式）：這檔現在是自選（或候補）、而且 ownClosed 記著一份編號和現在不同的、持有時的論點檔。沒有是 null。
+ * 「上一次持有時」只看持有的結案：最近一筆是候補移除（WATCH_REMOVED）時改看它帶著的 held（allocation_redesign §4.5 第 6 點），
+ * 沒有 held 就是沒有上一次持有。
  * conds：上一份的條件（loadConditions 讀 file_id = 上一份編號的）；不給 = 沒有讀（conditions 是 null）。
  * T44 之前結案的沒有 last：當成沒有記到論點。
  */
-export function prevFileOf(acct: Pick<Account, 'own' | 'ownClosed'>, ticker: string, conds: FileCondition[] | null = null): PrevFile | null {
-  const meta = acct.own[ticker];
-  const c = acct.ownClosed?.[ticker];
+export function prevFileOf(acct: Pick<Account, 'own' | 'ownClosed'> & Partial<Pick<Account, 'watch'>>, ticker: string, conds: FileCondition[] | null = null): PrevFile | null {
+  const meta = fileMeta(acct, ticker)?.meta;
+  const c0 = acct.ownClosed?.[ticker];
+  const c = c0?.reason === 'WATCH_REMOVED' ? c0.held : c0;
   if (!meta || !c?.fileId || c.fileId === meta.fileId) return null;
   const last = c.last ?? { thesis: null, premises: [] };
   return {
@@ -640,7 +651,7 @@ export function prevFileOf(acct: Pick<Account, 'own' | 'ownClosed'>, ticker: str
 }
 
 /** 上一份論點檔，連同它的條件（讀資料庫）。 */
-export async function loadPrevFile(db: D1Database, acct: Pick<Account, 'own' | 'ownClosed'>, ticker: string): Promise<PrevFile | null> {
+export async function loadPrevFile(db: D1Database, acct: Pick<Account, 'own' | 'ownClosed'> & Partial<Pick<Account, 'watch'>>, ticker: string): Promise<PrevFile | null> {
   const p = prevFileOf(acct, ticker);
   return p ? prevFileOf(acct, ticker, await loadConditions(db, ticker, p.fileId)) : null;
 }
@@ -923,7 +934,7 @@ export function pickFilings<F extends Pick<Filing, 'accession' | 'form' | 'items
  * 判的人看不到出題的過程（web_evidence_design §2.4 第 4 點）。
  */
 const PACK_SOURCE_TEXT: Record<string, string> = { DISCUSSION: '討論後貼回，', TYPED: '在網站手寫，' };
-const ORIGIN_TEXT: Record<string, string> = { INITIAL: '上線時就持有', NEW: '新增自選', TRANSFER: '從動能轉入', ADOPT: '認養', MANUAL: '自己買進' };
+const ORIGIN_TEXT: Record<string, string> = { INITIAL: '上線時就持有', NEW: '新增自選', TRANSFER: '從動能轉入', ADOPT: '認養', MANUAL: '自己買進', WATCH: '從候補名單進場' };
 const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
 const OUTCOME_TEXT: Record<string, string> = { FOLLOW: '照做', REVISE: '修正論點', DISAGREE: '不同意', SKIPPED: '月報裡沒有動它（當成不同意）', NONE: '上次的失效通知沒有回應', RULE: '照規則', KEPT: '不動', HALVED: '減半', DIP_ADD: '下跌加碼' };
 /** 回應的白話（甲類、慢規則通知的 SKIPPED 是「這次不做」；慢規則通知的 FOLLOW 是「照 AI」）。 */
@@ -1840,8 +1851,12 @@ export async function monthOwnAttention(db: D1Database, acct: Account, view: Mar
   return { acct: next, items: due.map(toAttention) };
 }
 
-/** 持股頁：這一檔現在成立的全部（不看頻率；集中度那一件組內每一檔自選都顯示）。不是自選回傳空的。 */
+/**
+ * 持股頁：這一檔現在成立的全部（不看頻率；集中度那一件組內每一檔自選都顯示）。不是自選回傳空的。
+ * 候補也是空的：持股的那幾種（沒有論點、減半中、集中度…）不適用；候補自己的「要看的事」是 T85 丙段（allocation_redesign §4.5 第 24 點）。
+ */
 export async function holdingAttention(db: D1Database, acct: Account, view: MarketView, ticker: string): Promise<Attention[]> {
+  if (!acct.own[ticker]) return [];
   const file = await thesisFile(db, acct, ticker, view.date);
   if (!file) return [];
   const conc = (() => {

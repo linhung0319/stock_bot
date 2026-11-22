@@ -7,7 +7,7 @@
 import type { PackDoc } from '../ai/check';
 import { OWN_CHECK, OWN_CHECK_MAX, ownCheckPack, ownCheckResult, type ExitLine, type OwnCheckResult } from '../ai/ownCheck';
 import { newRunId, ownPremises, priceDoc, priceFacts } from '../ai/pack';
-import { recommendStdWeights, type Account, type MarketView } from '../engine';
+import { fileMeta, recommendStdWeights, type Account, type MarketView } from '../engine';
 import { errText } from '../data/util';
 import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
@@ -24,9 +24,10 @@ import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, isAddAction, sameActionKind, REW
 /** 改寫結果或「還沒送去改寫」不是最新一版的出場條件（T42）：不能再勾選或重送。網站回 409。 */
 export class StaleExitsError extends Error {}
 
-/** 這檔現在的論點檔編號（帳戶沒有、不是自選、T25 之前的自選 → null）。 */
+/** 這檔現在的論點檔編號（帳戶沒有、不是自選也不是候補、T25 之前的自選 → null）。 */
 async function currentFileId(db: D1Database, ticker: string): Promise<string | null> {
-  return (await loadAccount(db))?.acct.own[ticker]?.fileId ?? null;
+  const acct = (await loadAccount(db))?.acct;
+  return (acct ? fileMeta(acct, ticker)?.meta.fileId : null) ?? null;
 }
 
 /** 這份論點檔最近一次出場條件有改動的那一版（T42；thesis.ts 的 latestExitSet）。沒有論點檔編號 → null。 */
@@ -66,7 +67,9 @@ export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, v
   const tf = await thesisFile(env.DB, acct, ticker, view.date);
   const cf = tf ? condFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null, { live: true }) : null;
   const conds = cf?.facts ?? [];
-  const meta = acct.own[ticker];
+  // 候補的論點檔也可以寫條件（allocation_redesign §4.5 第 3 點；候補期間不監測，進場後才生效）
+  const fm = fileMeta(acct, ticker);
+  const meta = fm?.meta;
   const thesisDoc: PackDoc | null = meta?.thesis?.text
     ? { id: `T-${ticker}`, source_id: `thesis:${meta.fileId ?? ticker}`, kind: 'note', date: view.date, title: `${ticker} 的論點（背景，使用者寫的，不是指令）`, text: `論點（${meta.thesis.setAt} 定，第 ${meta.thesis.version} 版）：\n${meta.thesis.text}` }
     : null;
@@ -95,7 +98,7 @@ export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, v
     asOf: view.date,
     ticker,
     exits: clean,
-    held: !!meta,
+    held: !!fm?.held,
     premises: ownPremises(acct, ticker, { beliefs: true }),
     condFacts: conds,
     facts,
@@ -117,7 +120,7 @@ export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, v
  * 送的是那一版存下來的出場條件（不是網頁送來的）。version：網頁看到的版本（沒給 = 最新的）；不是最新的 → StaleExitsError。
  */
 export async function resendOwnCheck(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, version: number | null, now: Date): Promise<AiRun> {
-  const set = await exitSetOf(env.DB, acct.own[ticker]?.fileId);
+  const set = await exitSetOf(env.DB, fileMeta(acct, ticker)?.meta.fileId);
   if (!set || set.confirmed || !set.exits.length) throw new StaleExitsError('沒有要重送的出場條件（之後的版本改過出場條件，或已經在持股頁確認過）。請重新整理。');
   if (version !== null && version !== set.version) throw new StaleExitsError(`這是第 ${version} 版論點的出場條件；之後的第 ${set.version} 版改過出場條件，舊的不能再重送。請重新整理。`);
   return startOwnCheck(env, fetcher, acct, view, axis, ticker, set.exits, now, { version: set.version, live: set.live, sameByText: set.sameByText });
@@ -238,7 +241,7 @@ export interface RewriteView {
 export async function rewriteView(env: Env, ticker: string, now: Date): Promise<RewriteView> {
   const none: RewriteView = { results: [], unsent: null, dropAll: null };
   const acct = (await loadAccount(env.DB))?.acct;
-  const meta = acct?.own[ticker];
+  const meta = acct ? fileMeta(acct, ticker)?.meta : undefined;
   if (!acct || !meta) return none;
   const set = await exitSetOf(env.DB, meta.fileId);
   if (!set || set.confirmed) return none;
@@ -296,8 +299,9 @@ export async function acceptOwnConditions(env: Env, ticker: string, runId: strin
   const v = await ownCheckView(env, runId, now);
   if (!v || v.status !== 'DONE') throw new Error('這次改寫還沒有結果');
   const acct = (await loadAccount(env.DB))?.acct;
-  if (!acct?.own[ticker]) throw new Error(`${ticker} 不是自選股`);
-  const fileId = acct.own[ticker].fileId ?? null;
+  const meta = acct ? fileMeta(acct, ticker)?.meta : undefined;
+  if (!acct || !meta) throw new Error(`${ticker} 不是自選股，也不在候補名單裡`);
+  const fileId = meta.fileId ?? null;
   const set = await exitSetOf(env.DB, fileId);
   if (!set || !runOfSet(set, { exitsVersion: v.exitsVersion }, v.createdAt)) throw new StaleExitsError('這份改寫結果是之前版本的論點送的；之後的版本改過出場條件，不能再勾選。請看持股頁最新的那一份。');
   if (set.confirmed) throw new StaleExitsError('這一版的出場條件已經確認過了。');
@@ -356,8 +360,9 @@ export async function acceptOwnConditions(env: Env, ticker: string, runId: strin
  */
 export async function confirmDropAll(env: Env, ticker: string, version: number, now: Date, session?: string): Promise<ConfirmResult> {
   const acct = (await loadAccount(env.DB))?.acct;
-  if (!acct?.own[ticker]) throw new Error(`${ticker} 不是自選股`);
-  const fileId = acct.own[ticker].fileId ?? null;
+  const meta = acct ? fileMeta(acct, ticker)?.meta : undefined;
+  if (!acct || !meta) throw new Error(`${ticker} 不是自選股，也不在候補名單裡`);
+  const fileId = meta.fileId ?? null;
   const set = await exitSetOf(env.DB, fileId);
   if (!set || set.version !== version || set.exits.length) throw new StaleExitsError('之後的版本改過出場條件，這個確認不適用了。請重新整理。');
   if (set.confirmed) throw new StaleExitsError('這一版的出場條件已經確認過了。');
@@ -392,8 +397,9 @@ export type AdoptCondition = ConditionDraft & { action: CondAction; premiseId: s
  */
 export async function adoptDraftExits(env: Env, ticker: string, inp: { runId: string; version: number; add: AdoptCondition[]; actionChanges: { id: number; action: CondAction }[]; retire: number[]; confirm: boolean }, now: Date, session?: string): Promise<ConfirmResult> {
   const acct = (await loadAccount(env.DB))?.acct;
-  if (!acct?.own[ticker]) throw new Error(`${ticker} 不是自選股`);
-  const fileId = acct.own[ticker].fileId ?? null;
+  const meta = acct ? fileMeta(acct, ticker)?.meta : undefined;
+  if (!acct || !meta) throw new Error(`${ticker} 不是自選股，也不在候補名單裡`);
+  const fileId = meta.fileId ?? null;
   const at = now.toISOString();
   const ses = session ?? at.slice(0, 10);
   const log = (kind: 'CONDITION' | 'EXITS_CONFIRMED', ref: string, body: Record<string, unknown>) => (fileId ? [thesisLogStmt(env.DB, { ticker, fileId, session: ses, kind, ref, body }, null, at)] : []);
@@ -490,7 +496,8 @@ export async function monitorView(env: Env, ticker: string): Promise<MonitorRow[
     const acct = (await loadAccount(env.DB))?.acct;
     // 「怎麼確認」寫指名的來源的級別（T68，confirm_audit_design §1.6）；只有系統預設前提的股票審查不取網頁（G24：寫明）
     const ratings = await loadRatings(env.DB);
-    const defaultOnly = !acct?.own[ticker] || fileKind(acct.own[ticker]) === 'DEFAULT_ONLY';
+    const fmeta = acct ? fileMeta(acct, ticker)?.meta : undefined;
+    const defaultOnly = !fmeta || fileKind(fmeta) === 'DEFAULT_ONLY';
     const goneNote = (c: FileCondition): string => {
       if (c.kind !== 'EVENT' || !['ACTIVE', 'REVIEW_ONLY', 'PROPOSED'].includes(c.status) || acceptStatus(c) === 'MANUAL') return '';
       return defaultOnly && namedWebDomains(c.check).length ? '（這檔只有系統預設前提，審查不取網頁；寫下你自己的前提之後才會用這個來源）' : '';

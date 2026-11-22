@@ -7,7 +7,7 @@
 //         AI 監測中的條件（T71，confirm_audit_design §3）改成出清或減半 → 寫 accepted_at，變成你定的（之後的審查換不掉）；
 //         有 supersedes 的，被取代的那條 RETIRED（和勾選同一套）
 // 你定的條件（ACTIVE＋REVIEW_ONLY）一檔最多 8 條；AI 監測中的另算（最多 3 條，由審查寫入時維持）。每一次都在 own_thesis_log 寫一筆 CONDITION。
-import type { Account } from '../engine';
+import { fileMeta, type Account } from '../engine';
 import { thesisLogStmt } from './ledgerStore';
 import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, acceptStatus, defaultAction, fileConditions, isAddAction, isAiWatch, isOwned, sameActionKind, type CondAction, type FileCondition } from './thesis';
 
@@ -50,9 +50,10 @@ export function supersedeStmts(db: D1Database, ticker: string, fileId: string | 
  * 持股頁的條件操作。acct：現在的帳戶（只讀 fileId）；session：訊號日（log 用）。
  * 回傳這一條之後的狀態。不能做時丟 CondError（訊息直接給使用者看）。
  */
-export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'>, ticker: string, id: number, op: CondOp, action: unknown, session: string, now: Date): Promise<{ id: number; status: string; action: CondAction | null; retired?: number }> {
-  const meta = acct.own[ticker];
-  if (!meta) throw new CondError(`${ticker} 不是自選股。`);
+export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'> & Partial<Pick<Account, 'watch'>>, ticker: string, id: number, op: CondOp, action: unknown, session: string, now: Date): Promise<{ id: number; status: string; action: CondAction | null; retired?: number }> {
+  // 候補的論點檔也有條件（allocation_redesign §4.5 第 3 點）
+  const meta = fileMeta(acct, ticker)?.meta;
+  if (!meta) throw new CondError(`${ticker} 不是自選股，也不在候補名單裡。`);
   const conds = await fileConditions(db, acct, ticker);
   const c = conds.find((x) => x.id === id);
   if (!c) throw new CondError('找不到這條條件（可能是之前那一份論點檔的）。');

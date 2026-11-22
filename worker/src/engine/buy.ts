@@ -1,7 +1,7 @@
 // 買進前的程式檢查（allocation_redesign §4.0，T83）：自選的每一種買進——先買一半的補滿（F27）、提高到 125%（F23）、
 // 你定的加碼條件（F28，T84）、下跌加碼（T84）、之後的候補進場——都先過同一組檢查，任何一項不過就不提。
 // buyAllowed 是純函式（只看傳進來的事實）；buyFacts 從帳戶狀態把事實整理出來。
-import { dropReviewOpen, priceOf, totalValue, type Account, type MarketView } from './account';
+import { dropReviewOpen, priceOf, totalValue, type Account, type MarketView, type OwnMeta } from './account';
 import type { OwnApplied, OwnState } from './types';
 
 /** 最近幾個日曆天內有前提被 3 票判不成立就不提買進。 */
@@ -76,6 +76,16 @@ export function buyAllowed(x: BuyFacts): BuyVerdict {
 }
 
 /**
+ * 最近一次有前提被 3 票判不成立的訊號日（不晚於 asOf；沒給 asOf = 不限）：OwnMeta.brokenAt，加上舊資料的 aiTier、dropReview 裡的日期。沒有是 null。
+ * 移出自選時抄進 ownClosed（allocation_redesign §4.5 第 7 點）也用它。
+ */
+export function lastBrokenAt(meta: Pick<OwnMeta, 'brokenAt' | 'aiTier' | 'dropReview'>, asOf?: string): string | null {
+  const ai = meta.aiTier;
+  const dates = [meta.brokenAt ?? null, ai?.premiseId ? ai.date : null, meta.dropReview?.status === 'BROKEN' ? meta.dropReview.session : null].filter((d): d is string => !!d && (asOf === undefined || d <= asOf));
+  return dates.length ? dates.sort().at(-1)! : null;
+}
+
+/**
  * 從帳戶整理這一檔的事實。want：想買幾股（沒給 = 只看狀態）。不是自選回傳 null。
  * skipKey（T84）：不算這一個項目（下跌加碼的選項就掛在那一則跌幅審查的項目上，那一項本身不算「還沒結案的跌幅審查」）。
  */
@@ -88,8 +98,7 @@ export function buyFacts(acct: Account, view: MarketView | null, ticker: string,
   const openDrop = dropReviewOpen(meta.dropReview) || meta.pending?.action === 'REDUCE' || live((it) => !!it.thesisDrop || it.f === 'F7');
   const ai = meta.aiTier;
   const openBreak = live((it) => it.brk?.type === 'B') || (!!ai?.suggest && !!ai.premiseId && (ai.tier === 'HALF' || ai.tier === 'EXIT'));
-  const dates = [meta.brokenAt ?? null, ai?.premiseId ? ai.date : null, meta.dropReview?.status === 'BROKEN' ? meta.dropReview.session : null].filter((d): d is string => !!d && d <= asOf);
-  const brokenAt = dates.length ? dates.sort().at(-1)! : null;
+  const brokenAt = lastBrokenAt(meta, asOf);
   const facts: BuyFacts = { state: meta.slow.state, applied: rule.applied, flags: meta.flags, openDrop, openBreak, brokenAt, asOf };
   if (want === undefined || !view) return facts;
   const price = priceOf(view, ticker);

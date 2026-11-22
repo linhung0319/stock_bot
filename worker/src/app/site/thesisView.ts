@@ -1,7 +1,7 @@
 // 持股頁的論點那一塊（T34，own_thesis §1.3）：從論點檔組出畫面要的白話——前提最近一次的檢查、事件時間軸、
 // 歷次審查與你的回應、靜默中的前提、減半檢視的狀態。純函式：論點檔由呼叫的地方組好（真實模式 thesisFile，示範模式 metaFile）。
 import { verdictText } from '../../ai/functions';
-import { DROP_CAUSE_TEXT, dropAttrText, isBelief, notifName, verifyEvery, type Account, type Attention, type MarketView, type OwnMeta } from '../../engine';
+import { DROP_CAUSE_TEXT, dropAttrText, isBelief, notifName, verifyEvery, type Account, type Attention, type MarketView, type OwnMeta, type ThesisMeta } from '../../engine';
 import { concentrationHits } from '../concentration';
 import { CODE_TEXT, eventDetail, eventLabel, eventSource, eventStatus, eventVia } from '../eventText';
 import { UNVERIFIED_AFTER, metaFile, openRisks, outcomeText, ownAttention, premiseStanding, toAttention, type OpenRisk, type PremiseStanding, type ThesisFile, type ThesisReview } from '../thesis';
@@ -200,10 +200,12 @@ function pendingRuleNotif(acct: Pick<Account, 'notifs'>, ticker: string): number
 }
 
 /**
- * 持股頁的論點那一塊（own_thesis §1.3）。file：這檔的論點檔；meta：帳戶狀態裡的這一檔；date：訊號日。
+ * 持股頁的論點那一塊（own_thesis §1.3）。file：這檔的論點檔；meta：帳戶狀態裡的這一檔（候補也可以：沒有靜默期、減半檢視、處理過的風險）；date：訊號日。
  * partial：示範模式的論點檔只有帳戶狀態（沒有事件、審查），畫面要說清楚。
  */
-export function thesisView(file: ThesisFile, meta: OwnMeta, acct: Pick<Account, 'notifs'>, date: string, partial = false): ThesisView {
+export function thesisView(file: ThesisFile, meta0: ThesisMeta, acct: Pick<Account, 'notifs'>, date: string, partial = false): ThesisView {
+  // 候補（有 addedAt、沒有慢規則）沒有靜默期、減半檢視、處理過的風險
+  const meta: Partial<OwnMeta> = 'addedAt' in meta0 ? {} : meta0;
   // 每條前提最近一次的結果（T61 的四種寫法）；信念不進審查，沒有結果
   const premiseChecks: Record<string, PremiseCheck> = {};
   for (const p of file.premises) premiseChecks[p.id] = premiseCheckOf(isBelief(p) ? null : premiseStanding(file, p.id), verifyEvery(p), partial);
@@ -235,10 +237,10 @@ export function thesisView(file: ThesisFile, meta: OwnMeta, acct: Pick<Account, 
     reviews: reviews.slice(0, VIEW_REVIEWS),
     reviewCount: reviews.length,
     silenced,
-    dropReview: dr ? { ...dropText(dr, meta), notif: pendingRuleNotif(acct, file.ticker) } : null,
+    dropReview: dr ? { ...dropText(dr, meta0 as OwnMeta), notif: pendingRuleNotif(acct, file.ticker) } : null,
     dropReviewNotifName: dr ? nameOf(pendingRuleNotif(acct, file.ticker)) : null,
     partial,
-    risks: openRisks(file, meta, date).map(riskView),
+    risks: openRisks(file, { riskSeen: meta.riskSeen }, date).map(riskView),
   };
 }
 
@@ -248,8 +250,10 @@ export function thesisView(file: ThesisFile, meta: OwnMeta, acct: Pick<Account, 
  */
 export function demoHolding(acct: Account, view: MarketView, ticker: string): { thesis: ThesisView | null; attention: Attention[] } {
   const file = metaFile(acct, ticker, view.date);
-  const meta = acct.own[ticker];
+  const meta = acct.own[ticker] ?? acct.watch?.[ticker];
   if (!file || !meta) return { thesis: null, attention: [] };
+  // 候補（allocation_redesign §4.5）：論點那一塊照樣有；持股的「要看的事」不適用（候補自己的是 T85 丙段）
+  if (!acct.own[ticker]) return { thesis: thesisView(file, meta, acct, view.date, true), attention: [] };
   const conc = (() => {
     try {
       return concentrationHits(acct, view).filter((x) => x.members.includes(ticker));

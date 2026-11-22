@@ -1,7 +1,7 @@
 // 證據包產生器（ai_layer_design §2.1）：程式先把資料與數字準備好，LLM 只能讀。
 // 這裡是各功能共用的部分：組裝與檢查、價格與規則狀態的數字、價格表（讓 LLM 引用價格時也有原文可以對）。
 // 各功能要的申報、XBRL、新聞由各自的產生器準備好再傳進來（T10、T11）。
-import { SLOW, annualizedVol, breaksOf, drawdownFromHigh, isBelief, sma, trailingReturn, type Account, type MarketView, type Premise } from '../engine';
+import { SLOW, annualizedVol, breaksOf, drawdownFromHigh, isBelief, fileMeta, sma, trailingReturn, type Account, type MarketView, type Premise } from '../engine';
 import { CONDITION_TYPES, type DataQuality, type EvidencePack, type PackDoc, type PackPolicy, type PackPremise } from './check';
 
 /** 一份原文的上限（字元）。太長的只留開頭，並在結尾註明（§8.3：長文件中間的資訊容易漏，應該只給相關的那一節）。 */
@@ -169,10 +169,10 @@ export function packPremise(p: Pick<Premise, 'id' | 'text' | 'origin' | 'breaksI
 }
 
 /**
- * 自選股的前提（使用者寫的、採用的 AI 草稿，或系統預設）。
+ * 自選股（或候補，allocation_redesign §4.5 第 3 點）的前提（使用者寫的、採用的 AI 草稿，或系統預設）。
  * 信念（verify.by = NONE，composite §2.3）不進審查的逐條判定：預設不放；opt.beliefs = true 才放（草稿要看得到全部現行的前提、
  * 出場條件的改寫要對得到前提）。
  */
 export function ownPremises(acct: Account, ticker: string, opt: { beliefs?: boolean } = {}): PackPremise[] {
-  return (acct.own[ticker]?.premises ?? []).filter((p) => opt.beliefs || !isBelief(p)).map(packPremise);
+  return (fileMeta(acct, ticker)?.meta.premises ?? []).filter((p) => opt.beliefs || !isBelief(p)).map(packPremise);
 }

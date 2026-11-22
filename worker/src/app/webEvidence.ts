@@ -20,7 +20,7 @@ import { fetchEdgarSubmissions, type Filing } from '../data/sources';
 import { errText } from '../data/util';
 import { markWebDocUsed, normalizeWebUrl, obtainWebDoc, safeWebUrl, webDocId } from '../data/webDoc';
 import { AI_TIERS, TIER_TEXT, WEB_EXCLUDED, WEB_SOURCES, aiExcludedOf, hostMatches, isExcluded, rateDomain, seedOf, seedSources, webDomainOf, webFetchRule, type AiTier, type WebRating, type WebRatingRow } from '../data/webSources';
-import type { OwnMeta, OwnWebSources, WebPeer, WebSourceCheck } from '../engine';
+import { fileMeta, type OwnMeta, type OwnWebSources, type WebPeer, type WebSourceCheck } from '../engine';
 import { TASK_TIMEOUT_MS, getTask } from './aiTasks';
 import { json, type Env, type Fetcher } from './env';
 import { cikFor } from './filings';
@@ -296,7 +296,8 @@ interface RunRow {
 
 /** 沒有記下 doc_ctx 的執行（減半檢視等，T54、T55 之前）：照現在的帳戶算論點檔，發布日下限用決策日前 365 天（T68 起不讀這檔的網域）。 */
 async function fallbackCtx(db: D1Database, ticker: string | null, asOf: string): Promise<DocCtx> {
-  const meta = ticker ? (await loadAccount(db))?.acct.own[ticker] : undefined;
+  const acct = ticker ? (await loadAccount(db))?.acct : undefined;
+  const meta = acct && ticker ? fileMeta(acct, ticker)?.meta : undefined;
   const notBefore = minusDays(asOf, NO_REVIEW_WEB_DAYS);
   if (!meta) return { menu: [], notBefore, domains: [], fileId: null, off: '已經不是自選股' };
   if (fileKind(meta) === 'DEFAULT_ONLY') return { menu: [], notBefore, domains: [], fileId: meta.fileId ?? null, off: '只有系統預設前提：不用網頁證據' };

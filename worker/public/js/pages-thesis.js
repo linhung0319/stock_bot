@@ -183,7 +183,9 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   const srcEd = sourcesEditor(d.ticker, own.webSources ?? null, () => changed());
 
   // ---- 右邊：新的（三欄都可以手改）
-  const thesisIn = h('textarea', { rows: 6, maxlength: LIMITS.thesis, placeholder: '我為什麼持有它（一段，300 字以內最好）' });
+  // 候補（allocation_redesign §4.5）：還沒持有；請 stock bot 草擬候補是之後的事，這一頁先不放
+  const watch = !!d.watch;
+  const thesisIn = h('textarea', { rows: 6, maxlength: LIMITS.thesis, placeholder: watch ? '我為什麼想買它（一段，300 字以內最好）' : '我為什麼持有它（一段，300 字以內最好）' });
   thesisIn.value = own.thesis?.text ?? '';
   const premList = h('div');
   const exitList = h('div');
@@ -696,7 +698,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     return box;
   }
   // 沒有等你看的草稿：右邊上面是「請 stock bot 草擬」那一塊（準備中、要等幾天、上次失敗的原因）
-  const draftAsk = draft
+  const draftAsk = draft || watch
     ? null
     : glass(
         'pad draft-box',
@@ -829,15 +831,15 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       back,
       kicker: own.thesis ? `第 ${own.thesis.version} 版，${day(own.thesis.setAt)} 定` : '還沒有論點本文',
       title: `編輯論點：${d.ticker}`,
-      sub: draft ? 'stock bot 的草稿回來了：在右邊先看反方的三點，還願意抱著就按「採用這份草稿」，整份照草稿存（出場條件採用後就生效）。不想用可以照舊貼上 claude.ai 討論的結果或手寫。' : '貼上 claude.ai 討論的結果、請 stock bot 草擬，或直接手寫。左邊是現在的、右邊是新的；確認之後論點與前提馬上存好，出場條件有改動才送 AI 對照與改寫。',
+      sub: watch && !draft ? '候補還沒持有：論點與前提存好之後，進場時沿用。貼上 claude.ai 討論的結果，或直接手寫；左邊是現在的、右邊是新的。' : draft ? 'stock bot 的草稿回來了：在右邊先看反方的三點，還願意抱著就按「採用這份草稿」，整份照草稿存（出場條件採用後就生效）。不想用可以照舊貼上 claude.ai 討論的結果或手寫。' : '貼上 claude.ai 討論的結果、請 stock bot 草擬，或直接手寫。左邊是現在的、右邊是新的；確認之後論點與前提馬上存好，出場條件有改動才送 AI 對照與改寫。',
       bubble: draft ? { k: '草稿', say: ['先看', { t: '反方的三點', tone: 'em' }, '，還願意抱著再按「採用這份草稿」。'], mood: 'watch' } : { k: '編輯論點', say: ['左右對照看一遍再確認。', { t: '出場條件', tone: 'em' }, '改了的話，要你在持股頁確認才會換上新的。'], mood: 'watch' },
     },
     pane: formBox,
     rail: glass(
       'pad',
       h('h2', { class: 'panel-h' }, '怎麼用'),
-      h('p', { class: 'small', style: 'margin-top:8px' }, h('b', null, '用 stock bot 的草稿')),
-      h('ol', { class: 'small', style: 'margin:4px 0 0;display:grid;gap:6px' }, h('li', null, '1. 按「請 stock bot 草擬」，好了推 LINE。'), h('li', null, '2. 先看反方的三點，還願意抱著這檔就按「採用這份草稿」。'), h('li', null, '3. 現在有論點的話，會先列出哪幾條會被換掉，按「確定採用」；之後要改字在這一頁改。')),
+      watch ? null : h('p', { class: 'small', style: 'margin-top:8px' }, h('b', null, '用 stock bot 的草稿')),
+      watch ? null : h('ol', { class: 'small', style: 'margin:4px 0 0;display:grid;gap:6px' }, h('li', null, '1. 按「請 stock bot 草擬」，好了推 LINE。'), h('li', null, '2. 先看反方的三點，還願意抱著這檔就按「採用這份草稿」。'), h('li', null, '3. 現在有論點的話，會先列出哪幾條會被換掉，按「確定採用」；之後要改字在這一頁改。')),
       h('p', { class: 'small', style: 'margin-top:12px' }, h('b', null, '在 claude.ai 討論')),
       h('ol', { class: 'small', style: 'margin:4px 0 0;display:grid;gap:6px' }, h('li', null, '1. 按「複製討論包」，貼到 claude.ai 的新對話。'), h('li', null, '2. 和它討論；它會站在反方問你。'), h('li', null, '3. 說「收尾」，把輸出的區塊貼回這裡、按「解析」。'), h('li', null, '4. 看左右對照，需要的話改，按「確認」。')),
       h('p', { class: 'small faint', style: 'margin-top:10px' }, '討論包與草稿的證據包都只有比重，沒有金額與股數。「這次的結論」只顯示，不會自動下單。'),

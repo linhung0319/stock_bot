@@ -20,6 +20,10 @@ import {
   type Account,
   type CloseReason,
   closedThesisOf,
+  fileMeta,
+  MAX_WATCH,
+  newFileId,
+  type WatchMeta,
   type Effect,
   type Item,
   type MarketView,
@@ -40,6 +44,7 @@ import { momSlotTarget, ownDepositFill, ownDepositScale, planDay } from './alloc
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
 import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SELF_HALVE_MIN, SKIPPED_REASON, addDispute, clearBuild, endDisputesFor, afterOpenLists, cancelThesisDrop, composeNotif, crashReviewOf, leaveWatch, monthlyReport, monthlyWait, rebuildThesisDrop, recordExternalFlow, refreshCoreBand, refreshOwnAiChoice, restoreSaved, thesisDropShadow, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
+import { lastBrokenAt } from './buy';
 import { appliedOf, cellKey, pickFrac, setApplied, type Bucket } from './types';
 
 const sumFor = (lines: OrderLine[], ticker: string) => lines.filter((l) => l.ticker === ticker).reduce((a, l) => a + l.shares, 0);
@@ -120,7 +125,9 @@ export function applyTier(acct: Account, view: MarketView, ticker: string, tier:
 function removeOwnPick(acct: Account, ticker: string, reason: CloseReason, date: string): void {
   const meta = acct.own[ticker];
   const fileId = meta?.fileId;
-  if (meta && fileId) acct.ownClosed = { ...(acct.ownClosed ?? {}), [ticker]: { fileId, reason, date, last: closedThesisOf(meta) } };
+  // 最近一次前提被判不成立的日子跟著結案紀錄走（allocation_redesign §4.5 第 7 點）：之後加進候補，30 天的防線看得到
+  const brokenAt = meta ? lastBrokenAt(meta) : null;
+  if (meta && fileId) acct.ownClosed = { ...(acct.ownClosed ?? {}), [ticker]: { fileId, reason, date, last: closedThesisOf(meta), ...(brokenAt ? { brokenAt } : {}) } };
   delete acct.own[ticker];
   delete acct.rule.own[ticker];
   cancelOwnItems(acct, ticker, reason, date);
@@ -1118,6 +1125,84 @@ export function removeOwn(acct0: Account, view: MarketView, ticker: string): { a
   return { acct, notif };
 }
 
+// ---------------------------------------------------------------- 候補名單（allocation_redesign §4.5，T85）
+
+/** 候補不能加、不能改時（訊息直接給使用者看；網站回 422）。 */
+export class WatchError extends Error {}
+
+/** 「為什麼想買」最多幾個字（和買進時的一句話相同）。 */
+export const WATCH_NOTE_MAX = 300;
+
+/**
+ * 加一檔候補（§4.5「怎麼加」）：開一份論點檔（編號照舊 `<代號>@<訊號日>`，進場後沿用），前提是系統預設的三條（種類「只有預設」）。
+ * note：「為什麼想買」→ buyNote（不是前提）；stdWeight：打算放的標準比重，沒填是 null（列進場項目時用推薦值）。
+ * 不下單、不發通知、不開任何 AI（自動草擬是 T85 丙段）。最多 MAX_WATCH 檔；已在自選、已在候補、核心的標的不能加。
+ */
+export function addWatch(acct0: Account, view: MarketView, ticker: string, opt: { note?: string | null; stdWeight?: number | null } = {}): Account {
+  const acct = clone(acct0);
+  const watch = acct.watch ?? {};
+  if (acct.own[ticker]) throw new WatchError(`${ticker} 已經在自選裡了，不用加候補`);
+  if (watch[ticker]) throw new WatchError(`${ticker} 已經在候補名單裡了`);
+  if (ticker === acct.cfg.coreTicker || ticker === acct.bondTicker) throw new WatchError(`${ticker} 是核心的標的，不能加進候補`);
+  if (Object.keys(watch).length >= MAX_WATCH) throw new WatchError(`候補最多 ${MAX_WATCH} 檔：先移除一檔再加`);
+  const note = opt.note?.trim() ? { text: opt.note.trim().slice(0, WATCH_NOTE_MAX), at: view.date } : null;
+  const premises = clone(SYSTEM_DEFAULT_PREMISES).map((p) => ({ ...p, addedAt: view.date }));
+  const meta: WatchMeta = {
+    fileId: newFileId(ticker, view.date, acct.ownClosed?.[ticker]?.fileId),
+    premises,
+    thesis: null,
+    premiseSeq: nextPremiseSeq({ premises }),
+    ...(note ? { buyNote: note } : {}),
+    addedAt: view.date,
+    stdWeight: opt.stdWeight ?? null,
+    lastListed: null,
+  };
+  acct.watch = { ...watch, [ticker]: meta };
+  return acct;
+}
+
+/**
+ * 改一檔候補（帳戶頁的候補那一塊）：stdWeight 給了就改（null = 改回留空，用推薦值）；note 給了就改「為什麼想買」（空字串 = 拿掉）。
+ */
+export function updateWatch(acct0: Account, view: MarketView, ticker: string, opt: { note?: string | null; stdWeight?: number | null }): Account {
+  const acct = clone(acct0);
+  const meta = acct.watch?.[ticker];
+  if (!meta) throw new WatchError(`${ticker} 不在候補名單裡`);
+  if (opt.stdWeight !== undefined) meta.stdWeight = opt.stdWeight;
+  if (opt.note !== undefined) meta.buyNote = opt.note?.trim() ? { text: opt.note.trim().slice(0, WATCH_NOTE_MAX), at: view.date } : null;
+  return acct;
+}
+
+/**
+ * 移除候補（§4.5「其他」）：論點檔結案（原因 WATCH_REMOVED，存檔時寫 log 的 CLOSE）；條件不用動（跟著論點檔編號，之後不會再讀）。
+ * ownClosed 每檔只有一筆，同時是「上一次持有時的論點」的來源：原本那一筆若是持有的結案就搬進 held（候補的論點不能蓋掉上一次持有的），
+ * 前提被判不成立的日子（brokenAt）照帶（30 天的防線，§4.5 第 7 點）。
+ * 還沒回覆的進場項目（F29）跟著取消——F29 是 T85 乙段才有，那時接上。
+ */
+export function removeWatch(acct0: Account, view: MarketView, ticker: string): Account {
+  const acct = clone(acct0);
+  const meta = acct.watch?.[ticker];
+  if (!meta) throw new WatchError(`${ticker} 不在候補名單裡`);
+  const prev = acct.ownClosed?.[ticker];
+  const held = prev ? (prev.reason === 'WATCH_REMOVED' ? (prev.held ?? null) : { fileId: prev.fileId, reason: prev.reason, date: prev.date, ...(prev.last ? { last: prev.last } : {}) }) : null;
+  acct.ownClosed = {
+    ...(acct.ownClosed ?? {}),
+    [ticker]: { fileId: meta.fileId, reason: 'WATCH_REMOVED', date: view.date, last: closedThesisOf(meta), ...(prev?.brokenAt ? { brokenAt: prev.brokenAt } : {}), ...(held ? { held } : {}) },
+  };
+  delete acct.watch![ticker];
+  return acct;
+}
+
+/** 候補的推薦標準比重（§4.5：自選預算內依波動度反比，現有的算法；分母是現在的自選加上這一檔，其他候補不算）。算不出來是 null。 */
+export function watchRecWeight(acct: Account, view: MarketView, ticker: string): number | null {
+  try {
+    const w = recommendStdWeights(view, [...Object.keys(acct.rule.own).filter((t) => t !== ticker), ticker], acct.cfg.ratio.own)[ticker];
+    return Number.isFinite(w) ? w : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------- 月報上的動作：轉入自選、排除、認養
 
 /**
@@ -1269,8 +1354,10 @@ export interface ThesisInput {
  */
 export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { acct: Account; mapping: PremiseMapping; before: { text: string; premises: Premise[] }; changed: boolean; silenceEnded: string[] } {
   const acct = clone(acct0);
-  const meta = acct.own[ticker];
-  if (!meta) throw new Error(`${ticker} 不在自選裡`);
+  // 候補也有論點檔（allocation_redesign §4.5 第 3 點）：論點與前提一樣存；候補沒有審查與靜默期，不排論點變動後的審查
+  const fm = fileMeta(acct, ticker);
+  if (!fm) throw new Error(`${ticker} 不在自選裡，也不在候補名單裡`);
+  const meta = fm.meta;
   const mapping = mapPremises(meta, inp.premises, inp.date);
   const before = { text: meta.thesis?.text ?? '', premises: clone(meta.premises) };
   const prev = meta.thesis ?? null;
@@ -1280,8 +1367,8 @@ export function setThesis(acct0: Account, ticker: string, inp: ThesisInput): { a
   meta.premises = mapping.premises;
   meta.premiseSeq = mapping.premiseSeq;
   const changed = mapping.added.length > 0 || mapping.retired.length > 0 || mapping.edited.length > 0;
-  if (changed) meta.thesisReviewDue = inp.date;
-  const silenceEnded = endDisputesFor(meta, mapping.edited.map((e) => e.id), inp.date, EDITED_REASON);
+  if (changed && fm.held) fm.meta.thesisReviewDue = inp.date;
+  const silenceEnded = fm.held ? endDisputesFor(fm.meta, mapping.edited.map((e) => e.id), inp.date, EDITED_REASON) : [];
   return { acct, mapping, before, changed, silenceEnded };
 }
 
@@ -1364,8 +1451,12 @@ export function setStdWeight(acct0: Account, ticker: string, stdWeight: number, 
   return acct;
 }
 
-/** 論點檔開檔的訊號日（fileId 是 `<代號>@<訊號日>`）；舊資料沒有編號時用 fallback。 */
-function openedOn(meta: Pick<OwnMeta, 'fileId'>, ticker: string, fallback?: string): string {
+/**
+ * 開始持有的訊號日：heldSince（從候補進場的，allocation_redesign §4.5 第 4 點）；沒有就用論點檔開檔的訊號日（fileId 是 `<代號>@<訊號日>`）；
+ * 舊資料沒有編號時用 fallback。
+ */
+function openedOn(meta: Pick<OwnMeta, 'fileId' | 'heldSince'>, ticker: string, fallback?: string): string {
+  if (meta.heldSince) return meta.heldSince;
   const d = meta.fileId?.slice(ticker.length + 1, ticker.length + 11);
   return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : (fallback ?? '');
 }

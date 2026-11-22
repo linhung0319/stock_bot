@@ -9,7 +9,7 @@
 // 時間模型和示範模式相同（src/demo/driver.ts）：訊號日收盤後先跑每日檢查；訊號日是當月最後一個交易日時，
 // 接著用同一天的收盤與排名出下個月的月報（台灣早上收到，當晚美股開盤下單）。
 import { annotate } from './site/explain';
-import { blockedMonthly, dailyCheck, monthlyReport, stepStrategyReview, strategyReminder, type Account, type MarketView, type MonthlyContext, type Notif, type StrategyReviewState } from '../engine';
+import { blockedMonthly, dailyCheck, monthlyReport, stepStrategyReview, strategyReminder, watchTickers, type Account, type MarketView, type MonthlyContext, type Notif, type StrategyReviewState } from '../engine';
 import { isLastTradingDayOfMonth, lastCompletedSession, nextTradingDay, tradingDaysBetween, type CalendarOverrides } from '../data/calendar';
 import { ALERT_CODES, coreAlertText, coreDataCheck, corePriceNote } from '../data/coreCheck';
 import { BENCHMARK, runIngest, type IngestResult } from '../data/ingest';
@@ -78,7 +78,8 @@ export async function ingest(env: Env, fetcher: Fetcher, now: Date, forceRank = 
     const loaded = await loadAccount(env.DB);
     // 影子組合要用最近 7 個月內影子紀錄裡的代號（觀察期最長 6 個月）；自選股與動能持股的產業 ETF（F7、個股自身大跌、動能單月大跌那一行的跌幅拆解）
     const since = new Date(now.getTime() - 213 * 86400_000).toISOString().slice(0, 10);
-    const track = loaded ? [...(await shadowTickers(env.DB, since)), ...Object.values(await sectorEtfs(env.DB, [...new Set([...Object.keys(loaded.acct.own), ...momHoldings(loaded.acct)])]))] : [];
+    // 候補（allocation_redesign §4.5 第 9 點）：照持股的方式抓價格，但放「追蹤」不放「必要」——候補一檔打錯或下市，不能讓整個帳戶當天沒有訊號
+    const track = loaded ? [...(await shadowTickers(env.DB, since)), ...watchTickers(loaded.acct), ...Object.values(await sectorEtfs(env.DB, [...new Set([...Object.keys(loaded.acct.own), ...momHoldings(loaded.acct)])]))] : [];
     return await runIngest(env.DB, fetcher, { now, required: requiredTickers(loaded?.acct ?? null), forceRank, track });
   } catch (e) {
     const error = errText(e);

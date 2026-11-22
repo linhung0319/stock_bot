@@ -7,7 +7,7 @@ import { routineReady } from '../ownAi';
 import { homeBrief, type HomeBrief } from '../marketBrief';
 import { DEMO_NOTE_PREFIX, ackNoCrashNote, noCrashNote, type NoCrashNote, type NoCrashNoteId } from '../noCrashNote';
 import type { DraftBroken } from '../../ai/ownDraft';
-import { bookShares, migrateAccount, pendingSplits, type Account, type Attention, type LedgerEvent, type MarketView, type OwnWebSources, type ShadowRecord, type Snapshot, type StrategyReviewState, type WebSourceCheck } from '../../engine';
+import { bookShares, migrateAccount, pendingSplits, fileMeta, watchTickers, type Account, type Attention, type LedgerEvent, type MarketView, type OwnWebSources, type ShadowRecord, type Snapshot, type StrategyReviewState, type WebSourceCheck } from '../../engine';
 import { probeWebSources } from '../webEvidence';
 import { easternTime, lastCompletedSession } from '../../data/calendar';
 import { BENCHMARK } from '../../data/ingest';
@@ -173,7 +173,8 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const required = requiredTickers(acct);
       const shadowSince = new Date(now.getTime() - 213 * 86400_000).toISOString().slice(0, 10);
       const shadowed = acct ? await shadowTickers(env.DB, shadowSince) : [];
-      const want = [...new Set([...required, BENCHMARK, ...(ranking?.order ?? []), ...shadowed, ...extra])];
+      // 候補（allocation_redesign §4.5 第 9 點）：帳戶頁與詳細頁要它的價格，但不算必要（抓不到不擋、不列進「沒有收盤價」的警示）
+      const want = [...new Set([...required, BENCHMARK, ...(ranking?.order ?? []), ...shadowed, ...watchTickers(acct), ...extra])];
       let series = await loadSeries(env.DB, want);
       const session = series.get(core)?.d.at(-1) ?? null;
       // 這次操作要用、但沒有存或不是最新的代號：當場抓一次（新增自選、快照出現新代號、建立帳戶）
@@ -306,7 +307,10 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
         const run = await resendOwnCheck(env, fetcher, d.acct, d.view, d.axis, ticker, version, now);
         return { runId: run.runId };
       },
-      exitSet: async (ticker) => exitSetOf(env.DB, (await loadAccount(env.DB))?.acct.own[ticker]?.fileId),
+      exitSet: async (ticker) => {
+        const acct = (await loadAccount(env.DB))?.acct;
+        return exitSetOf(env.DB, acct ? fileMeta(acct, ticker)?.meta.fileId : undefined);
+      },
       dropAllExits: async (ticker, version) => confirmDropAll(env, ticker, version, now, lastCompletedSession(now, await loadCalendarOverrides(env.DB))),
       checkView: (runId) => ownCheckView(env, runId, now),
       rewrites: (ticker) => rewriteView(env, ticker, now),
@@ -322,7 +326,7 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       prevFile: (ticker, acct) => loadPrevFile(env.DB, acct, ticker),
       async thesis(ticker, acct, view) {
         const file = await thesisFile(env.DB, acct, ticker, view.date);
-        const meta = acct.own[ticker];
+        const meta = fileMeta(acct, ticker)?.meta;
         return file && meta ? thesisView(file, meta, acct, view.date) : null;
       },
       mom: (ticker, acct, view, rankOrder) => holdingMom(env.DB, acct, view, ticker, rankOrder),

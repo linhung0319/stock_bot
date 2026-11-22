@@ -55,6 +55,14 @@ import {
   normVerify,
   type Snapshot,
   notifName,
+  fileMeta,
+  addWatch,
+  updateWatch,
+  removeWatch,
+  WatchError,
+  MAX_WATCH,
+  WATCH_NOTE_MAX,
+  watchRecWeight,
 } from '../../engine';
 import { VOL_HIST_SEED } from '../../engine/volSeed';
 import { DISCUSSION_MODES, LIVE_CONDITION_CODES, THESIS_LIMITS, parseThesisBlock, planExits, type LiveCondition } from '../../ai/discussion';
@@ -130,6 +138,29 @@ function stdWeightOf(v: unknown): number {
   const x = typeof v === 'string' && v.trim() !== '' ? Number(v.replace(/[,\s%]/g, '')) : v;
   if (typeof x !== 'number' || !Number.isFinite(x) || x < 0.001 || x > 0.5) throw new SiteError(422, '標準比重要在 0.1% 到 50% 之間（畫面上填百分比，例如 5 代表 5%）');
   return x;
+}
+
+/** 候補中的代號用了「新增自選」（allocation_redesign §4.5 第 8 點）：指到對的地方。 */
+const WATCH_TO_OWN_TEXT = (tk: string) => `${tk} 在候補名單裡。要現在就買，直接在券商買進、到「填快照」的自選那一桶填股數，候補會轉成持股、論點沿用；不用先新增自選。`;
+
+/** 加候補前的檢查（API 先擋一次，引擎的 addWatch 再擋一次；allocation_redesign §4.5 第 8、9 點）。訊息直接給使用者看（422）。 */
+function watchAddCheck(acct: Account, view: MarketView, tk: string): void {
+  if (acct.own[tk]) throw new SiteError(422, `${tk} 已經在自選裡了，不用加候補（持股頁看得到它的論點）`);
+  if (acct.watch?.[tk]) throw new SiteError(422, `${tk} 已經在候補名單裡了`);
+  if (tk === acct.cfg.coreTicker || tk === acct.bondTicker) throw new SiteError(422, `${tk} 是核心的標的，不能加進候補`);
+  if (Object.keys(acct.watch ?? {}).length >= MAX_WATCH) throw new SiteError(422, `候補最多 ${MAX_WATCH} 檔：先移除一檔再加`);
+  if (!view.close[tk] || !Number.isFinite(view.close[tk][view.i])) throw new SiteError(422, `抓不到 ${tk} 在 ${view.date} 的收盤價。請確認代號有沒有打錯。`);
+  if (view.i < 200 || !Number.isFinite(view.close[tk][view.i - 200])) throw new SiteError(422, `${tk} 的歷史價格不到 200 個交易日，還不能加進候補。`);
+}
+
+/** 引擎的候補操作：WatchError → 422。 */
+function watchOp(fn: () => Account): Account {
+  try {
+    return fn();
+  } catch (e) {
+    if (e instanceof WatchError) throw new SiteError(422, e.message);
+    throw e;
+  }
 }
 
 function ticker(v: unknown): string {
@@ -542,7 +573,8 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
   let adoptAdd: AdoptCondition[] = [];
   let adoptUse: DraftUse | null = null;
   const r = await mutate(backend, adopt ? `${tk} 採用草稿` : `${tk} 編輯論點`, [], (d) => {
-    if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
+    // 候補也有論點檔，可以手動編輯（allocation_redesign §4.5 第 10 點）
+    if (!fileMeta(d.acct, tk)) throw new SiteError(422, `${tk} 不在自選裡，也不在候補名單裡`);
     // 對乙類通知的回應（修正論點，own_thesis §1.10）：那則通知要還沒回覆、而且有這檔的乙類項目
     if (replyTo !== null) {
       const n = findNotif(d.acct, Number.isInteger(replyTo) ? replyTo : -1);
@@ -552,7 +584,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
     const ruleExit = !dry && d.acct.notifs.some((n) => n.status === 'PENDING' && n.items.some((i) => i.ticker === tk && !i.cancelled && i.brk?.type === 'B' && !!i.brk.withRule));
     // 草稿（T56／T70）：要是這份論點檔的；這份草稿是在前提被判不成立之後寫的 → 採用算一次「失效後修改」
     const dView = adopt ? draftViewOf(adopt.row, d.acct, tk) : null;
-    if (adopt && (!dView || (adopt.row.file_id ?? null) !== (d.acct.own[tk].fileId ?? null))) throw new SiteError(409, '這份草稿是上一份論點檔的（賣光又買回之前），不能用在這一份。重新整理看看');
+    if (adopt && (!dView || (adopt.row.file_id ?? null) !== (fileMeta(d.acct, tk)!.meta.fileId ?? null))) throw new SiteError(409, '這份草稿是上一份論點檔的（賣光又買回之前），不能用在這一份。重新整理看看');
     const draftBreak = !!dView?.broken;
     let out: ReturnType<typeof setThesis>;
     try {
@@ -566,13 +598,15 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
     // 通知結案；新的前提原封不動留著那一條 → 當成不同意（靜默期）；同一個編號但字改了 → 照修正論點，不進靜默期（T46）
     const rv = replyTo !== null && !dry ? reviseBreak(out.acct, d.view, replyTo, tk, out.mapping.edited.map((e) => e.id)) : null;
     if (rv?.ok) out = { ...out, acct: rv.acct };
-    const wsBefore = out.acct.own[tk].webSources ?? null;
+    const meta = fileMeta(out.acct, tk)!.meta;
+    const wsBefore = meta.webSources ?? null;
     // 採用草稿（T70，§2.3）：同業整組換成草稿的（EDGAR 對得到的才存）；之前存的網站（T68 起不讀）原樣留著
     const wsNew: OwnWebSources | null | undefined = adopt ? (adopt.peers.save.length || wsBefore?.domains.length ? { peers: adopt.peers.save, domains: wsBefore?.domains ?? [] } : null) : wsIn;
     const wsChanged = wsNew !== undefined && !sameWebSources(wsBefore, wsNew);
-    if (wsNew !== undefined && (!adopt || wsChanged)) out.acct.own[tk].webSources = wsNew ? { ...wsNew, checked: wsChecked } : null;
-    if (adopted.length) out.acct.own[tk].riskSeen = withRiskSeen(out.acct.own[tk].riskSeen, adopted.map((r) => ({ text: r.text, at: d.view.date, runId: r.runId, k: r.k, outcome: 'ADOPTED' as const })), d.view.date);
-    const meta = out.acct.own[tk];
+    if (wsNew !== undefined && (!adopt || wsChanged)) meta.webSources = wsNew ? { ...wsNew, checked: wsChecked } : null;
+    // 帶進論點的審查風險（T63）：只有自選有審查
+    const ownMeta = out.acct.own[tk];
+    if (adopted.length && ownMeta) ownMeta.riskSeen = withRiskSeen(ownMeta.riskSeen, adopted.map((r) => ({ text: r.text, at: d.view.date, runId: r.runId, k: r.k, outcome: 'ADOPTED' as const })), d.view.date);
     // 信念（T60）在 log 標出來：之後回頭看得到哪幾條當時是使用者選擇相信、不進審查的
     const brief = (ps: Premise[]) => ps.map((p) => ({ id: p.id, text: p.text, origin: p.origin, ...(isBelief(p) ? { belief: true } : {}) }));
     const mine = meta.premises.filter((p) => p.origin !== 'SYSTEM_DEFAULT');
@@ -602,7 +636,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
         beliefs: mine.filter(isBelief).map((p) => p.id),
         checkable: mine.length ? mine.filter((p) => !isBelief(p)).length : null,
         // 前提有變動、但 30 天內已經開過論點變動後的審查（T45，T41 第 9 條）：上次開的日子；隔天不會再審，留到月底檢查點
-        reviewHeld: out.changed ? thesisReviewHeld(d.acct.own[tk], nextTradingDay(d.view.date)) : null,
+        reviewHeld: out.changed && d.acct.own[tk] ? thesisReviewHeld(d.acct.own[tk], nextTradingDay(d.view.date)) : null,
         version,
         // 出場條件（T42）：有沒有改動、監測中幾條、只改動作的（沒改動時直接改；採用草稿時沿用的那幾條直接改）、之前還沒確認的那一版
         exits: {
@@ -623,7 +657,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
                 basedOn: dView.basedOn,
                 brokenOpen: !!dView.broken?.open,
                 premiseId: brokenId,
-                afterBreakNo: draftBreak ? (d.acct.own[tk].thesis?.afterBreak ?? 0) + 1 : null,
+                afterBreakNo: draftBreak ? (fileMeta(d.acct, tk)!.meta.thesis?.afterBreak ?? 0) + 1 : null,
                 // 對照（§2.1）：現在有論點、你的前提、監測中的條件或同業 → 採用前先給你看哪幾條會被換掉
                 differs: !!out.before.text || out.before.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT') || live.length > 0 || !!wsBefore?.peers.length,
                 thesisBefore: out.before.text,
@@ -825,7 +859,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
   if (disc && get) {
     const tk = ticker(disc[1]);
     const d = ready(await backend.load());
-    if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
+    // 候補也有論點檔（allocation_redesign §4.5 第 3 點）；候補的開場說法是 T85 丙段
+    if (!fileMeta(d.acct, tk)) throw new SiteError(422, `${tk} 不在自選裡，也不在候補名單裡`);
     const q = url.searchParams.get('mode');
     const mode = q ? (DISCUSSION_MODES.find((m) => m === q) ?? null) : null;
     if (q && !mode) throw new SiteError(422, 'mode 只能是 NEW、ROUTINE 或 BREAK');
@@ -887,7 +922,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
   if (draftGet && get) {
     const tk = ticker(draftGet[1]);
     const d = ready(await backend.load());
-    if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
+    if (!fileMeta(d.acct, tk)) throw new SiteError(422, `${tk} 不在自選裡，也不在候補名單裡`);
     if (!backend.ai) return json({ draft: null, state: null });
     return json({ draft: await backend.ai.readyDraft(tk, d.acct), state: d.drafts?.[tk] ?? null });
   }
@@ -1274,6 +1309,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const std = b.stdWeight === undefined || b.stdWeight === null || b.stdWeight === '' ? undefined : num(b.stdWeight, '標準比重', 0.001, 0.5);
     const r = await mutate(backend, `新增自選 ${tk}`, [tk], (d) => {
       if (d.acct.own[tk]) throw new SiteError(422, `${tk} 已經在自選裡了`);
+      // 候補中的代號不走「新增自選」（allocation_redesign §4.5 第 8 點）：自己買進、填快照，候補就轉成持股、論點檔沿用
+      if (d.acct.watch?.[tk]) throw new SiteError(422, WATCH_TO_OWN_TEXT(tk));
       if (tk === d.acct.cfg.coreTicker || tk === d.acct.bondTicker) throw new SiteError(422, `${tk} 是核心的標的，不能加進自選`);
       if (!d.view.close[tk] || !Number.isFinite(d.view.close[tk][d.view.i])) throw new SiteError(422, `抓不到 ${tk} 在 ${d.view.date} 的收盤價。請確認代號有沒有打錯。`);
       if (d.view.i < 200 || !Number.isFinite(d.view.close[tk][d.view.i - 200])) throw new SiteError(422, `${tk} 的歷史價格不到 200 個交易日，慢規則還算不出來。`);
@@ -1292,6 +1329,41 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       return { acct: out.acct, dry, result: { notifId: out.notif.id } };
     });
     return json({ ok: true, ...r.result, ...(dry ? { preview: notifView(r.after, findNotif(r.after.acct, r.result.notifId as number)) } : {}) });
+  }
+  // ---- 候補名單（allocation_redesign §4.5，T85）：加、改比重或那一句話、移除。不下單、不發通知、不開 AI
+  if (rest === 'ops/watch-add' && post) {
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const dry = b.dry === true;
+    const note = text(b.note, '為什麼想買', WATCH_NOTE_MAX, false);
+    const std = b.stdWeight === undefined || b.stdWeight === null || b.stdWeight === '' ? null : stdWeightOf(b.stdWeight);
+    // 當場抓價格、檢查（和新增自選同一套：不是核心的標的、有收盤、歷史 ≥ 200 天）
+    const r = await mutate(backend, `加候補 ${tk}`, [tk], (d) => {
+      watchAddCheck(d.acct, d.view, tk);
+      return { acct: watchOp(() => addWatch(d.acct, d.view, tk, { note, stdWeight: std })), dry, result: { ticker: tk, recommended: watchRecWeight(d.acct, d.view, tk) } };
+    });
+    return json({ ok: true, ...r.result });
+  }
+  if (rest === 'ops/watch-update' && post) {
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const std = b.stdWeight === undefined ? undefined : b.stdWeight === null || b.stdWeight === '' ? null : stdWeightOf(b.stdWeight);
+    const note = b.note === undefined ? undefined : text(b.note, '為什麼想買', WATCH_NOTE_MAX, false);
+    if (std === undefined && note === undefined) throw new SiteError(422, '沒有要改的');
+    await mutate(backend, `改候補 ${tk}`, [], (d) => {
+      if (!d.acct.watch?.[tk]) throw new SiteError(422, `${tk} 不在候補名單裡`);
+      return { acct: watchOp(() => updateWatch(d.acct, d.view, tk, { ...(std !== undefined ? { stdWeight: std } : {}), ...(note !== undefined ? { note } : {}) })) };
+    });
+    return json({ ok: true });
+  }
+  if (rest === 'ops/watch-remove' && post) {
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    await mutate(backend, `移除候補 ${tk}`, [], (d) => {
+      if (!d.acct.watch?.[tk]) throw new SiteError(422, `${tk} 不在候補名單裡`);
+      return { acct: watchOp(() => removeWatch(d.acct, d.view, tk)) };
+    });
+    return json({ ok: true });
   }
   if (rest === 'ops/unexclude' && post) {
     const b = await body(req);

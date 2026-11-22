@@ -5,6 +5,7 @@ import { consoleBox, glass, meterEl, menuList, page, tiles } from './layout.js';
 import { HALF_START_TEXT, bucketTag, fold, rankTable } from './parts.js';
 import { actionButton, errBox, linkButton, planBubble, slips, trayBody, trayTitle, undoButton } from './pages-notif.js';
 import { say } from './slime.js';
+import { watchSection } from './watch.js';
 
 const em = (t) => ({ t, tone: 'em' });
 
@@ -70,7 +71,10 @@ export function accountPage(ctx) {
       ? h('a', { class: 'notice rowlink-notice', style: 'margin:0 0 14px;display:block', href: '#/thesis-todo' }, h('b', null, `${st.thesisTodo.map((x) => x.ticker).join('、')} 還沒有你的論點`), h('span', { class: 'small', style: 'margin-left:8px' }, '去寫論點 →'))
       : null,
     a.unclassified.length ? glass('pad', h('b', null, '還沒分類：'), a.unclassified.map((u) => `${u.ticker} ${u.shares > 0 ? '+' : '−'}${qty(u.shares)} 股`).join('、')) : null,
-    groups,
+    // 候補名單（allocation_redesign §4.5）放在自選那一區下面
+    groups[0],
+    a.watch ? watchSection(ctx, a) : null,
+    groups.slice(1),
     a.excluded.length
       ? [
           h('h2', { class: 'sec' }, '你排除的動能股票'),

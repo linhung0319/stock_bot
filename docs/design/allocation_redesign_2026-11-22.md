@@ -584,6 +584,19 @@ T77：文獻開關不加、200 日線拿掉。所以「動能的開關」只剩�
 
 *分段*：甲＝1～10（候補這個物件、論點檔共用入口、網站那一塊，不碰 AI、不碰月報）；乙＝11～17（價格條件、F29、候補轉持股，碰帳本，只靠價格條件就能把整條路走完）；丙＝18～25（草稿、非價格的進場條件、月底確認、一年的提醒、討論包）。依序做，每段驗收過才做下一段。
 
+**實作時補的細節（T85 甲段，2026-11-23）**：
+
+1. **型別**（`engine/account.ts`）：`WatchMeta = { fileId, premises, thesis?, premiseSeq?, webSources?, buyNote?, attnShown?, addedAt, stdWeight: number | null, lastListed: string | null, entry?: WatchEntry[], blocked?: { date, text } | null }`；`WatchEntry = { id, text, setAt, why, metOn, runIds? }`（形狀照 `AddNotice` 拿掉 `action`，乙段第 16 點用；甲段沒有行為）。`MAX_WATCH = 5`。`Account.ownClosed` 的一筆抽成 `ClosedFile`，多 `brokenAt?`、`held?`。`OwnMeta.origin` 加 `'WATCH'`、`OwnMeta.heldSince?`（甲段只有讀的地方：`openedOn`、草稿的 `openedOf`、持股頁「開檔時就是減半」那一句；寫是乙段的 `promoteWatch`）。`CloseReason` 加 `'WATCH_REMOVED'`（`CLOSE_TEXT`「從候補名單移除」、`CLOSE_VERB`「移出候補」）。論點檔紀錄的 `ENTERED` 是乙段寫的，甲段沒有加進 `ThesisLogKind`。
+2. **`fileMeta(acct, ticker)`** 回 `{ meta: OwnMeta, held: true } | { meta: WatchMeta, held: false } | null`（`held` = 在自選裡，不論幾股）。改走它的：`fileConditions`、`thesisFile`／`metaFile`（候補的 `origin` 是 `WATCH`、`disputes`／`flags` 是空的）、`prevFileOf`／`loadPrevFile`、`setThesis`、`ownPremises`、`ownCheckAi` 的改寫與確認（`startOwnCheck` 的 `held` 照實帶）、`conditionOp`、`webEvidence` 的 `fallbackCtx`、草稿的 `draftStateOf`／`draftStates`／`readyDraft`／`draftViewOf`、網站的編輯論點、討論包、讀草稿的端點與後端的 `exitSet`、`thesis`。**故意沒改的**（只對持股有意義，或是乙丙段）：慢規則、審查、配置、`buyFacts`、F27／F28／F23、`breakLogs` 這些通知相關的、`monthOwnAttention`／`draftTriggers`／`startAutoDrafts`／`startTriggerDrafts`（都只跑 `acct.own`）、`startOwnDraft`／`requestOwnDraft`／`adoptDraft`（丙段 18～20）、`dismissRisk`。`holdingAttention` 對候補回空的（持股那幾種不適用；候補自己的「要看的事」是丙段 24）。
+3. **候補時存論點**：`setThesis` 一樣加版本、改前提，但不寫 `thesisReviewDue`、不結束靜默期（候補沒有審查、沒有靜默期）；網站的編輯論點頁照用，審查風險（`riskSeen`）只寫在自選身上。候補可以寫出場與加碼條件（改寫、確認照舊，條件掛在候補的論點檔），**監測不會跑到候補**——所有監測都從 `acct.own` 或掃描目標出發；丙段 21 再把「候補期間只看 `ENTRY`」寫死。
+4. **開檔與結案**：`ownFilesOf` 把候補的編號一起放（同一個代號兩邊都有時以自選為準）；`fileChanges` 加候補寫 OPEN（`{ origin: 'WATCH', premises, stdWeight, buyNote? }`，沒有慢規則狀態）、移除寫 CLOSE（原因從 `ownClosed` 讀）；同一個編號從候補搬到自選不寫。
+5. **移除候補（`removeWatch`）**：`ownClosed[t] = { fileId: 候補的, reason: 'WATCH_REMOVED', date, last, brokenAt: 原本那一筆的, held }`——原本那一筆是持有的結案就整筆搬進 `held`、原本就是候補移除就沿用它的 `held`；`prevFileOf` 遇到 `WATCH_REMOVED` 改看 `held`（沒有就是沒有上一次持有）。所以「上一次持有時的論點」跨過任意次加入、移除候補都還在；候補的論點本身不會變成「上一次持有」。還沒回覆的 F29 取消是乙段（`removeWatch` 的註解寫了接點）。
+6. **移出自選（`removeOwnPick`）抄 `brokenAt`**：用新的 `lastBrokenAt(meta)`（`engine/buy.ts`；`OwnMeta.brokenAt`、舊資料的 `aiTier`、`dropReview` 取最晚，和 `buyFacts` 同一套）。
+7. **加候補的檢查**：引擎 `addWatch` 丟 `WatchError`（網站轉 422）；API 先擋一次（已在自選、已在候補、核心的標的、滿 5 檔、抓不到收盤、歷史不到 200 天），價格照「新增自選」當場抓（`mutate` 的 `extra`）。比重用和持股頁同一個欄位檢查（0.1%～50%）。候補中的代號用「新增自選」→ 422「…直接在券商買進、到填快照的自選那一桶填股數，候補會轉成持股、論點沿用」（這條路是乙段的 `promoteWatch`）。
+8. **推薦值**（`watchRecWeight`）：`recommendStdWeights(現在的自選 ＋ 這一檔)`，其他候補不算進分母。帳戶頁、詳細頁在比重留空時顯示它；列 F29 時用的也是它（乙段）。
+9. **價格**：每日抓取把候補放進 `track`（`flow.ts` 的 `ingest`），網站載入的 `want` 也加候補；都不進 `requiredTickers`，抓不到的不告警、不擋訊號，帳戶頁那一列寫「價格抓不到」。`processSessions` 的 `loadSeries` 沒加（甲段沒有用到；乙段的 `prepareWatchEntries` 要時再加）。
+10. **網站**：`AccountView.watch: WatchRow[]`、`watchMax`；`WatchRow = { ticker, addedAt, note, stdWeight, recWeight, price, fromHigh, priceMissing, kind, hasThesisText, draft, entries: { text, state }[], blocked, lastListed }`（`entries` 甲段是空陣列，乙丙段填）。端點 `ops/watch-add`（`dry` 只試不存）、`ops/watch-update`（`stdWeight` 空 = 改回留空；`note` 空 = 拿掉）、`ops/watch-remove`；`ops/watch-price` 是乙段（第 12 點）。詳細頁沿用 `#/h/<代號>`：`HoldingDetail.watch`（`WatchRow` 加 `max`、`count`），候補時 `own` 也給（論點那一份；慢規則的欄位給中性的值），所以論點那一塊、編輯論點頁照用；候補的詳細頁不放「請 stock bot 草擬」（丙段），條件那一塊有寫才列、寫明候補期間不監測。帳戶頁的「候補」放在自選那一區下面：每列代號、加入日、那一句話、比重或推薦值、收盤與距高點、有沒有論點；下面是加候補的表單，滿 5 檔換成一句話。
+
 ### 4.6 照使用者的角度走一遍
 
 | 情況 | 會發生什麼 | 對應 |
@@ -634,12 +647,12 @@ T77：文獻開關不加、200 日線拿掉。所以「動能的開關」只剩�
 |---|---|---|
 | 設定（`engine/types.ts`） | 加 `coreBond: 0.20`、`coreBand: 0.05`；`crashCut` 只留給重放 | §1.1 |
 | `Account.rule` | `crash` 改可選、不用；`effPrev` 只含波動度比例 | §1.5 |
-| `Account` | `coreOwe` 拿掉；加 `watch`（候補）；加 `fromCrashRule`（從崩盤規則換過來的帳戶，第一次 F26 的備註用，T80） | §1.5、§4.5 |
+| `Account` | `coreOwe` 拿掉；加 `watch`（候補，`WatchMeta`，T85）；加 `fromCrashRule`（從崩盤規則換過來的帳戶，第一次 F26 的備註用，T80）；`ownClosed` 的一筆（`ClosedFile`）多 `brokenAt`、`held`（T85） | §1.5、§4.5 |
 | `planDay` | 加 `legacyCrash`（重放 B-8 的舊路徑；正式流程不給）；結果多 `coreBand`、`coreRebal`（金額模式的界線檢查，重放用）（T80） | §1.3、§1.6 |
 | `CoreContext`（`composeWithCore`） | `crash`、`halfUpTo` 拿掉；加 `fresh`（入金的新錢）、`sweepCash`（月報順便把現金買成 SGOV）（T80） | §1.2 |
 | `MonthlyContext` | `crash` 不再寫；加 `coreBand?: { s, bond, core }`（顯示用） | §1.3 |
 | `OwnState` | 加 `WATCH`、`BUILD`；另有 `OwnApplied`（`STD`／`HALF`／`BUILD`）給 `rule.own[*].applied` 用，`WATCH` 的目標記 `STD`（T82），先買一半記 `BUILD`、目標一半（T83；審查後持有期間 `build` 還在的也記 `BUILD`） | §3.3、§4.1 |
-| `OwnMeta` | 加 `watchLevel`（審到第幾級）、`build`、`dipAdd`；T83 另加 `buildAsk`（第一次設定標準比重時問）、`brokenAt`（最近一次前提被判不成立）、`earnChecks`（最近兩次財報後審查有沒有證實）；T84 另加 `addMonthly`（成立、等月報的加碼條件）、`watchSince`（這一次下跌從哪天開始），`dipAdd` 是 `{ episode, level, offered, at }`，`buyBlocked` 多 `line`（寫好的整句） | §3.3、§4.0、§4.1、§4.2、§4.3、§4.4 |
+| `OwnMeta` | 加 `watchLevel`（審到第幾級）、`build`、`dipAdd`；T83 另加 `buildAsk`（第一次設定標準比重時問）、`brokenAt`（最近一次前提被判不成立）、`earnChecks`（最近兩次財報後審查有沒有證實）；T84 另加 `addMonthly`（成立、等月報的加碼條件）、`watchSince`（這一次下跌從哪天開始），`dipAdd` 是 `{ episode, level, offered, at }`，`buyBlocked` 多 `line`（寫好的整句）；T85 另加 `heldSince`（開始持有的訊號日）、`origin` 多 `WATCH` | §3.3、§4.0、§4.1、§4.2、§4.3、§4.4 |
 | `DropStatus`／`DropReview` | 狀態加 `BROKEN`、`CLEAR`、`SPLIT`（有論點的四種結果；`NONE` 沿用當「沒跑完」）；`DropReview` 加 `thesis`、`level`、`exit`、`splitPremise`／`splitVotes`、`attr`、重派的 `days`／`lastTry`／`sameDay`、`failed`（T82）；T84 加 `dip`（下跌加碼的審查面）、`dipOffer`（通知上的選項最後算出來的樣子） | §3.2、§4.4 |
 | `Item` | 加 `thesisDrop: { level }`（有論點的股票的跌幅審查項目）（T82）；`dipAdd: { mode, shares, note }`（下跌加碼的選項，T84）；`Effect` 加 `DIP_ADD`（T84） | §3.2、§4.4 |
 | `ItemKind`／功能代號 | 加 F26 `CORE_BAND`、F27 `OWN_FILL`、F28 `OWN_ADD`、F29 `WATCH_ENTRY`；F5／F6 停用 | §5 |

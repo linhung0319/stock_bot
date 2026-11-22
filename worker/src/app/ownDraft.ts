@@ -26,7 +26,7 @@ import { FRESH_FNS, parseNewRisks } from '../ai/freshEyes';
 import { newRunId, ownPremises, priceDoc, priceFacts } from '../ai/pack';
 import { XBRL_METRICS } from '../data/edgar';
 import { errText } from '../data/util';
-import { breaksOf, normVerify, ownHeld, type Account, type MarketView, type PremiseInput, type PremiseVerify, type WebPeer, type WebSourceCheck } from '../engine';
+import { breaksOf, fileMeta, normVerify, ownHeld, type Account, type MarketView, type OwnMeta, type PremiseInput, type PremiseVerify, type ThesisMeta, type WebPeer, type WebSourceCheck } from '../engine';
 import { loadAccount } from './ledgerStore';
 import { lineConfigured, lineUrl, pushLine } from './line';
 import type { ApplyCtx, StartCtx } from './aiCtx';
@@ -107,10 +107,17 @@ export function pendingBreak(acct: Pick<Account, 'notifs' | 'own'>, ticker: stri
 }
 
 /** 已經有論點：使用者存過論點（任何一版），或前提裡有自己的（§2.5「在那之前使用者已經自己存了論點 → 不開」）。 */
-export const hasThesis = (meta: Account['own'][string]): boolean => !!meta.thesis || fileKind(meta) === 'THESIS';
+export const hasThesis = (meta: ThesisMeta): boolean => !!meta.thesis || fileKind(meta) === 'THESIS';
 
-/** 開檔的訊號日（論點檔編號 `<代號>@<日期>`）；沒有編號是 null。 */
-const openedOf = (ticker: string, fileId: string | null | undefined): string | null => (fileId && fileId.startsWith(`${ticker}@`) ? fileId.slice(ticker.length + 1, ticker.length + 11) : null);
+/**
+ * 開始持有的訊號日：從候補進場的看 heldSince（allocation_redesign §4.5 第 4 點），其他看論點檔編號 `<代號>@<日期>`；沒有編號是 null。
+ * 候補（沒有 heldSince 欄位）就是加入候補那天。
+ */
+const openedOf = (ticker: string, meta: Pick<OwnMeta, 'fileId' | 'heldSince'> | null | undefined): string | null => {
+  if (meta?.heldSince) return meta.heldSince;
+  const fileId = meta?.fileId;
+  return fileId && fileId.startsWith(`${ticker}@`) ? fileId.slice(ticker.length + 1, ticker.length + 11) : null;
+};
 
 /** 上一份論點檔（賣光再買回，T44）→ 一份背景 note。沒有論點的不放。 */
 export function prevFileDoc(prev: PrevFile | null, ticker: string, asOf: string): PackDoc | null {
@@ -331,9 +338,10 @@ export async function requestOwnDraft(env: Env, fetcher: Fetcher, acct: Account,
 export async function startAutoDrafts(sc: StartCtx): Promise<void> {
   const { env, fetcher, acct, view, axis, session, now, res } = sc;
   await expireDrafts(env.DB, now);
+  // 只跑自選（候補的自動草擬是 T85 丙段；甲段的每日流程不替候補開任何 AI）
   for (const [t, meta] of Object.entries(acct.own)) {
     const fileId = meta.fileId ?? null;
-    const opened = openedOf(t, fileId);
+    const opened = openedOf(t, meta);
     if (!fileId || !opened || daysApart(opened, session) > DRAFT_AUTO_WINDOW_DAYS || daysApart(opened, session) < 0) continue;
     if (hasThesis(meta)) continue;
     const rows = (await env.DB.prepare('SELECT trigger, status, attn_keys FROM own_drafts WHERE file_id = ?').bind(fileId).all<{ trigger: DraftTrigger; status: DraftStatus; attn_keys: string | null }>()).results;
@@ -388,7 +396,7 @@ export async function startTriggerDrafts(sc: StartCtx): Promise<void> {
     let hits = draftTriggers(file, acct, view).filter((x) => !autoKeyUsed(recs, draftKeyOf(x)));
     if (hits.some((x) => x.kind === 'NO_THESIS')) {
       const rows = (await env.DB.prepare('SELECT trigger, status, attn_keys FROM own_drafts WHERE file_id = ?').bind(fileId).all<{ trigger: DraftTrigger; status: DraftStatus; attn_keys: string | null }>()).results;
-      const opened = openedOf(t, fileId);
+      const opened = openedOf(t, meta);
       const young = !!opened && daysApart(opened, session) <= DRAFT_AUTO_WINDOW_DAYS;
       const seen = rows.some((r) => r.status !== 'FAILED' && r.status !== 'PENDING');
       const gaveUp = rows.filter((r) => r.trigger === 'AUTO' && !r.attn_keys && r.status === 'FAILED').length >= DRAFT_AUTO_TRIES;
@@ -556,8 +564,10 @@ type LastStatus = (typeof LAST_STATES)[number];
  * 一檔的草稿狀態（純函式）。rows：這檔的草稿（新到舊；別的論點檔的也可以在裡面）；session：現在的訊號日。
  * READY、最近一次只看這份論點檔的；7 天一次、還在準備中照 requestOwnDraft 的規則看整檔。
  */
-export function draftStateOf(rows: DraftRow[], acct: Pick<Account, 'own' | 'notifs' | 'lots'>, ticker: string, now: Date, session: string, aiReady: boolean): DraftState {
-  const meta = acct.own[ticker];
+export function draftStateOf(rows: DraftRow[], acct: Pick<Account, 'own' | 'notifs' | 'lots'> & Partial<Pick<Account, 'watch'>>, ticker: string, now: Date, session: string, aiReady: boolean): DraftState {
+  // 候補也有論點檔（allocation_redesign §4.5 第 10 點）：狀態照樣算；候補現在 0 股，不會是「下一次流程會自動草擬」（候補的自動草擬是 T85 丙段）
+  const fm = fileMeta(acct, ticker);
+  const meta = fm?.meta;
   const fileId = meta?.fileId ?? null;
   const mine = rows.filter((r) => (r.file_id ?? null) === fileId);
   const r0 = mine.find((r) => r.status === 'READY');
@@ -571,11 +581,12 @@ export function draftStateOf(rows: DraftRow[], acct: Pick<Account, 'own' | 'noti
   const last = l0 && (LAST_STATES as readonly string[]).includes(l0.status) ? { id: l0.id, status: l0.status as LastStatus, trigger: l0.trigger, createdAt: l0.created_at, at: l0.updated_at ?? l0.settled_at ?? l0.created_at, why: l0.error } : null;
   const done = rows.find((r) => r.status !== 'FAILED');
   const within = !!done && now.getTime() - Date.parse(done.created_at) < DRAFT_GAP_DAYS * DAY;
-  const opened = openedOf(ticker, fileId);
+  const opened = openedOf(ticker, fm?.held ? fm.meta : null);
   const age = opened ? daysApart(opened, session) : -1;
   const autoSoon =
     aiReady &&
     !!meta &&
+    !!fm?.held &&
     !!fileId &&
     age >= 0 &&
     age <= DRAFT_AUTO_WINDOW_DAYS &&
@@ -596,11 +607,11 @@ export function draftStateOf(rows: DraftRow[], acct: Pick<Account, 'own' | 'noti
 }
 
 /**
- * 每檔自選的草稿狀態（網站每次載入時；src/app/site/backend.ts）。先結算已經結束的執行（逾時的由 listRuns 先照規則結束），
- * 網站才不會一直寫「準備中」。
+ * 每檔自選與候補的草稿狀態（網站每次載入時；src/app/site/backend.ts）。先結算已經結束的執行（逾時的由 listRuns 先照規則結束），
+ * 網站才不會一直寫「準備中」。候補也算（allocation_redesign §4.5 第 10 點）。
  */
 export async function draftStates(env: Env, acct: Account, now: Date, session: string): Promise<Record<string, DraftState>> {
-  const tickers = Object.keys(acct.own);
+  const tickers = [...new Set([...Object.keys(acct.own), ...Object.keys(acct.watch ?? {})])];
   if (!tickers.length) return {};
   await settleDrafts(env.DB, now);
   const rows = (await env.DB.prepare(`SELECT * FROM own_drafts WHERE ticker IN (${tickers.map(() => '?').join(',')}) ORDER BY created_at DESC, id DESC LIMIT 400`).bind(...tickers).all<DraftRow>()).results;
@@ -627,8 +638,8 @@ export interface DraftView {
 }
 
 /** 這份論點檔等你看的草稿（READY，最新的那一份）；沒有是 null。 */
-export async function readyDraft(db: D1Database, acct: Pick<Account, 'own' | 'notifs'>, ticker: string): Promise<DraftView | null> {
-  const meta = acct.own[ticker];
+export async function readyDraft(db: D1Database, acct: Pick<Account, 'own' | 'notifs'> & Partial<Pick<Account, 'watch'>>, ticker: string): Promise<DraftView | null> {
+  const meta = fileMeta(acct, ticker)?.meta;
   if (!meta) return null;
   const fileId = meta.fileId ?? null;
   const row = await db
@@ -639,7 +650,7 @@ export async function readyDraft(db: D1Database, acct: Pick<Account, 'own' | 'no
 }
 
 /** 一列草稿 → 網站用的形狀（payload 解析不了的當成沒有）。 */
-export function draftViewOf(row: DraftRow, acct: Pick<Account, 'own' | 'notifs'>, ticker: string): DraftView | null {
+export function draftViewOf(row: DraftRow, acct: Pick<Account, 'own' | 'notifs'> & Partial<Pick<Account, 'watch'>>, ticker: string): DraftView | null {
   let payload: OwnDraft | null;
   let broken: DraftBroken | null;
   try {
@@ -649,7 +660,7 @@ export function draftViewOf(row: DraftRow, acct: Pick<Account, 'own' | 'notifs'>
     return null;
   }
   if (!payload || !Array.isArray(payload.premises)) return null;
-  const version = acct.own[ticker]?.thesis?.version ?? 0;
+  const version = fileMeta(acct, ticker)?.meta.thesis?.version ?? 0;
   const at = row.settled_at ?? row.created_at;
   const open = !!broken && pendingBreak(acct, ticker)?.notif === broken.notif;
   return { id: row.id, runId: row.run_id, trigger: row.trigger, createdAt: row.created_at, at, until: draftUntil(at), basedOn: row.based_on_version, version, stale: row.based_on_version !== version, broken: broken ? { ...broken, open } : null, payload };

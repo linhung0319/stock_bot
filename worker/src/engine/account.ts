@@ -95,8 +95,25 @@ export interface Thesis {
   lastAfterBreakAt: string | null;
 }
 
-/** 論點檔結案的原因（own_thesis §1.2 的 own_thesis_log `CLOSE`）。 */
-export type CloseReason = 'REMOVED' | 'SOLD_OUT' | 'EXIT_AI' | 'EXIT_CONDITION' | 'HARD_EVENT';
+/** 論點檔結案的原因（own_thesis §1.2 的 own_thesis_log `CLOSE`）。WATCH_REMOVED：候補移除（allocation_redesign §4.5，T85）。 */
+export type CloseReason = 'REMOVED' | 'SOLD_OUT' | 'EXIT_AI' | 'EXIT_CONDITION' | 'HARD_EVENT' | 'WATCH_REMOVED';
+
+/**
+ * 一檔最近一次結案的論點檔（Account.ownClosed）。
+ * last：結案那一刻的論點本文與自己的前提（T44）。
+ * brokenAt：結案時這檔最近一次有前提被 3 票判不成立的訊號日（allocation_redesign §4.5 第 7 點，T85）：出清之後加進候補，
+ * 候補的自動草擬與進場的程式檢查看它（30 個日曆天），防線才跨得過論點檔。沒有 = 沒有記錄。
+ * held：這一筆是候補移除（WATCH_REMOVED）時，原本那一筆若是持有的結案就搬進這裡——「上一次持有時的論點」看它，
+ * 免得候補的論點被顯示成上一次持有（§4.5 第 6 點）。
+ */
+export interface ClosedFile {
+  fileId: string;
+  reason: CloseReason;
+  date: string;
+  last?: ClosedThesis;
+  brokenAt?: string | null;
+  held?: { fileId: string; reason: CloseReason; date: string; last?: ClosedThesis } | null;
+}
 
 /**
  * 結案那一刻的論點（T44，own_thesis §1.2，2026-11-16 使用者同意改）：賣光再買回時，新的論點檔看得到上一份。
@@ -124,7 +141,13 @@ export interface OwnMeta {
   /** 2026-11-15 拿掉 R1（own_thesis §3.9）：不讀不寫，舊資料留著。 */
   r1?: boolean | null;
   premises: Premise[];
-  origin: 'INITIAL' | 'NEW' | 'TRANSFER' | 'ADOPT' | 'MANUAL';
+  /** WATCH：從候補名單進場（allocation_redesign §4.5，T85 乙段才會寫）。 */
+  origin: 'INITIAL' | 'NEW' | 'TRANSFER' | 'ADOPT' | 'MANUAL' | 'WATCH';
+  /**
+   * 開始持有的訊號日（allocation_redesign §4.5 第 4 點，T85）：候補進場時寫進場那份快照的訊號日（論點檔編號的日期是加入候補那天）。
+   * 「開檔滿幾天」「先買一半的 200 天」這類算「持有多久」的地方看它；沒有（舊資料、不是從候補進場的）= 用論點檔編號的日期。
+   */
+  heldSince?: string;
   /**
    * 最近一次 F24 的檔位（AI 層給的輸入）。suggest = 3 票一致、和目前不同、有一條不成立的前提 → 月報並列。
    * premiseId：三票都判不成立（有申報或財報引用）的那條前提，有多條時取編號最小的（own_thesis §1.6 第 1 點）。
@@ -794,7 +817,12 @@ export interface Account {
    * 同一天結案又重新加入時，用它避免論點檔編號重複。
    * last：結案那一刻的論點本文與自己的前提（T44：再買回時持股頁、討論包、編輯論點頁看得到上一份）；T44 之前結案的沒有這個欄位。
    */
-  ownClosed?: Record<string, { fileId: string; reason: CloseReason; date: string; last?: ClosedThesis }>;
+  ownClosed?: Record<string, ClosedFile>;
+  /**
+   * 候補名單（allocation_redesign §4.5，T85）：還沒持有、想在條件到的時候買的股票，最多 MAX_WATCH 檔。
+   * 不是「0 股的自選」：不進價格必要清單、每日掃描、硬事件法庭、慢規則與推薦比重的分母（§4.5 第 1 點）。沒有這個欄位 = 沒有候補。
+   */
+  watch?: Record<string, WatchMeta>;
   /** 自選的比例改成 0% 時記下的每檔標準比重（T39b，design_v2 §10 第 47 點）；從 0% 改回時用它。沒有這個欄位 = 沒有記錄。 */
   ownZero?: OwnZero;
   /**
@@ -820,6 +848,63 @@ export interface OwnZero {
   std: Record<string, number>;
   date: string;
 }
+
+// ---------------------------------------------------------------- 候補名單（allocation_redesign §4.5，T85）
+
+/** 候補最多幾檔【D7】。 */
+export const MAX_WATCH = 5;
+
+/**
+ * 一檔候補（Account.watch）。論點檔的欄位和 OwnMeta 同名（一鍵採用、編輯論點、討論包照用；§4.5 第 2 點）：
+ *   fileId、premises、thesis、premiseSeq、webSources、buyNote（加入時寫的「為什麼想買」，不是前提）、attnShown。
+ * 候補自己的：
+ *   addedAt：加入候補的訊號日；stdWeight：打算放的標準比重（null = 留空，列進場項目時用推薦值）；
+ *   lastListed：進場項目（F29）上次列在哪一份月報的訊號日（每 90 天最多一次，T85 乙段）；
+ *   entry：成立、等月報的非價格進場條件（乙段）；blocked：進場條件成立但這次不提的原因（乙段，頁面寫）。
+ * 沒有慢規則狀態、審查、硬事件標記：候補不跑那些。
+ */
+export interface WatchMeta {
+  fileId: string;
+  premises: Premise[];
+  thesis?: Thesis | null;
+  premiseSeq?: number;
+  webSources?: OwnWebSources | null;
+  buyNote?: { text: string; at: string } | null;
+  attnShown?: Record<string, string>;
+  addedAt: string;
+  stdWeight: number | null;
+  lastListed: string | null;
+  entry?: WatchEntry[];
+  blocked?: { date: string; text: string } | null;
+}
+
+/** 成立、等下一份月報的進場條件（WatchMeta.entry，§4.5 第 16 點；T85 乙段寫）。id：own_conditions 的列編號；metOn：成立的訊號日。 */
+export interface WatchEntry {
+  id: number;
+  text: string;
+  setAt: string;
+  why: string;
+  metOn: string;
+  runIds?: string[];
+}
+
+/** 論點檔的欄位（自選與候補共用的那一部分）。 */
+export type ThesisMeta = OwnMeta | WatchMeta;
+
+/**
+ * 這檔現在的論點檔在哪裡（§4.5 第 3 點）：先找自選、再找候補。held：是自選（不論現在幾股）；false = 候補。
+ * 論點檔的讀寫（論點、前提、條件、草稿、討論包、網頁證據、開檔結案的比對）走這裡；慢規則、審查、配置這些只對持股有意義的照舊讀 acct.own。
+ */
+export type FileMeta = { meta: OwnMeta; held: true } | { meta: WatchMeta; held: false };
+export function fileMeta(acct: Pick<Account, 'own'> & Partial<Pick<Account, 'watch'>>, ticker: string): FileMeta | null {
+  const own = acct.own?.[ticker];
+  if (own) return { meta: own, held: true };
+  const w = acct.watch?.[ticker];
+  return w ? { meta: w, held: false } : null;
+}
+
+/** 候補的代號（沒有是空陣列）。 */
+export const watchTickers = (acct: Partial<Pick<Account, 'watch'>> | null | undefined): string[] => Object.keys(acct?.watch ?? {});
 
 /** 這檔自選現在有沒有股數（T39b：0 股時不送定期審查、提前審查與條件監測，持有後再恢復）。 */
 export function ownHeld(acct: Pick<Account, 'lots'>, ticker: string): boolean {

@@ -905,3 +905,14 @@ a.rv:hover { background: var(--wash); }
 /* 先買一半（allocation_redesign §4.1，T83）：第一次設定標準比重時的兩個選項 */
 .build-ask .radio-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
 .build-ask .radio-line input { accent-color: #6d84ff; width: 16px; height: 16px; margin: 0; }
+
+/* 候補名單（allocation_redesign §4.5，T85）：帳戶頁自選下面那一塊、加候補的表單 */
+.watch-sec h2.sec { margin-top: 28px; }
+.watch-row a.tk { color: inherit; text-decoration: none; }
+.watch-row a.tk:hover { text-decoration: underline; text-underline-offset: 4px; }
+.watch-row .val { font: inherit; font-size: 13.5px; font-weight: 500; color: var(--ink-2); }
+.watch-add-wrap { border-top: 1px solid var(--line-2); }
+.watch-add { display: grid; grid-template-columns: minmax(7em, 10em) minmax(0, 1fr) minmax(0, 15em); gap: 0 18px; align-items: start; }
+.watch-add .field { margin-bottom: 12px; }
+.watch-add > .btn-row, .watch-add > :last-child { grid-column: 1 / -1; }
+@media (max-width: 760px) { .watch-add { grid-template-columns: minmax(0, 1fr); } }
