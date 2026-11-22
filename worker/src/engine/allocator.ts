@@ -13,7 +13,8 @@ import {
   cellKey,
   coreCfg,
   parseCell,
-  targetFrac,
+  pickFrac,
+  setApplied,
   type CellKey,
   type CellMap,
   type EngineConfig,
@@ -121,7 +122,7 @@ function sumBucket(m: CellMap, bucket: string): number {
 export function ownStateTarget(state: RuleState, ticker: string, total: number): number {
   const o = state.own[ticker];
   if (!o) return 0;
-  return o.stdWeight * total * targetFrac(o.applied);
+  return o.stdWeight * total * pickFrac(o);
 }
 
 /**
@@ -131,7 +132,7 @@ export function ownStateTarget(state: RuleState, ticker: string, total: number):
  */
 export function ownDepositScale(state: Pick<RuleState, 'own'>, ratioOwn: number): number {
   let s = 0;
-  for (const o of Object.values(state.own)) s += o.stdWeight * targetFrac(o.applied);
+  for (const o of Object.values(state.own)) s += o.stdWeight * pickFrac(o);
   return s > ratioOwn + 1e-9 ? ratioOwn / s : 1;
 }
 
@@ -139,7 +140,7 @@ export function ownDepositScale(state: Pick<RuleState, 'own'>, ratioOwn: number)
 export function ownDepositFill(state: Pick<RuleState, 'own'>, cfg: Pick<EngineConfig, 'ratio' | 'ownCapTo'>, ticker: string): number | null {
   const o = state.own[ticker];
   if (!o) return null;
-  return Math.min(o.stdWeight * targetFrac(o.applied) * ownDepositScale(state, cfg.ratio.own), cfg.ownCapTo);
+  return Math.min(o.stdWeight * pickFrac(o) * ownDepositScale(state, cfg.ratio.own), cfg.ownCapTo);
 }
 
 /** 動能每檔目標（設計 §2.1.1）：總資產 × Strategy 比例 × 有效比例 ÷ 檔數。 */
@@ -293,12 +294,12 @@ export function planDay(inp: PlanInput): PlanResult {
     if (act === 'REDUCE' && o.applied !== 'HALF') {
       tgt[k] = cur * 0.5;
       why[k] = '自選訊號';
-      o.applied = 'HALF';
+      setApplied(o, 'HALF');
       events.push({ kind: 'REDUCE', ticker: tk });
     } else if (act === 'READD' && o.applied === 'HALF') {
       tgt[k] = Math.max(cur, o.stdWeight * total);
       why[k] = '自選訊號';
-      o.applied = 'STD';
+      setApplied(o, 'STD');
       events.push({ kind: 'READD', ticker: tk });
     }
   }

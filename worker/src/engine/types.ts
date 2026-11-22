@@ -32,8 +32,22 @@ export type OwnState = 'STD' | 'HALF' | 'WATCH' | 'BUILD';
 export type OwnApplied = 'STD' | 'HALF' | 'BUILD';
 /** 慢規則狀態 → 已反映到帳上的目標。build：這檔還在先買一半（OwnMeta.build）——審查後持有（WATCH）期間 build 留著，目標仍是一半。 */
 export const appliedOf = (s: OwnState, build = false): OwnApplied => (s === 'HALF' ? 'HALF' : s === 'BUILD' || build ? 'BUILD' : 'STD');
-/** 目標占標準比重的比例：標準 1、減半與先買一半 0.5。 */
+/** 目標占標準比重的比例（只看狀態）：標準 1、減半與先買一半 0.5。從先買一半被減半的另看 pickFrac。 */
 export const targetFrac = (a: OwnApplied): number => (a === 'STD' ? 1 : 0.5);
+/**
+ * 這一檔的目標占標準比重的比例：標準 1、先買一半 0.5、減半 0.5；從先買一半被減半的（fromBuild）是「一半的一半」0.25
+ * （allocation_redesign §4.1，主持者 2026-11-23 定）。重放只有 STD／HALF、沒有 fromBuild，數字不變。
+ */
+export const pickFrac = (o: Pick<OwnPick, 'applied' | 'fromBuild'>): number => (o.applied === 'HALF' && o.fromBuild ? 0.25 : targetFrac(o.applied));
+/**
+ * 改已反映的目標（直接改傳進來的物件）：先買一半 → 減半時記 fromBuild（目標是標準的四分之一）；減半 → 減半保留原本的記號；
+ * 其他（標準 → 減半、回到標準、先買一半）拿掉記號。凡是會改 applied 的地方都經過這裡。
+ */
+export function setApplied(o: OwnPick, a: OwnApplied): void {
+  if (a === 'HALF' && o.applied === 'BUILD') o.fromBuild = true;
+  else if (!(a === 'HALF' && o.applied === 'HALF')) delete o.fromBuild;
+  o.applied = a;
+}
 export type OwnAction = 'REDUCE' | 'READD';
 
 /** 每張單的原因（設計 §2.1 第 6 點）。 */
@@ -146,6 +160,8 @@ export interface OwnPick {
   applied: OwnApplied;
   /** 標準比重（占總資產）。 */
   stdWeight: number;
+  /** 減半（applied 是 HALF）而且是從先買一半被減半的：目標是標準比重的四分之一（「一半的一半」，allocation_redesign §4.1）。加回之後拿掉。 */
+  fromBuild?: boolean;
 }
 
 /** 跨日保存的規則狀態（由呼叫端存取；引擎只接收與回傳）。 */

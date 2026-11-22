@@ -35,7 +35,7 @@ import { drawdownFromHigh, excessVol } from './indicators';
 import { composeWithCore, coreBandLines, crashCoreLines, mergeByTicker, planToLines, tenths, type Composed, type CoreBand, type CoreContext, type OrderLine } from './orders';
 import { buyCheck } from './buy';
 import { DROP_LADDER, SLOW, dropLadder, halveShares, slowDayInput, stepSlowRule, stepWatch } from './slowRule';
-import { cellKey, coreCfg, type OwnAction, type OwnState } from './types';
+import { cellKey, coreCfg, setApplied, type OwnAction, type OwnState } from './types';
 
 // ---------------------------------------------------------------- 共用
 
@@ -89,13 +89,13 @@ export function afterOpenLists(acct: Account, view: MarketView, opt: { except?: 
         if (rule.heldMom.includes(e.ticker)) ruleW().heldMom = rule.heldMom.filter((t) => t !== e.ticker);
       } else if (e.type === 'APPLY_TIER' && rule.own[e.ticker]) {
         const o = ruleW().own[e.ticker];
-        if (e.tier === 'HALF') o.applied = 'HALF';
-        else if (e.tier === 'STANDARD') o.applied = 'STD';
+        if (e.tier === 'HALF') setApplied(o, 'HALF');
+        else if (e.tier === 'STANDARD') setApplied(o, 'STD');
         else if (e.tier === 'RAISE') o.stdWeight *= 1.25;
       } else if (e.type === 'BUILD_END' && rule.own[e.ticker]?.applied === 'BUILD') {
         // 補滿照做：目標回到標準比重；不做：標準比重改成那時的實際比重（allocation_redesign §4.1）
         const o = ruleW().own[e.ticker];
-        o.applied = 'STD';
+        setApplied(o, 'STD');
         if (e.keep) {
           const total = totalValue({ ...acct, lots, cash }, view);
           const w = total > 0 ? ((lots.own[e.ticker] ?? 0) * priceOf(view, e.ticker)) / total : 0;
@@ -1789,7 +1789,7 @@ export function clearBuild(acct: Account, view: MarketView, ticker: string, keep
   delete meta.build;
   delete meta.buildAsk;
   if (meta.slow.state === 'BUILD') meta.slow = { ...meta.slow, state: 'STD' };
-  if (rule.applied === 'BUILD') rule.applied = 'STD';
+  if (rule.applied === 'BUILD') setApplied(rule, 'STD');
   if (keep) {
     const total = totalValue(acct, view);
     const w = total > 0 ? ((acct.lots.own[ticker] ?? 0) * priceOf(view, ticker)) / total : 0;

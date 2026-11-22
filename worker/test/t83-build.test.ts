@@ -23,7 +23,12 @@ import {
   DEFAULT_CONFIG,
   SLOW,
   appliedOf,
+  afterOpenLists,
+  breakNotice,
   buildEarnings,
+  condMetNotice,
+  pickFrac,
+  setApplied,
   buildStale,
   buyAllowed,
   buyCheck,
@@ -315,6 +320,102 @@ function rising(c: ArrayLike<number>, i: number): number[] {
   for (let k = Math.max(0, i - 260); k <= i; k++) out[k] = 100 * Math.pow(1.002, k - (i - 260));
   return out;
 }
+
+// 主持者 2026-11-23 定（allocation_redesign §4.1 細節 2）：從先買一半被減半 → 減半期間的目標是「一半的一半」＝標準比重的四分之一；加回時回到標準比重
+describe('T83：先買一半被減半之後的目標是標準比重的四分之一（四條路都一樣）', () => {
+  /** 入金時這一檔會補到多少股（沒有那一行是 0）。 */
+  const depositBuy = (a: Account, view: Sim['pre'], t: string) => deposit(a, view, 20_000).notif.items.flatMap((i) => i.choices[0].lines).find((l) => l.ticker === t && l.bucket === 'own')?.shares ?? 0;
+  /** 減半之後：目標、入金補到的比重是四分之一；入金最多只補到四分之一（不會把減半退掉一部分）。 */
+  function quarter(a: Account, view: Sim['pre'], t: string) {
+    const o = a.rule.own[t];
+    expect(o).toMatchObject({ applied: 'HALF', fromBuild: true });
+    expect(pickFrac(o)).toBe(0.25);
+    const total = totalValue(a, view);
+    expect(ownStateTarget(a.rule, t, total)).toBeCloseTo(o.stdWeight * total * 0.25, 6);
+    expect(ownDepositFill(a.rule, a.cfg, t)!).toBeLessThanOrEqual(o.stdWeight * 0.25 + 1e-12);
+    const px = priceOf(view, t);
+    const sh = depositBuy(a, view, t);
+    // 入金和現有的清單合起來算（還沒填快照的清單當成做完了，afterOpenLists）
+    const held = afterOpenLists(a, view, { pending: true }).lots.own[t] ?? 0;
+    expect(sh * px).toBeLessThanOrEqual(Math.max(0, o.stdWeight * 0.25 * (total + 20_000) - held * px) + px);
+    return sh;
+  }
+
+  it('pickFrac、setApplied：先買一半 → 減半記 fromBuild；減半 → 減半保留；回到標準、標準 → 減半都拿掉', () => {
+    const o = { applied: 'BUILD' as const, stdWeight: 0.06 } as { applied: 'STD' | 'HALF' | 'BUILD'; stdWeight: number; fromBuild?: boolean };
+    setApplied(o, 'HALF');
+    expect(o).toEqual({ applied: 'HALF', stdWeight: 0.06, fromBuild: true });
+    expect(pickFrac(o)).toBe(0.25);
+    setApplied(o, 'HALF');
+    expect(o.fromBuild).toBe(true);
+    setApplied(o, 'STD');
+    expect(o).toEqual({ applied: 'STD', stdWeight: 0.06 });
+    setApplied(o, 'HALF');
+    expect(o).toEqual({ applied: 'HALF', stdWeight: 0.06 });
+    expect(pickFrac(o)).toBe(0.5);
+    expect([pickFrac({ applied: 'STD' }), pickFrac({ applied: 'BUILD' }), pickFrac({ applied: 'STD', fromBuild: true })]).toEqual([1, 0.5, 1]);
+  });
+
+  it('① 只有預設前提、規則減半：目標四分之一、入金只補到四分之一；加回條件成立時買回到標準比重（不是回到先買一半），記號拿掉', () => {
+    const sim = ladder({ build: true, defaultOnly: true });
+    const n = untilF7(sim);
+    quarter(sim.acct, sim.post, 'NVDA');
+    // 成交之後（賣掉一半的一半）再入金：補到四分之一為止；同一檔若是一般的減半（目標一半）會補得比較多
+    const after = structuredClone(sim.acct);
+    after.lots.own.NVDA -= halveShares(after.lots.own.NVDA);
+    const shQ = quarter(after, sim.post, 'NVDA');
+    const plain = structuredClone(after);
+    delete plain.rule.own.NVDA.fromBuild;
+    expect(depositBuy(plain, sim.post, 'NVDA')).toBeGreaterThan(shQ);
+    // 通知與持股頁的字：四分之一
+    const v = notifView(ready(sim), n).items.find((x) => x.label === '慢規則減半')!;
+    expect(v.explain.why).toContain('減半之後的目標是標準比重 20.0% 的四分之一（5.00%）');
+    sim.respond(n.id);
+    sim.d++;
+    sim.open();
+    expect(accountView(ready(sim)).holdings.find((x) => x.ticker === 'NVDA')!.detail).toMatch(/^目標是標準比重 20\.0% 的四分之一（5\.00%）；/);
+    const later: Notif[] = [];
+    while (!sim.atEnd()) sim.day({ afterMonthly: (m) => (later.push(m), sim.respond(m.id)), afterClose: (c) => later.push(...c) });
+    const f8 = later.flatMap((x) => x.items).find((i) => i.f === 'F8' && i.ticker === 'NVDA')!;
+    expect(f8).toBeTruthy();
+    expect(sim.acct.rule.own.NVDA).toEqual({ applied: 'STD', stdWeight: 0.2 });
+    expect(sim.acct.own.NVDA.slow.state).toBe('STD');
+  });
+
+  it('② 有論點、審查後持有時審查判前提不成立、照做減半：一樣是四分之一', () => {
+    const sim = ladder({ build: true, flat: true, drops: { NVDA: { status: 'BROKEN', premiseId: 'P1' } } });
+    const n = untilF7(sim);
+    sim.respondAfterClose(n.id);
+    sim.d++;
+    sim.open();
+    quarter(sim.acct, sim.pre, 'NVDA');
+  });
+
+  it('③ 乙類（AI 判前提不成立）照做減半、④ 你定的出場條件減半：一樣是四分之一；標準狀態的照舊是一半', () => {
+    const run = (mk: (a: Account, v: Sim['pre']) => { acct: Account; notif: Notif | null }, choice: 'AI' | 'DO', build = true) => {
+      const sim = new Sim(makeMarket('2026-11-23', 5), scenarios.s1().init);
+      if (build) toBuild(sim.acct, 'MSFT', 0.12);
+      const r = mk(sim.acct, sim.pre);
+      sim.acct = r.acct;
+      const it = item(r.notif!, r.notif!.items[0].f, 'MSFT');
+      expect(sharesOf(it, choice)).toBe(-halveShares(sim.acct.lots.own.MSFT));
+      sim.respond(r.notif!.id, { mode: 'DO', choices: { [it.key]: choice } });
+      sim.open();
+      return sim;
+    };
+    const brk = (a: Account, v: Sim['pre']) => breakNotice(a, v, 'MSFT', { tier: 'HALF', premiseId: 'P1', basis: '10-Q 2026-10-30' });
+    const cond = (a: Account, v: Sim['pre']) => condMetNotice(a, v, 'MSFT', { id: 1, text: '營業利益率低於 40%', action: 'HALF', setAt: '2026-11-01', aiProposed: false, why: '10-Q' });
+    const b = run(brk, 'AI');
+    quarter(b.acct, b.pre, 'MSFT');
+    expect(b.acct.own.MSFT.build).toBeUndefined();
+    const c = run(cond, 'DO');
+    quarter(c.acct, c.pre, 'MSFT');
+    // 標準狀態被減半：照舊是一半、沒有記號
+    const std = run(cond, 'DO', false);
+    expect(std.acct.rule.own.MSFT.fromBuild).toBeUndefined();
+    expect(pickFrac(std.acct.rule.own.MSFT)).toBe(0.5);
+  });
+});
 
 describe('T83：入金時先買一半的目標是一半（§4.1）', () => {
   it('入金只把先買一半的股票補到標準比重的一半；標準狀態的照舊補到標準比重', () => {

@@ -40,7 +40,7 @@ import { momSlotTarget, ownDepositFill, ownDepositScale, planDay } from './alloc
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
 import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SELF_HALVE_MIN, SKIPPED_REASON, addDispute, clearBuild, endDisputesFor, afterOpenLists, cancelThesisDrop, composeNotif, crashReviewOf, leaveWatch, monthlyReport, monthlyWait, rebuildThesisDrop, recordExternalFlow, refreshCoreBand, refreshOwnAiChoice, restoreSaved, thesisDropShadow, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
-import { appliedOf, cellKey, targetFrac, type Bucket } from './types';
+import { appliedOf, cellKey, pickFrac, setApplied, type Bucket } from './types';
 
 const sumFor = (lines: OrderLine[], ticker: string) => lines.filter((l) => l.ticker === ticker).reduce((a, l) => a + l.shares, 0);
 
@@ -101,7 +101,8 @@ export function applyTier(acct: Account, view: MarketView, ticker: string, tier:
     delete meta.buildAsk;
     meta.slow = { ...meta.slow, state: st, sinceSwitch: 0 }; // 切換日重新起算
     meta.pending = null;
-    rule.applied = st;
+    // 先買一半被減半（乙類照做、你定的條件、跌幅審查選減半）：目標是標準的四分之一（setApplied 記 fromBuild）
+    setApplied(rule, st);
   } else if (tier === 'RAISE') {
     rule.stdWeight *= 1.25;
     meta.raisedAt = view.date;
@@ -206,7 +207,7 @@ function recomputeLate(acct: Account, view: MarketView, n: Notif): void {
     if (meta.slow.state !== expected) {
       it.cancelled = true;
       it.note = '期間規則狀態已反轉，這一項取消';
-      rule.applied = appliedOf(meta.slow.state, !!meta.build);
+      setApplied(rule, appliedOf(meta.slow.state, !!meta.build));
       meta.pending = null;
       continue;
     }
@@ -826,7 +827,7 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
         delete meta.build;
         delete meta.buildAsk;
         meta.slow = { ...meta.slow, state: 'HALF', sinceSwitch: 0 };
-        acct.rule.own[t].applied = 'HALF';
+        setApplied(acct.rule.own[t], 'HALF');
         cancelThesisDrop(acct, t, `${view.date} 的快照顯示你自己賣了 ${-q} 股，這檔之後照減半處理，這一項取消`);
         watchHalved.push(t);
       }
@@ -1014,7 +1015,7 @@ export function changeRatio(acct0: Account, view: MarketView, ratio: { own: numb
       r.stdWeight = kept !== undefined ? (kept * ratio.own) / rec!.from : recommended[tk];
       if (!base.rule.own[tk]) continue; // 還沒填快照的清單要把它移出自選：不買回
       const cur = base.lots.own[tk] ?? 0;
-      const want = Math.floor((r.stdWeight * total * targetFrac(r.applied)) / priceOf(view, tk));
+      const want = Math.floor((r.stdWeight * total * pickFrac(r)) / priceOf(view, tk));
       if (want > cur) lines.push({ ticker: tk, bucket: 'own', shares: want - cur, reason: '改比例' });
     }
     delete acct.ownZero;

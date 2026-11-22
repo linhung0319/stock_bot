@@ -19,7 +19,7 @@ import {
   priceOf,
   rollingMax,
   sma,
-  targetFrac,
+  pickFrac,
   totalValue,
   trailingReturn,
   type Account,
@@ -558,6 +558,17 @@ export function liveOwnRule(ctx: ExplainContext, n: Notif, it: ItemX): Explain {
   return { ...x, short: tail ? `${x.short}；${tail}` : x.short, ai: fresh.ai, aiMissing: fresh.aiMissing, choiceNotes: fresh.choiceNotes ?? x.choiceNotes };
 }
 
+/**
+ * 先買一半的股票被減半時那一句（allocation_redesign §4.1，主持者 2026-11-23 定：一半的一半）：
+ * `這檔是先買一半：減半之後的目標是標準比重 6.0% 的四分之一（1.5%），入金只補到這裡；站回 200 日均線連續 10 天再買回到標準比重。`
+ * 先買一半（還沒減半）或從先買一半減半的才有，其他是空字串。
+ */
+export function buildHalfNote(acct: Pick<Account, 'rule'>, ticker: string): string {
+  const r = acct.rule.own[ticker];
+  if (!r || !(r.applied === 'BUILD' || (r.applied === 'HALF' && r.fromBuild))) return '';
+  return `這檔是先買一半：減半之後的目標是標準比重 ${fmtPct(r.stdWeight, 1)} 的四分之一（${fmtPct(r.stdWeight / 4, 2)}），入金只補到這裡；站回 200 日均線連續 10 天再買回到標準比重。`;
+}
+
 /** 跌幅審查（有論點的股票，allocation_redesign §3.2、§3.3）：跌幅只觸發審查；只有前提不成立會讓它賣。 */
 function thesisDrop(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const { view, acct } = ctx;
@@ -580,7 +591,7 @@ function thesisDrop(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const watch = `這檔留在「審查後持有」：${next === undefined ? '' : `再跌到比高點低 ${fmtPct(-next)} 會重新審查；`}站回 200 日均線連續 10 天後回到一般狀態。`;
   return {
     short: `比 52 週高點低 ${fmtPct(-dd, 1)}，觸發跌幅審查`,
-    why: `${t} ${late ? `在 ${md(trig.date)} ` : ''}收盤 ${fmtPx(px)}，比 52 週高點 ${fmtPx(high)} 低 ${fmtPct(-dd, 1)}。這檔有你的論點，所以跌幅只觸發論點檢查，不是賣出的理由：3 票判同一條前提不成立才減半；前提都沒有被判不成立、票數不一致、沒跑完都是不動。${late ? '審查判前提不成立，但這一筆不到總資產 5%，所以沒有當天通知，併到這份月報。' : ''}`,
+    why: `${t} ${late ? `在 ${md(trig.date)} ` : ''}收盤 ${fmtPx(px)}，比 52 週高點 ${fmtPx(high)} 低 ${fmtPct(-dd, 1)}。這檔有你的論點，所以跌幅只觸發論點檢查，不是賣出的理由：3 票判同一條前提不成立才減半；前提都沒有被判不成立、票數不一致、沒跑完都是不動。${late ? '審查判前提不成立，但這一筆不到總資產 5%，所以沒有當天通知，併到這份月報。' : ''}${buildHalfNote(acct, t)}`,
     gauge: Number.isFinite(dd) ? drawdownGauge(dd) : undefined,
     rule: RULE.thesisDrop,
     facts: sh ? [{ label: '減半的話這一筆占總資產', value: fmtPct((sh * (c ? c[view.i] : 0)) / total, 1), note: '前提不成立時：5% 以上當天通知，不到 5% 併入月報。' }] : undefined,
@@ -620,7 +631,7 @@ function ownReduce(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const total = totalValue(acct, view);
   return {
     short: `比 52 週高點低 ${fmtPct(-dd, 1)}，門檻是 20%`,
-    why: `${t} ${late ? `在 ${md(trig.date)} ` : ''}收盤 ${fmtPx(px)}，比 52 週高點 ${fmtPx(high)} 低 ${fmtPct(-dd, 1)}。慢規則：跌超過 20% 就賣掉一半。它是底線：你沒有另外決定時照它做；這是保險，不是判斷它會繼續跌。${late ? '當時變動不到總資產 5%，所以沒有當天通知，併到這份月報。' : ''}`,
+    why: `${t} ${late ? `在 ${md(trig.date)} ` : ''}收盤 ${fmtPx(px)}，比 52 週高點 ${fmtPx(high)} 低 ${fmtPct(-dd, 1)}。慢規則：跌超過 20% 就賣掉一半。它是底線：你沒有另外決定時照它做；這是保險，不是判斷它會繼續跌。${late ? '當時變動不到總資產 5%，所以沒有當天通知，併到這份月報。' : ''}${buildHalfNote(acct, t)}`,
     gauge: Number.isFinite(dd) ? drawdownGauge(dd) : undefined,
     rule: RULE.slow,
     facts: [{ label: '這一筆占總資產', value: fmtPct((sh * (c ? c[view.i] : 0)) / total, 1), note: '5% 以上當天通知，不到 5% 併入月報。' }],
@@ -708,10 +719,10 @@ export function depositFillText(acct: Account, ticker: string): string {
   const fill = ownDepositFill(acct.rule, acct.cfg, ticker);
   if (!r || fill === null) return '';
   const half = r.applied !== 'STD';
-  // 先買一半（allocation_redesign §4.1）的目標也是一半：入金只補到一半，另一半等財報過關後的補滿
-  const tag = r.applied === 'BUILD' ? '先買一半' : '減半中';
-  const plain = r.stdWeight * targetFrac(r.applied);
-  if (Math.abs(fill - plain) < 1e-9) return `補到標準比重 ${fmtPct(r.stdWeight, 1)}${half ? ` 的一半 ${fmtPct(plain, 1)}（${tag}）` : ''}`;
+  // 先買一半（allocation_redesign §4.1）的目標也是一半：入金只補到一半，另一半等財報過關後的補滿；從先買一半被減半的是四分之一
+  const tag = r.applied === 'BUILD' ? '先買一半' : r.fromBuild ? '先買一半時被減半' : '減半中';
+  const plain = r.stdWeight * pickFrac(r);
+  if (Math.abs(fill - plain) < 1e-9) return `補到標準比重 ${fmtPct(r.stdWeight, 1)}${half ? ` 的${r.applied === 'HALF' && r.fromBuild ? '四分之一' : '一半'} ${fmtPct(plain, 1)}（${tag}）` : ''}`;
   const why = ownDepositScale(acct.rule, acct.cfg.ratio.own) < 1 ? '自選合計超過預算，入金照比例少補' : `入金最多補到 ${fmtPct(acct.cfg.ownCapTo)}`;
   return `入金補到 ${fmtPct(fill, 1)}（${why}）；${half ? `${tag}，` : ''}${r.applied === 'BUILD' ? '補滿' : '加回'}補到標準比重 ${fmtPct(r.stdWeight, 1)}`;
 }
@@ -734,7 +745,7 @@ function lineFacts(ctx: ExplainContext, lines: OrderLine[], deposit = false): Fa
     const cur = ((acct.lots[l.bucket][l.ticker] ?? 0) * px) / total;
     let tgt: number | null = null;
     const ownRule = l.bucket === 'own' ? acct.rule.own[l.ticker] : undefined;
-    if (ownRule) tgt = ownRule.stdWeight * targetFrac(ownRule.applied);
+    if (ownRule) tgt = ownRule.stdWeight * pickFrac(ownRule);
     if (l.bucket === 'mom' && acct.rule.heldMom.includes(l.ticker)) tgt = slot / total;
     // 入金補自選（T43）：補的是標準比重（減半中只補到一半）；自選各檔合計超過自選比例時入金照比例少補，寫出實際補到多少
     const ownFill = deposit && ownRule && l.shares > 0 ? `目前 ${fmtPct(cur, 1)}，${depositFillText(acct, l.ticker)}` : null;

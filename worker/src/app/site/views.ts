@@ -705,6 +705,8 @@ function ownHolding(d: Ready, t: string, total: number): HoldingView {
       state = '減半中';
       const run = meta.slow.aboveRun;
       detail = px > ma ? `站上 200 日均線 ${Math.min(run, SLOW.aboveRun)}/${SLOW.aboveRun} 天，滿了就買回標準比重` : `收盤低於 200 日均線 ${fmtPct(1 - px / ma, 1)}；站回去連續 ${SLOW.aboveRun} 天才買回`;
+      // 先買一半時被減半（allocation_redesign §4.1，一半的一半）：目標是標準比重的四分之一
+      if (rule.fromBuild) detail = `目標是標準比重 ${fmtPct(rule.stdWeight, 1)} 的四分之一（${fmtPct(rule.stdWeight / 4, 2)}）；${detail}`;
       tone = 'warn';
     } else if (meta.build) {
       // 先買一半（allocation_redesign §4.1）：目標是標準比重的一半，開檔後第一份財報過關再補滿
