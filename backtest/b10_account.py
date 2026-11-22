@@ -10,6 +10,12 @@
               denom='total' 時 SGOV 目標 = sgov × 總資產（參考用）
       ratio＋hyb_n>0（B-13 折衷）：換股日 SPY 連續 hyb_n 次 < 200 日均線 → SGOV 目標改成 hyb_sgov；
               某次換股日回到 200 日均線之上 → 回到 sgov。狀態一變就調到新目標
+  暫放（B-14）mom_park / own_park
+      core    移出的錢進核心照比例分、移回時從核心照比例拿（B-11～B-13 的做法）
+      sgov    移出的錢留在原桶、放 SGOV（格子 (桶, 'CASH')）；移回時先從這裡拿，不夠才從核心拿
+      voo     同上，但放 VOO（格子 (桶, 'SPY')）
+      動能：只有「比例改變」（波動度、200 日線、開關）減下來的錢暫放；換股、跨桶上限的照舊進出核心
+      自選：只有慢規則減半的錢暫放；加回時先用暫放的錢；沒有減半中的股票時，剩下的暫放錢還給核心
   動能      mom_200   200 日線減半（舊版跟著 crash_rule；這裡獨立）
             switch    'bear24' / 'bear24hv' / 'bear36' / 'bear36hv' 開關：打開時動能比重 0，錢進核心
   現金      cash_ret  True：現金照 SGOV／國庫券計息（舊版為 0）
@@ -46,6 +52,8 @@ class Acct(ab.Scenario):
     count_cash: bool = True
     hyb_n: int = 0
     hyb_sgov: float = 0.5
+    mom_park: str = "core"
+    own_park: str = "core"
 
 
 # B-8 主要方案（緩衝 0.10）＝現在線上的設計
@@ -67,6 +75,9 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
     cidx = w.cash if sc.cash_ret else pd.Series(1.0, index=prices.close.index)
     sigs = {tk: ab.slow_signals(L[tk].dropna(), days[0]) for tk in own} if sc.own_rule else {}
     use200 = sc.core_policy == "crash" or sc.mom_200
+    PARK = {"sgov": "CASH", "voo": "SPY"}
+    mpk = ("mom", PARK[sc.mom_park]) if sc.mom_park != "core" else None
+    opk = ("own", PARK[sc.own_park]) if sc.own_park != "core" else None
 
     lots: dict[tuple[str, str], float] = {}
     held_mom: list[str] = []
@@ -171,11 +182,20 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
                     tgt[("own", tk)] = cur * 0.5
                     why[("own", tk)] = "自選訊號"
                     applied[tk] = "RED"
+                    if opk:
+                        tgt[opk] = tgt.get(opk, 0.0) + cur * 0.5
+                        why[opk] = "自選訊號"
                     events.append(dict(date=d, ticker=tk, action=act))
                 elif act == "READD" and applied[tk] == "RED":
                     tgt[("own", tk)] = max(cur, std_w * total)
                     why[("own", tk)] = "自選訊號"
                     applied[tk] = "STD"
+                    if opk:
+                        take = min(tgt[("own", tk)] - cur, tgt.get(opk, 0.0))
+                        tgt[opk] = tgt.get(opk, 0.0) - take
+                        why[opk] = "自選訊號"
+                        if all(a == "STD" for a in applied.values()):
+                            tgt[opk] = 0.0
                     events.append(dict(date=d, ticker=tk, action=act))
             if is_r:
                 for tk in own:
@@ -210,7 +230,7 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
                 name_t = sys_val * sc.mom_frac * eff / 5
                 if sw:  # 開關打開：動能全部出場，關上時重新買前 5 名
                     names, new = [], []
-                for k in [k for k in tgt if k[0] == "mom" and k[1] not in names]:
+                for k in [k for k in tgt if k[0] == "mom" and k[1] not in names and k != mpk]:
                     tgt[k] = 0.0
                     why[k] = "動能開關" if sw_changed else "動能換股"
                 changed = (w_prev is None) or eff != w_prev
@@ -239,6 +259,9 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
                                 tgt[("own", t)] = own_t - (excess - cut)
                                 why[("own", t)] = "跨桶上限"
                             events.append(dict(date=d, ticker=t, action="CROSS_TRIM"))
+                if mpk and changed:
+                    tgt[mpk] = sys_val * sc.mom_frac * (1 - eff)
+                    why[mpk] = w_reason
                 held_mom, w_prev, sw_prev = names, eff, sw
             if is_r:
                 crash = new_c200
@@ -305,12 +328,12 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
                     net[k[1]] = net.get(k[1], 0.0) + dv
             traded = sum(abs(x) for x in net.values())
             fee = traded * FEE
-            dc = tgt.get(("core", "CASH"), 0.0) - val.get(("core", "CASH"), 0.0)
+            dc = sum(tgt.get(k, 0.0) - val.get(k, 0.0) for k in set(tgt) | set(val) if k[1] == "CASH")
             if (flow or sc.count_cash) and abs(dc) > 1e-12:
                 net["SGOV"] = dc
             big = {t: x for t, x in net.items() if abs(x) > ORDER_MIN * total}
             reasons = {why.get(k, "其他") for k in set(tgt) | set(val)
-                       if k[0] != "core" and k[1] in big and abs(tgt.get(k, 0.0) - val.get(k, 0.0)) > ORDER_MIN * total}
+                       if k[0] != "core" and ("SGOV" if k[1] == "CASH" else k[1]) in big and abs(tgt.get(k, 0.0) - val.get(k, 0.0)) > ORDER_MIN * total}
             if crash_changed and use200:
                 reasons.add("崩盤規則")
             if core_rebal:
@@ -340,7 +363,7 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
         mom_w.append(sum(x for k, x in cv.items() if k[0] == "mom") / tv)
         cc, cs_ = cv.get(("core", "CASH"), 0.0), cv.get(("core", "SPY"), 0.0)
         cash_core.append(cc / (cc + cs_) if cc + cs_ > 0 else 0.0)
-        cash_tot.append(cc / tv)
+        cash_tot.append(sum(x for k, x in cv.items() if k[1] == "CASH") / tv)
         for tk, s in sigs.items():
             a = s.get(d)
             a = a if isinstance(a, str) else None
