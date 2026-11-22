@@ -12,7 +12,7 @@
 // wrangler.jsonc 的 triggers.crons 要和這裡相同（test/flow.test.ts 鎖住）。
 import type { ScanTarget } from '../ai/events';
 import { guard, type StartCtx } from './aiCtx';
-import { startCrashRuns } from './crashAi';
+import { refreshMacro } from './crashAi';
 import { startMarketBrief } from './marketBrief';
 import { rescanEvents, startCourts } from './events';
 import { momRecheck } from './momAi';
@@ -73,7 +73,7 @@ export function attemptOfCron(cron: string): Attempt {
  *   T29b 提前審查（掃描在 01:30 才標到的可提前事件，同一次就開）：startEarlyReviews（已接；每日第一次流程也呼叫）
  *   T32b 動能的 momRecheck（月報前一天與訊號日，momentum_ai §3.9）：重開沒有結論的進場法庭與回看、回看帶來新命中的開法庭（已接）
  *   T64  市場摘要：補看 01:30 才開的提前審查、重試當天沒有成功的那一份（composite_layer_design §1.2）：startMarketBrief（已接）
- *   T33b 崩盤檢視：先重抓不足的總經資料，再跑 crashNeeds（沒有結論的重開一次、資料重抓後夠了就開；core_ai §3.1、§3.5、§3.12）（已接）
+ *   T33b 總經儀表板：重抓不足的總經資料（core_ai §3.5；崩盤檢視的 AI 部分 2026-11-22 退場，T81）（已接）
  */
 export async function finalStarts(sc: StartCtx, targets: ScanTarget[]): Promise<void> {
   // 每日掃描（或 23:30 之後的規則段）標到的硬事件候選 → 同一次就開法庭，不等到隔天
@@ -89,6 +89,6 @@ export async function finalStarts(sc: StartCtx, targets: ScanTarget[]): Promise<
   await guard(sc.res, '提前審查（01:30）', () => startEarlyReviews(sc, { fetchChecks: true }));
   // 市場摘要（composite_layer_design §1.2，T64）：01:30 才開的提前審查也算「當天有個股執行」；23:30 開的那一份沒有成功 → 再試一次（一個事件各最多 2 次）
   await guard(sc.res, '市場摘要（01:30）', () => startMarketBrief(sc, { final: true }));
-  // 崩盤規則檢視：總經資料重抓（§3.5）；預估或補開的檢視沒有結論 → 重開一次（同一個月份＋方向合計最多 3 次，§3.1）
-  await guard(sc.res, '崩盤規則檢視（01:30）', () => startCrashRuns(sc, { final: true }));
+  // 總經儀表板：資料不足的重抓（core_ai §3.5；崩盤規則檢視已經退場，不再開 AI）
+  await guard(sc.res, '總經儀表板（01:30）', () => refreshMacro(sc, { final: true }));
 }

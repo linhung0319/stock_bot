@@ -81,16 +81,27 @@ function bucketNote(a, id) {
   return [`${rows.length} 檔，`, hot ? h('span', { class: 'hot' }, `${hot} 檔碰到門檻`) : near ? h('span', { class: 'warn' }, `${near} 檔接近門檻`) : '都正常'];
 }
 
-/** 崩盤規則那一格括號裡的那一句（核心還沒換：你 2027-01 選了這次不做；core_ai §3.6）：大字只放狀態，這句放下面一行。 */
-function crashOwe(value) {
-  const m = /（(.*)）$/.exec(value);
-  return m ? h('p', { class: 'meter-note', style: 'margin:2px 0 8px;color:var(--ink-2)' }, m[1]) : null;
+/**
+ * 核心比例橫條（allocation_redesign §1.6）：0～40% 的一條，三段（偏少／界線內／偏多）各自有字，15%、20%（目標）、25% 三個刻度標在上面，
+ * 白點是現在的位置。只有橫條，沒有別的儀表。
+ */
+export function coreBarEl(c) {
+  if (!c) return null;
+  const at = (x) => `${((x / c.max) * 100).toFixed(2)}%`;
+  const dot = Math.min(1, Math.max(0, c.s / c.max)) * 100;
+  return h(
+    'div',
+    { class: 'corebar', 'data-at': c.at, role: 'img', 'aria-label': c.label },
+    h('div', { class: 'cb-ticks' }, c.ticks.map((t) => h('span', { style: `left:${at(t.at)}` }, t.label))),
+    h('div', { class: 'cb-track' }, c.segs.map((s) => h('i', { class: 'cb-seg', 'data-k': s.kind, style: `flex:${Math.round((s.to - s.from) * 1000)}` })), h('b', { class: 'cb-dot', style: `left:${dot.toFixed(2)}%` })),
+    h('div', { class: 'cb-labels' }, c.segs.map((s) => h('span', { 'data-k': s.kind, style: `flex:${Math.round((s.to - s.from) * 1000)}` }, s.label))),
+  );
 }
 
 export function tiles(st) {
   const a = st.account;
   if (!a) return null;
-  const [crash, vol] = a.status;
+  const [core, vol] = a.status;
   const total = Math.round(a.total).toLocaleString('en-US');
   return [
     h(
@@ -118,12 +129,12 @@ export function tiles(st) {
     h(
       'div',
       { class: 'tiles2' },
-      crash
+      core
         ? h(
             'section',
-            { class: 'tile', 'aria-label': '崩盤規則' },
-            h('div', { class: 'tile-head' }, h('h2', null, '崩盤規則')),
-            h('div', { class: 'tile-body' }, h('div', { class: 'meter-v' }, h('i', { class: 'led', style: `--tc:${crash.tone === 'warn' ? 'var(--hot)' : 'var(--core)'}` }), crash.value.replace(/（.*）$/, '')), crashOwe(crash.value), meterEl(crash.meter), h('p', { class: 'meter-note' }, crash.detail)),
+            { class: 'tile wide', 'aria-label': '核心比例' },
+            h('div', { class: 'tile-head' }, h('h2', null, '核心比例')),
+            h('div', { class: 'tile-body' }, h('div', { class: 'meter-v' }, h('i', { class: 'led', style: `--tc:${core.tone === 'warn' ? 'var(--warn)' : 'var(--core)'}` }), core.value), coreBarEl(core.coreBar), h('p', { class: 'meter-note' }, core.detail)),
           )
         : null,
       vol

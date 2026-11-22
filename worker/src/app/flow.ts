@@ -20,10 +20,8 @@ import type { FlowExtras } from './aiCtx';
 import { closeStaleRuns, listRuns } from './aiRuns';
 import { aiStep } from './aiStep';
 import { updateSizeFlags } from './concentration';
-import { crashDirection, crashReviewFor } from './crashAi';
-import { routineReady } from './ownAi';
 import { sectorEtfs } from './filings';
-import { monthOfSignal, prepareEntries, recordReplacements, signalsIn, type MonthInputs } from './momAi';
+import { prepareEntries, recordReplacements, signalsIn, type MonthInputs } from './momAi';
 import { STRATEGY_STATE_KEY, loadStrategyState } from './strategyAi';
 import { noteOfRun } from './site/aiViews';
 import type { AiNote } from './site/types';
@@ -183,10 +181,7 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
     // 核心 ETF 的資料檢查（core_ai §3.10）：對不上就告警，每日訊號照常產生、不擋流程
     const issues = coreDataCheck(view, core, BENCHMARK, acct.bondTicker);
     const names = { core, bench: BENCHMARK, bond: acct.bondTicker };
-    // 均線算不出來的那一天如果要出月報，月報另外推 CORE_MA_MISSING（§3.10 最後一段），這裡不重複
-    const monthDay = isLastTradingDayOfMonth(s, ov) && !monthlyMade(acct, nextTradingDay(s, ov).slice(0, 7));
     for (const x of issues) {
-      if (x.code === 'MA_SHORT' && monthDay) continue;
       if (x.code === 'NO_BENCH') log.push(`${s} ${BENCHMARK} 沒有這一天的價格，這次沒辦法核對 ${core}`);
       const text = ALERT_CODES.has(x.code) ? coreAlertText(x, names, s) : null;
       if (text) alerts.push({ kind: 'CORE_PRICE_SUSPECT', message: text });
@@ -201,14 +196,14 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
         const ranking = rankings.get(s) ?? null;
         const run = await loadRun(db, s);
         let input: MonthlyContext;
-        // AI 層給的輸入（月報之前在 runFlow 準備好）：任務 A 的否決與遞補、附註、崩盤規則檢視的意見
+        // AI 層給的輸入（月報之前在 runFlow 準備好）：任務 A 的否決與遞補、附註
         const ai = monthInputs.get(s) ?? {};
         if (ranking && run?.rebalanceOk) {
           input = { order: ranking.order, month, company: ranking.detail.company, ...ai };
         } else {
           const why = pauseReason(run, !!ranking);
-          // 暫停換股：否決與遞補用不到，崩盤規則檢視照樣附上（連同它的 run_id）
-          input = { order: [...acct.rule.heldMom], month, paused: why, ...(ai.crashReview ? { crashReview: ai.crashReview } : {}), ...(ai.runIds?.crash ? { runIds: { crash: ai.runIds.crash } } : {}) };
+          // 暫停換股：否決與遞補用不到
+          input = { order: [...acct.rule.heldMom], month, paused: why };
           alerts.push({ kind: 'MONTHLY_PAUSED', message: `${month} 月報照出，但本月暫停換股（${why}），動能名單不變。` });
         }
         // 訊號日的資料檢查結果跟著月報存（core_ai §3.10）；重算沿用
@@ -236,9 +231,6 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
         const m = monthlyReport(acct, view, input);
         acct = m.acct;
         monthly = m.notif.id;
-        // 均線算不出來（core_ai §3.10）：崩盤規則維持原狀態，另外告警
-        const cr = m.notif.monthly?.input.crash;
-        if (cr && cr.ma === null) alerts.push({ kind: 'CORE_MA_MISSING', message: `${core} 的 200 日均線算不出來（只有 ${cr.bars ?? 0} 根日線）。崩盤規則這個月維持原狀態（${cr.below ? '啟動中' : '未啟動'}）。` });
         rankOrder = input.order;
       }
     }
@@ -400,7 +392,7 @@ export async function pushPending(env: Env, fetcher: Fetcher, now: Date, acct: A
 // ---------------------------------------------------------------- 月報的 AI 輸入
 
 /**
- * 月報訊號日、出月報之前：任務 A 的否決與遞補（還沒審過的跑規則偵測）、崩盤規則檢視的狀態（同月份＋方向，crashReviewFor）。
+ * 月報訊號日、出月報之前：任務 A 的否決與遞補（還沒審過的跑規則偵測）。2026-11-22 起不再有崩盤規則檢視的狀態（allocation_redesign §1.6）。
  * 出錯只記下來，月報照規則出（預設准許、沒有 AI 那一行）。任務 C（F20）的說明 T32d 拿掉（momentum_ai §3.6）。
  */
 async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal: string, ov: CalendarOverrides, now: Date, log: string[], alerts: Alert[]): Promise<MonthInputs> {
@@ -410,18 +402,6 @@ async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal:
     Object.assign(out, await prepareEntries(env, fetcher, acct, signal, ov, now, log, { alerts }));
   } catch (e) {
     log.push(`任務 A 的月報輸入出錯，照規則准許：${errText(e)}`);
-  }
-  try {
-    const { view } = buildMarketView(await loadSeries(env.DB, requiredTickers(acct)), signal, acct.cfg.coreTicker);
-    // 崩盤規則檢視的狀態（core_ai §3.2）：會切換時才有；月報的 F5／F6 那一項照它寫那一列與 LINE 那一行
-    const dir = crashDirection(acct, view);
-    if (dir !== 'NONE') {
-      const cr = await crashReviewFor(env.DB, monthOfSignal(signal, ov), dir, { ready: routineReady(env) });
-      out.crashReview = cr;
-      if (cr.runId) out.runIds = { ...out.runIds, crash: cr.runId };
-    }
-  } catch (e) {
-    log.push(`崩盤規則檢視的月報輸入出錯：${errText(e)}`);
   }
   return out;
 }

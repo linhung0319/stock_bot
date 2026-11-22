@@ -5,6 +5,7 @@
 import { dismissDraft, draftForSave, draftStates, markDraftUsed, readyDraft, requestOwnDraft, type DraftRow, type DraftState, type DraftUse, type DraftView } from '../ownDraft';
 import { routineReady } from '../ownAi';
 import { homeBrief, type HomeBrief } from '../marketBrief';
+import { DEMO_NOTE_PREFIX, ackNoCrashNote, noCrashNote, type NoCrashNote, type NoCrashNoteId } from '../noCrashNote';
 import type { DraftBroken } from '../../ai/ownDraft';
 import { bookShares, migrateAccount, pendingSplits, type Account, type Attention, type LedgerEvent, type MarketView, type OwnWebSources, type ShadowRecord, type Snapshot, type StrategyReviewState, type WebSourceCheck } from '../../engine';
 import { probeWebSources } from '../webEvidence';
@@ -78,6 +79,8 @@ export interface SiteData {
   aiReady?: boolean;
   /** 首頁那一行市場摘要（T65，composite_layer_design §1.8：最近 10 個交易日內有寫好的摘要）。示範模式沒有。 */
   brief?: HomeBrief | null;
+  /** 首頁一次性的說明（崩盤規則退場，allocation_redesign §2.4）：還沒按「知道了」時才有。 */
+  notice?: NoCrashNote | null;
 }
 
 export interface SiteBackend {
@@ -100,6 +103,8 @@ export interface SiteBackend {
   checkSplits?(shares: Record<string, number>): Promise<string[]>;
   /** 試抓每檔的網頁證據來源（T52，web_evidence_design §1.3；只有真實模式會真的對外連線，示範模式沒有這個方法）。 */
   probeSources?(ws: OwnWebSources): Promise<WebSourceCheck[]>;
+  /** 首頁一次性說明按「知道了」（allocation_redesign §2.4）。 */
+  ackNotice(id: NoCrashNoteId): Promise<void>;
   /** AI 層的網站操作（只有真實模式有）。 */
   ai?: SiteAi;
 }
@@ -228,7 +233,8 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const drafts: Record<string, DraftState> = acct && view ? await draftStates(env, acct, now, view.date).catch((e) => (console.error('論點草稿的狀態', e), {})) : {};
       // 首頁那一行市場摘要（T65）：也放在 listRuns 之後（逾時的那一次先結束）；讀不到不擋網站
       const brief = acct && view ? await homeBrief(env.DB, axis).catch((e) => (console.error('市場摘要', e), null)) : null;
-      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), asOf: easternTime(now).date, warnings, undoable, strategy, drafts, aiReady: routineReady(env), brief };
+      const notice = acct && view ? await noCrashNote(env.DB, acct, axis).catch((e) => (console.error('首頁的一次性說明', e), null)) : null;
+      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), asOf: easternTime(now).date, warnings, undoable, strategy, drafts, aiReady: routineReady(env), brief, notice };
     },
     async save(acct, cause, log = []) {
       // 論點檔紀錄和這一版帳戶同一筆交易寫（account_version = 這次存檔的 rev，復原快照時一起刪）
@@ -236,6 +242,7 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       const at = now.toISOString();
       rev = await saveAccount(env.DB, acct, loaded, cause, now, log.map((l) => thesisLogStmt(env.DB, l, next, at)));
     },
+    ackNotice: (id) => ackNoCrashNote(env.DB, id, now),
     runs: () => listRuns(env.DB, now, { limit: 200 }),
     run: (id) => getRun(env.DB, id, now),
     async recordSnapshot(date, snap) {
@@ -411,6 +418,7 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
         demo: info(s),
         undoable: await demoUndoable(),
         autofill: (extra, exact) => demoFilledSnapshot({ ...s, acct: st!.acct }, extra, exact),
+        notice: await noCrashNote(env.DB, s.acct, [], true).catch(() => null),
       };
     },
     async save(acct) {
@@ -434,7 +442,9 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
     },
     runs: async () => [],
     run: async () => null,
+    ackNotice: (id) => ackNoCrashNote(env.DB, id, now, true),
     async reset(id) {
+      await env.DB.prepare('DELETE FROM flow_state WHERE key LIKE ?').bind(`${DEMO_NOTE_PREFIX}%`).run();
       await read();
       st = st ?? { scenario: id, d: 0, acct: null as unknown as Account };
       st = { ...st, scenario: id };

@@ -213,7 +213,7 @@ export function macroMissingText(s: Pick<MacroSnapshot, 'rows'>): string {
   const missing = s.rows.filter((r) => r.value === null).map((r) => r.id);
   const stale = s.rows.filter((r) => r.value !== null && r.stale).map((r) => r.id);
   const what = [missing.length ? `缺 ${missing.join('、')}` : '', stale.length ? `過期 ${stale.join('、')}` : ''].filter(Boolean).join('；');
-  return `總經資料抓不到：FRED 的 ${MACRO_SERIES.length} 個序列只有 ${macroUsable(s.rows)} 個可用${what ? `（${what}）` : ''}。崩盤規則照常；這個月如果切換，不會有 AI 檢視。可以用 POST /admin/macro 重抓。`;
+  return `總經資料抓不到：FRED 的 ${MACRO_SERIES.length} 個序列只有 ${macroUsable(s.rows)} 個可用${what ? `（${what}）` : ''}。市場摘要缺的序列會備註；可以用 POST /admin/macro 重抓。`;
 }
 
 /**
@@ -298,7 +298,29 @@ async function refreshCrashItem(sc: StartCtx, need: CrashNeed): Promise<void> {
 }
 
 /**
- * 崩盤規則檢視（core_ai §3.1）：月報前一天先算儀表板並存（資料不足記 macro:retry）；
+ * 總經儀表板（2026-11-22 起，崩盤規則檢視退場後留下的部分；allocation_redesign §1.6）：月報前一天抓 FRED、算儀表板、存一份
+ * （網站「AI 紀錄」上方的儀表板與市場摘要的備援都讀它）；資料不足記 macro:retry，01:30（final）只重抓缺的與過期的。不開任何 AI。
+ */
+export async function refreshMacro(sc: StartCtx, opt: { final?: boolean } = {}): Promise<void> {
+  const { env, fetcher, acct, view, session, ov, res } = sc;
+  const db = env.DB;
+  try {
+    if (opt.final) await retryMacro(sc);
+    const signal = nextTradingDay(session, ov);
+    if (!isLastTradingDayOfMonth(signal, ov)) return;
+    const month = monthOfSignal(signal, ov);
+    if (opt.final && (await loadSnapshot(db, month))) return;
+    const snap = await buildSnapshot(db, fetcher, acct, view, month);
+    await saveSnapshot(db, snap, sc.now);
+    // 每月驗一次 FRED 抓不抓得到（§3.5）
+    if (macroQuality(snap.rows) === 'missing') await setFlag(db, `${MACRO_RETRY_PREFIX}${month}`, sc.now.toISOString(), sc.now);
+  } catch (e) {
+    res.log.push(`總經儀表板沒有更新成功：${errText(e)}`);
+  }
+}
+
+/**
+ * （已停用，2026-11-22 起排程不再呼叫；本體留給 T88 清）崩盤規則檢視（core_ai §3.1）：月報前一天先算儀表板並存（資料不足記 macro:retry）；
  * 列出需要檢視的切換（crashNeeds），每一筆照「跑完了不開、在等不開、沒有結論滿 3 筆不開、總經資料不足不開」決定開不開。
  * 不會切換的月份不開任何 AI（每月評語在 T33d 拿掉，§3.9），儀表板照樣算、存。
  * final：01:30（finalStarts）——先重抓不足的總經資料；儀表板 23:30 已經算過就不重算。

@@ -142,6 +142,20 @@ function coreSwitchPending(acct: Pick<Account, 'fromCrashRule' | 'notifs'>): boo
   return !acct.notifs.some((n) => (n.status === 'DONE' || n.status === 'RESPONDED') && n.items.some((i) => i.f === 'F26' && !i.cancelled && i.choice === 'DO'));
 }
 
+/**
+ * 月報狀態文字的核心那一段（allocation_redesign §1.6）：`核心：SGOV 與現金 19.2%（15%～25% 之內不調）`。
+ * 超出界線時說明這份月報怎麼處理：有 F26 就寫「下面有調回 20% 的一項」；換算不出整股就寫這次不動、下個月再算。
+ */
+export function coreStatusText(acct: Pick<Account, 'cfg' | 'bondTicker'>, check: CoreBand, hasItem: boolean): string {
+  const { bond, band } = coreCfg(acct.cfg);
+  const lo = pct0(bond - band);
+  const hi = pct0(bond + band);
+  const head = `核心：${acct.bondTicker} 與現金 ${pct1(check.s)}`;
+  if (!check.out) return `${head}（${lo}～${hi} 之內不調）`;
+  const side = check.s > bond ? `超過 ${hi}` : `低於 ${lo}`;
+  return `${head}（${side}，${hasItem ? `下面有調回 ${pct0(bond)} 的一項` : '這次換算不出整股，下個月再算'}）`;
+}
+
 /** F26 的標題與理由（allocation_redesign §1.3 的項目文字）。 */
 function coreBandText(acct: Account, check: CoreBand, first: boolean): { title: string; why: string } {
   const { bond, band } = coreCfg(acct.cfg);
@@ -871,8 +885,6 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
       old.coreAbsorb = false;
     }
   }
-  // 崩盤規則已經退場（allocation_redesign §1.6），這一行的字在 T81 換成核心比例；這裡先固定寫未啟動
-  const status = `崩盤規則：未啟動；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '');
   // 核心比例的界線檢查（allocation_redesign §1.3）：其他單照預設選項合成之後算；超出界線加一項 F26（可以是這份月報唯一的一項）。
   // 帳上的閒置現金不再單獨成一項（§1.2：現金算短債那一邊；有其他單時合成的清單順便加一行買短債）
   const probe: Notif = { id: 0, kind: 'MONTHLY', date: view.date, seq: view.i, title: '', items, status: 'PENDING', coreAbsorb: true, reminded: false, ...(flow?.kind === '入金' ? { deposit: flow.amount } : {}) };
@@ -884,6 +896,8 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
   }
   if (band.item) items.push(band.item);
   const coreBand = { s: band.check.s, bond: band.check.bond, core: band.check.core };
+  // 狀態文字（allocation_redesign §1.6）：核心比例；崩盤規則已經退場
+  const status = `${coreStatusText(acct, band.check, !!band.item)}；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '');
   const notif = newNotif(acct, view, {
     kind: items.length ? 'MONTHLY' : 'MONTHLY_EMPTY',
     title: items.length ? `${input.month} 月報` : `${input.month} 月報：本月不用動`,
@@ -1378,9 +1392,12 @@ export function stepStrategyReview(s0: StrategyReviewState, date: string, modelR
   return { state: s, alerts };
 }
 
+/** 策略檢討提醒的固定說明（allocation_redesign §2.3）：動能沒有「大盤跌就撤」的規則，帳戶的緩衝是核心的 SGOV。 */
+export const STRATEGY_COST_NOTE = `動能沒有「大盤跌就撤」的規則；整個帳戶的緩衝是核心的 SGOV。`;
+
 /** F21：策略檢討提醒（不附清單的提醒，設計 §2.5 的例外；永不自動停用）。 */
 export function strategyReminder(acct0: Account, view: MarketView, text: string): { acct: Account; notif: Notif } {
   const acct = clone(acct0);
-  const notif = newNotif(acct, view, { kind: 'INFO', title: '策略檢討提醒', text: `${text}。系統不會自動停用策略；AI 會逐條列出前提的正反證據（不給停用或繼續的建議），報告在網站。`, coreAbsorb: false });
+  const notif = newNotif(acct, view, { kind: 'INFO', title: '策略檢討提醒', text: `${text}。系統不會自動停用策略；AI 會逐條列出前提的正反證據（不給停用或繼續的建議），報告在網站。${STRATEGY_COST_NOTE}`, coreAbsorb: false });
   return { acct, notif };
 }

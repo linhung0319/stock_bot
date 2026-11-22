@@ -75,7 +75,7 @@ describe('T33b：影子紀錄（§3.4；舊紀錄的顯示）', () => {
     const axis = Array.from({ length: 200 }, (_, k) => `2027-${String(1 + Math.floor(k / 21)).padStart(2, '0')}-${String(4 + (k % 21)).padStart(2, '0')}`);
     const book = { axis, adj: (t: string, k: number) => (k < 0 || k >= axis.length ? NaN : t === 'VOO' ? 100 * Math.pow(1.1, k / 21) : 50) };
     const v = crashLogView({ notifs }, records, book);
-    expect(v.head).toBe('崩盤規則切換過 2 次；AI 說延後 1 次，其中 1 次延後一個月比較好。');
+    expect(v.head).toBe('崩盤規則（已停用）切換過 2 次；AI 說延後 1 次，其中 1 次延後一個月比較好。');
     expect(v.rows.map((r) => [r.label, r.ai, r.runId, r.choice])).toEqual([
       ['2027-03 解除', '沒有意見', 'run-2', '照做'],
       ['2027-01 啟動', '延後（3 票一致）', 'run-1', '這次不做：想再看看'],

@@ -150,7 +150,7 @@ describe('情境 ① 平常的月報：用網站走完', () => {
       items.map((i) => JSON.stringify([i.ticker ?? null, i.choice, i.choices.map((c) => [c.id, c.lines.map((l) => `${l.bucket}:${l.ticker}:${l.shares}`)])])).sort();
     expect(sig(v.items)).toEqual(sig(n.items));
     expect(v.items.map((i) => i.label)).toEqual(['動能出場', '動能進場', '動能比例調回', 'AI 建議提高比重']);
-    expect(v.text).toBe('崩盤規則：未啟動。動能部位全額');
+    expect(v.text).toBe('核心：SGOV 與現金 20.6%（15%～25% 之內不調）。動能部位全額');
     const orcl = itemOf(v, '動能出場', 'ORCL');
     expect(orcl.headline).toBe('賣 ORCL 28 股（全部）');
     expect(orcl.bucket).toBe('mom');
@@ -265,7 +265,8 @@ describe('情境 ① 平常的月報：用網站走完', () => {
     const acctText = st.bubble.account!.say.map((s) => (typeof s === 'string' ? s : s.t)).join('');
     expect(acctText).toContain('ORCL');
     expect(st.account!.holdings.find((h) => h.ticker === 'ORCL')!.meter).toMatchObject({ s: 'hit', zone: '賣出' });
-    expect(st.account!.status[0].meter).toMatchObject({ zone: '啟動', s: 'ok' });
+    expect(st.account!.status[0]).toMatchObject({ label: '核心比例', tone: 'ok' });
+    expect(st.account!.status[0].coreBar).toMatchObject({ at: 'in', max: 0.4, ticks: [{ at: 0.15, label: '15%' }, { at: 0.2, label: '20% 目標' }, { at: 0.25, label: '25%' }] });
   });
 
   it('照清單做完：帳本照清單分到各桶；1 月月報沒有規則單', async () => {
@@ -454,7 +455,7 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     // T80：示範帳戶的核心從全部 VOO 改成固定比例（VOO 八成、SGOV 與現金兩成；allocation_redesign §1.1、第 7 章）
     expect(a.holdings.find((h) => h.ticker === 'VOO')).toMatchObject({ bucket: 'core', shares: 54 });
     expect(a.holdings.find((h) => h.ticker === 'SGOV')).toMatchObject({ bucket: 'core', shares: 62 });
-    expect(a.status.map((s) => s.value)).toEqual(['未啟動', '全額']);
+    expect(a.status.map((s) => s.value)).toEqual(['SGOV 與現金 19.9%', '全額']);
     expect(a.ranking[0]).toMatchObject({ rank: 1, ticker: 'PLTR', mark: 'HELD' });
   });
 

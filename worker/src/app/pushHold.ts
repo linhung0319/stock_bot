@@ -144,7 +144,8 @@ export const crashWaiter: PushWaiter = {
 };
 
 /** 所有「等到下一次流程再推」的規則通知。 */
-export const PUSH_WAITERS: PushWaiter[] = [dropWaiter, lateVetoWaiter, crashWaiter];
+// 崩盤規則的 crashWaiter 2026-11-22 起不在這裡（allocation_redesign §1.6：不再派 CRASH_REVIEW）；函式本體留給 T88 清。
+export const PUSH_WAITERS: PushWaiter[] = [dropWaiter, lateVetoWaiter];
 
 /** 這則新通知要不要等到下一次流程再推。 */
 export const pushWaiting = (acct: Account, n: Notif, waiters: PushWaiter[] = PUSH_WAITERS): boolean => waiters.some((w) => w.waiting(acct, n));

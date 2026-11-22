@@ -19,12 +19,11 @@ import { OWN_DROP } from '../ai/drops';
 import { EVENT_SCAN, HARD_EVENT, type ScanTarget } from '../ai/events';
 import { MOM_ENTRY } from '../ai/momEntry';
 import { OWN_EARNINGS } from '../ai/earnings';
-import { CRASH_REVIEW } from '../ai/crash';
 import { OWN_CONDITION, OWN_REVIEW } from '../ai/ownReview';
 import { OWN_DRAFT } from '../ai/ownDraft';
 import { guard, type Applier, type ApplyCtx, type FlowExtras, type StartCtx, type StepResult } from './aiCtx';
 import { closeStaleRuns, getRun, listRuns } from './aiRuns';
-import { applyCrashReview, startCrashRuns } from './crashAi';
+import { refreshMacro } from './crashAi';
 import { applyOwnDrop, markDropNone, startDropRuns } from './dropAi';
 import { applyOwnEarnings, startOwnEarnings } from './earningsAi';
 import type { Env, Fetcher } from './env';
@@ -55,8 +54,6 @@ export const APPLIERS: Record<string, Applier> = {
   [EVENT_SCAN]: applyEventScan,
   [MOM_ENTRY]: applyMomEntry,
   [OWN_DROP]: applyOwnDrop,
-  // 崩盤規則檢視：月報之後才回來的結果更新那一項、連續沒有結論的告警（core_ai §3.2、§3.1）
-  [CRASH_REVIEW]: applyCrashReview,
   // 策略檢討說明：沒有結論時提醒通知註明「AI 說明沒有回來」（momentum_ai §3.8）
   [STRATEGY_REVIEW]: applyStrategyReview,
   // 論點草稿（T55）：結算成 READY 或 FAILED（逾時的也在這裡）；自動開的連續 2 次失敗 → 告警（web_evidence_design §2.5）
@@ -183,7 +180,8 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
   await guard(res, '動能新股進場審查', () => momPreview(sc));
   // 月報當天才進榜、要法庭的：月報之後開法庭與進場前回看（momentum_ai §3.2）
   await guard(res, '動能新股進場審查（月報當天才進榜的）', () => momLateStart(sc));
-  await guard(res, '崩盤規則檢視', () => startCrashRuns(sc));
+  // 總經儀表板：月報前一天抓 FRED 存一份（市場摘要與網站的儀表板用；崩盤規則檢視已經退場）
+  await guard(res, '總經儀表板', () => refreshMacro(sc));
   await guard(res, '減半檢視、個股自身大跌與大跌說明', () => startDropRuns(sc));
   // 提前審查（own_thesis §2.4）：規則段與之前的掃描標到的可提前事件、上面剛寫的個股自身大跌；放在其他自選審查之後（今天已經開了的不另開）
   await guard(res, '提前審查', () => startEarlyReviews(sc));

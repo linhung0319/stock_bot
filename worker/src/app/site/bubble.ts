@@ -210,11 +210,9 @@ export function accountBubble(a: Pick<AccountView, 'buckets' | 'holdings' | 'cas
     if (alerts.length > 2) say.push(`，還有 ${alerts.length - 2} 檔`);
     say.push('。');
   } else say.push('沒有持股碰到規則的門檻。');
-  const crash = a.status.find((s) => s.label === '崩盤規則');
-  if (crash?.value.startsWith('啟動中')) say.push('崩盤規則', neg('啟動中'), '。');
-  // 崩盤項目選了「這次不做」、核心還沒換（core_ai §3.6）
-  const owe = crash ? /（((?:核心還沒換|短債還沒換回)[^）]*)）$/.exec(crash.value) : null;
-  if (owe) say.push(owe[1].replace(/：.*/, ''), '（崩盤規則上次選了這次不做，下一份月報會再列）。');
+  // 核心比例超出界線（allocation_redesign §1.6）：下一份月報會列調回
+  const core = a.status.find((s) => s.label === '核心比例');
+  if (core?.tone === 'warn') say.push('核心', neg(core.value), '，超出界線，下一份月報會調回。');
   if (a.cash < NEG_CASH) say.push('帳上現金是 ', neg(money(a.cash)), '。');
   return { k: '現在的狀況', say: tidy(say), mood: alerts.length ? 'alert' : 'watch' };
 }

@@ -142,11 +142,11 @@ export function breadth(view: MarketView, tickers: string[]): { above: number; n
 
 export function dashboardText(rows: DashRow[], br: { above: number; n: number } | null, core: { ticker: string; close: number; ma: number } | null): string {
   const f = (x: number | null, d = 2) => (x === null || !Number.isFinite(x) ? '-' : x.toFixed(d));
-  const lines = ['series | date | value | 6m change | derived | at bear starts (' + TRUE_BEARS.join(', ') + ', revised values) | note'];
+  const lines = ['series | date | value | 6m change | derived | note'];
   // 過期的列在 note 後面寫明（core_ai §3.5）
-  for (const r of rows) lines.push(`${r.id} ${r.label} | ${r.date ?? '-'} | ${f(r.value)} | ${f(r.change6m)} | ${r.derived ?? '-'} | ${TRUE_BEARS.map((b) => f(r.atBears[b] ?? null)).join(' / ')} | ${r.note}${r.stale ? `（資料停在 ${r.date}，不能當證據）` : ''}`);
-  if (br) lines.push(`breadth | | ${br.n ? ((br.above / br.n) * 100).toFixed(0) : '-'}% of top-50 universe above 200-day MA (${br.above}/${br.n}) | | | | computed from stored prices`);
-  if (core) lines.push(`${core.ticker} | | close ${core.close.toFixed(2)} vs 200-day MA ${core.ma.toFixed(2)} (${((core.close / core.ma - 1) * 100).toFixed(1)}%) | | | |`);
+  for (const r of rows) lines.push(`${r.id} ${r.label} | ${r.date ?? '-'} | ${f(r.value)} | ${f(r.change6m)} | ${r.derived ?? '-'} | ${r.note}${r.stale ? `（資料停在 ${r.date}，不能當證據）` : ''}`);
+  if (br) lines.push(`breadth | | ${br.n ? ((br.above / br.n) * 100).toFixed(0) : '-'}% of top-50 universe above 200-day MA (${br.above}/${br.n}) | | | computed from stored prices`);
+  if (core) lines.push(`${core.ticker} | | close ${core.close.toFixed(2)} vs 200-day MA ${core.ma.toFixed(2)} (${((core.close / core.ma - 1) * 100).toFixed(1)}%) | | |`);
   return lines.join('\n');
 }
 

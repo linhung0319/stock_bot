@@ -166,6 +166,7 @@ export async function homePage(ctx, opt = {}) {
     pane: [
       // 上一份快照「可能填錯」（現金差額大到不像成交價差、手續費、股利）才提醒；平常要復原到「我要…」
       st.undo?.cashWarn ? cashWarnBox(ctx, st.undo.cashOther, st.undo.date) : null,
+      noticeRow(ctx, st.notice),
       h(
         'div',
         { class: 'todo-area' },
@@ -176,6 +177,23 @@ export async function homePage(ctx, opt = {}) {
     ],
     rail: tiles(st),
   });
+}
+
+/**
+ * 首頁一次性的說明（allocation_redesign §2.4）：崩盤規則退場後，第一份月報、之後第一次大盤跌一段時多一行固定文字，免得以為系統漏了。
+ * 按「知道了」之後不再出現（伺服器記在 flow_state）。
+ */
+function noticeRow(ctx, n) {
+  if (!n) return null;
+  return glass(
+    'pad no-crash-note',
+    h('p', { class: 'brief-h' }, h('span', { class: 'chip' }, '規則有改'), h('b', null, n.text)),
+    h('p', { class: 'small dim', style: 'margin:6px 0 10px' }, '大盤跌破 200 日線時，月報不會再叫你把核心換一半成短債、也不會叫動能減半；不用做任何事。核心的緩衝是固定的 SGOV 兩成，超出 15%～25% 才調回。'),
+    actionButton('知道了', '', async () => {
+      await api.post('/notice/ack', { id: n.id });
+      ctx.refresh();
+    }),
+  );
 }
 
 /** 首頁的市場摘要那一行（T65，composite_layer_design §1.8）；字在 brief-home.js。 */

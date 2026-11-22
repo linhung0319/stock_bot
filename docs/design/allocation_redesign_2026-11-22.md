@@ -155,6 +155,17 @@
 - 對得上是因為重放和回測一樣用比重模式（不取整股）、現金格照同一個指數計息（利息在隔天開盤前入帳）、SGOV 的買賣算一張單但不收手續費（回測的 `traded` 不含現金格）。整股與 SGOV 的實際價格只影響正式流程的清單（`composeWithCore`），不在這組基準裡，由單元測試與情境測試看。
 - 另外各有一條「上線設定」（`DEFAULT_CONFIG`，三項照設計文字的差異）的檢查，範圍照舊（年化差 < 0.3 pp、最大回撤 < 1 pp、Sharpe < 0.03）；新規則下 2000 段 13.23% / 0.834 / -49.2%、2013 段 22.21% / 1.433 / -29.6%。
 
+**實作時定的細節（T81）**
+
+- **排程**：`aiStep` 與 `finalStarts` 不再呼叫 `startCrashRuns`，`APPLIERS` 拿掉 `CRASH_REVIEW`（還沒套用的舊執行只標成已套用），`PUSH_WAITERS` 拿掉 `crashWaiter`（03:30 不再補推崩盤檢視），`monthEndInputs` 不再算 `crashReview`。**總經儀表板的抓取與儲存留著**：新函式 `refreshMacro`（`app/crashAi.ts`）做原本 `startCrashRuns` 裡不開 AI 的那一半——月報前一天抓 FRED 存一份、資料不足記 `macro:retry`、01:30 重抓；`MACRO_MISSING` 的字改成「市場摘要缺的序列會備註」。函式本體（`startCrashRuns`、`crashNeeds`、`applyCrashReview`、`crashWaiter`…）留給 T88。
+- **市場摘要實際讀的欄位**（`app/marketBrief.ts` 的 `macroFor`＋`snapshotDoc`→`dashboardText`）：每個序列的 id／label／date／value／6 個月變化／derived／note／stale、市場廣度、核心 ETF 相對 200 日線。**沒讀**基準率表（`CRASH_EPISODES`）；`atBears`（三次真空頭開始時的值）雖然在 `dashboardText` 的一欄裡，但 `market_brief_v2.md` 沒有用它。所以拿掉 `dashboardText` 那一欄與網站儀表板的「真空頭開始時」字樣與底下兩句崩盤說明；`macroDashboard` 仍照舊算、存 `atBears`（儲存不動，舊資料相容）。
+- **月報狀態文字**：`核心：SGOV 與現金 19.2%（15%～25% 之內不調）；動能比例 …`；超出界線且有 F26 → `（超過 25%，下面有調回 20% 的一項）`，超出但換算不出整股 → `（…，這次換算不出整股，下個月再算）`（`coreStatusText`）。LINE 的月報文字就是這一行（`n.text`），沒有另外的崩盤行。
+- **`coreDataCheck`**：只留 `DAY_GAP`、`BOND_JUMP`、`NO_BENCH`；`MA_SHORT`、`MA_GAP`、`CORE_MA_MISSING`（月報產生時的告警）拿掉；告警文字「崩盤規則照這個價格判斷」→「核心比例照這個價格算」。舊月報存的 `coreCheck` 字串陣列照讀。
+- **帳戶頁核心比例橫條**：`status[0]` 換成 `核心比例`（`coreStatus`／`coreBarOf`，`views.ts`）；橫條 0～40%、三段（偏少，調回／界線內，不調／偏多，調回）、刻度 15%／20% 目標／25%、白點＝現在，磚占整排寬（`.tile.wide`）。持股列的核心 ETF 不再畫 200 日線的尺與門檻條。舊通知的 F5／F6 標「（已停用）」（項目名稱、AI 紀錄的功能名稱、檢視紀錄區塊；網站沒有淺色主題，只有深色）。
+- **首頁一次性說明（§2.4）**：兩個場合各一次——`monthly`（有 `monthly.input.coreBand` 的月報，T80 起才有）、`drop`（最近 10 個交易日內 `market_triggers` 有 `CUMULATIVE`）；`monthly` 優先。使用者按「知道了」才算看過（`POST /notice/ack`，`flow_state` 的 `note:no-crash:<id>`；示範模式用 `demo:` 開頭、重置情境時清掉）。不在讀的時候寫：網站每換一頁就重抓狀態，讀時寫會讓說明一閃就沒。（`app/noCrashNote.ts`）
+- **策略檢討提醒**：`STRATEGY_COST_NOTE` 接在提醒文字最後。
+- **`run.md`**：檔裡沒有崩盤檢視的列（每個功能的判斷寫在各自的 prompt 檔），不需要改、不需要重貼；`crash_review_v1／v2.md` 留著。
+
 【D9，照建議】月報與帳戶頁**不顯示**「大盤在 200 日線上／下」（T77 留的「最多顯示」）。它不觸發任何動作，放在那裡只會讓人想自己擇時；大跌時市場摘要已經會說明原因。
 
 ### 1.7 照使用者的角度走一遍

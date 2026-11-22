@@ -499,6 +499,21 @@ a.step-in:hover, button.step-in:hover { color: #fff; }
 .meter-say { margin-top: -4px; font-size: 15px; font-weight: 700; color: color-mix(in srgb, var(--mc) 70%, #fff); }
 .meter-cap { margin-top: 18px; font-size: 12.5px; color: var(--ink-3); }
 .tile .meter { margin-top: 14px; }
+/* 核心比例橫條：0～40%，三段各自有字，刻度在上面，白點是現在 */
+.tiles2 .tile.wide { grid-column: 1 / -1; }
+.corebar { --cb-in: rgba(22, 207, 120, 0.38); --cb-out: rgba(255, 192, 33, 0.3); margin-top: 14px; }
+.cb-ticks { position: relative; height: 18px; font-size: 11.5px; line-height: 18px; color: var(--ink-2); }
+.cb-ticks span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; font-family: var(--font-num); }
+.cb-track { position: relative; display: flex; gap: 3px; height: 10px; }
+.cb-seg { border-radius: 5px; background: var(--cb-out); font-style: normal; }
+.cb-seg[data-k="in"] { background: var(--cb-in); }
+.corebar[data-at="low"] .cb-seg[data-k="low"], .corebar[data-at="high"] .cb-seg[data-k="high"] { background: var(--warn); }
+.corebar[data-at="in"] .cb-seg[data-k="in"] { background: var(--core); }
+.cb-dot { position: absolute; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--core) 60%, transparent), 0 3px 8px rgba(0, 0, 0, 0.6); }
+.corebar[data-at="low"] .cb-dot, .corebar[data-at="high"] .cb-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 65%, transparent), 0 3px 8px rgba(0, 0, 0, 0.6); }
+.cb-labels { display: flex; gap: 3px; margin-top: 6px; font-size: 11.5px; line-height: 1.4; color: var(--ink-3); }
+.cb-labels span { text-align: center; min-width: 0; }
+.corebar[data-at="low"] .cb-labels [data-k="low"], .corebar[data-at="high"] .cb-labels [data-k="high"], .corebar[data-at="in"] .cb-labels [data-k="in"] { color: var(--ink); font-weight: 700; }
 .tile .meter-bar { margin-bottom: 20px; }
 .legend { display: flex; align-items: center; gap: 16px; margin: 0 0 26px; padding: 14px 18px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); font-size: 13.5px; color: var(--ink-2); }
 .legend b { color: var(--ink); font-weight: 600; }

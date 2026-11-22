@@ -128,7 +128,7 @@ describe('T33d：拿掉每月評語；crash_review_v2（core_ai §3.9）', () =>
     const monthly = { ...base, fn: 'CRASH_REVIEW', pack: { rule: { action: '崩盤規則不切換', detail: { direction: 'NONE' } } }, outcome } as unknown as AiRun;
     expect(runRow(monthly)).toMatchObject({ label: CRASH_MONTHLY_LABEL, verdict: '只記錄' });
     const review = { ...base, fn: 'CRASH_REVIEW', pack: { rule: { action: '崩盤規則啟動', detail: { direction: 'ON', month: '2026-11' } } }, outcome: { ...outcome, verdict: 'DELAY', votes: { DELAY: 3 } } } as unknown as AiRun;
-    expect(runRow(review)).toMatchObject({ label: '崩盤規則檢視', verdict: '延後' });
+    expect(runRow(review)).toMatchObject({ label: '崩盤規則檢視（已停用）', verdict: '延後' });
   });
 });
 
@@ -149,16 +149,15 @@ const NAMES = { core: 'VOO', bench: 'SPY', bond: 'SGOV' };
 const codes = (v: MarketView) => coreDataCheck(v, 'VOO', 'SPY', 'SGOV').map((x) => x.code);
 
 describe('T33d：核心 ETF 的資料檢查 coreDataCheck（core_ai §3.10）', () => {
-  it('平常沒有問題；VOO 最後一天比 SPY 多跌 3% → DAY_GAP 與 MA_GAP；門檻邊界', () => {
+  it('平常沒有問題；VOO 最後一天比 SPY 多跌 3% → DAY_GAP（MA_GAP 2026-11-22 起不再檢查，T81）；門檻邊界', () => {
     expect(codes(miniView())).toEqual([]);
     const v = miniView({ vooLast: 0.97 });
     const issues = coreDataCheck(v, 'VOO', 'SPY', 'SGOV');
-    expect(issues.map((x) => x.code)).toEqual(['DAY_GAP', 'MA_GAP']);
-    expect(coreAlertText(issues[0], NAMES, '2026-11-30')).toBe('VOO 的價格和 SPY 對不上：11-30 日報酬 VOO -2.95%、SPY +0.05%（平常差不到 0.1 個百分點），可能是資料錯誤。崩盤規則照這個價格判斷；月報日之前請到券商核對 VOO 的收盤價。');
-    expect(coreAlertText(issues[1], NAMES, '2026-11-30')).toMatch(/^VOO 的價格和 SPY 對不上：相對 200 日均線 VOO \+\d\.\d%、SPY \+\d\.\d%（平常差不到 0.1 個百分點）/);
+    expect(issues.map((x) => x.code)).toEqual(['DAY_GAP']);
+    expect(coreAlertText(issues[0], NAMES, '2026-11-30')).toBe('VOO 的價格和 SPY 對不上：11-30 日報酬 VOO -2.95%、SPY +0.05%（平常差不到 0.1 個百分點），可能是資料錯誤。核心比例照這個價格算；月報日之前請到券商核對 VOO 的收盤價。');
     // 日報酬差 0.9 個百分點：不到門檻（MA_GAP 也不到）
     expect(codes(miniView({ vooLast: 0.991 }))).toEqual([]);
-    expect(CORE_CHECK).toEqual({ dayGap: 0.01, maGap: 0.015, bondJump: 0.01 });
+    expect(CORE_CHECK).toEqual({ dayGap: 0.01, bondJump: 0.01 });
   });
 
   it('短債一天變動 2% → BOND_JUMP；0.5% 不算', () => {
@@ -169,10 +168,9 @@ describe('T33d：核心 ETF 的資料檢查 coreDataCheck（core_ai §3.10）', 
     expect(codes(miniView({ bondLast: 1.005 }))).toEqual([]);
   });
 
-  it('VOO 不滿 200 根 → MA_SHORT（MA_GAP 不比）；SPY 沒有今天的價格 → NO_BENCH（沒有告警文字）', () => {
+  it('VOO 不滿 200 根 → 沒有問題（核心沒有 200 日線規則，MA_SHORT 拿掉）；SPY 沒有今天的價格 → NO_BENCH（沒有告警文字）', () => {
     const short = coreDataCheck(miniView({ vooBars: 150 }), 'VOO', 'SPY', 'SGOV');
-    expect(short).toEqual([{ code: 'MA_SHORT', bars: 150 }]);
-    expect(coreAlertText(short[0], NAMES, '2026-11-30')).toContain('只有 150 根日線');
+    expect(short).toEqual([]);
     const nb = coreDataCheck(miniView({ spy: false }), 'VOO', 'SPY', 'SGOV');
     expect(nb).toEqual([{ code: 'NO_BENCH' }]);
     expect(coreAlertText(nb[0], NAMES, '2026-11-30')).toBeNull();
@@ -187,9 +185,9 @@ describe('T33d：資料檢查在每日流程與月報（core_ai §3.10）', () =
       expect(await alertsOf(db, 'CORE_PRICE_SUSPECT')).toEqual([]);
       w.shock.VOO = { from: '2026-11-30', factor: 0.97 };
       const m = await run('2026-11-30');
-      expect((await alertsOf(db, 'CORE_PRICE_SUSPECT')).length).toBe(2);
+      expect((await alertsOf(db, 'CORE_PRICE_SUSPECT')).length).toBe(1);
       const n = (await acct()).notifs.find((x) => x.id === m.monthly)!;
-      expect(n.monthly!.input.coreCheck).toEqual(['DAY_GAP', 'MA_GAP']);
+      expect(n.monthly!.input.coreCheck).toEqual(['DAY_GAP']);
       expect(n.items.some((i) => i.f === 'F5' || i.f === 'F6')).toBe(false);
       expect(corePriceWarn(n)).toBe(false);
       expect(sec.line.filter((t) => t.includes('【月報】')).every((t) => !t.includes('價格資料可能有誤'))).toBe(true);
@@ -212,7 +210,7 @@ describe('T33d：資料檢查在每日流程與月報（core_ai §3.10）', () =
     const item = (over: object) => ({ key: 'k', f: 'F5', kind: 'STRATEGY', title: '崩盤規則啟動', choices: [{ id: 'DO', label: '照做', lines: [] }], choice: 'DO', ruleChoice: 'DO', ...over });
     const notif = (codes: string[], it: object): Notif => ({ id: 1, kind: 'MONTHLY', date: '2026-11-30', seq: 0, title: '2026-12 月報', items: [item(it)], status: 'PENDING', coreAbsorb: true, reminded: false, monthly: { input: { order: [], month: '2026-12', coreCheck: codes } } }) as unknown as Notif;
     expect(notifText(acct, notif(['DAY_GAP'], {}), null)).toContain('注意：VOO 的價格資料可能有誤，下單前先看網站。');
-    expect(notifText(acct, notif(['MA_GAP'], {}), null)).toContain('注意：VOO');
+    expect(notifText(acct, notif(['MA_GAP'], {}), null)).not.toContain('注意：VOO'); // 舊月報存的 MA_GAP 不再算
     expect(notifText(acct, notif(['BOND_JUMP'], {}), null)).not.toContain('注意：VOO');
     expect(notifText(acct, notif(['DAY_GAP'], { relist: true }), null)).not.toContain('注意：VOO');
     expect(notifText(acct, notif(['DAY_GAP'], { cancelled: true }), null)).not.toContain('注意：VOO');

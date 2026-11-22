@@ -80,6 +80,7 @@ import { annotate } from './explain';
 import { accountView, composedView, crashLogView, ctxOf, historyView, withPreviewNote, holdingDetail, notifView, pendingBreakOf, snapshotForm, stateView, thesisTodoOf, newOwnDrafts } from './views';
 import { demoHolding, type RiskView } from './thesisView';
 import { eventDetail, eventSource } from '../eventText';
+import { isNoCrashNoteId } from '../noCrashNote';
 
 type Ready = SiteData & { acct: Account; view: MarketView };
 
@@ -788,6 +789,12 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     return json(runDetail(run, fu));
   }
 
+  if (rest === 'notice/ack' && post) {
+    const b = await body(req);
+    if (!isNoCrashNoteId(b.id)) throw new SiteError(400, '不認得這則說明');
+    await backend.ackNotice(b.id);
+    return json({ ok: true });
+  }
   if (rest === 'account' && post) return createFromSnapshot(backend, await body(req));
   if (rest === 'std-hint' && post) return stdHint(backend, await body(req));
 

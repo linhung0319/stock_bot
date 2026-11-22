@@ -482,7 +482,7 @@ export function noteOfRun(run: AiRun): AiNote | null {
 
 /** 示範模式：腳本裡的假 AI 說明 → 紀錄列（只有列表，沒有完整的證據包）。 */
 export function rowOfNote(n: AiNote, k: number): RunRow {
-  const label = { REVIEW: '自選定期審查', VETO: '動能新股進場審查', CONDITION: '自選條件監測', CRASH: '崩盤規則檢視', HARD: '持股硬事件' }[n.kind];
+  const label = { REVIEW: '自選定期審查', VETO: '動能新股進場審查', CONDITION: '自選條件監測', CRASH: '崩盤規則檢視（已停用）', HARD: '持股硬事件' }[n.kind];
   return { id: `demo-${k}`, date: n.date, label, ticker: n.ticker ?? null, verdict: n.verdict, status: 'AGREED', statusLabel: n.votes ?? '', followRule: false, summary: n.summary, fake: true };
 }
 

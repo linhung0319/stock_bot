@@ -5,14 +5,11 @@ import {
   DEFAULT_ONLY_WHY,
   SLOW,
   TIER_NAME,
-  CORE_OWE_SNAPSHOT_REASON,
   bookShares,
   bucketValue,
   composeNotif,
-  coreContext,
+  coreCfg,
   crashReviewOf,
-  coreOweMonth,
-  owedCoreLines,
   ownDepositFill,
   ownDepositScale,
   drawdownFromHigh,
@@ -46,6 +43,7 @@ import { prevFileOf, type PrevFile } from '../thesis';
 import { draftStateOf, type DraftState } from '../ownDraft';
 import type { SiteData } from './backend';
 import type { HomeBrief } from '../marketBrief';
+import type { NoCrashNote } from '../noCrashNote';
 import { accountBubble, todoBubble, type Bubble } from './bubble';
 import { coreLineWhy, crashReasonText, explainItem, reasonPicksOf, findNote, liveCashflow, liveCrash, liveOwnRule, fmtMoney, fmtPct, fmtPx, fmtSigned, sharesText, type ExplainContext, type ItemX } from './explain';
 import { labelOf, meter, place, scaleOf, type Meter } from './meter';
@@ -68,8 +66,8 @@ const ITEM_LABEL: Record<string, string> = {
   F2: '動能出場',
   F3: '動能比例調回',
   F4: '動能部位調整',
-  F5: '崩盤規則啟動',
-  F6: '崩盤規則解除',
+  F5: '崩盤規則啟動（已停用）',
+  F6: '崩盤規則解除（已停用）',
   F7: '慢規則減半',
   F8: '慢規則加回',
   F10: '超過上限',
@@ -267,7 +265,7 @@ function lineView(view: MarketView, l: OrderLine, acct: Account): LineView {
 }
 
 /** 清單本身不用下單、只有帳上原本的現金交給核心時，核心那一行的說明（T39a：乙類預設不動，右邊卻列「買 VOO」看起來像這則要你下單）。 */
-const cashOnlyWhy = (core: string): string => `帳上原本就有的現金交給核心買 ${core}。這則通知本身不用下單；這張只是順便把閒著的現金投入核心，不下也可以，下次月報會再列。`;
+const cashOnlyWhy = (bond: string): string => `帳上原本就有的現金順便買成 ${bond}（現金本來就算核心裡 ${bond} 那一邊，比例沒有變，只是沒有利息）。這則通知本身不用下單；不下也可以，下次有單時會再列。`;
 
 function linesText(lines: OrderLine[], single: boolean): string {
   if (!lines.length) return '不動';
@@ -488,7 +486,7 @@ export function composedView(d: Ready, n: Notif, c: Composed): ComposedView {
   const orders: OrderView[] = c.merged.map((m) => {
     const px = priceAt(d.view, m.ticker);
     const parts = m.parts.map((l) => lineView(d.view, l, d.acct));
-    return { ticker: m.ticker, shares: m.shares, transfer: m.shares === 0, price: px, amount: px === null ? null : m.shares * px, parts: cashOnly ? parts.map((p) => ({ ...p, reason: cashOnlyWhy(d.acct.cfg.coreTicker) })) : parts };
+    return { ticker: m.ticker, shares: m.shares, transfer: m.shares === 0, price: px, amount: px === null ? null : m.shares * px, parts: cashOnly ? parts.map((p) => ({ ...p, reason: cashOnlyWhy(d.acct.bondTicker) })) : parts };
   });
   // 賣的排前面（先賣才有錢買），各自照金額大小
   orders.sort((a, b) => Number(a.shares > 0) - Number(b.shares > 0) || Math.abs(b.amount ?? 0) - Math.abs(a.amount ?? 0));
@@ -639,7 +637,7 @@ export interface AccountView {
   snapshotDate: string | null;
   ratio: { own: number; strat: number; core: number };
   buckets: { id: string; name: string; value: number; pct: number; budget: number; who: string }[];
-  status: { label: string; value: string; tone: 'ok' | 'warn'; detail: string; meter?: Meter | null; cells?: number }[];
+  status: { label: string; value: string; tone: 'ok' | 'warn'; detail: string; meter?: Meter | null; cells?: number; coreBar?: CoreBar | null }[];
   holdings: HoldingView[];
   unclassified: { ticker: string; shares: number }[];
   excluded: { ticker: string; reason: string; date: string }[];
@@ -733,30 +731,80 @@ function momHolding(d: Ready, t: string, total: number): HoldingView {
   return { bucket: 'mom', ticker: t, shares: sh, price: px, value, pct: value / total, state, detail, tone, gauge, meter: met, target: inModel ? `每檔目標 ${fmtPct(slot / total, 1)}` : null };
 }
 
-/** 崩盤規則的門檻條：沒啟動時看「跌破 200 日均線就啟動」，啟動中看「站回均線之上就解除」。 */
-function crashMeter(acct: Account, rel: number): Meter | null {
-  if (!Number.isFinite(rel)) return null;
-  const span = Math.max(0.1, Math.ceil(Math.abs(rel) * 20) / 20 + 0.05);
-  const core = acct.cfg.coreTicker;
-  if (acct.rule.crash) return meter({ start: -span, th: 0, end: span / 3, value: rel, hit: rel > 0 }, { zone: '解除', kind: 'go', label: `${core} 收盤${rel >= 0 ? '高於' : '低於'} 200 日均線 ${fmtPct(Math.abs(rel), 1)}；月報日站回均線之上會解除崩盤規則` });
-  return meter({ start: span, th: 0, end: -span / 3, value: rel, hit: rel < 0 }, { zone: '啟動', label: `${core} 收盤${rel >= 0 ? '高於' : '低於'} 200 日均線 ${fmtPct(Math.abs(rel), 1)}；月報日跌破均線會啟動崩盤規則` });
+/** 核心比例橫條（allocation_redesign §1.6）：0～40%，15%／20%／25% 三個刻度，三段各自有字，白點 = 現在。 */
+export interface CoreBar {
+  /** 現在的比例（SGOV 那一邊 ÷ 核心）。 */
+  s: number;
+  /** 條的右端（0.4）。 */
+  max: number;
+  /** 三段：偏少、界線內、偏多。 */
+  segs: { from: number; to: number; label: string; kind: 'low' | 'in' | 'high' }[];
+  /** 刻度：15%、20%（目標）、25%。 */
+  ticks: { at: number; label: string }[];
+  /** 現在在哪一段。 */
+  at: 'low' | 'in' | 'high';
+  /** 給螢幕閱讀器的一句話。 */
+  label: string;
 }
 
-/**
- * 崩盤項目選了「這次不做」、核心還沒換時，狀態後面加的那一句（core_ai §3.6，狀態要是真的）：
- * `（核心還沒換：你 2027-01 選了這次不做）`／`（短債還沒換回：…）`。用現在的持股重算一次，已經沒有要動的（例如自己補做了）就不寫。
- */
-export function coreOweText(d: Ready): string {
-  const owe = d.acct.coreOwe;
-  if (!owe || d.acct.rule.crash !== (owe.direction === 'ON')) return '';
-  try {
-    if (!owedCoreLines(coreContext(d.acct, d.view), owe.direction).length) return '';
-  } catch {
-    // 缺價格：照記下的寫
-  }
-  const what = owe.direction === 'ON' ? '核心還沒換' : '短債還沒換回';
-  const month = coreOweMonth(d.acct, owe);
-  return owe.reason === CORE_OWE_SNAPSHOT_REASON ? `（${what}：${month} 月報的單快照顯示沒有做）` : `（${what}：你 ${month} 選了這次不做）`;
+export const CORE_BAR_MAX = 0.4;
+
+/** 核心現在的比例（SGOV 那一邊 ÷ 核心）；算不出來（缺價格、核心是 0）回 null。 */
+export function coreRatioOf(acct: Account, view: MarketView): { s: number; bond: number; core: number } | null {
+  const pb = priceAt(view, acct.bondTicker);
+  const core = bucketValue(acct, view, 'core');
+  if (!(core > 0)) return null;
+  const sh = acct.lots.core[acct.bondTicker] ?? 0;
+  if (sh && pb === null) return null;
+  const bond = (pb === null ? 0 : sh * pb) + acct.cash;
+  return { s: bond / core, bond, core };
+}
+
+const pctW = (x: number): string => `${Math.round(x * 1000) / 10}%`;
+
+export function coreBarOf(acct: Account, view: MarketView): CoreBar | null {
+  const r = coreRatioOf(acct, view);
+  if (!r) return null;
+  const { bond, band } = coreCfg(acct.cfg);
+  const lo = Math.round((bond - band) * 1000) / 1000;
+  const hi = Math.round((bond + band) * 1000) / 1000;
+  const at: CoreBar['at'] = r.s < lo ? 'low' : r.s > hi ? 'high' : 'in';
+  const say = at === 'in' ? `在 ${pctW(lo)}～${pctW(hi)} 之內，不調` : `${at === 'low' ? '低於' : '高於'} ${pctW(at === 'low' ? lo : hi)}，下一份月報調回 ${pctW(bond)}`;
+  return {
+    s: r.s,
+    max: CORE_BAR_MAX,
+    segs: [
+      { from: 0, to: lo, label: '偏少，調回', kind: 'low' },
+      { from: lo, to: hi, label: '界線內，不調', kind: 'in' },
+      { from: hi, to: CORE_BAR_MAX, label: '偏多，調回', kind: 'high' },
+    ],
+    ticks: [
+      { at: lo, label: pctW(lo) },
+      { at: bond, label: `${pctW(bond)} 目標` },
+      { at: hi, label: pctW(hi) },
+    ],
+    at,
+    label: `核心裡 ${acct.bondTicker} 與現金占 ${pctW(r.s)}：${say}`,
+  };
+}
+
+/** 帳戶頁「核心比例」那一格（取代崩盤規則）：大字 = 現在的比例，下面一條橫條，再下面一句話。 */
+function coreStatus(d: Ready): AccountView['status'][number] {
+  const { acct, view } = d;
+  const bar = coreBarOf(acct, view);
+  const { bond, band } = coreCfg(acct.cfg);
+  const b = acct.bondTicker;
+  if (!bar) return { label: '核心比例', value: '算不出來', tone: 'ok', detail: `缺價格，暫時算不出 ${b} 與現金占核心的比例。`, coreBar: null };
+  const out = bar.at !== 'in';
+  return {
+    label: '核心比例',
+    value: `${b} 與現金 ${(bar.s * 100).toFixed(1)}%`,
+    tone: out ? 'warn' : 'ok',
+    detail: out
+      ? `目標 ${pctW(bond)}，界線 ${pctW(bond - band)}～${pctW(bond + band)}；現在${bar.at === 'low' ? '偏少' : '偏多'}，下一份月報會列一項調回。`
+      : `目標 ${pctW(bond)}（核心固定放 ${acct.cfg.coreTicker} 八成、${b} 與現金兩成）。每月月報日檢查，超出 ${pctW(bond - band)}～${pctW(bond + band)} 才調回。`,
+    coreBar: bar,
+  };
 }
 
 function coreHoldings(d: Ready, total: number): HoldingView[] {
@@ -769,26 +817,9 @@ function coreHoldings(d: Ready, total: number): HoldingView[] {
     const px = priceAt(view, t);
     const value = px === null ? 0 : sh * px;
     if (t === acct.cfg.coreTicker) {
-      const c = view.close[t];
-      const ma = c ? sma(c, view.i, 200) : NaN;
-      const rel = px === null ? NaN : px / ma - 1;
-      const span = Math.max(0.15, Math.ceil(Math.abs(rel) * 20) / 20 + 0.05);
-      out.push({
-        bucket: 'core',
-        ticker: t,
-        shares: sh,
-        price: px,
-        value,
-        pct: value / total,
-        state: acct.rule.crash ? '崩盤規則啟動中' : '正常',
-        detail: Number.isFinite(rel) ? `收盤${rel >= 0 ? '高於' : '低於'} 200 日均線 ${fmtPct(Math.abs(rel), 1)}；月報日低於均線會啟動崩盤規則` : '',
-        tone: acct.rule.crash ? 'alert' : rel < 0.03 ? 'warn' : 'ok',
-        gauge: Number.isFinite(rel) ? { from: -span, to: span, fromLabel: fmtSigned(-span), toLabel: fmtSigned(span), value: rel, valueLabel: fmtSigned(rel, 1), marks: [{ at: 0, label: '200 日均線' }], zones: [{ from: -span, to: 0 }], caption: '收盤相對 200 日均線' } : null,
-        meter: crashMeter(acct, rel),
-        target: null,
-      });
+      out.push({ bucket: 'core', ticker: t, shares: sh, price: px, value, pct: value / total, state: '核心 ETF', detail: '核心的八成（目標）', tone: 'ok', gauge: null, meter: null, target: null });
     } else {
-      out.push({ bucket: 'core', ticker: t, shares: sh, price: px, value, pct: value / total, state: '短債', detail: '崩盤規則啟動時，核心的一半放在這裡', tone: 'muted', gauge: null, meter: null, target: null });
+      out.push({ bucket: 'core', ticker: t, shares: sh, price: px, value, pct: value / total, state: '短債', detail: '核心的兩成（連同帳上現金）放在這裡', tone: 'muted', gauge: null, meter: null, target: null });
     }
   }
   out.push({ bucket: 'core', ticker: '現金', shares: 0, price: null, value: acct.cash, pct: acct.cash / total, state: '帳上現金', detail: acct.pendingWithdraw ? `出金 ${fmtMoney(acct.pendingWithdraw)} 還沒從券商轉出：券商現在會多顯示這筆` : '股利與交易剩下的零頭；月報時交給核心', tone: 'muted', gauge: null, meter: null, target: null });
@@ -827,9 +858,6 @@ export function accountView(d: Ready): AccountView {
     .filter((t) => acct.lots.mom[t])
     .map((t) => momHolding(d, t, total))
     .sort(byValue);
-  const corePx = priceAt(view, acct.cfg.coreTicker);
-  const coreC = view.close[acct.cfg.coreTicker];
-  const rel = corePx !== null && coreC ? corePx / sma(coreC, view.i, 200) - 1 : NaN;
   const w = acct.rule.volW;
   return {
     paper: acct.paper,
@@ -840,16 +868,10 @@ export function accountView(d: Ready): AccountView {
     buckets: [
       { id: 'own', name: '自選', value: bv.own, pct: bv.own / total, budget: r.own, who: '你選股票，慢規則當保險' },
       { id: 'mom', name: '動能', value: bv.mom, pct: bv.mom / total, budget: r.strat, who: '規則照排名選股' },
-      { id: 'core', name: '核心', value: bv.core, pct: bv.core / total, budget: r.core, who: `${acct.cfg.coreTicker}；其他兩桶減下來的錢都回到這裡` },
+      { id: 'core', name: '核心', value: bv.core, pct: bv.core / total, budget: r.core, who: `${acct.cfg.coreTicker} 八成、${acct.bondTicker} 與現金兩成；其他兩桶減下來的錢都照這個比例回到這裡` },
     ],
     status: [
-      {
-        label: '崩盤規則',
-        value: (acct.rule.crash ? '啟動中' : '未啟動') + coreOweText(d),
-        tone: acct.rule.crash || coreOweText(d) ? 'warn' : 'ok',
-        detail: Number.isFinite(rel) ? `${acct.cfg.coreTicker} 收盤${rel >= 0 ? '高於' : '低於'} 200 日均線 ${fmtPct(Math.abs(rel), 1)}。每月第一個交易日判斷一次。` : '每月第一個交易日判斷一次。',
-        meter: crashMeter(acct, rel),
-      },
+      coreStatus(d),
       {
         label: '動能部位',
         value: w === null ? '全額（還沒開始減碼）' : w >= 0.999 ? '全額' : Math.abs(w - 2 / 3) < 0.01 ? '2/3' : Math.abs(w - 1 / 3) < 0.01 ? '1/3' : '0',
@@ -918,6 +940,8 @@ export interface StateView {
   drafts?: Record<string, DraftState>;
   /** 首頁那一行市場摘要（T65，composite_layer_design §1.8）：最近 10 個交易日內有寫好的摘要時才有。示範模式、沒有帳戶時沒有。 */
   brief?: HomeBrief | null;
+  /** 首頁一次性的說明（崩盤規則退場，allocation_redesign §2.4）：按「知道了」之前一直有；沒有是 null。 */
+  notice?: NoCrashNote | null;
 }
 
 export interface ThesisTodoRow {
@@ -983,7 +1007,7 @@ export function stateView(d: SiteData): StateView {
   const first = todo[0];
   const firstN = first?.type === 'DECIDE' ? r.acct.notifs.find((n) => n.id === first.id) : undefined;
   const plan = firstN ? notifView(r, firstN) : null;
-  return { ...base, hasAccount: true, account, todo, recent, thesisTodo: thesisTodoOf(r.acct), drafts: d.drafts ?? {}, brief: d.brief ?? null, bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
+  return { ...base, hasAccount: true, account, todo, recent, thesisTodo: thesisTodoOf(r.acct), drafts: d.drafts ?? {}, brief: d.brief ?? null, notice: d.notice ?? null, bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
 }
 
 // ---------------------------------------------------------------- 紀錄
@@ -1064,9 +1088,6 @@ export interface CrashLogView {
   rows: CrashLogRow[];
 }
 
-/** 2000–2026 的固定文字（和崩盤項目上的那一列相同的數字）。 */
-export const CRASH_BASE_TEXT = '2000–2026 崩盤規則啟動 17 次，3 次是真的空頭（買回時便宜 13～34%）；13 次買回時更貴（+2～+14%），多付的那幾次就是保險費。';
-
 const CRASH_LATE_SUFFIX = '（AI 檢視在回覆之後才回來）';
 
 /**
@@ -1126,7 +1147,7 @@ export function crashLogView(acct: Pick<Account, 'notifs'>, records: ShadowRecor
   const sw = rows.filter((r) => !r.relist);
   const delays = sw.filter((r) => r.ai.startsWith('延後'));
   const better = delays.filter((r) => (r.at['1m']?.delay ?? 0) < 0);
-  return { head: sw.length ? `崩盤規則切換過 ${sw.length} 次；AI 說延後 ${delays.length} 次，其中 ${better.length} 次延後一個月比較好。` : '還沒有紀錄', rows };
+  return { head: sw.length ? `崩盤規則（已停用）切換過 ${sw.length} 次；AI 說延後 ${delays.length} 次，其中 ${better.length} 次延後一個月比較好。` : '還沒有紀錄', rows };
 }
 
 /**
