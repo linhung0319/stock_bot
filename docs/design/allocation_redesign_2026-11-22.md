@@ -541,6 +541,49 @@ T77：文獻開關不加、200 日線拿掉。所以「動能的開關」只剩�
 - **出清的股票**不會自動進候補。使用者可以自己加回候補；因為前提不成立而出清的，30 天內加進候補不自動草擬（現有的防線：前提剛被判不成立時不自動草擬，防找理由買回）。新的論點檔照舊帶「上一次持有時的論點」。
 - 候補的股票同時被動能買進：互不影響；進場時受跨桶上限限制。
 
+**實作前補的細節（T85 盤點，主持者 2026-11-23 定）**：T85 先派一個工作階段對照 0.17.0＋T80～T84 的程式逐句讀這一節，列出的缺口與衝突由主持者照下面定。實作分三段（甲、乙、丙，見最後），各段做的時候再補更細的。
+
+*資料與論點檔（甲）*
+
+1. **候補不是「0 股的自選」**：`acct.own` 的鍵會被價格必要清單（`requiredTickers`）、每日掃描與硬事件法庭（`scanTargets`）、慢規則（`dailyCheck`）、推薦比重的分母當成自選。所以照上面另立 `Account.watch?: Record<代號, WatchMeta>`（讀的時候 `?? {}`），「不進每日掃描、不開硬事件法庭、不跑新眼光」因此不用另外擋，但要有測試鎖住 `scanTargets`、`requiredTickers` 不含候補。
+2. **`WatchMeta` 要放得下論點檔**（一鍵採用會寫論點、前提）：論點檔的欄位用和 `OwnMeta` 一樣的名字——`fileId, premises, thesis, premiseSeq, webSources, buyNote, attnShown`；候補自己的——`addedAt, stdWeight: number | null（留空 = 列 F29 時用推薦值）, lastListed: string | null, entry?（成立、等月報的進場條件，見 16）, blocked?: { date, text }`。上面寫的 `note` 就存成 `buyNote: { text, at }`（討論包、草稿的 B1 不用改）。新建時 `premises = SYSTEM_DEFAULT_PREMISES`（種類是「只有預設」）。
+3. **共用入口 `fileMeta(acct, ticker)`**（`engine/account.ts`）：回 `{ meta, held } | null`，先找 `own` 再找 `watch`。論點檔的讀寫（`app/thesis.ts`、`ownDraft.ts`、`ownCheckAi.ts`、`ownConds.ts`、`ownAi.ts` 的條件部分、`ai/pack.ts` 的前提、討論包、`webEvidence`、`ledgerStore` 的開檔結案比對）改走它；只對持股有意義的（慢規則、審查、配置）不改。
+4. **編號**：照舊 `newFileId(代號, 加入候補的訊號日, 上一份結案的編號)`，進場後沿用。程式裡把編號的日期當「開始持有」的地方（`openedOn`、`openedOf`、`fileDate`）改看新欄位 `OwnMeta.heldSince`（進場那份快照的訊號日；沒有就用編號的日期，舊資料不變）；`build.since` 也用它，所以候補放 8 個月才進場不會一進場就「200 天沒補滿」。`OwnMeta.origin` 加 `'WATCH'`。畫面寫 `11/20 加入候補 → 2/3 進場`。論點檔紀錄加一種 `ENTERED`（`{ via: 'F29' | 'SELF', shares, state }`）。
+5. **開檔與結案紀錄**：`ownFilesOf`／`fileChanges` 把 `watch` 的編號一起算；同一個編號從 `watch` 搬到 `own` 不寫 OPEN／CLOSE。加候補寫 OPEN（`origin: 'WATCH'`）。
+6. **移除候補**：新函式 `removeWatch`，結案原因加 `'WATCH_REMOVED'`（`CLOSE_TEXT`、`CLOSE_VERB` 跟著加）。`ownClosed[代號]` 每檔只有一筆、同時是「上一次持有時的論點」的來源，候補移除照寫但多帶 `held?`：原本那一筆若是持有的結案就搬進去，`prevFileOf` 遇到 `WATCH_REMOVED` 改用 `held`，免得候補的論點被顯示成「上一次持有」。還沒回覆的 F29 取消；條件不用動。
+7. **30 天的防線要跨論點檔**：現有的「前提剛被判不成立不自動草擬」看的是同一份論點檔，新開的候補看不到舊的。`removeOwnPick` 把 `OwnMeta.brokenAt` 抄進 `ownClosed[代號].brokenAt`；候補的自動草擬與 F29 的程式檢查都看它（30 個日曆天）。手動按鈕照舊可以按。
+8. **5 檔上限**：只算 `acct.watch` 的鍵；引擎的 `addWatch` 與 API 各擋一次（422）。已在自選的代號不能加候補，候補中的代號不能用「新增自選」（都 422，訊息指到對的地方）。
+9. **價格放「追蹤」不放「必要」**：照「持股的方式」抓，但不能讓候補一檔打錯或下市就整個帳戶當天沒訊號——候補加進每日抓取的 `track` 與各處 `loadSeries`，不進 `requiredTickers`。沒有價格的候補不列 F29，頁面寫「價格抓不到」。加候補當下照「新增自選」的做法當場抓、檢查（不是核心標的、有收盤、歷史 ≥ 200 天）。
+10. **網站**：`AccountView.watch: WatchRow[]`（代號、加入日、那一句話、比重或推薦值、進場條件與現在的狀態、草稿狀態、沒提的原因、`lastListed`），跟著 `state` 回。寫入端點：`ops/watch-add`（`{ ticker, note?, stdWeight?, dry? }`）、`ops/watch-update`、`ops/watch-remove`、`ops/watch-price`（見 12）。詳細頁沿用 `#/holding/<代號>`（`holdingDetail` 多回 `watch`），編輯論點頁、草稿那一塊照用；`draftStates` 含候補。
+
+*進場條件、F29、候補 → 持股（乙）*
+
+11. **`ENTRY` 怎麼存**：`CondAction` 加 `'ENTRY'`（另立 `ENTRY_ACTIONS`；`sameActionKind` 分出場／加碼／進場三組；`notifyTier` 對它回 null，不發甲類）。**進場條件另算、不占你定的 8 條**；上限是草稿或你寫的非價格條件 3 條、價格條件 2 條。
+12. **價格條件**（你自己填的數字）：現在 `kind: 'PRICE'` 的意思是「只記錄、不監測」，這裡另開例外——只有「`action: 'ENTRY'`＋`check.type` 是 `price_close_below`（`level`）或 `price_drawdown_below`（`pct`）」才監測（`ConfirmMode` 加 `'PRICE'`，寫入就是 `ACTIVE`）；其他 `PRICE` 照舊只記錄。不經 AI 改寫：候補那一塊用結構化欄位（種類＋數字），程式組文字，`ops/watch-price` 整組取代價格那一組。`check` 帶 `asOf`，比對時用 `splits` 表在 `asOf` 之後的拆股換算 `level`（價格序列是拆股後的，不然 1 拆 2 會誤觸發）。
+13. **價格條件什麼時候算成立**：「程式每天比」只用來顯示（`現在 -27%，條件成立中`），不改狀態；真正決定列不列的是**月報訊號日的收盤**（`monthEndInputs` 裡新的 `prepareWatchEntries`）。列進 F29 那一刻才標成立（一次性）；月中成立過、訊號日不成立的不算用掉。結果放 `MonthlyContext.watchEntries`，月報暫停後重算沿用同一份。
+14. **F29 的硬傷檢查**：動能那一套規則偵測裡，被收購方、延遲申報是規則直接否決，但重編（8-K 4.02）、會計師辭任在動能是「開法庭」，候補沒有法庭。所以新純函式 `watchHardHits`：這四種只要是來自申報（新聞標題不算）、在 `HIT_WINDOW` 內就不提，持股頁寫原因；單日跳漲、EPS 背離、增資不擋。要連網，在 `prepareWatchEntries` 做。申報清單抓不到 → 這個月不提、下個月再看（買不急）。
+15. **F29 的程式檢查與股數**：新 `watchBuyFacts` 給 `buyAllowed`——候補沒有慢規則狀態、審查、硬事件標記，有意義的只有「30 天內前提被判不成立」（看 7 的 `ownClosed.brokenAt`）、跨桶 10%（砍到 0 不提）、沒有要買的股數。另外加一項（比照 §4.0，往保守的方向）：**這檔你定的財報類出場條件現在已經成立 → 不提**，寫原因。股數 `floor(stdWeight × 0.5 × 總資產 ÷ 價格)`，`stdWeight` 留空時列的當下用推薦值並寫在項目上；錢從核心照 80：20（`composeNotif` 已經會做）。自選比例設成 0% 時不列。90 天：`lastListed` 記列的那份月報的訊號日，選不做、照做沒買都算列過。項目 `f: 'F29'`、`kind: 'WATCH_ENTRY'`，選項 `DO`（預設）／`SKIP`，影子紀錄每次都記。要特別測：F29 的行是 `bucket: 'own'` 但 `rule.own` 還沒有這檔，是現在沒有的組合。
+16. **非價格的進場條件成立之後**：`notifyOwnCondition` 開頭對 `ENTRY` 分流成記進 `watch[t].entry`，等月報。被 90 天、硬傷、程式檢查擋下時**留到下個月再看**（進場條件是唯一的入口，丟掉就卡住），頁面寫原因；成立超過 100 天還沒列 → 丟掉，寫「要再用就重新定」。同一份月報同一檔只列一項，其他成立的在說明裡帶過、一起算用掉。
+17. **候補 → 持股**：新函式 `promoteWatch(acct, view, ticker, via)`：用 `newOwnMeta` 建骨架、蓋上候補的論點檔欄位（`fileId` 沿用）、`origin: 'WATCH'`、`heldSince`、`rule.own[t] = { applied, stdWeight: watch.stdWeight ?? 推薦值 }`，刪掉 `acct.watch[t]`，寫 `ENTERED`。
+    - **F29 照做**：`DO` 帶新效果 `WATCH_ENTER`，**只有快照的自選桶股數 > 0 才轉**；沒買的還是候補，照現有的「補做差額或就這樣」。轉過來的是 `BUILD`（`build = { since: heldSince, confirmBy: 'EARNINGS', misses: 0 }`），不問。
+    - **自己先買**（清單外買進、舊式分類、轉入自選、認養都算）：在 `ensureOwnMeta` 開頭攔，有候補就 `promoteWatch(…, 'SELF')`，不重複開檔；狀態 `STD` 加 `buildAsk`，持股頁對 `origin === 'WATCH'` **預選「先買一半」**（§4.1 表單上寫的「從候補名單進場的預設」）；還沒回覆的 F29 取消。F29 還沒回覆、你自己買了：對帳會當成照清單做了，走 F29 那條路，可以接受。
+    - **進場時已經比高點低 20% 以上**（價格條件「比高點低 25%」就是這種）：只有預設前提的照 §4.1 既有規則開在 `HALF`（目標一樣是標準的一半，補回看 200 日線），F29 標題寫明。**有論點的照 §3 字面：進場後的每日流程照常觸發 -20% 那一級（或已經到的更深一級）的跌幅審查**——那是「這檔低於高點 20%、該檢查論點」的訊號，D2、D3 不因為是剛買的而例外；結果是「前提都沒有被判不成立」而且過 §4.4 時，通知上照 §4.4 給 `BUILD` 的「補滿」選項（預設不動）。主持者考慮過「進場當下那一級不審」，那會改到 D2、D3 的字面，沒有採用。
+    - **進場條件的狀態**：條件在資料庫、不跟帳戶版本走，快照當下不改；監測對「代號已在 `acct.own`」的 `ENTRY` 一律略過，下一次每日流程（`syncWatchConds`）補寫：列在 F29 上的那一條標成立，其他撤下（原因「已進場」或「你自己先買了」）。這樣復原快照時帳戶和條件不會不一致。
+
+*草稿與非價格的進場條件（丙）*
+
+18. **草稿放寬**：`startOwnDraft`、`requestOwnDraft` 改走 `fileMeta`；`startAutoDrafts` 加一段跑 `acct.watch`（加入 7 天內、沒論點、沒草稿、試不到 2 次、7 的 30 天防線），受 `DRAFT_AUTO_DAILY` 限制（一次加 5 檔會分幾天開）；T72 的七種觸發對候補全部不開（多半要審查或持有；「只有預設前提」由加入時那一次負責，「論點滿一年」由 20 涵蓋）。時機是每日第一次流程，頁面寫清楚。
+19. **草稿的證據包與輸出**：候補版的數字——R1「還沒持有（候補，M/D 加入）」、R2「打算放的比重」、R4「自選合計與預算」，沒有 R3；B1 用 `buyNote`；上一份論點檔照放。題目加候補的說法，輸出多 `payload.entries` 1～3 條（`action: 'ENTRY'`、`kind` 只有 `XBRL`、`EVENT`，格式檢查用 `conditionFormatIssue`，寫了價格條件整份退回）。持有中的草稿不收 `entries`；候補的草稿照樣可以有出場與加碼條件（進場後才生效，見 21）。`own_draft_v4` 還沒部署，直接改、不升版。F29 旁邊顯示的「今天沒持股的話會不會買」就是草稿的 `would_buy_today`，寫明是反方的答案與草稿日期。
+20. **一鍵採用**：`draftAdoptPlan` 把 `entries` 接上（`direction: 'UP'`、`origin: 'AI_DRAFT_ACCEPTED'`），整組取代非價格的進場條件；**你填的價格條件不在整組取代的範圍**（AI 草稿永遠沒有價格條件）。你自己寫的非價格進場條件：編輯論點頁對候補多一塊「進場條件」，走改寫（`own_check_v7` 還沒部署，直接改）；「只有預設前提的候補只能有價格條件」在 API 擋。
+21. **候補期間的出場與加碼條件休眠**：成立的判斷對候補只看 `ENTRY`（`ownXbrlConditions`、F25），不然一次性的條件會在沒有持股時被用掉；進場後的下一次每日流程補比一次財報類條件。
+22. **資料抓取**：EDGAR 申報清單的代號 = 掃描目標 ∪ 候補（去重，`edgar:<代號>` 的已看標記共用）；`classifyFresh`、`applyRuleEvents`、`startEventRuns` 照舊只吃掃描目標。XBRL（`ownFacts`）加上有財報類進場條件的候補；採用草稿當下用草稿那份季度表比一次，已成立就直接標成立。明確不加：財報新聞稿當天確認、個股大跌、提前審查、定期審查、部位大小與集中度、漲太多的提示、產業 ETF。
+23. **非價格進場條件的確認**：確認來源有申報的，照持有中的做法在新申報出現時開 F25（新函式 `startWatchRuns`，`aiStep` 在 `startOwnRuns` 後呼叫）。只有法說會、新聞、網頁來源的（設計上面第 3 點「月底、有新證據時用一次條件確認任務判」）：現有的 `OWN_CONDITION`（`own_condition_v1`）題目寫死只讀申報原文、沒有取文件，判不了——**升 `own_condition_v2`**：文件 = 上次確認之後的 8-K、10-Q、10-K，加 `buildDocMenu` 的目錄與取文件，引用規則沿用 `condCite`，成立依據記 `WEB_VOTE`。月底檢查點那天開，「有新證據」= 這份論點檔上一次條件確認之後有新的 8-K／10-Q／10-K，或條件指名網頁來源而且距上次滿 25 天（`WEB_DUE_DAYS`）；都沒有就不開。`conditionPack` 對 `ENTRY` 寫「進場條件（成立時：候補進場，先買一半）」。
+24. **一年沒進場**：`Attention` 加 `src: 'watch'` 與鍵 `WATCH_STALE`（`every: 12`，`since = addedAt + 365 天`，記在 `watch[t].attnShown`，連到帳戶頁）。條件都用掉的寫 `…一年了，目前沒有進場條件。要重新定，還是移除？`。候補的其他「要看的事」只留「草稿好了」。
+25. **討論包與 `/thesis`**：`/admin/own/list` 帶候補並標記，討論包開場加一種「還沒持有，放在候補」；貼回的區塊對候補不收進場條件（進場條件在網站改）。
+26. 不用 migration：`own_conditions.action` 沒有 CHECK、`kind` 本來就有 `PRICE`、`own_drafts.file_id` 可空；`watch` 在帳戶狀態的 JSON 裡。
+
+*分段*：甲＝1～10（候補這個物件、論點檔共用入口、網站那一塊，不碰 AI、不碰月報）；乙＝11～17（價格條件、F29、候補轉持股，碰帳本，只靠價格條件就能把整條路走完）；丙＝18～25（草稿、非價格的進場條件、月底確認、一年的提醒、討論包）。依序做，每段驗收過才做下一段。
+
 ### 4.6 照使用者的角度走一遍
 
 | 情況 | 會發生什麼 | 對應 |
