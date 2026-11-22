@@ -512,7 +512,7 @@ a.step-in:hover, button.step-in:hover { color: #fff; }
 .cb-dot { position: absolute; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--core) 60%, transparent), 0 3px 8px rgba(0, 0, 0, 0.6); }
 .corebar[data-at="low"] .cb-dot, .corebar[data-at="high"] .cb-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 65%, transparent), 0 3px 8px rgba(0, 0, 0, 0.6); }
 .cb-labels { display: flex; gap: 3px; margin-top: 6px; font-size: 11.5px; line-height: 1.4; color: var(--ink-3); }
-.cb-labels span { text-align: center; min-width: 0; }
+.cb-labels span { text-align: center; min-width: 0; white-space: nowrap; }
 .corebar[data-at="low"] .cb-labels [data-k="low"], .corebar[data-at="high"] .cb-labels [data-k="high"], .corebar[data-at="in"] .cb-labels [data-k="in"] { color: var(--ink); font-weight: 700; }
 .tile .meter-bar { margin-bottom: 20px; }
 .legend { display: flex; align-items: center; gap: 16px; margin: 0 0 26px; padding: 14px 18px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); font-size: 13.5px; color: var(--ink-2); }

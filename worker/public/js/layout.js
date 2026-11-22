@@ -2,6 +2,7 @@
 // 右邊在待辦與帳戶頁是一組儀表磚，在月報與「我要…」的流程是「合起來要下幾張單」的主控台（CTA 在它底部）。
 import { day, h, money, pct } from './dom.js';
 import { bubbleKids, mascotEl } from './slime.js';
+import { corebarPos } from './corebar-pos.js';
 
 const WD = ['日', '一', '二', '三', '四', '五', '六'];
 /** 2026-12-01 → 12 月 1 日 · 星期二 */
@@ -87,14 +88,13 @@ function bucketNote(a, id) {
  */
 export function coreBarEl(c) {
   if (!c) return null;
-  const at = (x) => `${((x / c.max) * 100).toFixed(2)}%`;
-  const dot = Math.min(1, Math.max(0, c.s / c.max)) * 100;
+  const pos = corebarPos(c);
   return h(
     'div',
     { class: 'corebar', 'data-at': c.at, role: 'img', 'aria-label': c.label },
-    h('div', { class: 'cb-ticks' }, c.ticks.map((t) => h('span', { style: `left:${at(t.at)}` }, t.label))),
-    h('div', { class: 'cb-track' }, c.segs.map((s) => h('i', { class: 'cb-seg', 'data-k': s.kind, style: `flex:${Math.round((s.to - s.from) * 1000)}` })), h('b', { class: 'cb-dot', style: `left:${dot.toFixed(2)}%` })),
-    h('div', { class: 'cb-labels' }, c.segs.map((s) => h('span', { 'data-k': s.kind, style: `flex:${Math.round((s.to - s.from) * 1000)}` }, s.label))),
+    h('div', { class: 'cb-ticks' }, c.ticks.map((t, k) => h('span', { style: `left:${pos.ticks[k]}%` }, t.label))),
+    h('div', { class: 'cb-track' }, c.segs.map((s, k) => h('i', { class: 'cb-seg', 'data-k': s.kind, style: `flex:${pos.flex[k]} 1 0` })), h('b', { class: 'cb-dot', style: `left:${pos.dot}%` })),
+    h('div', { class: 'cb-labels' }, c.segs.map((s, k) => h('span', { 'data-k': s.kind, style: `flex:${pos.flex[k]} 1 0` }, s.label))),
   );
 }
 

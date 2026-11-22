@@ -139,3 +139,21 @@ describe('T81：首頁一次性的說明（§2.4）', () => {
     }
   });
 });
+
+describe('T81：核心比例橫條的位置算法（public/js/corebar-pos.js）', () => {
+  it('刻度與白點是占整條的百分比、各段 flex 是千分比整數（加總 1000，才拉得滿一行）', async () => {
+    const { corebarPos, barPct } = (await import('../public/js/corebar-pos.js' as string)) as { corebarPos: (c: unknown) => { ticks: number[]; dot: number; flex: number[] }; barPct: (x: number, max: number) => number };
+    const acct = { cfg: DEFAULT_CONFIG, bondTicker: 'SGOV', cash: 0, lots: { own: {}, mom: {}, core: { VOO: 8, SGOV: 20 }, unc: {} } } as unknown as Account;
+    const view = { date: '2026-11-30', i: 0, close: { VOO: [100], SGOV: [100] } } as unknown as MarketView; // VOO 800、SGOV 2000 → 71%
+    const high = corebarPos(coreBarOf(acct, view)!);
+    expect(high.ticks).toEqual([37.5, 50, 62.5]);
+    expect(high.flex).toEqual([150, 100, 150]);
+    expect(high.dot).toBe(100); // 超過 40% 貼在最右
+    const mid = corebarPos(coreBarOf({ ...acct, lots: { ...acct.lots, core: { VOO: 8, SGOV: 2 } } } as Account, view)!); // 200／1000 = 20%
+    expect(mid.dot).toBe(50);
+    const left = corebarPos(coreBarOf({ ...acct, lots: { ...acct.lots, core: { VOO: 8, SGOV: 1.98 } } } as Account, view)!);
+    expect(left.dot).toBeLessThan(50);
+    expect(left.dot).toBeGreaterThan(37.5);
+    expect(barPct(-1, 0.4)).toBe(0);
+  });
+});
