@@ -16,13 +16,16 @@ function weightOf(input) {
 
 const weightText = (x) => (x.stdWeight !== null ? `打算放 ${pct(x.stdWeight)}` : x.recWeight !== null ? `留空（推薦 ${pct(x.recWeight)}）` : '比重留空');
 
-/** 進場條件與現在的狀態（「比 52 週高點低 25% 以上：現在 -27.0%，條件成立中…」）；沒有條件時一句話。 */
-function entryList(x) {
+/**
+ * 進場條件與現在的狀態（「比 52 週高點低 25% 以上：現在 -27.0%，條件成立中…」）；沒有條件時一句話。
+ * retire（T85 丙段，詳細頁才給）：非價格、還在監測的進場條件後面放「撤下」（價格條件在下面的表單改）。
+ */
+function entryList(x, retire = null) {
   if (!x.entries.length) return h('p', { class: 'small faint watch-entries', style: 'margin:6px 0 0' }, '還沒有進場條件：沒有條件就不會列進月報。');
   return h(
     'ul',
     { class: 'small watch-entries', style: 'margin:6px 0 0;padding-left:1.4em' },
-    x.entries.map((e) => h('li', null, h('span', null, `進場條件「${e.text}」`), '：', h('span', { class: /成立中|等下一份月報/.test(e.state) ? 'tone-ok' : 'dim' }, e.state))),
+    x.entries.map((e) => h('li', null, h('span', null, `${e.price ? '價格條件' : '進場條件'}「${e.text}」`), '：', h('span', { class: /成立中|等下一份月報/.test(e.state) ? 'tone-ok' : 'dim' }, e.state), retire && e.retire ? [' ', linkButton('撤下', () => retire(e))] : null)),
   );
 }
 
@@ -82,7 +85,18 @@ function priceForm(ctx, d, fail) {
   return [
     h('h5', { style: 'margin-top:18px' }, '進場條件'),
     h('p', { class: 'small', style: 'margin:2px 0 6px' }, '條件到了，下一份月報會列一項「候補進場：先買一半」，預設照做；買進、在快照的自選那一桶填了股數，這檔就從候補轉成持股，論點沿用。沒有進場條件就不會列。'),
-    entryList(x),
+    entryList(x, async (e) => {
+      if (!window.confirm(`撤下進場條件「${e.text}」？之後不再監測它。`)) return;
+      try {
+        await api.post('/ops/own-condition', { ticker: d.ticker, id: e.id, op: 'retire' });
+        toast('撤下了');
+        ctx.refresh();
+      } catch (err) {
+        fail(err);
+      }
+    }),
+    // 非價格的進場條件（T85 丙段，§4.5 第 20 點）：草稿或你在編輯論點頁寫；只有系統預設前提時只能有價格條件
+    h('p', { class: 'small faint', style: 'margin:6px 0 0' }, x.kind === 'THESIS' ? '非價格的進場條件（財報門檻、申報或網頁事件）在「編輯論點」的「進場條件」那一塊寫，或採用 stock bot 的草稿；最多 3 條。' : '非價格的進場條件要先有你自己的前提：可以等 stock bot 的草稿（加進候補之後自動草擬一次），或在「編輯論點」自己寫。', ' ', h('a', { href: `#/h/${encodeURIComponent(d.ticker)}/thesis` }, '編輯論點')),
     x.blocked ? h('p', { class: 'small tone-warn', style: 'margin:6px 0 0' }, x.blocked) : null,
     x.lastListed ? h('p', { class: 'small faint', style: 'margin:4px 0 0' }, `上次列進月報：${day(x.lastListed, true)}（同一檔每 90 天最多列一次）。`) : null,
     h('h5', { style: 'margin-top:14px' }, `你填的價格條件（最多 ${x.priceMax} 條）`),

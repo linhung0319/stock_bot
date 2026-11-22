@@ -303,6 +303,11 @@ export interface ThesisFile {
    * keys 是哪幾件觸發的（draftKeyOf 的鍵）；at 開的時間；status 那一次草稿現在的狀態。沒有是空陣列（舊的呼叫端、示範模式：undefined）。
    */
   autoDrafts?: AutoDraftRec[];
+  /**
+   * 候補的進場條件（allocation_redesign §4.5；T85 丙段）：候補的論點檔才有（loadConditions 的 'only'，含你填的價格條件）。
+   * 持股、示範模式、舊的呼叫端沒有（undefined）。討論包的「進場條件」一節、一年的提醒（WATCH_STALE）用。
+   */
+  entries?: FileCondition[];
 }
 
 /** 一次「要看的事」觸發的自動草稿（T72）。 */
@@ -563,6 +568,7 @@ export async function thesisFile(db: D1Database, acct: Pick<Account, 'own'> & Pa
     unchecked,
     draft: await readyDraftOf(db, fileId),
     autoDrafts: await loadAutoDrafts(db, fileId),
+    ...(own ? {} : { entries: await loadConditions(db, ticker, fileId, 'only') }),
   };
 }
 
@@ -1842,12 +1848,51 @@ export function dueAttention(hits: AttnHit[], shown: Record<string, Record<strin
 /** 存進月報、給畫面的形狀（拿掉頻率用的欄位）。 */
 export const toAttention = (x: AttnHit): Attention => ({ ticker: x.ticker, kind: x.kind, text: x.text, since: x.since, src: x.src ?? 'own', ...(x.link ? { link: x.link } : {}), ...(x.drafted ? { drafted: x.drafted } : {}) });
 
+/** 候補滿幾個日曆天沒進場就列「要看的事」（allocation_redesign §4.5「其他」第 2 點）。 */
+export const WATCH_STALE_DAYS = 365;
+
+/**
+ * 候補的「要看的事」（allocation_redesign §4.5 第 24 點；純函式）：只有兩種——
+ *   WATCH_STALE  滿一年沒有進場：每年一次（every 12；since = 加入候補那天 + 365 天）。進場條件都用掉（沒有還在監測的）時換一句。
+ *   DRAFT_READY  草稿好了（和自選同一種）。
+ * 持股那幾種（沒有論點、減半中、審查沒有一致結論…）都不適用：候補沒有審查，「只有預設前提」由加入時那一次自動草擬負責。
+ * files：各檔候補的論點檔（thesisFile 組的，entries 是進場條件）。
+ */
+export function watchAttention(files: ThesisFile[], acct: Partial<Pick<Account, 'watch'>>, view: Pick<MarketView, 'date'>): AttnHit[] {
+  const out: AttnHit[] = [];
+  for (const file of files) {
+    const w = acct.watch?.[file.ticker];
+    if (!w) continue;
+    const t = file.ticker;
+    if (file.draft) {
+      const d = file.draft;
+      out.push({ ticker: t, kind: 'DRAFT_READY', src: 'watch', key: `DRAFT_READY@${d.runId}`, every: null, since: taipeiDay(d.at), text: `${t}（候補）的論點草稿好了，等你看：草稿裡有進場條件（${Number(d.until.slice(5, 7))}/${Number(d.until.slice(8, 10))} 之後不再列）` });
+    }
+    const since = plusDays(w.addedAt, WATCH_STALE_DAYS);
+    if (view.date >= since) {
+      const live = (file.entries ?? []).some((c) => LIVE_CODES.includes(c.status));
+      out.push({
+        ticker: t,
+        kind: 'WATCH_STALE',
+        src: 'watch',
+        key: 'WATCH_STALE',
+        every: 12,
+        since,
+        text: live ? `${t} 在候補名單一年了，進場條件還沒成立。要留著、改條件，還是移除？` : `${t} 在候補名單一年了，目前沒有進場條件。要重新定，還是移除？`,
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * 每日流程在產生月報前（own_thesis §3.6.6）：組每檔自選的論點檔、算這個月該列的，並更新 attnShown。
+ * 候補（T85 丙段，§4.5 第 24 點）一起算：一年的提醒與草稿好了，頻率記在 watch[t].attnShown。
  * 回傳新的帳戶（acct 不改）與該列的清單。讀資料庫（論點檔），所以不在引擎裡。
  */
 export async function monthOwnAttention(db: D1Database, acct: Account, view: MarketView): Promise<{ acct: Account; items: Attention[] }> {
   const files = (await Promise.all(Object.keys(acct.own).map((t) => thesisFile(db, acct, t, view.date)))).filter((f): f is ThesisFile => !!f);
+  const watchFiles = (await Promise.all(Object.keys(acct.watch ?? {}).filter((t) => !acct.own[t]).map((t) => thesisFile(db, acct, t, view.date)))).filter((f): f is ThesisFile => !!f);
   // 集中度（T35）：每個月算一次，是一件事不屬於哪一份論點檔，所以不在 OWN_ATTN 裡；算不出來（價格不齊）這個月不列
   const conc = (() => {
     try {
@@ -1860,22 +1905,29 @@ export async function monthOwnAttention(db: D1Database, acct: Account, view: Mar
   // 漲太多的提示（T65，composite_layer_design §1.7）：要產業 ETF 兩年的價格，所以和集中度一樣在 OWN_ATTN 外面算；算不出來這個月不列
   const runup = await loadRunupHits(db, acct, view.date).catch((e) => (console.error('漲太多的提示算不出來', e), []));
   const { due, shown } = dueAttention(
-    [...ownAttention(files, acct, view), ...conc, ...runup],
-    Object.fromEntries(Object.entries(acct.own).map(([t, m]) => [t, m.attnShown])),
+    [...ownAttention(files, acct, view), ...conc, ...runup, ...watchAttention(watchFiles, acct, view)],
+    { ...Object.fromEntries(Object.entries(acct.watch ?? {}).map(([t, m]) => [t, m.attnShown])), ...Object.fromEntries(Object.entries(acct.own).map(([t, m]) => [t, m.attnShown])) },
     view.date,
   );
   if (!due.length) return { acct, items: [] };
   const next = clone(acct);
-  for (const [t, s] of Object.entries(shown)) if (next.own[t]) next.own[t].attnShown = s;
+  for (const [t, s] of Object.entries(shown)) {
+    if (next.own[t]) next.own[t].attnShown = s;
+    else if (next.watch?.[t]) next.watch[t].attnShown = s;
+  }
   return { acct: next, items: due.map(toAttention) };
 }
 
 /**
  * 持股頁：這一檔現在成立的全部（不看頻率；集中度那一件組內每一檔自選都顯示）。不是自選回傳空的。
- * 候補也是空的：持股的那幾種（沒有論點、減半中、集中度…）不適用；候補自己的「要看的事」是 T85 丙段（allocation_redesign §4.5 第 24 點）。
+ * 候補：持股的那幾種（沒有論點、減半中、集中度…）不適用，只有候補自己的兩種（watchAttention：一年沒進場、草稿好了；§4.5 第 24 點）。
  */
 export async function holdingAttention(db: D1Database, acct: Account, view: MarketView, ticker: string): Promise<Attention[]> {
-  if (!acct.own[ticker]) return [];
+  if (!acct.own[ticker]) {
+    if (!acct.watch?.[ticker]) return [];
+    const wf = await thesisFile(db, acct, ticker, view.date);
+    return wf ? watchAttention([wf], acct, view).map(toAttention) : [];
+  }
   const file = await thesisFile(db, acct, ticker, view.date);
   if (!file) return [];
   const conc = (() => {

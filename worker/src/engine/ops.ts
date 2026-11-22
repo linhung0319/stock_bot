@@ -1177,7 +1177,7 @@ export const WATCH_NOTE_MAX = 300;
 /**
  * 加一檔候補（§4.5「怎麼加」）：開一份論點檔（編號照舊 `<代號>@<訊號日>`，進場後沿用），前提是系統預設的三條（種類「只有預設」）。
  * note：「為什麼想買」→ buyNote（不是前提）；stdWeight：打算放的標準比重，沒填是 null（列進場項目時用推薦值）。
- * 不下單、不發通知、不開任何 AI（自動草擬是 T85 丙段）。最多 MAX_WATCH 檔；已在自選、已在候補、核心的標的不能加。
+ * 不下單、不發通知（加入 7 天內的第一次每日流程自動草擬一次，T85 丙段，src/app/ownDraft.ts 的 startWatchDrafts）。最多 MAX_WATCH 檔；已在自選、已在候補、核心的標的不能加。
  */
 export function addWatch(acct0: Account, view: MarketView, ticker: string, opt: { note?: string | null; stdWeight?: number | null } = {}): Account {
   const acct = clone(acct0);

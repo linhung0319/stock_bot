@@ -1,6 +1,6 @@
 // 網站的 API（T8）。/api/* 是真實帳本，/demo/api/* 是示範資料；兩邊是同一組端點。
 // 每個會改帳戶的端點都是：讀帳戶與市場 → 呼叫引擎的純函式 → 替新通知寫下理由 → 存檔。
-import { DraftError, adoptOwnedCount, adoptPeers, draftAdoptPlan, draftViewOf, peerSkipText, type AdoptPlan, type DraftRow, type DraftUse } from '../ownDraft';
+import { DraftError, adoptEntryCount, adoptOwnedCount, adoptPeers, draftAdoptPlan, draftViewOf, peerSkipText, type AdoptPlan, type DraftRow, type DraftUse } from '../ownDraft';
 import { DRAFT_LIMITS, type OwnDraft } from '../../ai/ownDraft';
 import type { AdoptCondition } from '../ownCheckAi';
 import {
@@ -69,7 +69,7 @@ import { DISCUSSION_MODES, LIVE_CONDITION_CODES, THESIS_LIMITS, parseThesisBlock
 import type { ExitLine } from '../../ai/ownCheck';
 import { demoDiscussion } from '../discussion';
 import type { ThesisLogInput } from '../ledgerStore';
-import { COND_ACTIONS, MAX_OWNED, isAddAction, ruleResponseLogs, withRiskSeen, type CondAction } from '../thesis';
+import { COND_ACTIONS, MAX_OWNED, fileKind, isAddAction, isEntryAction, ruleResponseLogs, withRiskSeen, type CondAction } from '../thesis';
 import { RISK_SEEN_DAYS } from '../../ai/freshEyes';
 import { StaleExitsError } from '../ownCheckAi';
 import { thesisReviewHeld } from '../ownAi';
@@ -432,6 +432,25 @@ export function exitsOf(v: unknown): ExitLine[] {
   return out;
 }
 
+/** 候補的非價格進場條件最多幾條（同 watchEntry.ts 的 MAX_ENTRY_OTHER）。 */
+const MAX_ENTRY_LINES = 3;
+
+/**
+ * 編輯論點頁的「進場條件」那一塊（候補才有；allocation_redesign §4.5 第 20 點）：[{ text }] 或字串陣列 → 動作 ENTRY 的幾行，最多 3 條。
+ * 沒送（undefined）= 不動進場條件（貼回討論、管理路徑存論點時不會把它們撤下）；空陣列 = 全部拿掉。價格條件不在這裡（候補那一塊填數字）。
+ */
+export function entriesOf(v: unknown): ExitLine[] | null {
+  if (v === undefined || v === null) return null;
+  if (!Array.isArray(v)) throw new SiteError(422, 'entryConditions 要是陣列');
+  const out: ExitLine[] = [];
+  for (const x of v) {
+    const t = text(typeof x === 'string' ? x : ((x ?? {}) as Record<string, unknown>).text, '進場條件', THESIS_LIMITS.exit, false);
+    if (t) out.push({ text: t, action: 'ENTRY' });
+  }
+  if (out.length > MAX_ENTRY_LINES) throw new SiteError(422, `進場條件最多 ${MAX_ENTRY_LINES} 條（價格條件另算，在候補那一塊填）`);
+  return out;
+}
+
 /** 網頁證據的來源（T52）：檢查不過的訊息直接給使用者看（422）。 */
 function sourcesOf(v: unknown, tk: string): OwnWebSources | null {
   try {
@@ -441,11 +460,15 @@ function sourcesOf(v: unknown, tk: string): OwnWebSources | null {
   }
 }
 
-/** 這檔目前監測中的你定的條件（T42 整組取代的範圍；示範模式沒有條件）。 */
-async function liveConditions(backend: SiteBackend, tk: string): Promise<LiveCondition[]> {
+/**
+ * 這檔目前監測中的你定的條件（T42 整組取代的範圍；示範模式沒有條件）。
+ * entries（T85）：候補另外帶非價格的進場條件（這次有送進場條件、或採用的草稿有進場條件時才在整組取代的範圍裡）。
+ */
+async function liveConditions(backend: SiteBackend, tk: string, entries = false): Promise<LiveCondition[]> {
   if (!backend.ai) return [];
   const rows = await backend.ai.monitor(tk);
-  return rows.filter((r) => r.id > 0 && r.owned && (LIVE_CONDITION_CODES as readonly string[]).includes(r.code)).map((r) => ({ id: r.id, text: r.text, action: r.action, status: r.status, code: r.code }));
+  const own = rows.filter((r) => r.id > 0 && r.owned && (LIVE_CONDITION_CODES as readonly string[]).includes(r.code)).map((r) => ({ id: r.id, text: r.text, action: r.action, status: r.status, code: r.code }));
+  return entries ? [...own, ...(await backend.ai.entryLive(tk))] : own;
 }
 
 /** 編輯論點頁送來的 risk：{ runId, k }（哪一次執行的第幾條「前提以外的風險」）；格式不對 → null。 */
@@ -538,6 +561,9 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
     .map((o) => riskRefOf(o.risk))
     .filter((x): x is { runId: string; k: number } => !!x);
   const exitsIn = adopt ? [] : exitsOf(b.exitConditions);
+  // 進場條件（T85，候補的編輯論點頁）：有送才在整組取代的範圍裡；採用的草稿有進場條件時也是（§4.5 第 20 點）
+  const entriesIn = adopt ? null : entriesOf(b.entryConditions);
+  const withEntries = entriesIn !== null || (!!adopt && [...adopt.plan.add, ...adopt.plan.rewrite, ...adopt.plan.keep].some((x) => isEntryAction(x.action)));
   const source0 = adopt ? 'DRAFT' : b.source === 'DISCUSSION' ? 'DISCUSSION' : 'TYPED';
   const replyTo = b.replyTo === undefined || b.replyTo === null || b.replyTo === '' ? null : Number(b.replyTo);
   const dry = b.dry === true;
@@ -545,8 +571,8 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
   const wsIn = adopt || b.webSources === undefined ? undefined : sourcesOf(b.webSources, tk);
   const wsChecked = adopt ? (adopt.checks ? { at: new Date().toISOString(), items: adopt.checks } : null) : wsIn && !dry ? { at: new Date().toISOString(), items: backend.probeSources ? await backend.probeSources(wsIn) : demoProbe(wsIn) } : null;
   // 出場條件整組取代（T42）：和監測中的比，有沒有改動
-  const live = await liveConditions(backend, tk);
-  const plan = planExits(exitsIn, live);
+  const live = await liveConditions(backend, tk, withEntries);
+  const plan = planExits([...exitsIn, ...(entriesIn ?? [])], live);
   // 採用草稿（T70）：出場條件直接寫進條件，只有監測不了格式的才送改寫；字和監測中的一樣的沿用，動作不同的直接改
   const ap = adopt?.plan ?? null;
   // T71：採用之後你定的條件不能超過 8 條（預覽與存檔都擋，存檔前就擋：帳戶和條件分兩次寫，不能存了論點才發現條件寫不進去）。
@@ -554,9 +580,10 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
   if (ap) {
     const n = adoptOwnedCount(ap, live);
     if (n > MAX_OWNED) throw new SiteError(422, `採用這份草稿之後，你定的條件會有 ${n} 條（上限 ${MAX_OWNED} 條），這份草稿不能採用。按「不用這份草稿」，或到編輯論點自己寫出場條件。`);
+    if (adoptEntryCount(ap) > MAX_ENTRY_LINES) throw new SiteError(422, `採用這份草稿之後，進場條件會超過 ${MAX_ENTRY_LINES} 條，這份草稿不能採用。`);
   }
   const exitsChanged = ap ? ap.add.length + ap.rewrite.length + ap.retire.length > 0 : plan.changed;
-  const exits: ExitLine[] = ap ? ap.rewrite.map((x) => ({ text: x.text, action: x.action })) : plan.changed ? exitsIn : [];
+  const exits: ExitLine[] = ap ? ap.rewrite.map((x) => ({ text: x.text, action: x.action })) : plan.changed ? [...exitsIn, ...(entriesIn ?? [])] : [];
   const actionChanged: { id: number; text: string; action: CondAction; was: CondAction | null }[] = ap
     ? ap.keep.flatMap((k) => (k.was && k.was !== k.action ? [{ id: k.id, text: k.text, action: k.action, was: k.was }] : []))
     : plan.changed
@@ -576,6 +603,8 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
   const r = await mutate(backend, adopt ? `${tk} 採用草稿` : `${tk} 編輯論點`, [], (d) => {
     // 候補也有論點檔，可以手動編輯（allocation_redesign §4.5 第 10 點）
     if (!fileMeta(d.acct, tk)) throw new SiteError(422, `${tk} 不在自選裡，也不在候補名單裡`);
+    // 進場條件只有候補有（§4.5 第 20 點）
+    if (entriesIn !== null && fileMeta(d.acct, tk)!.held) throw new SiteError(422, `${tk} 已經是持股，沒有進場條件了；重新整理看看`);
     // 對乙類通知的回應（修正論點，own_thesis §1.10）：那則通知要還沒回覆、而且有這檔的乙類項目
     if (replyTo !== null) {
       const n = findNotif(d.acct, Number.isInteger(replyTo) ? replyTo : -1);
@@ -600,6 +629,8 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
     const rv = replyTo !== null && !dry ? reviseBreak(out.acct, d.view, replyTo, tk, out.mapping.edited.map((e) => e.id)) : null;
     if (rv?.ok) out = { ...out, acct: rv.acct };
     const meta = fileMeta(out.acct, tk)!.meta;
+    // 只有預設前提的候補只能有價格條件（§4.5 第 3、20 點）：非價格的進場條件要在你自己的前提之下才判得了
+    if (entriesIn?.length && fileKind(meta) === 'DEFAULT_ONLY') throw new SiteError(422, '只有系統預設前提的候補只能有價格條件：先寫你自己的前提（為什麼想買、什麼事要繼續成立），才能定非價格的進場條件；價格條件在候補那一塊填數字。');
     const wsBefore = meta.webSources ?? null;
     // 採用草稿（T70，§2.3）：同業整組換成草稿的（EDGAR 對得到的才存）；之前存的網站（T68 起不讀）原樣留著
     const wsNew: OwnWebSources | null | undefined = adopt ? (adopt.peers.save.length || wsBefore?.domains.length ? { peers: adopt.peers.save, domains: wsBefore?.domains ?? [] } : null) : wsIn;
@@ -617,7 +648,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
     if (adopt && dp) {
       // 草稿的第幾條前提 → 存檔後的編號（出場條件的 premise_index 用）
       const idOf = (k: number | null) => (k !== null && dp.premises[k] ? (meta.premises.find((p) => premiseKey(p.text) === premiseKey(dp.premises[k].text))?.id ?? null) : null);
-      adoptAdd = adopt.plan.add.map((x) => ({ ticker: tk, runId: adopt.row.run_id, condId: `D${x.k + 1}`, direction: isAddAction(x.action) ? ('UP' as const) : ('DOWN' as const), kind: x.kind, text: x.text, check: x.check, tierIfMet: x.action === 'EXIT' || x.action === 'HALF' ? x.action : null, manual: false, action: x.action, premiseId: idOf(x.premiseIndex) }));
+      adoptAdd = adopt.plan.add.map((x) => ({ ticker: tk, runId: adopt.row.run_id, condId: `D${x.k + 1}`, direction: isAddAction(x.action) || isEntryAction(x.action) ? ('UP' as const) : ('DOWN' as const), kind: x.kind, text: x.text, check: x.check, tierIfMet: x.action === 'EXIT' || x.action === 'HALF' ? x.action : null, manual: false, action: x.action, premiseId: idOf(x.premiseIndex), ...(x.metNow ? { metNow: x.metNow } : {}) }));
       use = { id: adopt.row.id, runId: adopt.row.run_id, version, thesis: 'SAME', premises: { same: out.mapping.added.length, edited: 0, kept: out.mapping.kept.length }, exits: adopt.plan.add.length, exitsKept: adopt.plan.keep.length, exitsRewrite: adopt.plan.rewrite.length, peers: adopt.peers.save.length, peersSkipped: adopt.peers.skip, afterBreak: draftBreak };
       adoptUse = use;
     }
@@ -661,11 +692,13 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
                 afterBreakNo: draftBreak ? (fileMeta(d.acct, tk)!.meta.thesis?.afterBreak ?? 0) + 1 : null,
                 // 對照（§2.1）：現在有論點、你的前提、監測中的條件或同業 → 採用前先給你看哪幾條會被換掉
                 differs: !!out.before.text || out.before.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT') || live.length > 0 || !!wsBefore?.peers.length,
+                // 候補（T85）：對照上寫明出場、加碼條件候補期間不監測
+                watch: !fileMeta(d.acct, tk)!.held,
                 thesisBefore: out.before.text,
                 exitPlan: {
                   add: adopt.plan.add.map((x) => ({ text: x.text, action: x.action, kind: x.kind, status: x.status })),
                   keep: adopt.plan.keep.map((x) => ({ id: x.id, text: x.text, action: x.action, was: x.was })),
-                  retire: adopt.plan.retire.map((c) => ({ id: c.id, text: c.text })),
+                  retire: adopt.plan.retire.map((c) => ({ id: c.id, text: c.text, ...(isEntryAction(c.action) ? { entry: true } : {}) })),
                   rewrite: adopt.plan.rewrite.map((x) => ({ text: x.text, action: x.action, why: x.why })),
                 },
                 peerPlan: { save: adopt.peers.save, skip: adopt.peers.skip.map(peerSkipText), before: wsBefore?.peers ?? [] },
@@ -715,13 +748,26 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
   });
   if (dry) return json({ ok: true, ...r.result });
   // 採用草稿（T70）另外帶 added、retired（寫進條件幾條、撤下哪幾條）
-  const conds: { actionChanged: number[]; errors: string[]; added?: number; retired?: number[] } = adopt ? { actionChanged: [], retired: [], added: 0, errors: [] } : { actionChanged: [], errors: [] };
+  const conds: { actionChanged: number[]; errors: string[]; added?: number; retired?: number[]; entryMet?: string[] } = adopt ? { actionChanged: [], retired: [], added: 0, errors: [] } : { actionChanged: [], errors: [] };
   const version = savedVersion;
   if (adopt && adoptUse && backend.ai) {
     // 採用草稿（T70，§2.2）：出場條件直接寫進條件、撤下草稿沒有的、沿用的那幾條改動作；沒有要送改寫的 → 這一版不用再確認
     try {
       const res = await backend.ai.adoptExits(tk, { runId: adopt.row.run_id, version, add: adoptAdd, actionChanges: actionChanged.map((a) => ({ id: a.id, action: a.action })), retire: adopt.plan.retire.map((c) => c.id), confirm: exitsChanged && !exits.length });
       Object.assign(conds, { actionChanged: res.actionChanged, retired: res.retired, added: res.added });
+      // 財報門檻的進場條件用草稿那份季度表比已經成立（T85，§4.5 第 22 點）：adoptExits 已經標成立，這裡記進 watch[t].entry 等下一份月報
+      if (res.entryMet?.length) {
+        const met = res.entryMet;
+        await mutate(backend, `${tk} 進場條件已經成立`, [], (d) => {
+          const w = d.acct.watch?.[tk];
+          if (!w || d.acct.own[tk]) return { acct: d.acct, log: [] };
+          const acct = clone(d.acct);
+          const ww = acct.watch![tk];
+          ww.entry = [...(ww.entry ?? []), ...met.filter((m) => !(ww.entry ?? []).some((x) => x.id === m.id)).map((m) => ({ ...m, metOn: d.view.date }))];
+          return { acct, log: [] };
+        });
+        Object.assign(conds, { entryMet: met.map((m) => m.text) });
+      }
     } catch (e) {
       conds.errors.push(`草稿的出場條件沒有寫進去：${errText(e)}。論點與前提已經存好，可以在編輯論點頁重新存一次出場條件。`);
     }
@@ -770,10 +816,14 @@ async function adoptDraft(backend: SiteBackend, b: Record<string, unknown>): Pro
   const gone: Record<string, string> = { USED: '採用過了', DISMISSED: '標成不用了', EXPIRED: '過期了（30 天沒處理，或之後有新的草稿）' };
   if (row.status !== 'READY') throw new SiteError(409, `這份草稿${gone[row.status] ?? '不在等你看的狀態'}，重新整理看看`);
   const d = ready(await backend.load());
-  if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
+  // 候補也可以採用草稿（allocation_redesign §4.5 第 20 點）：進場條件跟著整組取代（非價格的那一組）
+  if (!fileMeta(d.acct, tk)) throw new SiteError(422, `${tk} 不在自選裡，也不在候補名單裡`);
   const view = draftViewOf(row, d.acct, tk);
   if (!view) throw new SiteError(409, '這份草稿讀不出來，重新整理看看');
-  const plan = draftAdoptPlan(view.payload, await liveConditions(backend, tk));
+  // 草稿寫的時候還是候補、現在已經進場了：進場條件用不到了，不寫進去
+  const held = fileMeta(d.acct, tk)!.held;
+  const payload = held ? { ...view.payload, entries: undefined } : view.payload;
+  const plan = draftAdoptPlan(payload, await liveConditions(backend, tk, !!payload.entries?.length));
   const peers = view.payload.sources?.peers ?? [];
   const ws: OwnWebSources = { peers: peers.map((p) => ({ name: p.name, ...(p.edgar ? { edgar: p.edgar } : {}), ...(p.yahoo ? { yahoo: p.yahoo } : {}) })), domains: [] };
   const checks = peers.some((p) => p.edgar) ? (backend.probeSources ? await backend.probeSources(ws) : demoProbe(ws)) : null;
@@ -1445,7 +1495,7 @@ export async function handleSite(req: Request, env: Env, fetcher: Fetcher, now: 
 /**
  * 管理金鑰的論點路徑（T48，own_thesis §1.7、§1.8）：在 repo 裡用 Claude Code 取討論包、和使用者討論、預覽、回填。
  * 驗證（Bearer ADMIN_TOKEN）在 index.ts 做過了；這裡只接真實模式，內部走和網站同一套函式。
- *   GET  /admin/own/list                        自選清單：代號、有沒有論點、論點版本、有沒有還沒回覆的乙類通知
+ *   GET  /admin/own/list                        自選清單：代號、有沒有論點、論點版本、有沒有還沒回覆的乙類通知；候補也列（watch: true，T85 丙段）
  *   GET  /admin/own/discussion?ticker=&mode=    一檔的討論包（和持股頁「複製討論包」相同）
  *   POST /admin/own/thesis/parse                { ticker, text } → 解析收尾的區塊
  *   POST /admin/own/thesis                      和 /api/ops/own-thesis 相同的內容（dry = 只預覽）；來源一律記成討論後貼回
@@ -1462,20 +1512,22 @@ export async function handleAdminThesis(req: Request, env: Env, fetcher: Fetcher
     let res: Response;
     if (m[1] === 'list' && get) {
       const d = ready(await backend.load());
+      // 候補（allocation_redesign §4.5 第 25 點）也列，標 watch: true（討論包的開場是「還沒持有，放在候補」；收尾區塊不收進場條件）
+      const watchTk = Object.keys(d.acct.watch ?? {}).filter((tk) => !d.acct.own[tk]);
       res = json({
         date: d.view.date,
-        own: Object.keys(d.acct.own)
-          .sort()
-          .map((tk) => {
-            const meta = d.acct.own[tk];
-            return {
-              ticker: tk,
-              kind: meta.premises.every((p) => p.origin === 'SYSTEM_DEFAULT') ? 'DEFAULT_ONLY' : 'THESIS',
-              thesisVersion: meta.thesis?.version ?? null,
-              thesisSetAt: meta.thesis?.setAt ?? null,
-              pendingBreak: pendingBreakOf(d.acct, tk)?.notif ?? null,
-            };
-          }),
+        own: [...Object.keys(d.acct.own).sort(), ...watchTk.sort()].map((tk) => {
+          const meta = fileMeta(d.acct, tk)!.meta;
+          const watch = !d.acct.own[tk];
+          return {
+            ticker: tk,
+            kind: meta.premises.every((p) => p.origin === 'SYSTEM_DEFAULT') ? 'DEFAULT_ONLY' : 'THESIS',
+            thesisVersion: meta.thesis?.version ?? null,
+            thesisSetAt: meta.thesis?.setAt ?? null,
+            pendingBreak: watch ? null : (pendingBreakOf(d.acct, tk)?.notif ?? null),
+            ...(watch ? { watch: true } : {}),
+          };
+        }),
       });
     } else if (m[1] === 'discussion' && get) {
       res = await route(req, `own/${ticker(url.searchParams.get('ticker'))}/discussion`, url, backend);

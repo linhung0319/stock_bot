@@ -16,7 +16,12 @@ export const OWN_CONDITION = 'OWN_CONDITION';
 export const OWN_REVIEW_PROMPT = 'own_review_v6';
 /** F24 獨立跑幾次。 */
 export const OWN_REVIEW_SAMPLES = 3;
-export const OWN_CONDITION_PROMPT = 'own_condition_v1';
+/**
+ * T85 丙段（allocation_redesign §4.5 第 23 點）：v2 多「月底檢查」的模式（候補的進場條件、只有法說會／新聞／網頁來源的）——
+ * 文件是上次確認之後的 8-K、10-Q、10-K，加上目錄與取文件（buildDocMenu），引用照 condCite（申報或財報；指名的網頁來源要一手或產業研究機構）。
+ * 新申報出現時的那一種照舊（只讀申報原文）。v1 留著、不再使用。
+ */
+export const OWN_CONDITION_PROMPT = 'own_condition_v2';
 
 /**
  * F23：AI 可以選「提高到標準的 125%」的規則條件（allocation_redesign §4.3，T83，使用者 D6）：
@@ -525,30 +530,55 @@ export interface ConditionRunInput {
   view: MarketView;
   ticker: string;
   runId: string;
-  conditions: OwnCondition[];
-  /** 新出現、而且是條件指定的確認來源的申報原文。 */
+  conditions: (OwnCondition & { id?: number; action?: string | null })[];
+  /** 新出現、而且是條件指定的確認來源的申報原文（月底檢查是上次確認之後的 8-K、10-Q、10-K）。 */
   filings: PackDoc[];
+  /**
+   * FILING（預設）：新申報出現時，只讀申報原文（照舊）。
+   * MONTH_END（T85，§4.5 第 23 點）：候補的進場條件裡只有法說會、新聞、網頁來源的，月底有新證據時判；可以取文件（目錄是 menuFacts）。
+   */
+  mode?: 'FILING' | 'MONTH_END';
+  /** 月底檢查的目錄（M 開頭）與種子（S 開頭）；FILING 沒有。 */
+  menuFacts?: EvidencePack['facts'];
   now: Date;
 }
 
+/** 條件成立時的動作寫在證據包上的白話（F25 的 facts；T85：進場條件寫「候補進場，先買一半」）。 */
+const condThen = (c: { action?: string | null; tierIfMet: Tier | null }) => (c.action === 'ENTRY' ? '進場條件（成立時：候補進場，先買一半）' : `成立時建議${c.tierIfMet ? TIER_NAME[c.tierIfMet] : '重新審查'}`);
+
 /** F25：新申報能不能證實某一條事件條件（3 票、引用必須是申報原文）。 */
 export function conditionPack(inp: ConditionRunInput) {
-  const events = inp.conditions.filter((c) => c.kind === 'EVENT' && c.status === 'ACTIVE');
+  const month = inp.mode === 'MONTH_END';
+  // 月底檢查的條件是「只在審查時判」的（REVIEW_ONLY）與指名網頁來源的；新申報那一種只看監測中的事件條件
+  const events = inp.conditions.filter((c) => c.kind === 'EVENT' && (c.status === 'ACTIVE' || (month && c.status === 'REVIEW_ONLY')));
+  // 編號（T85）：同一份論點檔裡 cond_id 可能重複（不同次改寫都從 U1 起），重複的加 #2…；ids 記編號 → 列編號，套用時照列編號找
+  const seen = new Map<string, number>();
+  const keyOf = events.map((c) => {
+    const n = (seen.get(c.condId) ?? 0) + 1;
+    seen.set(c.condId, n);
+    return n === 1 ? c.condId : `${c.condId}#${n}`;
+  });
+  const ids = Object.fromEntries(events.flatMap((c, k) => (typeof c.id === 'number' ? [[keyOf[k], c.id]] : [])));
+  const named = Object.fromEntries(events.map((c, k) => [keyOf[k], namedWebDomains(c.check)] as const).filter(([, d]) => d.length));
   return buildPack({
     runId: inp.runId,
     fn: OWN_CONDITION,
     promptVersion: OWN_CONDITION_PROMPT,
     asOf: inp.view.date,
     subject: { ticker: inp.ticker },
-    question:
-      `${inp.ticker} 有新的申報。之前的審查寫下了下面幾條事件條件（facts 的 E 開頭）。` +
-      '只根據這幾份申報的原文判斷：有沒有一條條件已經「成立」？成立要有申報原文的直接證據，沾到邊、只是可能、或市場評論都不算。' +
-      '成立就 verdict = MET，payload.condition_id 寫是哪一條；都沒有成立就 NOT_MET。',
+    question: month
+      ? `月底檢查：${inp.ticker} 還沒持有、放在候補名單，下面幾條是使用者定的進場條件（facts 的 E 開頭），確認來源是法說會、新聞或指名的網頁。` +
+        '證據包有上次確認之後的申報原文；不夠時可以照目錄（M 開頭）或搜尋取文件。判斷有沒有一條已經「成立」：要有申報、財報的原文，或條件指名的那個網站（一手或產業研究機構）的原文直接證據；只是可能、沾到邊、評論、新聞標題都不算。' +
+        '成立就 verdict = MET，payload.condition_id 寫是哪一條（facts 的 label 裡的條件編號）；都沒有成立就 NOT_MET。'
+      : `${inp.ticker} 有新的申報。之前寫下了下面幾條事件條件（facts 的 E 開頭）。` +
+        '只根據這幾份申報的原文判斷：有沒有一條條件已經「成立」？成立要有申報原文的直接證據，沾到邊、只是可能、或市場評論都不算。' +
+        '成立就 verdict = MET，payload.condition_id 寫是哪一條；都沒有成立就 NOT_MET。',
     policy: { level: 'A3', verdicts: ['MET', 'NOT_MET'], abstain: 'NOT_MET', min_evidence: 1, samples: 3 },
-    rule: { action: '規則沒有動作（慢規則不受影響）', detail: { conditions: events.map((c) => c.condId) } },
+    rule: { action: '規則沒有動作（慢規則不受影響）', detail: { conditions: keyOf, mode: month ? 'MONTH_END' : 'FILING', ...(Object.keys(ids).length ? { ids } : {}), ...(Object.keys(named).length ? { named } : {}) } },
     facts: [
-      ...events.map((c, k) => ({ id: `E${k + 1}`, label: `條件 ${c.condId}（${c.direction === 'DOWN' ? '降級' : '升級'}，成立時建議${c.tierIfMet ? TIER_NAME[c.tierIfMet] : '重新審查'}）`, value: c.text, note: `確認來源：${((c.check.confirm_by as string[] | undefined) ?? []).join('、')}；寫於 ${c.createdAt.slice(0, 10)}` })),
+      ...events.map((c, k) => ({ id: `E${k + 1}`, label: `條件 ${keyOf[k]}（${c.action === 'ENTRY' ? condThen(c) : `${c.direction === 'DOWN' ? '降級' : '升級'}，${condThen(c)}`}）`, value: c.text, note: `確認來源：${((c.check.confirm_by as string[] | undefined) ?? []).join('、')}；寫於 ${c.createdAt.slice(0, 10)}` })),
       ...priceFacts(inp.view, inp.ticker).slice(0, 3),
+      ...(inp.menuFacts ?? []),
     ],
     premises: ownPremises(inp.acct, inp.ticker),
     documents: inp.filings,
@@ -568,10 +598,25 @@ export function checkConditionPayload(s: CheckedSample, pack: EvidencePack): voi
   }
 }
 
-/** F25 的結論：3 票一致 MET、指同一條、引用通過 → 那一條成立。 */
-export function conditionDecision(outcome: Outcome): { condId: string | null; why: string } {
+/**
+ * F25 的結論：3 票一致 MET、指同一條、引用通過 → 那一條成立。
+ * pack（T85，own_condition_v2）：月底檢查（rule.detail.mode = MONTH_END，可以取網頁）照 condCite 再看每一票的引用——申報或財報表算（HARD）；
+ * 網頁要是那一條指名的網域、判的時候是一手或產業研究機構（WEB）；有一票沒有合格的引用就不算成立。basis：都靠申報或財報是 FILING_VOTE，否則 WEB_VOTE。
+ * 新申報那一種證據包只有申報原文（check.ts 已經要求引用逐字出自原文），不另外看。rowId：證據包記的那一條的列編號（rule.detail.ids；舊的執行沒有）。
+ */
+export function conditionDecision(outcome: Outcome, pack?: Pick<EvidencePack, 'documents' | 'rule'>): { condId: string | null; why: string; basis?: 'FILING_VOTE' | 'WEB_VOTE'; rowId?: number | null } {
   if (!outcome.actionable || outcome.verdict !== 'MET') return { condId: null, why: outcome.reason };
   const ids = new Set(outcome.samples.map((s) => String(s.payload?.condition_id)));
   if (ids.size !== 1) return { condId: null, why: `3 票都說成立，但指的不是同一條（${[...ids].join('、')}），照規則。` };
-  return { condId: [...ids][0], why: `3 票一致：條件 ${[...ids][0]} 成立。` };
+  const condId = [...ids][0];
+  if (!pack) return { condId, why: `3 票一致：條件 ${condId} 成立。` };
+  const detail = (pack.rule?.detail ?? {}) as { ids?: Record<string, number>; named?: Record<string, string[]>; mode?: string };
+  const rowId = detail.ids?.[condId] ?? null;
+  if (detail.mode !== 'MONTH_END') return { condId, why: `3 票一致：條件 ${condId} 成立。`, basis: 'FILING_VOTE', rowId };
+  const src = packSources(pack);
+  const named = detail.named?.[condId] ?? [];
+  const bases = outcome.samples.filter((s) => s.valid).map((s) => condCite(s, s.evidence.filter((e) => e.ok).map((e) => e.id), src, named));
+  if (!bases.length || bases.some((b) => b === null)) return { condId: null, why: `3 票都說條件 ${condId} 成立，但有一票的引用不合格（要申報、財報表，或條件指名的網站而且是一手或產業研究機構），照規則。` };
+  const basis = bases.every((b) => b === 'HARD') ? 'FILING_VOTE' : 'WEB_VOTE';
+  return { condId, why: `3 票一致：條件 ${condId} 成立（${basis === 'WEB_VOTE' ? '有指名網站的原文' : '申報或財報的原文'}）。`, basis, rowId };
 }

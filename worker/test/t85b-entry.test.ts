@@ -637,7 +637,8 @@ describe('T85 乙 ⑥：成立、等月報的非價格進場條件（watch[t].en
     expect(hard.acct.watch![T].blocked!.text).toContain('規則偵測到硬傷（會計師辭任，8-K 2026-11-20）');
     // 網站：等月報的那一條與沒提的原因
     const row = holdingDetail({ ...ready(sim), acct: hard.acct }, T).watch!;
-    expect(row.entries).toEqual([{ text: entry.text, state: '已成立（11/24），等下一份月報' }]);
+    // T85 丙段：每一條多帶列編號、是不是價格條件、能不能在這裡撤下（等月報的不能）
+    expect(row.entries).toEqual([{ id: entry.id, text: entry.text, state: '已成立（11/24），等下一份月報', price: false, retire: false }]);
     expect(row.blocked).toContain('規則偵測到硬傷');
     // 超過 100 天
     const old = structuredClone(sim.acct);
@@ -742,7 +743,8 @@ describe('T85 乙 ⑦：網站與每日流程（真實模式）——存價格�
       expect(await fileConditions(c.db, acct, 'AMD')).toEqual([]);
       expect(await loadConditions(c.db, 'AMD')).toEqual([]);
       expect((await entryConditions(c.db, acct, 'AMD')).map((x) => [x.action, x.origin, x.check.asOf, !!x.acceptedAt])).toEqual([['ENTRY', 'USER', '2026-11-19', true], ['ENTRY', 'USER', '2026-11-19', true]]);
-      await expect(conditionOp(c.db, acct, 'AMD', rows[0].id, 'action', 'EXIT', '2026-11-19', new Date('2026-11-20T02:00:00Z'))).rejects.toThrow('找不到這條條件');
+      // T85 丙段（§4.5 第 20 點）：conditionOp 讀得到進場條件了（撤下單條非價格的）；價格條件照樣不能在這裡改（候補那一塊整組改）
+      await expect(conditionOp(c.db, acct, 'AMD', rows[0].id, 'action', 'EXIT', '2026-11-19', new Date('2026-11-20T02:00:00Z'))).rejects.toThrow('價格條件在候補那一塊改');
       // 帳戶頁那一列：條件與現在的狀態、表單預先填上
       const st = (await c.api<StateView>('GET', 'state')).body;
       const row = st.account!.watch.find((x) => x.ticker === 'AMD')!;

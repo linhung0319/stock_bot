@@ -50,6 +50,8 @@ function watchPanels(ctx, d) {
   return [
     watchPanel(ctx, d),
     thesisPanel(d, { watch: true }),
+    // 候補的「要看的事」（T85 丙段，§4.5 第 24 點）：只有一年沒進場、草稿好了
+    attentionPanel(d),
     conds.length ? glass('pad hp', panelTop('條件'), h('p', { class: 'small dim', style: 'margin-bottom:8px' }, '出場與加碼條件在候補期間不監測（還沒有持股，一次性的條件不能先用掉），進場之後才開始。'), conds) : null,
     d.chart ? glass('pad', chart(d.chart)) : null,
     d.facts.length ? glass('pad', h('dl', { class: 'facts' }, d.facts.map((f) => [h('dt', null, f.label), h('dd', null, h('span', { class: 'num' }, f.value), f.note ? h('small', null, f.note) : null)]))) : null,
@@ -122,7 +124,7 @@ function buildPanel(ctx, d) {
   );
 }
 
-/** 論點、前提與最近一次檢查、編輯與討論的入口。opt.watch：候補（還沒持有；沒有審查，草擬是之後的事）。 */
+/** 論點、前提與最近一次檢查、編輯與討論的入口。opt.watch：候補（還沒持有；沒有審查；草擬照用，草稿多進場條件，T85 丙段）。 */
 function thesisPanel(d, opt = {}) {
   const o = d.own;
   const watch = !!opt.watch;
@@ -153,8 +155,9 @@ function thesisPanel(d, opt = {}) {
     silencedRetired(o, t),
     o.reviewSkip ? h('p', { class: 'small dim', style: 'margin-top:10px' }, o.reviewSkip) : null,
     // 「請 stock bot 草擬」在前、「複製討論包」在後（T56，web_evidence_design §2.6）；草稿準備中、好了、要等幾天、上次失敗的原因寫在按鈕下面
+    // 候補（T85 丙段，§4.5 第 18 點）：「請 stock bot 草擬」照用（草稿多進場條件）；加入 7 天內的第一次每日流程會自動草擬一次
     watch
-      ? h('div', { class: 'btn-row', style: 'margin-top:18px' }, h('a', { class: 'btn primary', href: edit }, '編輯論點'), copyPackButton(d.ticker))
+      ? h('div', { style: 'margin-top:18px' }, def ? draftAction(d.ticker, o.draft, { primary: true, watch: true, after: [copyPackButton(d.ticker), h('a', { class: 'btn', href: edit }, '編輯論點')] }) : draftAction(d.ticker, o.draft, { watch: true, before: [h('a', { class: 'btn primary', href: edit }, '編輯論點')], after: [copyPackButton(d.ticker)] }))
       : h(
       'div',
       { style: 'margin-top:18px' },
@@ -164,7 +167,7 @@ function thesisPanel(d, opt = {}) {
     ),
     pb ? h('p', { class: 'small', style: 'margin-top:8px;color:var(--hot)' }, `前提 ${pb.premiseId ?? ''} 剛被 AI 判不成立：這時候請 stock bot 草擬，草稿最上面會提醒你別只是替繼續持有找新理由，也不能沿用那一條。`) : null,
     watch
-      ? h('p', { class: 'small faint', style: 'margin-top:8px' }, '按「編輯論點」寫下為什麼想買、什麼事要繼續成立（前提）。想先和 AI 討論，按「複製討論包」貼到 claude.ai 的新對話，說「收尾」後把結果貼回「編輯論點」。候補沒有定期審查。')
+      ? h('p', { class: 'small faint', style: 'margin-top:8px' }, '加進候補之後的第一次每日流程（台灣早上 7:30）會自動草擬一次（論點、前提、進場條件與出場條件；進場條件不寫價位），你在「編輯論點」看過反方、按「採用這份草稿」才會生效；也可以自己按「請 stock bot 草擬」（每檔 7 天一次）。想先和 AI 討論，按「複製討論包」貼到 claude.ai 的新對話，說「收尾」後把結果貼回「編輯論點」。候補沒有定期審查。')
       : h(
       'p',
       { class: 'small faint', style: 'margin-top:8px' },

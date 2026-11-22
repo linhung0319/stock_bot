@@ -3,7 +3,8 @@
 //                  「每天比」只用來顯示；真正決定列不列的是月報訊號日的收盤（prepareWatchEntries）。
 //   月報的輸入      prepareWatchEntries：訊號日仍成立的價格條件、成立後等月報的非價格條件（watch[t].entry）、硬傷、財報類出場條件 → MonthlyContext.watchEntries
 //   條件的狀態      列進月報（F29）那一刻才標成立（listedPriceStmts）；進場之後的下一次每日流程補寫其餘的（syncWatchConds）
-// 非價格的進場條件怎麼寫進來、怎麼確認是丙段；成立之後記進 watch[t].entry 的接口在 ownAi.ts 的 queueWatchEntry。
+// 非價格的進場條件（丙段，§4.5 第 18～23 點）：草稿或你在編輯論點頁寫（改寫、確認），財報門檻由程式比（ownXbrlConditions）、
+//   申報事件在新申報時 F25（startWatchRuns）、只有法說會／新聞／網頁的月底有新證據時用 own_condition_v2 判；成立之後記進 watch[t].entry（ownAi.ts 的 queueWatchEntry）。
 import { xbrlConditionMet, fetchCompanyFacts, quarterTable } from '../data/edgar';
 import { buildMarketView } from '../data/marketView';
 import { activeHits, classifyFilings, needsCover, quickHits, type FilingHit } from '../data/secEvents';
@@ -16,6 +17,7 @@ import type { ApplyCtx } from './aiCtx';
 import type { Env, Fetcher } from './env';
 import { cikFor } from './filings';
 import { requiredTickers, thesisLogStmt } from './ledgerStore';
+import { wouldBuyOf } from './ownDraft';
 import { EXIT_ACTIONS, LIVE_CODES, fileConditions, isOwned, loadConditions, type FileCondition } from './thesis';
 
 /** 進場條件另算、不占你定的 8 條（§4.5 第 11 點）：你填的價格條件最多 2 條；非價格的（草稿或你寫的，丙段）最多 3 條。 */
@@ -35,6 +37,8 @@ export interface EntryCond {
   fileId: string | null;
   text: string;
   price: boolean;
+  /** 條件的種類（XBRL 財報門檻、EVENT 事件、PRICE 價格；丙段的顯示用）。舊的呼叫端沒給。 */
+  kind?: string;
   check: Record<string, unknown>;
   status: string;
   setAt: string;
@@ -52,7 +56,7 @@ export interface SplitLike {
 
 export const isEntryPrice = (c: Pick<FileCondition, 'kind' | 'check' | 'action'>): boolean => c.action === 'ENTRY' && c.kind === 'PRICE' && ENTRY_PRICE_TYPES.includes(String(c.check.type));
 
-export const toEntryCond = (c: FileCondition): EntryCond => ({ id: c.id, ticker: c.ticker, fileId: c.fileId, text: c.text, price: isEntryPrice(c), check: c.check, status: c.status, setAt: (c.acceptedAt ?? c.createdAt).slice(0, 10), metAt: c.metAt, note: c.note });
+export const toEntryCond = (c: FileCondition): EntryCond => ({ id: c.id, ticker: c.ticker, fileId: c.fileId, text: c.text, price: isEntryPrice(c), kind: c.kind, check: c.check, status: c.status, setAt: (c.acceptedAt ?? c.createdAt).slice(0, 10), metAt: c.metAt, note: c.note });
 
 /** 使用者在候補那一塊填的一條價格條件：種類＋數字（close：收盤低於多少美元；drawdown：比 52 週高點低百分之幾以上）。 */
 export interface PriceInput {
@@ -111,7 +115,8 @@ export function priceState(check: Record<string, unknown>, close: ArrayLike<numb
 /** 候補那一塊每條進場條件後面的那一句（§4.5 第 13 點：每天比只用來顯示）。 */
 export function entryStateText(c: EntryCond, close: ArrayLike<number> | undefined, i: number, factor = 1): string {
   if (c.status === 'MET') return `已成立${c.metAt ? `（${md(c.metAt.slice(0, 10))}）` : ''}：一次性的，要再等就重新定條件`;
-  if (!c.price) return c.status === 'ACTIVE' || c.status === 'REVIEW_ONLY' ? '監測中' : c.status === 'MANUAL' ? '只記錄' : c.status;
+  // 非價格的（丙段）：怎麼確認
+  if (!c.price) return c.status === 'MANUAL' ? '只記錄（格式沒有通過檢查，不會成立）' : c.status === 'REVIEW_ONLY' ? '監測中：月底有新的申報或網頁消息時由 AI 確認' : c.status === 'ACTIVE' ? (c.kind === 'XBRL' ? '監測中：新財報出來時程式比對' : '監測中：新申報出來時由 AI 確認') : c.status;
   const s = priceState(c.check, close, i, factor);
   const adj = s.level !== undefined && Math.abs(factor - 1) > 1e-9 ? `（拆股後換算成 ${money(Math.round(s.level * 100) / 100)}）` : '';
   if (s.met === null) return `價格抓不到，沒辦法比${adj}`;
@@ -186,6 +191,8 @@ export async function prepareWatchEntries(env: Env, fetcher: Fetcher, acct: Acco
     const e: WatchEntryInput = priced.get(t) ?? { ticker: t, conds: [] };
     if (!e.conds.length && !w.entry?.length) continue;
     out.push(e);
+    // 「今天沒持股的話會不會買」（§4.5 第 19 點）：這份論點檔最新一份草稿的反方答案與日期；只是資訊
+    e.wouldBuy = await wouldBuyOf(env.DB, t, w.fileId).catch(() => null);
     if (w.lastListed && w.lastListed < signal && calDays(w.lastListed, signal) < WATCH_LIST_GAP_DAYS) continue;
     try {
       const cik = await cikFor(env, fetcher, t);

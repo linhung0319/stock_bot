@@ -28,10 +28,10 @@ import { loadReviews, loadVetoReviews, type MomReview } from '../momAi';
 import { loadStrategyState } from '../strategyAi';
 import { acceptOwnConditions, adoptDraftExits, confirmDropAll, exitSetOf, monitorView, ownCheckView, resendOwnCheck, rewriteView, startOwnCheck, type ConfirmResult, type ExitSetRef, type OwnCheckView, type RewriteView } from '../ownCheckAi';
 import type { ExitLine } from '../../ai/ownCheck';
-import type { DiscussionMode } from '../../ai/discussion';
+import type { DiscussionMode, LiveCondition } from '../../ai/discussion';
 import { realDiscussion } from '../discussion';
 import { conditionOp, type CondOp } from '../ownConds';
-import { holdingAttention, loadPrevFile, thesisFile, type ExitSet, type PrevFile } from '../thesis';
+import { entryConditions, holdingAttention, loadPrevFile, thesisFile, type ExitSet, type PrevFile } from '../thesis';
 import { thesisView, type ThesisView } from './thesisView';
 import { listedPriceStmts, loadEntryConds, priceCheckOf, priceEntriesAt, setWatchPrice, MAX_ENTRY_PRICE, WatchCondError, type EntryCond, type PriceInput, type SplitLike } from '../watchEntry';
 import { loadSplits } from '../../data/store';
@@ -148,6 +148,8 @@ export interface SiteAi {
   /** 持股頁的條件操作（T26）：勾選 AI 建議的條件、撤下你定的條件、改成立時的動作。 */
   condition(ticker: string, id: number, op: CondOp, action?: unknown): Promise<{ id: number; status: string; action: string | null; retired?: number }>;
   monitor(ticker: string): Promise<Awaited<ReturnType<typeof monitorView>>>;
+  /** 候補的非價格進場條件（監測中、只記錄的；T85 丙段：編輯論點與採用草稿時整組取代的範圍）。持股是空的。 */
+  entryLive(ticker: string): Promise<LiveCondition[]>;
   /** 持股頁：這檔現在成立的「要看的事」（全部，不看頻率；own_thesis §3.6.6）。 */
   attention(ticker: string, acct: Account, view: MarketView): Promise<Attention[]>;
   /** 賣光之後又買回時的上一份論點檔，連同當時的出場條件（T44，own_thesis §1.2）。沒有是 null。 */
@@ -341,6 +343,12 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
         return conditionOp(env.DB, acct, ticker, id, op, action, lastCompletedSession(now, await loadCalendarOverrides(env.DB)), now);
       },
       monitor: (ticker) => monitorView(env, ticker),
+      async entryLive(ticker) {
+        const acct = (await loadAccount(env.DB))?.acct;
+        if (!acct || !acct.watch?.[ticker] || acct.own[ticker]) return [];
+        const LIVE = ['ACTIVE', 'REVIEW_ONLY', 'MANUAL'];
+        return (await entryConditions(env.DB, acct, ticker)).filter((c) => c.kind !== 'PRICE' && LIVE.includes(c.status)).map((c) => ({ id: c.id, text: c.text, action: 'ENTRY' as const, status: c.status === 'ACTIVE' ? '監測中' : c.status === 'REVIEW_ONLY' ? '月底有新證據時檢查' : '只記錄', code: c.status }));
+      },
       attention: (ticker, acct, view) => holdingAttention(env.DB, acct, view, ticker),
       prevFile: (ticker, acct) => loadPrevFile(env.DB, acct, ticker),
       async thesis(ticker, acct, view) {

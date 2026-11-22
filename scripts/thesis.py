@@ -69,7 +69,8 @@ def cmd_list(api: Api) -> None:
     for o in r["own"]:
         state = "還沒有論點（只有系統預設前提）" if o["kind"] == "DEFAULT_ONLY" else f"有論點（第 {o['thesisVersion']} 版，{o['thesisSetAt']} 定）" if o["thesisVersion"] else "有自己的前提，還沒有論點本文"
         brk = f"；有還沒回覆的「前提不成立」通知 #{o['pendingBreak']}（回覆要在網站上做）" if o["pendingBreak"] is not None else ""
-        out(f"  {o['ticker']}：{state}{brk}")
+        watch = "（候補，還沒持有；進場條件在網站改）" if o.get("watch") else ""
+        out(f"  {o['ticker']}{watch}：{state}{brk}")
 
 
 def cmd_pull(api: Api, root: Path, tickers: list[str], everything: bool) -> None:

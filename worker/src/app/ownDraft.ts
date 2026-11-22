@@ -18,6 +18,11 @@
 //     新的 READY 回來時同一檔舊的 READY 標 EXPIRED；READY 30 天沒處理 → EXPIRED。
 //     自動開的連續 2 次失敗 → 告警 DRAFT_FAILED（G22）；使用者按的：回來（READY）或失敗推 LINE 一行，網站的按鈕旁邊寫原因與「再試一次」（T56）。
 //   還在跑的不重開要原子（T56）：開執行之前先佔一列 PENDING，同一檔同時只能有一列（migration 0020 的部分唯一索引），兩個分頁同時按第二個會 409。
+//   T85 丙段（allocation_redesign §4.5 第 18～20 點）：候補也可以草擬（startOwnDraft、requestOwnDraft 走 fileMeta）。
+//     自動：加入候補 7 天內、還沒有論點、這份論點檔沒有成功或還在跑的草稿、自動的失敗不到 2 次、上一份論點檔的前提 30 天內沒有被判不成立
+//     （ownClosed.brokenAt）→ 每日第一次流程開一次，受 DRAFT_AUTO_DAILY 限制（一次加 5 檔會分幾天開）。T72 的七種觸發對候補不開。
+//     證據包：R1「還沒持有（候補）」、R2 打算放的比重、R4 自選合計與預算（沒有 R3）；輸出多 entries（進場條件）。
+//     一鍵採用：entries 接在出場、加碼條件後面一起整組取代（只換非價格的進場條件；你填的價格條件不在範圍內）。
 import { OWN_DRAFT, draftEventCheck, draftResult, ownDraftPack, type DraftBroken, type DraftPeer, type DraftPremise, type OwnDraft, brokenNotice } from '../ai/ownDraft';
 import { normalizeText, type EvidencePack, type PackDoc } from '../ai/check';
 import { discussionNumbers, planExits, type LiveCondition } from '../ai/discussion';
@@ -26,14 +31,14 @@ import { FRESH_FNS, parseNewRisks } from '../ai/freshEyes';
 import { newRunId, ownPremises, priceDoc, priceFacts } from '../ai/pack';
 import { XBRL_METRICS } from '../data/edgar';
 import { errText } from '../data/util';
-import { breaksOf, fileMeta, normVerify, ownHeld, type Account, type MarketView, type OwnMeta, type PremiseInput, type PremiseVerify, type ThesisMeta, type WebPeer, type WebSourceCheck } from '../engine';
+import { breaksOf, fileMeta, normVerify, ownHeld, watchRecWeight, type Account, type MarketView, type OwnMeta, type PremiseInput, type PremiseVerify, type ThesisMeta, type WebPeer, type WebSourceCheck } from '../engine';
 import { loadAccount } from './ledgerStore';
 import { lineConfigured, lineUrl, pushLine } from './line';
 import type { ApplyCtx, StartCtx } from './aiCtx';
 import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { gatherOwnEvidence, reviewThesisEvidence, routineReady } from './ownAi';
-import { AUTO_KEY_TRIES, BROKEN_QUIET_DAYS, DRAFT_EXPIRE_DAYS, OWNED_LIVE, acceptStatus, autoKeyUsed, condFacts, draftKeyOf, draftTriggers, draftUntil, fileKind, loadPrevFile, recentBroken, thesisFile, triggerRank, type CondAction, type PrevFile, type ThesisFile } from './thesis';
+import { AUTO_KEY_TRIES, BROKEN_QUIET_DAYS, DRAFT_EXPIRE_DAYS, OWNED_LIVE, isEntryAction, acceptStatus, autoKeyUsed, condFacts, draftKeyOf, draftTriggers, draftUntil, fileKind, loadPrevFile, recentBroken, thesisFile, triggerRank, type CondAction, type PrevFile, type ThesisFile } from './thesis';
 import { buildDocMenu, sourceFacts } from './webEvidence';
 import type { DocCtx } from '../ai/added';
 
@@ -88,6 +93,7 @@ export class DraftError extends Error {
 }
 
 const DAY = 86400_000;
+const NOT_FILE = (t: string) => `${t} 不在自選裡，也不在候補名單裡`;
 const md = (iso: string) => `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
 const daysApart = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / DAY);
 
@@ -202,6 +208,16 @@ export async function loadRiskRuns(db: D1Database, ticker: string, asOf: string)
 export function weightFacts(acct: Account, view: MarketView, ticker: string): Fact[] {
   const n = discussionNumbers(acct, view, ticker, null);
   const pc = (x: number | null) => (x === null || !Number.isFinite(x) ? '—' : `${(x * 100).toFixed(1)}%`);
+  // 候補（allocation_redesign §4.5 第 19 點）：還沒持有，沒有慢規則狀態與目前的占比（沒有 R3）；R2 是打算放的比重（留空用推薦值）
+  const w = acct.own[ticker] ? null : acct.watch?.[ticker];
+  if (w) {
+    const rec = w.stdWeight === null ? watchRecWeight(acct, view, ticker) : null;
+    return [
+      { id: 'R1', label: '持有狀態', value: `還沒持有（候補，${md(w.addedAt)} 加入）` },
+      { id: 'R2', label: '打算放的比重', value: w.stdWeight !== null ? pc(w.stdWeight) : rec !== null ? `留空（推薦值 ${pc(rec)}）` : '留空', note: '進場時先買這個比重的一半' },
+      ...(n.ownTotal !== null ? [{ id: 'R4', label: '自選合計占總資產', value: pc(n.ownTotal), note: `自選的預算 ${pc(n.ownBudget)}` }] : []),
+    ];
+  }
   return [
     { id: 'R1', label: '慢規則狀態', value: n.slow === 'HALF' ? '減半中' : '標準' },
     { id: 'R2', label: '標準比重', value: pc(n.stdWeight) },
@@ -216,8 +232,9 @@ export function weightFacts(acct: Account, view: MarketView, ticker: string): Fa
  * 寫一列 own_drafts（PENDING）；沒觸發成的當場結算成 FAILED。
  */
 export async function startOwnDraft(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: DraftTrigger, now: Date, attnKeys: string[] | null = null): Promise<AiRun> {
-  const meta = acct.own[ticker];
-  if (!meta) throw new DraftError(422, `${ticker} 不在自選裡`);
+  // 候補也可以草擬（allocation_redesign §4.5 第 18 點）
+  const meta = fileMeta(acct, ticker)?.meta;
+  if (!meta) throw new DraftError(422, NOT_FILE(ticker));
   if (!routineReady(env)) throw new DraftError(400, 'AI 層的雲端排程還沒設定（SETUP.md 的 T5），沒辦法草擬');
   const asOf = view.date;
   const runId = newRunId(asOf, OWN_DRAFT, ticker);
@@ -244,11 +261,12 @@ export async function startOwnDraft(env: Env, fetcher: Fetcher, acct: Account, v
 
 /** 組證據包、開執行（startOwnDraft 已經佔好 own_drafts 那一列）。沒觸發成的當場結算成 FAILED。 */
 async function startDraftRun(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: DraftTrigger, now: Date, runId: string, broken: DraftBroken | null): Promise<AiRun> {
-  const meta = acct.own[ticker];
+  const fm = fileMeta(acct, ticker)!;
+  const meta = fm.meta;
   const asOf = view.date;
   const ev = await gatherOwnEvidence(env, fetcher, ticker, asOf);
   const tf = await thesisFile(env.DB, acct, ticker, asOf);
-  if (!tf) throw new DraftError(422, `${ticker} 不在自選裡`);
+  if (!tf) throw new DraftError(422, NOT_FILE(ticker));
   const rows = ev.dataQuality.xbrl === 'ok' ? ev.rows : null;
   const conds = condFacts(tf, rows, { live: true });
   const extra = await reviewThesisEvidence(env, fetcher, tf, ev, asOf);
@@ -280,7 +298,9 @@ async function startDraftRun(env: Env, fetcher: Fetcher, acct: Account, view: Ma
     asOf,
     ticker,
     trigger,
-    held: ownHeld(acct, ticker),
+    held: fm.held && ownHeld(acct, ticker),
+    // 候補（§4.5 第 19 點）：題目寫還沒持有、多一節進場條件
+    watch: fm.held ? null : { addedAt: fm.meta.addedAt },
     premises: ownPremises(acct, ticker, { beliefs: true }),
     facts,
     docs,
@@ -310,7 +330,7 @@ export async function loadDrafts(db: D1Database, ticker: string, limit = 10): Pr
  * failed（T56）：按下去當場就沒有開成（雲端排程沒有觸發成功）的原因；網站在按鈕旁邊寫原因與「再試一次」，不推 LINE（pushed_at = SYNC）。
  */
 export async function requestOwnDraft(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, now: Date): Promise<{ runId: string; broken: DraftBroken | null; failed: string | null }> {
-  if (!acct.own[ticker]) throw new DraftError(422, `${ticker} 不在自選裡`);
+  if (!fileMeta(acct, ticker)) throw new DraftError(422, NOT_FILE(ticker));
   if (!routineReady(env)) throw new DraftError(400, 'AI 層的雲端排程還沒設定（SETUP.md 的 T5），沒辦法草擬');
   await settleDrafts(env.DB, now);
   const drafts = await loadDrafts(env.DB, ticker, 20);
@@ -338,7 +358,6 @@ export async function requestOwnDraft(env: Env, fetcher: Fetcher, acct: Account,
 export async function startAutoDrafts(sc: StartCtx): Promise<void> {
   const { env, fetcher, acct, view, axis, session, now, res } = sc;
   await expireDrafts(env.DB, now);
-  // 只跑自選（候補的自動草擬是 T85 丙段；甲段的每日流程不替候補開任何 AI）
   for (const [t, meta] of Object.entries(acct.own)) {
     const fileId = meta.fileId ?? null;
     const opened = openedOf(t, meta);
@@ -364,7 +383,60 @@ export async function startAutoDrafts(sc: StartCtx): Promise<void> {
       res.log.push(`${t} 的論點草稿沒有開成：${errText(e)}`);
     }
   }
+  await startWatchDrafts(sc);
   await startTriggerDrafts(sc);
+}
+
+/**
+ * 候補這一份論點檔現在該不該自動草擬（allocation_redesign §4.5 第 18 點；純函式，網站的 autoSoon 與每日流程共用）。
+ * rows：這份論點檔的草稿。回傳 null = 該開；否則是不開的原因（紀錄用）。
+ *   加入候補 7 個日曆天內；還沒有論點；這份論點檔沒有成功或還在跑的草稿；自動的失敗不到 2 次；
+ *   上一份論點檔的前提 30 個日曆天內沒有被判不成立（ownClosed.brokenAt，§4.5 第 7 點：防找理由買回；手動按照舊可以）。
+ */
+export function watchDraftBlock(acct: Partial<Pick<Account, 'watch' | 'ownClosed'>>, ticker: string, rows: Pick<DraftRow, 'trigger' | 'status' | 'attn_keys'>[], session: string): string | null {
+  const w = acct.watch?.[ticker];
+  if (!w) return '不在候補名單';
+  const age = daysApart(w.addedAt, session);
+  if (age < 0 || age > DRAFT_AUTO_WINDOW_DAYS) return `加入候補超過 ${DRAFT_AUTO_WINDOW_DAYS} 天`;
+  if (hasThesis(w)) return '已經有論點';
+  if (rows.some((r) => r.status !== 'FAILED')) return '這份論點檔已經草擬過';
+  if (rows.filter((r) => r.trigger === 'AUTO' && !r.attn_keys).length >= DRAFT_AUTO_TRIES) return `自動草擬已經失敗 ${DRAFT_AUTO_TRIES} 次`;
+  const b = acct.ownClosed?.[ticker]?.brokenAt ?? null;
+  if (b && b <= session && daysApart(b, session) <= BROKEN_QUIET_DAYS) return `${b} 上一份論點檔的前提被判不成立（${BROKEN_QUIET_DAYS} 天內），不自動草擬（防找理由買回；要的話自己按「請 stock bot 草擬」）`;
+  return null;
+}
+
+/**
+ * 候補的自動草擬（allocation_redesign §4.5 第 18 點；每日第一次流程，接在新自選的那一次後面、「要看的事」觸發的前面）。
+ * 條件見 watchDraftBlock；同一天最多 DRAFT_AUTO_DAILY 檔（和「要看的事」觸發的共用，一次加 5 檔會分幾天開，加入早的先）。
+ * T72 的七種觸發對候補不開（多半要審查或持有；「只有預設前提」由加入時這一次負責、「論點滿一年」由一年的提醒涵蓋）。
+ */
+export async function startWatchDrafts(sc: StartCtx): Promise<void> {
+  const { env, fetcher, acct, view, axis, session, now, res } = sc;
+  const watch = Object.entries(acct.watch ?? {});
+  if (!watch.length) return;
+  const today = (await env.DB.prepare("SELECT COUNT(DISTINCT ticker) AS n FROM own_drafts WHERE trigger = 'AUTO' AND session = ?").bind(session).first<{ n: number }>())?.n ?? 0;
+  let left = DRAFT_AUTO_DAILY - today;
+  for (const [t, w] of watch.sort((a, b) => a[1].addedAt.localeCompare(b[1].addedAt) || a[0].localeCompare(b[0]))) {
+    const rows = (await env.DB.prepare('SELECT trigger, status, attn_keys FROM own_drafts WHERE file_id = ?').bind(w.fileId).all<{ trigger: DraftTrigger; status: DraftStatus; attn_keys: string | null }>()).results;
+    const why = watchDraftBlock(acct, t, rows, session);
+    if (why) {
+      if (/防找理由/.test(why)) res.log.push(`${t}（候補）：${why}`);
+      continue;
+    }
+    if (left <= 0) {
+      res.log.push(`${t}（候補）：今天已經自動草擬 ${DRAFT_AUTO_DAILY} 檔，排到之後的日子`);
+      continue;
+    }
+    try {
+      const run = await startOwnDraft(env, fetcher, acct, view, axis, t, 'AUTO', now);
+      left--;
+      res.started.push(run.runId);
+      res.log.push(`${t}：新加進候補，自動草擬論點與進場條件 ${run.runId}${rows.length ? '（上一次失敗，重試一次）' : ''}`);
+    } catch (e) {
+      res.log.push(`${t}（候補）的論點草稿沒有開成：${errText(e)}`);
+    }
+  }
 }
 
 /** 「要看的事」觸發的自動草稿：同一天最多幾檔（新自選的那一次也算在裡面；控制雲端次數，§5）。 */
@@ -564,8 +636,8 @@ type LastStatus = (typeof LAST_STATES)[number];
  * 一檔的草稿狀態（純函式）。rows：這檔的草稿（新到舊；別的論點檔的也可以在裡面）；session：現在的訊號日。
  * READY、最近一次只看這份論點檔的；7 天一次、還在準備中照 requestOwnDraft 的規則看整檔。
  */
-export function draftStateOf(rows: DraftRow[], acct: Pick<Account, 'own' | 'notifs' | 'lots'> & Partial<Pick<Account, 'watch'>>, ticker: string, now: Date, session: string, aiReady: boolean): DraftState {
-  // 候補也有論點檔（allocation_redesign §4.5 第 10 點）：狀態照樣算；候補現在 0 股，不會是「下一次流程會自動草擬」（候補的自動草擬是 T85 丙段）
+export function draftStateOf(rows: DraftRow[], acct: Pick<Account, 'own' | 'notifs' | 'lots'> & Partial<Pick<Account, 'watch' | 'ownClosed'>>, ticker: string, now: Date, session: string, aiReady: boolean): DraftState {
+  // 候補也有論點檔（allocation_redesign §4.5 第 10 點）：狀態照樣算；候補的「下一次流程會自動草擬」看 watchDraftBlock（第 18 點）
   const fm = fileMeta(acct, ticker);
   const meta = fm?.meta;
   const fileId = meta?.fileId ?? null;
@@ -583,8 +655,9 @@ export function draftStateOf(rows: DraftRow[], acct: Pick<Account, 'own' | 'noti
   const within = !!done && now.getTime() - Date.parse(done.created_at) < DRAFT_GAP_DAYS * DAY;
   const opened = openedOf(ticker, fm?.held ? fm.meta : null);
   const age = opened ? daysApart(opened, session) : -1;
-  const autoSoon =
-    aiReady &&
+  const autoSoon = fm && !fm.held
+    ? aiReady && watchDraftBlock(acct, ticker, mine, session) === null
+    : aiReady &&
     !!meta &&
     !!fm?.held &&
     !!fileId &&
@@ -783,6 +856,8 @@ export interface AdoptExit {
   /** 對應草稿的第幾條前提（0 起；沒有是 null）。存檔後換成那一條的編號。 */
   premiseIndex: number | null;
   status: 'ACTIVE' | 'REVIEW_ONLY' | 'MANUAL';
+  /** 財報門檻的進場條件、用草稿那份季度表比已經成立（T85，§4.5 第 22 點）：採用時直接標成立、記進 watch[t].entry。 */
+  metNow?: { end: string; values: (number | null)[] };
 }
 
 /** 採用一份草稿會做什麼（純函式 draftAdoptPlan；網站的對照與存檔都用它）。 */
@@ -815,14 +890,15 @@ function adoptStatus(kind: AdoptExit['kind'], check: Record<string, unknown>): A
  *     和改寫同一個格式檢查）、價格條件（只記錄）→ 直接寫進條件（add）；監測不了格式的（舊草稿的事件條件沒有 confirm_by 等）→ 送改寫（rewrite）；
  *     監測中、草稿沒有的 → 撤下（retire）。
  */
-export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits' | 'adds'>, live: LiveCondition[]): AdoptPlan {
+export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits' | 'adds' | 'entries'>, live: LiveCondition[]): AdoptPlan {
   const premises: PremiseInput[] = d.premises.map((dp) => {
     const f = draftPremiseFields(dp);
     return dp.keep_id ? { id: dp.keep_id, text: dp.text, ...f } : { id: null, text: dp.text, origin: 'AI_DRAFT_ACCEPTED' as const, ...f };
   });
   // 加碼條件（T84，own_draft_v4）接在出場條件後面，一起整組取代（你定的條件 8 條上限合計）；動作只認各自那一組
-  const all = [...d.exits.map((x) => ({ x, add: false })), ...(d.adds ?? []).map((x) => ({ x, add: true }))];
-  const exits = all.map(({ x, add }) => ({ text: x.text, action: add ? (x.action === 'RAISE' ? 'RAISE' : 'FILL') : (['EXIT', 'HALF', 'REVIEW'] as CondAction[]).includes(x.action) ? x.action : ('REVIEW' as CondAction) }));
+  // 進場條件（T85，候補的草稿）也接在後面：整組取代非價格的進場條件（live 裡只放非價格的；你填的價格條件不在範圍內，AI 草稿永遠沒有價格條件）
+  const all = [...d.exits.map((x) => ({ x, add: false, entry: false })), ...(d.adds ?? []).map((x) => ({ x, add: true, entry: false })), ...(d.entries ?? []).map((x) => ({ x, add: false, entry: true }))];
+  const exits = all.map(({ x, add, entry }) => ({ text: x.text, action: entry ? ('ENTRY' as CondAction) : add ? (x.action === 'RAISE' ? 'RAISE' : 'FILL') : (['EXIT', 'HALF', 'REVIEW'] as CondAction[]).includes(x.action) ? x.action : ('REVIEW' as CondAction) }));
   const plan = planExits(exits, live);
   const keep: AdoptPlan['keep'] = [];
   const add: AdoptExit[] = [];
@@ -837,7 +913,8 @@ export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits' | 'adds'>,
     const pi = typeof x.premise_index === 'number' ? x.premise_index : null;
     const kind = x.kind;
     const check = x.check && typeof x.check === 'object' ? x.check : null;
-    if (kind === 'XBRL' && check) return void add.push({ k, text: x.text, action, kind, check, premiseIndex: pi, status: adoptStatus(kind, check) });
+    const metNow = (x as { met_now?: AdoptExit['metNow'] | null }).met_now ?? null;
+    if (kind === 'XBRL' && check) return void add.push({ k, text: x.text, action, kind, check, premiseIndex: pi, status: adoptStatus(kind, check), ...(metNow && isEntryAction(action) ? { metNow } : {}) });
     if (kind === 'PRICE') return void add.push({ k, text: x.text, action, kind, check: check ?? {}, premiseIndex: pi, status: adoptStatus(kind, check ?? {}) });
     if (kind === 'EVENT' && check) {
       const ev = draftEventCheck(check, METRICS);
@@ -861,7 +938,32 @@ export function adoptOwnedCount(plan: Pick<AdoptPlan, 'keep' | 'add'>, live: Liv
     const code = live.find((l) => l.id === k.id)?.code;
     return code === undefined || OWNED_LIVE.includes(code);
   }).length;
-  return kept + plan.add.filter((a) => OWNED_LIVE.includes(a.status)).length;
+  return kept + plan.add.filter((a) => OWNED_LIVE.includes(a.status) && !isEntryAction(a.action)).length;
+}
+
+/** 採用之後監測中的非價格進場條件有幾條（T85：另算、最多 MAX_ENTRY_OTHER 條；沿用的看它的動作）。 */
+export function adoptEntryCount(plan: Pick<AdoptPlan, 'keep' | 'add'>): number {
+  return plan.keep.filter((k) => isEntryAction(k.action)).length + plan.add.filter((a) => isEntryAction(a.action) && a.status !== 'MANUAL').length;
+}
+
+const ANSWER_TEXT: Record<string, string> = { YES: '會買', NO: '不會買', UNSURE: '說不準' };
+
+/**
+ * 候補進場項目旁邊的「今天沒持股的話會不會買」（allocation_redesign §4.5 第 19 點）：這份論點檔最新一份回來的草稿（等你看的或採用過的）
+ * 的 would_buy_today 與草稿回來的日期（台北時間）。沒有是 null。answer 是白話（會買、不會買、說不準，後面括號一句理由）。
+ */
+export async function wouldBuyOf(db: D1Database, ticker: string, fileId: string): Promise<{ answer: string; date: string } | null> {
+  const row = await db.prepare("SELECT payload, settled_at, created_at FROM own_drafts WHERE ticker = ? AND file_id = ? AND status IN ('READY', 'USED') AND payload IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1").bind(ticker, fileId).first<{ payload: string; settled_at: string | null; created_at: string }>();
+  if (!row) return null;
+  try {
+    const wb = (JSON.parse(row.payload) as OwnDraft).would_buy_today;
+    if (!wb?.answer) return null;
+    const text = ANSWER_TEXT[wb.answer] ?? wb.answer;
+    const iso = row.settled_at ?? row.created_at;
+    return { answer: wb.why ? `${text}（${wb.why.length > 80 ? `${wb.why.slice(0, 80)}…` : wb.why}）` : text, date: new Date(Date.parse(iso) + 8 * 3600_000).toISOString().slice(0, 10) };
+  } catch {
+    return null;
+  }
 }
 
 /**

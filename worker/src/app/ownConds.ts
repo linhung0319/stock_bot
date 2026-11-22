@@ -9,7 +9,7 @@
 // 你定的條件（ACTIVE＋REVIEW_ONLY）一檔最多 8 條；AI 監測中的另算（最多 3 條，由審查寫入時維持）。每一次都在 own_thesis_log 寫一筆 CONDITION。
 import { fileMeta, type Account } from '../engine';
 import { thesisLogStmt } from './ledgerStore';
-import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, acceptStatus, defaultAction, fileConditions, isAddAction, isAiWatch, isOwned, sameActionKind, type CondAction, type FileCondition } from './thesis';
+import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, acceptStatus, defaultAction, entryConditions, fileConditions, isAddAction, isAiWatch, isEntryAction, isOwned, sameActionKind, type CondAction, type FileCondition } from './thesis';
 
 export class CondError extends Error {}
 
@@ -21,7 +21,8 @@ const isAction = (x: unknown): x is CondAction => COND_ACTIONS.includes(x as Con
  * 一檔現在有幾條會自己發通知的你定的條件（ACTIVE＋REVIEW_ONLY）；except：不算這幾列（被取代的那一條）。
  * AI 監測中的（T71：同樣是 ACTIVE／REVIEW_ONLY，但不是你定的）不算，它們另算 3 條。
  */
-export const ownedCount = (conds: FileCondition[], except: number[] = []) => conds.filter((c) => isOwned(c) && OWNED_LIVE.includes(c.status) && !except.includes(c.id)).length;
+// 進場條件（T85，allocation_redesign §4.5 第 11 點）另算、不占這 8 條（改寫確認時 conds 會帶候補的非價格進場條件）
+export const ownedCount = (conds: FileCondition[], except: number[] = []) => conds.filter((c) => isOwned(c) && OWNED_LIVE.includes(c.status) && !isEntryAction(c.action) && !except.includes(c.id)).length;
 
 /** 上限的檢查：再加 add 條會不會超過 8 條。 */
 export function checkCap(conds: FileCondition[], add: number, except: number[] = []): void {
@@ -56,7 +57,18 @@ export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'> & P
   if (!meta) throw new CondError(`${ticker} 不是自選股，也不在候補名單裡。`);
   const conds = await fileConditions(db, acct, ticker);
   const c = conds.find((x) => x.id === id);
-  if (!c) throw new CondError('找不到這條條件（可能是之前那一份論點檔的）。');
+  if (!c) {
+    // 進場條件（T85，allocation_redesign §4.5 第 20 點）：fileConditions 看不到，另外讀；非價格的只能撤下（動作只有一種），
+    // 價格條件在候補那一塊整組改（ops/watch-price）
+    const e = (await entryConditions(db, acct, ticker)).find((x) => x.id === id);
+    if (!e) throw new CondError('找不到這條條件（可能是之前那一份論點檔的）。');
+    if (e.kind === 'PRICE') throw new CondError('價格條件在候補那一塊改：清掉那一列的數字再按「存進場條件」。');
+    if (op !== 'retire') throw new CondError('進場條件成立時只有一種動作（候補進場，先買一半），只能撤下；要改字到編輯論點頁的「進場條件」那一塊。');
+    if (!['ACTIVE', 'REVIEW_ONLY', 'MANUAL'].includes(e.status)) throw new CondError(e.status === 'MET' ? '這條進場條件已經成立過了（一次性），要再等就重新定一條。' : '這條進場條件已經不在監測中。');
+    const at = now.toISOString();
+    await db.batch([db.prepare("UPDATE own_conditions SET status = 'RETIRED', note = ? WHERE id = ?").bind(`你在 ${at.slice(0, 10)} 撤下`, e.id), ...logStmt(db, ticker, meta.fileId, session, at, e.id, 'RETIRED', 'ENTRY')]);
+    return { id: e.id, status: 'RETIRED', action: 'ENTRY' };
+  }
   if (action !== undefined && action !== null && !isAction(action)) throw new CondError('成立時的動作只能是出清、減半或重新審查（加碼條件是補到標準比重或提高到 125%）。');
   // AI 不能自己提加碼條件（allocation_redesign §4.2）：AI 建議的、AI 監測中的條件不能變成加碼條件
   if (isAddAction(action) && !isOwned(c)) throw new CondError('AI 建議的條件不能改成加碼（AI 不能自己提加碼條件）；要加碼條件，到編輯論點頁自己寫一條。');

@@ -3,10 +3,10 @@
 //   尾：parseThesisBlock 解析 claude.ai 收尾時輸出的固定格式區塊，給「編輯論點」頁預覽
 // 純函式：不讀資料庫、網路、時鐘。固定指示和解析器要同一個版本，所以指示放在這裡（Worker 讀不到 repo 的 md）。
 // 討論包只放比重，不放金額與股數。
-import { SLOW, TIER_NAME, bucketValue, premiseKey, rollingMax, sma, totalValue, trailingReturn, type Account, type MarketView, type Tier } from '../engine';
+import { SLOW, TIER_NAME, bucketValue, premiseKey, rollingMax, sma, totalValue, trailingReturn, watchRecWeight, type Account, type MarketView, type Tier } from '../engine';
 import { sizeOf } from '../app/concentration';
 import { normalizeTicker } from '../data/sources';
-import { outcomeText, type CondAction, type PrevFile, type ThesisFile } from '../app/thesis';
+import { outcomeText, sameActionKind, type CondAction, type PrevFile, type ThesisFile } from '../app/thesis';
 import { eventDetail, eventLabel } from '../app/eventText';
 
 export const DISCUSSION_VERSION = 'discussion_v3';
@@ -143,6 +143,8 @@ export interface DiscussionNumbers {
   openedHalf: number | null;
   /** 部位達標準比重 2 倍以上（§3.6.3；sizeFlag 成立時才有）：占總資產（自選桶）、是標準比重的幾倍。 */
   size?: { weight: number; ratio: number } | null;
+  /** 候補（allocation_redesign §4.5 第 25 點）：還沒持有；加入候補的訊號日、打算放的比重（null = 留空）、推薦值。持股是 undefined。 */
+  watch?: { addedAt: string; stdWeight: number | null; rec: number | null } | null;
 }
 
 const fin = (x: number) => (Number.isFinite(x) ? x : null);
@@ -175,6 +177,10 @@ export function discussionNumbers(acct: Account, view: MarketView, ticker: strin
     size: (() => {
       const s = meta?.sizeFlag ? sizeOf(acct, view, ticker) : null;
       return s ? { weight: s.weight, ratio: s.ratio } : null;
+    })(),
+    ...(() => {
+      const w = meta ? null : acct.watch?.[ticker];
+      return w ? { watch: { addedAt: w.addedAt, stdWeight: w.stdWeight, rec: w.stdWeight === null ? watchRecWeight(acct, view, ticker) : null } } : {};
     })(),
   };
 }
@@ -211,6 +217,19 @@ const SP = '　';
 const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '—');
 
 function whySection(file: ThesisFile, n: DiscussionNumbers, mode: DiscussionMode, brk: BreakInfo | null, prev: PrevFile | null): string[] {
+  // 候補（allocation_redesign §4.5 第 25 點）：還沒持有，放在候補名單，想等條件到了再買；開場問的是為什麼想買、什麼事發生才買
+  if (n.watch && mode !== 'BREAK') {
+    const head = `這檔我還沒持有：${n.watch.addedAt} 放進候補名單，想等條件到了再買（條件到了，stock bot 的月報會列一項「先買一半」，由我決定）。`;
+    if (mode === 'NEW')
+      return [
+        `${head}還沒有寫下論點。`,
+        ...(prev ? ['我之前持有過它，下面「上一次持有時的論點」記著那一次的論點與賣出的原因。請先問我：上次為什麼賣、這次為什麼又想買。'] : []),
+        file.buyNote?.text ? '下面「我想買它的原因」是我加進候補時隨手寫的一句話，請從那句話問起：' : '請先問我 3 個問題：',
+        '為什麼想買、哪幾件事要繼續成立、什麼事發生（或什麼證據出現）我才會真的買進；也問我什麼情況下會放棄、移出候補。',
+        '我回答之後再和我討論，不要直接替我寫。進場的時機（價位）是我自己決定的，不要給目標價。',
+      ];
+    return [`${head}例行檢視。`, '請先挑出論點裡最弱的一條前提，從那裡開始；也問我：如果今天就用現在的價格買進，會不會買。'];
+  }
   if (mode === 'NEW') {
     // 賣光之後又買回（T44）：從「上次為什麼賣、這次為什麼買回」問起
     // 有買進時的一句話（T40）：從那句話問起，不再要 claude.ai 先問為什麼買
@@ -241,9 +260,10 @@ function whySection(file: ThesisFile, n: DiscussionNumbers, mode: DiscussionMode
 }
 
 /** 買進時的一句話（T40，own_thesis §1.7）：不一定對、不是論點，只當開場。沒有就不放這一節。 */
-function buyNoteSection(file: ThesisFile): string[] {
+function buyNoteSection(file: ThesisFile, watch = false): string[] {
   const b = file.buyNote;
   if (!b?.text) return [];
+  if (watch) return ['## 我想買它的原因', '這是我加進候補名單時隨手寫的一句話，不一定對，也不是論點；請拿來當開場，不要當成已經成立的前提。', `「${b.text}」（${b.at.slice(0, 10)} 寫的）`, ''];
   return ['## 我買進時的想法', '這是我買的時候隨手寫的一句話，不一定對，也不是論點；請拿來當開場，不要當成已經成立的前提。', `「${b.text}」（${b.at} 寫的）`, ''];
 }
 
@@ -350,6 +370,19 @@ function conditionSection(file: ThesisFile): string[] {
   return L;
 }
 
+/**
+ * 候補的進場條件（allocation_redesign §4.5 第 25 點）：只列給 claude.ai 參考；進場條件在 stock bot 的網站改（價格條件在候補那一塊填數字、
+ * 其他的在編輯論點頁），收尾區塊不收。持股沒有這一節。
+ */
+function entrySection(file: ThesisFile, watch: boolean): string[] {
+  if (!watch) return [];
+  const live = (file.entries ?? []).filter((c) => ['ACTIVE', 'REVIEW_ONLY', 'MANUAL'].includes(c.status));
+  const L = ['## 進場條件（在 stock bot 的網站改，不要寫進收尾區塊）', '成立時月報列一項「候補進場：先買一半」，由我決定。價位是我自己填的數字；其他條件在編輯論點頁改。'];
+  if (!live.length) L.push('還沒有');
+  live.forEach((c) => L.push(`- ${c.text}（${c.kind === 'PRICE' ? '我填的價格條件，程式每天比收盤' : COND_STATE[c.status] ?? c.status}）`));
+  return [...L, ''];
+}
+
 function eventSection(file: ThesisFile): string[] {
   const evs = file.events.filter((e) => e.isNew).slice(0, MAX_EVENTS);
   if (!evs.length) return ['沒有'];
@@ -384,8 +417,9 @@ function reviewSection(file: ThesisFile): string[] {
 function numberSection(n: DiscussionNumbers, xbrl: string | null): string[] {
   const L = [
     `收盤 ${px(n.close)}（${n.date}）；距 52 週高點 ${spc(n.fromHigh)}；200 日均線 ${px(n.ma200)}（收盤相對均線 ${spc(n.vsMa)}）`,
-    `慢規則狀態：${n.slow === 'HALF' ? '減半中' : '標準'}；過去一年報酬 ${spc(n.ret1y)}`,
-    `比重：占總資產 ${pc(n.weight)}，標準比重 ${pc(n.stdWeight)}；自選桶合計 ${pc(n.ownTotal, 0)}（預算 ${pc(n.ownBudget, 0)}）`,
+    ...(n.watch
+      ? [`還沒持有（候補，${n.watch.addedAt} 加入）；過去一年報酬 ${spc(n.ret1y)}`, `打算放的比重：${n.watch.stdWeight !== null ? pc(n.watch.stdWeight) : `留空（推薦值 ${pc(n.watch.rec)}）`}，進場時先買一半；自選桶合計 ${pc(n.ownTotal, 0)}（預算 ${pc(n.ownBudget, 0)}）`]
+      : [`慢規則狀態：${n.slow === 'HALF' ? '減半中' : '標準'}；過去一年報酬 ${spc(n.ret1y)}`, `比重：占總資產 ${pc(n.weight)}，標準比重 ${pc(n.stdWeight)}；自選桶合計 ${pc(n.ownTotal, 0)}（預算 ${pc(n.ownBudget, 0)}）`]),
     '',
     '最近 8 季財報表（XBRL）：',
     xbrl ?? '沒有財報表',
@@ -412,7 +446,7 @@ export function discussionPack(file: ThesisFile, n: DiscussionNumbers, mode: Dis
       '## 這次為什麼討論',
       ...whySection(file, n, mode, brk, prev),
       '',
-      ...buyNoteSection(file),
+      ...buyNoteSection(file, !!n.watch),
       ...prevSection(prev),
       '## 我的論點',
       ...thesisSection(file),
@@ -421,8 +455,10 @@ export function discussionPack(file: ThesisFile, n: DiscussionNumbers, mode: Dis
       ...premiseSection(file),
       '',
       '## 出場條件',
+      ...(n.watch ? ['（還沒持有：這些條件在候補期間不監測，進場之後才開始。）'] : []),
       ...conditionSection(file),
       '',
+      ...entrySection(file, !!n.watch),
       '## 上次審查之後的事件',
       ...eventSection(file),
       '',
@@ -567,7 +603,7 @@ export function parseThesisBlock(text: string, ticker: string): ParsedThesis {
     notes.push(`出場條件超過 ${THESIS_LIMITS.exits} 條，只留前 ${THESIS_LIMITS.exits} 條`);
     exitRows = exitRows.slice(0, THESIS_LIMITS.exits);
   }
-  const exits: ParsedExit[] = exitRows.map((row0, k) => {
+  const exits: ParsedExit[] = exitRows.map((row0, k): ParsedExit | null => {
     // v2 區塊行首的 [C12]（T40）：T42 起出場條件是整組取代，編號忽略、只取文字
     const tag = COND_TAG.exec(row0);
     const row = tag ? row0.slice(tag[0].length) : row0;
@@ -577,13 +613,18 @@ export function parseThesisBlock(text: string, ticker: string): ParsedThesis {
     let cond = at >= 0 ? row.slice(0, at).trim() : row.trim();
     const word = at >= 0 ? row.slice(at + len).trim().replace(/[。.．,，;；!！\s]+$/, '') : '';
     const action = ACTIONS[word];
+    // 進場條件（T85）不收：在網站改（候補那一塊的價格條件、編輯論點頁的進場條件）
+    if (!action && /進場/.test(word)) {
+      notes.push(`出場條件第 ${k + 1} 條是進場條件（${cond.slice(0, 30)}…）：收尾區塊不收進場條件，沒有算進去；進場條件到 stock bot 的編輯論點頁那一塊改`);
+      return null;
+    }
     if (!action) notes.push(`出場條件第 ${k + 1} 條的動作${word ? `「${word}」不認得` : '沒寫'}，先當成「重新審查」`);
     if (cond.length > THESIS_LIMITS.exit) {
       notes.push(`出場條件第 ${k + 1} 條超過 ${THESIS_LIMITS.exit} 字，後面截掉了`);
       cond = cond.slice(0, THESIS_LIMITS.exit);
     }
     return { text: cond, action: action ?? 'REVIEW', guessed: !action };
-  });
+  }).filter((x): x is ParsedExit => x !== null);
   const one = (rows: string[]) => rows.map((l) => l.trim()).filter(Boolean).join(' ') || null;
   return { found: true, error: null, thesis, premises, premiseIds, exits, conclusion: one(sec.這次的結論), reason: one(sec.理由), notes };
 }
@@ -623,8 +664,8 @@ export function planExits(exits: { text: string; action: CondAction }[], live: L
   const actionChanged: ExitPlan['actionChanged'] = [];
   const sameByText: Record<number, number> = {};
   exits.forEach((x, index) => {
-    // 出場條件和加碼條件（T84）字一樣也不算同一條：只改動作互換要重新送改寫，讓你在對照上看到「成立時：買進」
-    const hit = live.find((c) => !used.has(c.id) && premiseKey(c.text) === premiseKey(x.text) && isAdd(c.action ?? null) === isAdd(x.action));
+    // 出場條件和加碼條件（T84）字一樣也不算同一條：只改動作互換要重新送改寫，讓你在對照上看到「成立時：買進」；進場條件（T85）另成一組
+    const hit = live.find((c) => !used.has(c.id) && premiseKey(c.text) === premiseKey(x.text) && sameActionKind(c.action ?? 'REVIEW', x.action));
     if (!hit) return;
     used.add(hit.id);
     sameByText[index] = hit.id;

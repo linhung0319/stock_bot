@@ -15,7 +15,7 @@ import { say } from './slime.js';
 import { replyOption } from './thesis-reply.js';
 import { prevFill } from './thesis-prev.js';
 import { sourcesEditor, sourcesNow } from './thesis-sources.js';
-import { ACTION_TEXT as DRAFT_ACTION, ADOPT_HINT, ANSWER_TEXT, adoptCompare, adoptResultLines, checkLine, draftButtonState, draftItems, draftNotices, exitMonitorText, md } from './thesis-draft.js';
+import { ACTION_TEXT as DRAFT_ACTION, ADOPT_HINT, ANSWER_TEXT, adoptCompare, adoptResultLines, checkLine, draftButtonState, draftItems, draftNotices, entryMonitorText, exitMonitorText, md } from './thesis-draft.js';
 import { BELIEF_NOTE, EVERY_DEFAULT, LIMITS as FIELD_LIMITS, MAX_CLAUSES, VERIFY_OPTIONS, checkableWarn, fieldsSummary, hasFields, premiseFieldsOf, verifyText } from './thesis-fields.js';
 import { RISK_INTRO, RISK_ROW_HINT, RISK_TITLE, riskButtons, riskMeta, riskPreviewLine } from './thesis-risks.js';
 
@@ -36,6 +36,10 @@ const ADD_ACTIONS = [
 const MAX_OWNED = 8;
 const isAddAct = (a) => a === 'FILL' || a === 'RAISE';
 /** 加碼條件那一塊的說明（§4.2：成立時只進月報、預設照做；不收價格條件）。 */
+/** 候補的非價格進場條件最多幾條（T85，§4.5 第 11 點；價格條件另算 2 條，在候補那一塊填）。 */
+const ENTRY_MAX = 3;
+/** 進場條件那一塊的說明（§4.5 第 2、20 點）。 */
+export const ENTRY_NOTE = '論點被證實到值得開始買的事（例如：下一季營收年增轉正、公司在 8-K 宣布拿到大客戶合約）。存檔後送 AI 改寫成查得到的格式，在這一檔的頁面確認才開始監測；成立時下一份月報列一項「候補進場：先買一半」。價格條件（收盤低於多少、比高點低幾 %）不寫在這裡，在候補那一塊填數字。';
 export const ADD_NOTE = '論點被證實、值得多買的事（例如：營業利益率連兩季高於 35%）。成立時在下一份月報列一項買進，預設照做；不收價格條件（下跌時加碼由跌幅審查另外處理）。';
 
 /**
@@ -183,7 +187,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   const srcEd = sourcesEditor(d.ticker, own.webSources ?? null, () => changed());
 
   // ---- 右邊：新的（三欄都可以手改）
-  // 候補（allocation_redesign §4.5）：還沒持有；請 stock bot 草擬候補是之後的事，這一頁先不放
+  // 候補（allocation_redesign §4.5）：還沒持有；草稿與「請 stock bot 草擬」照用（T85 丙段），多一塊「進場條件」（非價格的，最多 3 條）
   const watch = !!d.watch;
   const thesisIn = h('textarea', { rows: 6, maxlength: LIMITS.thesis, placeholder: watch ? '我為什麼想買它（一段，300 字以內最好）' : '我為什麼持有它（一段，300 字以內最好）' });
   thesisIn.value = own.thesis?.text ?? '';
@@ -193,6 +197,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   const prems = [];
   const exits = [];
   const adds = [];
+  const entryList = h('div');
+  const entries = [];
   const noEnter = (el) => el.addEventListener('keydown', (ev) => ev.key === 'Enter' && ev.preventDefault());
   /**
    * 右邊的一條前提。每一條都有「怎麼驗證」那一塊（T60：用什麼查、來源、多久有新的一份、怎樣算證實、怎樣算不成立最多 3 句；
@@ -272,6 +278,22 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     addList.append(el);
     return r;
   };
+  /** 右邊的一條進場條件（T85，候補才有）：成立時固定是「候補進場，先買一半」，沒有選單；最多 ENTRY_MAX 條（價格條件另算，在候補那一塊填）。 */
+  const addEntry = (x = { text: '' }) => {
+    if (entries.length >= ENTRY_MAX) {
+      toast(`進場條件最多 ${ENTRY_MAX} 條（價格條件另算，在候補那一塊填）：先拿掉一條`);
+      return null;
+    }
+    const input = h('textarea', { class: 'prem-in', rows: 1, maxlength: LIMITS.exit, value: x.text, placeholder: '論點被證實到值得開始買的事，例如：下一季營收年增轉正', 'aria-label': '進場條件' });
+    noEnter(input);
+    const r = { input };
+    input.addEventListener('input', changed);
+    const el = h('div', { class: 'exit-row entry-row' }, h('div', { style: rowStyle.replace('margin-top:8px', 'margin-top:0') }, input, removeBtn(() => { entries.splice(entries.indexOf(r), 1); el.remove(); changed(); })), h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, '成立時：候補進場，先買一半（月報列一項，你決定）')));
+    r.el = el;
+    entries.push(r);
+    entryList.append(el);
+    return r;
+  };
   const fill = (p) => {
     thesisIn.value = p.thesis;
     thesisIn.dispatchEvent(new Event('input'));
@@ -301,6 +323,9 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     else addExit({ text: c.text, action: c.action ?? 'REVIEW' });
   }
   if (!exits.length) addExit();
+  // 進場條件（T85）預填現在還在監測的非價格進場條件（你填的價格條件在候補那一塊，不在這裡）
+  const entryNow = watch ? (d.watch.entries ?? []).filter((e) => e.retire) : [];
+  for (const e of entryNow) addEntry({ text: e.text });
 
   // ---- 貼上
   const paste = h('textarea', { rows: 5, placeholder: '把 claude.ai 收尾時輸出的整個區塊貼在這裡（===STOCKBOT 論點 v3 … 到 ===END===）' });
@@ -339,6 +364,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     premises: prems.map((r) => ({ id: r.id, text: r.input.value.trim(), ...r.getFields(), ...(r.risk ? { risk: r.risk } : {}) })).filter((p) => p.text),
     // 加碼條件（T84）接在出場條件後面一起送（同一張表、整組取代）
     exitConditions: [...exits, ...adds].map((r) => ({ text: r.input.value.trim(), action: r.sel.value })).filter((x) => x.text),
+    // 進場條件（T85，候補才送）：整組取代非價格的進場條件；沒送 = 不動
+    ...(watch ? { entryConditions: entries.map((r) => r.input.value.trim()).filter(Boolean) } : {}),
     source,
     replyTo: reply && reply.checked ? replyNotif : null,
     ...(srcEd.changed() ? { webSources: srcEd.value() } : {}),
@@ -372,22 +399,23 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
    */
   const exitPreview = (x) => {
     if (!x) return null;
-    const rows = [...exits, ...adds].map((r) => r.input.value.trim()).filter(Boolean);
+    const rows = [...exits, ...adds, ...entries].map((r) => r.input.value.trim()).filter(Boolean);
+    const what = watch ? '出場、加碼與進場條件' : '出場條件';
     if (!x.changed) {
       if (!x.live && !rows.length) return null;
       return [
-        h('b', null, '出場條件'),
-        h('p', { style: 'margin-top:6px' }, x.live ? `出場條件沒有改動：現在的 ${x.live} 條照舊監測，不用送 AI。` : '出場條件沒有改動。'),
+        h('b', null, watch ? '條件' : '出場條件'),
+        h('p', { style: 'margin-top:6px' }, x.live ? `${what}沒有改動：現在的 ${x.live} 條照舊，不用送 AI。` : `${what}沒有改動。`),
         x.actionChanged.length
           ? h('div', { style: 'margin-top:6px' }, h('b', null, '只改成立時的動作（存檔時直接改）：'), h('ul', { class: 'diff-list' }, x.actionChanged.map((a) => h('li', null, h('span', null, `${a.text}：${actName(a.was)} → ${actName(a.action)}`)))))
           : null,
       ];
     }
     const head = rows.length
-      ? `出場條件有改動：存檔後送 AI 對照與改寫，回來後在持股頁確認${x.live ? `；確認之前，現在的 ${x.live} 條照舊監測` : '，確認後才開始監測'}。`
-      : `出場條件全部拿掉：存檔後在持股頁確認才撤下；確認之前，現在的 ${x.live} 條照舊監測。`;
+      ? `${what}有改動：存檔後送 AI 對照與改寫，回來後在${watch ? '這一檔的頁面' : '持股頁'}確認${x.live ? `；確認之前，現在的 ${x.live} 條照舊` : '，確認後才開始監測'}。`
+      : `${what}全部拿掉：存檔後在${watch ? '這一檔的頁面' : '持股頁'}確認才撤下；確認之前，現在的 ${x.live} 條照舊。`;
     return [
-      h('b', null, '出場條件'),
+      h('b', null, watch ? '條件' : '出場條件'),
       h('p', { style: 'margin-top:6px' }, head),
       rows.length && x.live ? h('p', { class: 'faint', style: 'margin-top:4px' }, '右邊是存檔後你要的全部出場條件。AI 會標出哪幾條和現在的相同（不新增）、哪幾條取代舊的；右邊沒有寫到的舊條件，確認後撤下。') : null,
       x.pendingVersion ? h('p', { style: 'margin-top:6px;color:var(--warn)' }, `第 ${x.pendingVersion} 版存的出場條件改動還沒在持股頁確認；這次存檔後以這一版為準，第 ${x.pendingVersion} 版的改寫結果不再列。`) : null,
@@ -522,7 +550,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       const c = checkLine(it);
       return h('p', { class: 'small', style: c.belief ? 'color:var(--warn)' : c.ok ? 'color:var(--ink-2)' : 'color:var(--hot)' }, c.text);
     };
-    const notices = draftNotices(draft);
+    const notices = draftNotices(draft, { watch });
     const body = { ticker: d.ticker, id: draft.id };
     const replyTo = () => (reply && reply.checked ? replyNotif : null);
     const compareBox = h('div');
@@ -624,7 +652,7 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
           return showRow([
             h('p', null, it.text),
             h('p', { class: 'small' }, h('span', { class: 'faint' }, '成立時：'), DRAFT_ACTION[it.action] ?? it.action, it.premiseIndex !== null && P.premises[it.premiseIndex] ? h('span', { class: 'faint' }, `；對應第 ${it.premiseIndex + 1} 條前提`) : null),
-            h('p', { class: `small tone-${m.tone}` }, m.text),
+            h('p', { class: `small tone-${m.tone}` }, watch ? `${m.text}（候補期間不監測，進場之後才開始）` : m.text),
             evList(it.evidence),
           ]);
         }),
@@ -648,10 +676,30 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
             ),
           ]
         : null,
+      // 進場條件（T85，候補的草稿）：採用後直接開始監測；財報門檻用草稿那份財報表比已經成立的，採用後直接列進下一份月報
+      items.entries.length
+        ? [
+            h('h5', { class: 'dr-h' }, `進場條件（${items.entries.length} 條；成立時月報列一項「候補進場：先買一半」，你決定）`),
+            h('p', { class: 'small dim' }, '草稿不寫價格條件（AI 不談估值與目標價）；你在候補那一塊填的價格條件，採用這份草稿也不會動。'),
+            h(
+              'ul',
+              { class: 'dr-list' },
+              items.entries.map((it) => {
+                const m = entryMonitorText(it);
+                return showRow([
+                  h('p', null, it.text),
+                  h('p', { class: `small tone-${m.tone}` }, m.text),
+                  it.metNow ? h('p', { class: 'small tone-core' }, `用草稿那份財報表比，現在已經成立（${it.metNow.end} 那一季起）：採用之後直接列進下一份月報。`) : null,
+                  evList(it.evidence),
+                ]);
+              }),
+            ),
+          ]
+        : null,
       peerRows.length ? [h('h5', { class: 'dr-h' }, '同業（審查時 AI 可以另外讀的申報與新聞）'), h('ul', { class: 'dr-list' }, peerRows)] : null,
       P.not_checkable?.length ? [h('h5', { class: 'dr-h' }, 'stock bot 監測不了、要你自己留意的'), h('ul', { class: 'dr-plain' }, P.not_checkable.map((x) => h('li', { class: 'small' }, x)))] : null,
       P.report ? h('details', { class: 'more', style: 'margin-top:12px' }, h('summary', null, '主筆的說明'), h('p', { class: 'more-body small', style: 'white-space:pre-wrap' }, P.report)) : null,
-      h('div', { class: 'adopt-bar' }, h('p', { class: 'small adopt-hint' }, ADOPT_HINT), h('div', { class: 'btn-row' }, adopt, dismiss)),
+      h('div', { class: 'adopt-bar' }, h('p', { class: 'small adopt-hint' }, watch ? ADOPT_HINT.replace('還願意抱著這檔嗎？', '還想買這檔嗎？') : ADOPT_HINT), h('div', { class: 'btn-row' }, adopt, dismiss)),
       compareBox,
       dismissBox,
     );
@@ -698,14 +746,14 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     return box;
   }
   // 沒有等你看的草稿：右邊上面是「請 stock bot 草擬」那一塊（準備中、要等幾天、上次失敗的原因）
-  const draftAsk = draft || watch
+  const draftAsk = draft
     ? null
     : glass(
         'pad draft-box',
         h('h2', { class: 'panel-h' }, '請 stock bot 草擬'),
-        h('p', { class: 'small dim', style: 'margin-top:4px' }, 'stock bot 讀這家公司的申報、財報與網站，先寫反方，再寫論點、前提與出場條件。回來後在這裡先看反方，再決定要不要整份採用。'),
+        h('p', { class: 'small dim', style: 'margin-top:4px' }, watch ? 'stock bot 讀這家公司的申報、財報與網站，先寫反方，再寫論點、前提、進場條件與出場條件（進場條件不寫價位）。回來後在這裡先看反方，再決定要不要整份採用。' : 'stock bot 讀這家公司的申報、財報與網站，先寫反方，再寫論點、前提與出場條件。回來後在這裡先看反方，再決定要不要整份採用。'),
         own.pendingBreak ? h('p', { class: 'small', style: 'margin-top:6px;color:var(--hot)' }, `前提 ${own.pendingBreak.premiseId ?? ''} 剛被 AI 判不成立：這時候請 stock bot 草擬，草稿最上面會提醒你別只是替繼續持有找新理由，也不能沿用那一條。`) : null,
-        h('div', { style: 'margin-top:10px' }, draftAction(d.ticker, draftState, { onEdit: true })),
+        h('div', { style: 'margin-top:10px' }, draftAction(d.ticker, draftState, { onEdit: true, watch })),
       );
 
   const current = glass(
@@ -797,6 +845,18 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       addList,
       h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addAdd(); changed(); } }, adds.length ? '再加一條加碼條件' : '加一條加碼條件')),
     ),
+    // 進場條件（T85，allocation_redesign §4.5 第 20 點；候補才有）：和出場條件同一套改寫與確認；改寫的對照寫「成立時：候補進場」
+    watch
+      ? h(
+          'div',
+          { class: 'field entry-field', style: 'margin:14px 0 0' },
+          h('span', null, `進場條件（不含價格；最多 ${ENTRY_MAX} 條）`),
+          h('small', null, ENTRY_NOTE),
+          own.kind === 'DEFAULT_ONLY' ? h('small', { style: 'color:var(--warn)' }, '只有系統預設前提時只能有價格條件：先在上面寫你自己的前提，才能存非價格的進場條件。') : null,
+          entryList,
+          h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addEntry(); changed(); } }, entries.length ? '再加一條進場條件' : '加一條進場條件')),
+        )
+      : null,
     srcEd.el,
   );
 
@@ -831,15 +891,15 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       back,
       kicker: own.thesis ? `第 ${own.thesis.version} 版，${day(own.thesis.setAt)} 定` : '還沒有論點本文',
       title: `編輯論點：${d.ticker}`,
-      sub: watch && !draft ? '候補還沒持有：論點與前提存好之後，進場時沿用。貼上 claude.ai 討論的結果，或直接手寫；左邊是現在的、右邊是新的。' : draft ? 'stock bot 的草稿回來了：在右邊先看反方的三點，還願意抱著就按「採用這份草稿」，整份照草稿存（出場條件採用後就生效）。不想用可以照舊貼上 claude.ai 討論的結果或手寫。' : '貼上 claude.ai 討論的結果、請 stock bot 草擬，或直接手寫。左邊是現在的、右邊是新的；確認之後論點與前提馬上存好，出場條件有改動才送 AI 對照與改寫。',
+      sub: watch && !draft ? '候補還沒持有：論點、前提與條件存好之後，進場時沿用。請 stock bot 草擬、貼上 claude.ai 討論的結果，或直接手寫；左邊是現在的、右邊是新的。' : draft ? (watch ? 'stock bot 的草稿回來了：在右邊先看反方的三點，還想買就按「採用這份草稿」，整份照草稿存（進場條件採用後就開始監測）。不想用可以照舊貼上 claude.ai 討論的結果或手寫。' : 'stock bot 的草稿回來了：在右邊先看反方的三點，還願意抱著就按「採用這份草稿」，整份照草稿存（出場條件採用後就生效）。不想用可以照舊貼上 claude.ai 討論的結果或手寫。') : '貼上 claude.ai 討論的結果、請 stock bot 草擬，或直接手寫。左邊是現在的、右邊是新的；確認之後論點與前提馬上存好，出場條件有改動才送 AI 對照與改寫。',
       bubble: draft ? { k: '草稿', say: ['先看', { t: '反方的三點', tone: 'em' }, '，還願意抱著再按「採用這份草稿」。'], mood: 'watch' } : { k: '編輯論點', say: ['左右對照看一遍再確認。', { t: '出場條件', tone: 'em' }, '改了的話，要你在持股頁確認才會換上新的。'], mood: 'watch' },
     },
     pane: formBox,
     rail: glass(
       'pad',
       h('h2', { class: 'panel-h' }, '怎麼用'),
-      watch ? null : h('p', { class: 'small', style: 'margin-top:8px' }, h('b', null, '用 stock bot 的草稿')),
-      watch ? null : h('ol', { class: 'small', style: 'margin:4px 0 0;display:grid;gap:6px' }, h('li', null, '1. 按「請 stock bot 草擬」，好了推 LINE。'), h('li', null, '2. 先看反方的三點，還願意抱著這檔就按「採用這份草稿」。'), h('li', null, '3. 現在有論點的話，會先列出哪幾條會被換掉，按「確定採用」；之後要改字在這一頁改。')),
+      h('p', { class: 'small', style: 'margin-top:8px' }, h('b', null, '用 stock bot 的草稿')),
+      h('ol', { class: 'small', style: 'margin:4px 0 0;display:grid;gap:6px' }, h('li', null, watch ? '1. 加進候補之後的第一次每日流程會自動草擬一次；也可以按「請 stock bot 草擬」，好了推 LINE。' : '1. 按「請 stock bot 草擬」，好了推 LINE。'), h('li', null, `2. 先看反方的三點，${watch ? '還想買這檔' : '還願意抱著這檔'}就按「採用這份草稿」。`), h('li', null, '3. 現在有論點的話，會先列出哪幾條會被換掉，按「確定採用」；之後要改字在這一頁改。')),
       h('p', { class: 'small', style: 'margin-top:12px' }, h('b', null, '在 claude.ai 討論')),
       h('ol', { class: 'small', style: 'margin:4px 0 0;display:grid;gap:6px' }, h('li', null, '1. 按「複製討論包」，貼到 claude.ai 的新對話。'), h('li', null, '2. 和它討論；它會站在反方問你。'), h('li', null, '3. 說「收尾」，把輸出的區塊貼回這裡、按「解析」。'), h('li', null, '4. 看左右對照，需要的話改，按「確認」。')),
       h('p', { class: 'small faint', style: 'margin-top:10px' }, '討論包與草稿的證據包都只有比重，沒有金額與股數。「這次的結論」只顯示，不會自動下單。'),
@@ -936,13 +996,13 @@ export function thesisTodoPage(ctx) {
  * state：伺服器給的草稿狀態（沒有 = 示範模式或月報裡的舊清單：只放按鈕，按了照伺服器的回應寫）。
  * 按了之後原地換成新的狀態（準備中）；開不成的寫原因與「再試一次」。按鈕連按只會送一次（actionButton 送出時先停用；伺服器也擋同一檔同時兩次）。
  * opt：primary 主要按鈕；compact 字小一點；link 用連結的樣子（「要看的事」那一行）；onEdit 在編輯論點頁（草稿好了不用再連過去）；
- *      before／after：和草擬的按鈕排在同一列的其他按鈕（持股頁的「編輯論點」「複製討論包」）。
+ *      before／after：和草擬的按鈕排在同一列的其他按鈕（持股頁的「編輯論點」「複製討論包」）；watch 候補（T85：自動草擬的說法不同）。
  */
 export function draftAction(ticker, state, opt = {}) {
   const box = h('div', { class: 'draft-act' + (opt.compact ? ' compact' : '') + (opt.link ? ' as-link' : '') });
   const edit = `#/h/${encodeURIComponent(ticker)}/thesis`;
   const draw = (st, err = null) => {
-    const v = draftButtonState(st);
+    const v = draftButtonState(st, new Date(), { watch: !!opt.watch });
     const label = err ? (err.status === 503 ? '再試一次' : v.button) : v.button;
     const go = async () => {
       try {
@@ -993,6 +1053,13 @@ export const DRAFT_ATTN = ['THESIS_OLD', 'PREMISE_NO_DATA', 'NO_CONSENSUS', 'HAL
  * state：這檔的草稿狀態（持股頁有；月報頁是當時的清單，沒有）。
  */
 export function attnDraftAction(x, state = null) {
+  // 候補（T85 丙段，§4.5 第 24 點）：草稿好了 →「看草稿」；一年沒進場 → 到候補那一塊（留著、改條件或移除）
+  if (x.src === 'watch') {
+    if (x.kind === 'DRAFT_READY') return h('a', { class: 'linkbtn', href: `#/h/${encodeURIComponent(x.ticker)}/thesis` }, '看草稿');
+    // 一年沒進場：連到帳戶頁的「候補」那一塊（留著、改條件、移除都在那裡或點進去）
+    if (x.kind === 'WATCH_STALE') return h('a', { class: 'linkbtn', href: '#/account' }, '到帳戶頁的候補');
+    return null;
+  }
   if ((x.src ?? 'own') !== 'own') return null;
   // 已經自動請 stock bot 草擬（T72）：那一行寫了「好了會列在這裡」，不用再按
   if (x.drafted) return null;

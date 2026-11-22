@@ -363,8 +363,10 @@ describe('T85 甲 ③：網站的候補那一塊', () => {
 
 // ---------------------------------------------------------------- 4. 每日流程
 
+// T85 丙段改了兩件（allocation_redesign §4.5 第 18、22 點）：加入 7 天內的那一次自動草擬會開（受 DRAFT_AUTO_DAILY 限制）；
+// EDGAR 申報清單的代號 = 掃描目標 ∪ 候補。其他 AI（審查、掃描、硬事件、新眼光、條件確認）照樣不替候補開。
 describe('T85 甲 ④：每日流程多抓候補的價格，但不多跑任何 AI', () => {
-  it('候補的價格放「追蹤」：壞代號不擋整天的訊號；不進掃描、不開任何任務（草稿、審查、條件確認都沒有）', async () => {
+  it('候補的價格放「追蹤」：壞代號不擋整天的訊號；不進掃描、除了加入時那一次自動草擬不開任何任務', async () => {
     await withWorld(async (c) => {
       expect((await c.api('POST', 'ops/watch-add', { ticker: 'ZZZW' })).status).toBe(200);
       // 加進候補之後才下市（Yahoo 回 500）
@@ -384,10 +386,11 @@ describe('T85 甲 ④：每日流程多抓候補的價格，但不多跑任何 A
       expect((await loadSeries(c.db, ['ZZZW'])).get('ZZZW')?.d.at(-1)).toBe('2026-11-20');
       const runs = (await c.db.prepare("SELECT COUNT(*) AS n FROM ai_runs WHERE ticker IN ('ZZZW', 'BADX')").first<{ n: number }>())!.n;
       const drafts = (await c.db.prepare("SELECT COUNT(*) AS n FROM own_drafts WHERE ticker IN ('ZZZW', 'BADX')").first<{ n: number }>())!.n;
-      expect(runs).toBe(0);
-      expect(drafts).toBe(0);
-      // 沒有對候補抓申報（不進掃描）
-      expect(c.w.calls.filter((u) => /sec\.gov/.test(u) && /ZZZW|BADX/.test(u))).toEqual([]);
+      // 丙段：只有加入時那一次自動草擬（兩檔，DRAFT_AUTO_DAILY = 2）；沒有審查、掃描、硬事件、條件確認
+      expect(drafts).toBe(2);
+      expect(runs).toBe(2);
+      expect((await c.db.prepare("SELECT COUNT(*) AS n FROM ai_runs WHERE ticker IN ('ZZZW', 'BADX') AND fn != 'OWN_DRAFT'").first<{ n: number }>())!.n).toBe(0);
+      expect((await c.db.prepare("SELECT COUNT(*) AS n FROM sec_events WHERE ticker IN ('ZZZW', 'BADX')").first<{ n: number }>())!.n).toBe(0);
       const after = await acctOf(c.db);
       expect(Object.keys(after.watch!).sort()).toEqual(['BADX', 'ZZZW']);
       // 帳戶頁：抓不到價格的那一檔寫出來，其他照常
@@ -397,15 +400,17 @@ describe('T85 甲 ④：每日流程多抓候補的價格，但不多跑任何 A
     });
   });
 
-  it('新自選的自動草擬只看自選：剛加的候補（沒有論點、7 天內）不會被開', async () => {
+  it('剛加的候補（沒有論點、7 天內）：丙段起由 startWatchDrafts 自動草擬一次（新自選那一段不碰它）', async () => {
     await withWorld(async (c) => {
       expect((await c.api('POST', 'ops/watch-add', { ticker: 'AMD' })).status).toBe(200);
       const acct = await acctOf(c.db);
       const res = { created: [], started: [] as string[], log: [] as string[], alerts: [] };
       await startAutoDrafts({ env: c.env, fetcher: c.fetcher, acct, view: c.view, axis: [], session: '2026-11-19', ov: {}, now: new Date('2026-11-20T01:00:00Z'), checks: [], res, extras: {} });
-      expect(res.started).toEqual([]);
-      expect(res.log.join('\n')).not.toContain('AMD');
-      expect(c.fire.n).toBe(0);
+      expect(res.started).toHaveLength(1);
+      expect(res.started[0]).toContain('OWN_DRAFT_AMD');
+      expect(res.log.join('\n')).toContain('AMD：新加進候補，自動草擬論點與進場條件');
+      expect(res.log.join('\n')).not.toContain('新的自選，自動草擬');
+      expect(c.fire.n).toBe(1);
     });
   });
 });

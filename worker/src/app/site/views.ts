@@ -270,7 +270,7 @@ export interface NotifView {
   deposit: number | null;
   withdraw: number | null;
   /** 月報：這個月該列的「要看的事」（own_thesis §3.6.6；src 分自選股與動能持股兩段）。 */
-  attention: { ticker: string; kind: string; text: string; since: string; src: 'own' | 'mom' }[];
+  attention: { ticker: string; kind: string; text: string; since: string; src: 'own' | 'mom' | 'watch' }[];
   /** 沒有清單的通知（策略檢討提醒）用到的 AI 執行：通知頁連到報告（momentum_ai §3.8）。沒有是 null。 */
   aiRun: string | null;
   /** 提醒指到的那一則通知的名字（日期與種類，不用內部編號；T39a）。沒有是 null。 */
@@ -720,7 +720,8 @@ export interface WatchRow {
   kind: 'THESIS' | 'DEFAULT_ONLY';
   hasThesisText: boolean;
   draft: string | null;
-  entries: { text: string; state: string }[];
+  /** id：條件的列編號；retire：可以在這裡撤下（非價格、還在監測的；T85 丙段）；price：你填的價格條件。 */
+  entries: { id: number; text: string; state: string; price: boolean; retire: boolean }[];
   priceConds: PriceInput[];
   priceMax: number;
   blocked: string | null;
@@ -738,8 +739,8 @@ function watchEntriesOf(d: { view: MarketView; watchConds?: Record<string, Entry
   const live = all.filter((x) => x.price && x.status === 'ACTIVE');
   return {
     entries: [
-      ...shown.map((x) => ({ text: x.text, state: entryStateText(x, c, view.i, splitFactor(d.splits ?? [], ticker, String(x.check.asOf ?? x.setAt))) })),
-      ...(meta.entry ?? []).map((x) => ({ text: x.text, state: `已成立（${notifDay(x.metOn)}），等下一份月報` })),
+      ...shown.map((x) => ({ id: x.id, text: x.text, state: entryStateText(x, c, view.i, splitFactor(d.splits ?? [], ticker, String(x.check.asOf ?? x.setAt))), price: x.price, retire: !x.price && ['ACTIVE', 'REVIEW_ONLY', 'MANUAL'].includes(x.status) })),
+      ...(meta.entry ?? []).map((x) => ({ id: x.id, text: x.text, state: `已成立（${notifDay(x.metOn)}），等下一份月報`, price: false, retire: false })),
     ],
     priceConds: live.flatMap((x): PriceInput[] => (x.check.type === 'price_close_below' ? [{ type: 'close' as const, value: Number(x.check.level) }] : x.check.type === 'price_drawdown_below' ? [{ type: 'drawdown' as const, value: Number(x.check.pct) }] : [])),
   };

@@ -4,8 +4,10 @@
 //   使用者確認的出場條件 → own_conditions（origin = USER、有勾選時間與成立時的動作，是「你定的條件」；審查換不掉），由 F25 監測。
 // T70（confirm_audit_design §2.2）：採用 stock bot 的草稿時，草稿的出場條件直接寫進條件（adoptDraftExits，origin = AI_DRAFT_ACCEPTED），
 //   不走改寫與確認；之後你親手改出場條件的字，照舊走改寫與持股頁確認。
+// T85 丙段（allocation_redesign §4.5 第 20 點）：候補的論點檔可以一起送非價格的進場條件（動作 ENTRY），同一套改寫、確認與整組取代；
+//   確認時進場條件另算（最多 MAX_ENTRY_OTHER 條，不占你定的 8 條）。整組取代的範圍是存檔時送了的那幾組（rewriteConds）。
 import type { PackDoc } from '../ai/check';
-import { OWN_CHECK, OWN_CHECK_MAX, ownCheckPack, ownCheckResult, type ExitLine, type OwnCheckResult } from '../ai/ownCheck';
+import { OWN_CHECK, OWN_CHECK_LINES, ownCheckPack, ownCheckResult, type ExitLine, type OwnCheckResult } from '../ai/ownCheck';
 import { newRunId, ownPremises, priceDoc, priceFacts } from '../ai/pack';
 import { fileMeta, recommendStdWeights, type Account, type MarketView } from '../engine';
 import { errText } from '../data/util';
@@ -13,13 +15,27 @@ import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { entryEvidence } from './momAi';
 import { loadAccount, thesisLogStmt } from './ledgerStore';
-import { gatherOwnEvidence, insertConditionStmts, routineReady } from './ownAi';
+import { gatherOwnEvidence, insertConditionStmts, metStmt, routineReady } from './ownAi';
 import { CONC, corr1y } from './concentration';
 import { SUPERSEDABLE, checkCap, supersedeStmts } from './ownConds';
 import { namedWebDomains, type ConditionDraft } from '../ai/ownReview';
 import { sourceFacts } from './webEvidence';
 import { loadRatings } from './webRatings';
-import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, isAddAction, sameActionKind, REWRITE_DAYS, acceptStatus, aiTierText, condFacts, confirmText, defaultAction, fileConditions, fileKind, fmtMetric, isAiCond, isOwned, latestExitSet, ownerText, progressText, runOfSet, thesisFile, type CondAction, type ExitSet, type FileCondition } from './thesis';
+import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, entryConditions, isAddAction, isEntryAction, sameActionKind, REWRITE_DAYS, acceptStatus, aiTierText, condFacts, confirmText, defaultAction, fileConditions, fileKind, fmtMetric, isAiCond, isOwned, latestExitSet, ownerText, progressText, runOfSet, thesisFile, type CondAction, type ExitSet, type FileCondition } from './thesis';
+
+/** 候補的非價格進場條件最多幾條（同 watchEntry.ts 的 MAX_ENTRY_OTHER；這裡 import 會循環）。 */
+const MAX_ENTRY_OTHER = 3;
+
+/**
+ * 改寫、確認、整組取代看的條件（T85）：這份論點檔的條件，候補另外加上非價格的進場條件（價格條件在候補那一塊整組改，不經改寫）。
+ * 持股沒有進場條件（進場後的下一次每日流程已經補寫成立或撤下），和 fileConditions 一樣。
+ */
+export async function rewriteConds(db: D1Database, acct: Account, ticker: string): Promise<FileCondition[]> {
+  const fm = fileMeta(acct, ticker);
+  if (!fm) return [];
+  const conds = await fileConditions(db, acct, ticker);
+  return fm.held ? conds : [...conds, ...(await entryConditions(db, acct, ticker)).filter((c) => c.kind !== 'PRICE')];
+}
 
 /** 改寫結果或「還沒送去改寫」不是最新一版的出場條件（T42）：不能再勾選或重送。網站回 409。 */
 export class StaleExitsError extends Error {}
@@ -61,11 +77,15 @@ export interface ExitSetRef {
  */
 export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, exits: ExitLine[], now: Date, set?: ExitSetRef): Promise<AiRun> {
   if (!routineReady(env)) throw new Error('AI 層的雲端排程還沒設定（SETUP.md 的 T5），沒辦法送去改寫');
-  const clean = exits.map((e) => ({ text: e.text.trim().slice(0, 300), action: COND_ACTIONS.includes(e.action) ? e.action : ('REVIEW' as CondAction) })).filter((e) => e.text).slice(0, OWN_CHECK_MAX);
+  // 進場條件（T85）只有候補能送；持股送了當成重新審查（不會發生：網站只對候補給那一塊）
+  const watchFile = !!fileMeta(acct, ticker) && !fileMeta(acct, ticker)!.held;
+  const clean = exits.map((e) => ({ text: e.text.trim().slice(0, 300), action: COND_ACTIONS.includes(e.action) || (watchFile && isEntryAction(e.action)) ? e.action : ('REVIEW' as CondAction) })).filter((e) => e.text).slice(0, OWN_CHECK_LINES);
   if (!clean.length) throw new Error('沒有要改寫的出場條件');
   const ev = await gatherOwnEvidence(env, fetcher, ticker, view.date);
   const tf = await thesisFile(env.DB, acct, ticker, view.date);
-  const cf = tf ? condFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null, { live: true }) : null;
+  // 候補（T85）：C 也放非價格的進場條件（整組取代的範圍；AI 才標得出 same／supersedes）
+  const entryC = tf && watchFile ? (tf.entries ?? []).filter((c) => c.kind !== 'PRICE') : [];
+  const cf = tf ? condFacts({ ...tf, conditions: [...tf.conditions, ...entryC] }, ev.dataQuality.xbrl === 'ok' ? ev.rows : null, { live: true }) : null;
   const conds = cf?.facts ?? [];
   // 候補的論點檔也可以寫條件（allocation_redesign §4.5 第 3 點；候補期間不監測，進場後才生效）
   const fm = fileMeta(acct, ticker);
@@ -245,7 +265,7 @@ export async function rewriteView(env: Env, ticker: string, now: Date): Promise<
   if (!acct || !meta) return none;
   const set = await exitSetOf(env.DB, meta.fileId);
   if (!set || set.confirmed) return none;
-  const conds = await fileConditions(env.DB, acct, ticker);
+  const conds = await rewriteConds(env.DB, acct, ticker);
   const text = (id: number) => conds.find((c) => c.id === id)?.text ?? '';
   if (!set.exits.length) {
     const retire = confirmPlan([], set.live, conds).retire.map((c) => ({ id: c.id, text: c.text }));
@@ -286,6 +306,11 @@ export interface ConfirmResult {
   retired: number[];
   /** 改了成立時動作的條件（和現有條件相同、動作不同的）。 */
   actionChanged: number[];
+  /**
+   * 採用草稿時，財報門檻的進場條件用草稿那份季度表比已經成立、採用當下標成立的（T85，§4.5 第 22 點）：
+   * 呼叫的地方記進 watch[t].entry 等下一份月報。沒有是 undefined。
+   */
+  entryMet?: { id: number; text: string; setAt: string; why: string }[];
 }
 
 const retireNote = (date: string, version: number) => `你在 ${date} 確認第 ${version} 版論點的出場條件時撤下（這次的出場條件沒有提到）`;
@@ -305,7 +330,7 @@ export async function acceptOwnConditions(env: Env, ticker: string, runId: strin
   const set = await exitSetOf(env.DB, fileId);
   if (!set || !runOfSet(set, { exitsVersion: v.exitsVersion }, v.createdAt)) throw new StaleExitsError('這份改寫結果是之前版本的論點送的；之後的版本改過出場條件，不能再勾選。請看持股頁最新的那一份。');
   if (set.confirmed) throw new StaleExitsError('這一版的出場條件已經確認過了。');
-  const conds = await fileConditions(env.DB, acct, ticker);
+  const conds = await rewriteConds(env.DB, acct, ticker);
   const plan = confirmPlan(v.conditions, set.live, conds, ids);
   // T68（confirm_audit_design §1.6）：勾選時不再選網頁來源；條件寫的 web:<網域> 原樣存，能不能確認看審查時那個網域的級別
   // 勾選時可以改成立時的動作，但出場條件與加碼條件不能互換（T84：要互換就回編輯論點頁重寫，改寫的對照才寫得出「成立時：買進」）；
@@ -314,14 +339,18 @@ export async function acceptOwnConditions(env: Env, ticker: string, runId: strin
     const want = actions[c.condId] as CondAction;
     const base = c.action ?? defaultAction(c);
     const action = COND_ACTIONS.includes(want) && sameActionKind(want, base) ? want : base;
-    return { ...c, action, direction: isAddAction(action) ? ('UP' as const) : c.direction };
+    return { ...c, action, direction: isAddAction(action) || isEntryAction(action) ? ('UP' as const) : c.direction };
   });
   if (!pick.length && !plan.retire.length && !plan.actionChanges.length) throw new Error('至少勾一條');
-  checkCap(
-    conds,
-    pick.filter((c) => acceptStatus({ kind: c.kind, check: c.check, auto: !c.manual, status: 'PROPOSED' }) !== 'MANUAL').length,
-    [...plan.sups.values(), ...plan.retire].map((x) => x.id),
-  );
+  const live = (c: { kind: OwnCheckResult['conditions'][number]['kind']; check: Record<string, unknown>; manual: boolean }) => acceptStatus({ kind: c.kind, check: c.check, auto: !c.manual, status: 'PROPOSED' }) !== 'MANUAL';
+  const gone = [...plan.sups.values(), ...plan.retire].map((x) => x.id);
+  // 進場條件（T85）另算：不占你定的 8 條，候補的非價格進場條件最多 3 條
+  checkCap(conds, pick.filter((c) => live(c) && !isEntryAction(c.action)).length, gone);
+  const entryAdd = pick.filter((c) => live(c) && isEntryAction(c.action)).length;
+  if (entryAdd) {
+    const entryNow = conds.filter((c) => isEntryAction(c.action) && ['ACTIVE', 'REVIEW_ONLY'].includes(c.status) && !gone.includes(c.id)).length;
+    if (entryNow + entryAdd > MAX_ENTRY_OTHER) throw new Error(`非價格的進場條件最多 ${MAX_ENTRY_OTHER} 條（確認之後會有 ${entryNow + entryAdd} 條），少勾幾條，或回編輯論點頁拿掉幾條。`);
+  }
   const at = now.toISOString();
   const ses = session ?? at.slice(0, 10);
   const log = (kind: 'CONDITION' | 'EXITS_CONFIRMED', ref: string, body: Record<string, unknown>) => (fileId ? [thesisLogStmt(env.DB, { ticker, fileId, session: ses, kind, ref, body }, null, at)] : []);
@@ -366,7 +395,7 @@ export async function confirmDropAll(env: Env, ticker: string, version: number, 
   const set = await exitSetOf(env.DB, fileId);
   if (!set || set.version !== version || set.exits.length) throw new StaleExitsError('之後的版本改過出場條件，這個確認不適用了。請重新整理。');
   if (set.confirmed) throw new StaleExitsError('這一版的出場條件已經確認過了。');
-  const conds = await fileConditions(env.DB, acct, ticker);
+  const conds = await rewriteConds(env.DB, acct, ticker);
   const retire = confirmPlan([], set.live, conds).retire;
   const at = now.toISOString();
   const ses = session ?? at.slice(0, 10);
@@ -384,7 +413,7 @@ export async function confirmDropAll(env: Env, ticker: string, version: number, 
 const adoptRetireNote = (date: string, version: number) => `你在 ${date} 採用 stock bot 的草稿（第 ${version} 版論點）時撤下（草稿的出場條件沒有這一條）`;
 
 /** 採用草稿時寫進條件的一條（ownDraft.ts 的 AdoptExit 換成條件的形狀；premiseId 是存檔後對應的前提編號）。 */
-export type AdoptCondition = ConditionDraft & { action: CondAction; premiseId: string | null };
+export type AdoptCondition = ConditionDraft & { action: CondAction; premiseId: string | null; metNow?: { end: string; values: (number | null)[] } };
 
 /**
  * 採用 stock bot 的草稿時，草稿的出場條件直接寫進條件（T70，confirm_audit_design §2.2）：不送改寫、不到持股頁確認。
@@ -406,6 +435,17 @@ export async function adoptDraftExits(env: Env, ticker: string, inp: { runId: st
   const res = inp.add.length ? await env.DB.batch(insertConditionStmts(env.DB, ticker, inp.runId, inp.add, at, 'AI_DRAFT_ACCEPTED', fileId)) : [];
   const accepted = res.map((r) => r.meta.last_row_id);
   const after: D1PreparedStatement[] = [];
+  // 財報門檻的進場條件、用草稿那份季度表比已經成立（T85，§4.5 第 22 點）：直接標成立（met_basis XBRL）；記進 watch[t].entry 由呼叫的地方做
+  const entryMet: NonNullable<ConfirmResult['entryMet']> = [];
+  inp.add.forEach((a, k) => {
+    if (!a.metNow || !isEntryAction(a.action) || acct.own[ticker]) return;
+    const id = accepted[k];
+    const vals = a.metNow.values.map((v) => (v === null ? '—' : fmtMetric(String(a.check.metric), v))).join('、');
+    const why = `採用 ${ses} 的草稿時，用草稿那份財報表（${a.metNow.end} 那一季起）比對已經成立：${vals}（程式比的）`;
+    after.push(metStmt(env.DB, id, at, `採用草稿時已經成立（${a.metNow.end}：${vals}）`, 'XBRL'));
+    after.push(...log('CONDITION', String(id), { id, change: 'MET', action: 'ENTRY', by: 'SYSTEM', reason: 'MET_AT_ADOPT', runId: inp.runId }));
+    entryMet.push({ id, text: a.text, setAt: ses, why });
+  });
   accepted.forEach((id, k) => after.push(...log('CONDITION', String(id), { id, change: 'ACCEPTED', action: inp.add[k].action, by: 'DRAFT', runId: inp.runId })));
   const retired: number[] = [];
   for (const id of inp.retire) {
@@ -419,7 +459,7 @@ export async function adoptDraftExits(env: Env, ticker: string, inp: { runId: st
   }
   if (inp.confirm) after.push(...log('EXITS_CONFIRMED', inp.runId, { runId: null, draftRunId: inp.runId, by: 'DRAFT', version: inp.version, accepted, retired, actionChanged: inp.actionChanges.map((a) => a.id) }));
   if (after.length) await env.DB.batch(after);
-  return { added: accepted.length, retired, actionChanged: inp.actionChanges.map((a) => a.id) };
+  return { added: accepted.length, retired, actionChanged: inp.actionChanges.map((a) => a.id), ...(entryMet.length ? { entryMet } : {}) };
 }
 
 export interface MonitorRow {

@@ -33,7 +33,7 @@ import { ConflictError, loadAccount, requiredTickers, saveAccount, thesisLogStmt
 import { MARKET_BRIEF } from '../ai/marketBrief';
 import { applyMarketBrief, startMarketBrief } from './marketBrief';
 import { applyMomEntry, momLateStart, momPreview } from './momAi';
-import { applyOwnCondition, applyOwnReview, ownFacts, ownXbrlConditions, routineReady, startEarlyReviews, startOwnRuns } from './ownAi';
+import { applyOwnCondition, applyOwnReview, ownFacts, ownXbrlConditions, routineReady, startEarlyReviews, startOwnRuns, startWatchRuns } from './ownAi';
 import { applyOwnDraft, startAutoDrafts } from './ownDraft';
 import { noteOfRun } from './site/aiViews';
 import { annotate } from './site/explain';
@@ -42,7 +42,8 @@ import { STRATEGY_REVIEW } from '../ai/strategy';
 import { applyStrategyReview, loadStrategyState, startStrategyRun, strategyHistory, withHistory } from './strategyAi';
 import { breakLogs, ruleBreakLogs, withRuleKeys } from './thesis';
 import { syncWatchConds } from './watchEntry';
-import { endDisputes, ownHeld } from '../engine';
+import { endDisputes, ownHeld, watchTickers } from '../engine';
+import { entryConditions } from './thesis';
 
 export type { StepResult as AiStepResult } from './aiCtx';
 
@@ -87,12 +88,20 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
   let checks: FilingCheck[] = [];
   let classified: Classified[] = [];
   let facts = new Map();
-  if (startNew && env.EDGAR_USER_AGENT && targets.length) {
+  // 候補（T85 丙段，allocation_redesign §4.5 第 22 點）：申報清單的代號 = 掃描目標 ∪ 候補（edgar:<代號> 的已看標記共用）；
+  // 規則分類、規則事件、掃描與法庭照舊只吃掃描目標（候補不進每日掃描、不開硬事件法庭、不跑新眼光）
+  const watchOnly = watchTickers(first.acct).filter((t) => !first.acct.own[t]);
+  if (startNew && env.EDGAR_USER_AGENT && (targets.length || watchOnly.length)) {
     await guard(res, '看新申報', async () => {
-      checks = await fetchFilingChecks(env, fetcher, targets.map((t) => t.ticker), session, res.log);
-      classified = await classifyFresh(env, fetcher, checks, targets, res.log);
-      // 0 股的自選不比對財報條件（T39b）
-      facts = await ownFacts(env, fetcher, checks, new Set(Object.keys(first.acct.own).filter((t) => ownHeld(first.acct, t))), session, res.log);
+      const isTarget = new Set(targets.map((t) => t.ticker));
+      checks = await fetchFilingChecks(env, fetcher, [...new Set([...targets.map((t) => t.ticker), ...watchOnly])], session, res.log);
+      classified = await classifyFresh(env, fetcher, checks.filter((c) => isTarget.has(c.ticker)), targets, res.log);
+      // 0 股的自選不比對財報條件（T39b）；候補有財報類進場條件的也抓 XBRL（只比進場條件）；
+      // 從候補進場之後的第一次每日流程沒有新財報也抓一次（補比候補期間休眠的出場、加碼條件，第 21 點）
+      const watchX: string[] = [];
+      for (const t of watchOnly) if ((await entryConditions(db, first.acct, t)).some((c) => c.kind === 'XBRL' && c.status === 'ACTIVE')) watchX.push(t);
+      const entered = Object.entries(first.acct.own).filter(([t, m]) => m.entered && !m.entered.xbrlAt && ownHeld(first.acct, t)).map(([t]) => t);
+      facts = await ownFacts(env, fetcher, checks, new Set([...Object.keys(first.acct.own).filter((t) => ownHeld(first.acct, t)), ...watchX]), session, res.log, new Set(entered));
     });
   }
 
@@ -177,6 +186,8 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
   const acct = (await loadAccount(db))!.acct;
   const sc: StartCtx = { env, fetcher, acct, view, axis, session, ov, now, checks, res, extras };
   await guard(res, '自選審查與條件監測', () => startOwnRuns(sc));
+  // 候補的進場條件（allocation_redesign §4.5 第 23 點）：新申報對上確認來源 → F25；月底檢查點有新證據 → own_condition_v2
+  await guard(res, '候補的進場條件確認', () => startWatchRuns(sc));
   // 財報新聞稿當天確認你定的財報條件（own_thesis §1.11）
   await guard(res, '財報數字擷取', () => startOwnEarnings(sc));
   await guard(res, '硬事件與每日掃描', () => startEventRuns(sc, targets));

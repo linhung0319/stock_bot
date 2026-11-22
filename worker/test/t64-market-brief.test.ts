@@ -1139,7 +1139,8 @@ describe('T64 研究員取文件、送回、結算（§1.4、§1.5）', () => {
   });
 
   it('市場摘要列在可以取文件的功能裡；功能的白話名稱與結論的寫法', () => {
-    expect([...DOC_FNS]).toEqual(['OWN_REVIEW', 'OWN_DROP', 'OWN_DRAFT', 'MARKET_BRIEF']);
+    // T85（allocation_redesign §4.5 第 23 點）：條件確認（候補進場條件的月底檢查）也可以取文件
+    expect([...DOC_FNS]).toEqual(['OWN_REVIEW', 'OWN_DROP', 'OWN_DRAFT', 'MARKET_BRIEF', 'OWN_CONDITION']);
     expect(fnInfo(MARKET_BRIEF)).toMatchObject({ label: '市場摘要', note: null, verdicts: { DONE: '寫好了', INSUFFICIENT: '沒有寫成' } });
   });
 

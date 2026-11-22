@@ -18,7 +18,7 @@ import { PAYLOAD_HOOKS } from '../src/ai/hooks';
 import { MARKET_BRIEF, MARKET_BRIEF_PROMPT } from '../src/ai/marketBrief';
 import { OWN_CHECK, OWN_CHECK_PROMPT, ownCheckPack, ownCheckResult } from '../src/ai/ownCheck';
 import { OWN_DRAFT, OWN_DRAFT_PROMPT, draftEventCheck, draftResult, ownDraftPack, type OwnDraft } from '../src/ai/ownDraft';
-import { OWN_REVIEW, OWN_REVIEW_PROMPT, conditionFormatIssue } from '../src/ai/ownReview';
+import { OWN_CONDITION, OWN_CONDITION_PROMPT, OWN_REVIEW, OWN_REVIEW_PROMPT, conditionFormatIssue } from '../src/ai/ownReview';
 import type { Env, Fetcher } from '../src/app/env';
 import { runFlow } from '../src/app/flow';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
@@ -41,7 +41,8 @@ const RATING = 'source_rating.md';
 const RATING_REF = 'ai/prompts/source_rating.md';
 
 /** 會取文件的四個功能 → 現行的 prompt（DOC_FNS 的順序不一定，用功能名稱對）。 */
-const DOC_PROMPTS: Record<string, string> = { [OWN_REVIEW]: OWN_REVIEW_PROMPT, [OWN_DROP]: OWN_DROP_PROMPT, [OWN_DRAFT]: OWN_DRAFT_PROMPT, [MARKET_BRIEF]: MARKET_BRIEF_PROMPT };
+// T85（allocation_redesign §4.5 第 23 點）：條件確認升 own_condition_v2，候補進場條件的月底檢查可以取文件，也指到來源評級
+const DOC_PROMPTS: Record<string, string> = { [OWN_REVIEW]: OWN_REVIEW_PROMPT, [OWN_DROP]: OWN_DROP_PROMPT, [OWN_DRAFT]: OWN_DRAFT_PROMPT, [MARKET_BRIEF]: MARKET_BRIEF_PROMPT, [OWN_CONDITION]: OWN_CONDITION_PROMPT };
 
 // ---------------------------------------------------------------- 1 升版、指到 source_rating.md
 

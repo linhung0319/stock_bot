@@ -243,6 +243,8 @@ const plainTitle = (t: string) =>
 
 export function foundView(run: AiRun): FoundView | null {
   if (!(DOC_FNS as readonly string[]).includes(run.fn)) return null;
+  // 條件確認（T85）只有候補進場條件的月底檢查那一種會取文件；新申報那一種（與舊的紀錄）不顯示這一塊
+  if (run.fn === 'OWN_CONDITION' && (run.pack?.rule?.detail as { mode?: string } | undefined)?.mode !== 'MONTH_END') return null;
   const added = run.added ?? { calls: 0, chars: 0, docs: [], refused: [], refusedTotal: 0, sites: {} };
   const lk = run.lookups ?? null;
   const ctx = run.docCtx ?? null;

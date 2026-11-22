@@ -12,7 +12,7 @@
 //                               沒有就不審、記 reviewSkip（月報那天用上一次的結論）；
 //                               前提有增減（thesisReviewDue）→ 論點變動後的審查（每檔 30 天 1 次，own_thesis §3.6.5）
 // 雲端排程（ROUTINE_FIRE_URL／ROUTINE_TOKEN）還沒設定時不開新的執行；EDGAR 的 User-Agent 沒設定時不看申報。
-import { webMetaOf } from '../ai/added';
+import { webMetaOf, type DocCtx } from '../ai/added';
 import type { CheckedSample, EvidencePack, PackDoc } from '../ai/check';
 import { MEDIA_MIN_DOMAINS, OWN_CONDITION, OWN_REVIEW, citedSources, condCite, confirmMode, conditionDecision, conditionPack, earningsConfirmed, namedWebDomains, ownReviewPack, packSources, reviewDecision, type ConditionDraft, type ProposedDraft, type RevenueCheck } from '../ai/ownReview';
 import { STRONG_RATINGS, sameWebDomain } from '../data/webSources';
@@ -34,7 +34,7 @@ import type { Env, Fetcher } from './env';
 import { accOf, cikFor, fetchFilingChecks, handledStmt, loadEvents, sectorEtfs, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { briefNote } from './marketBrief';
 import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
-import { EARLY_NOTE, EVIDENCE_TEXT, MAX_AI_WATCH, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultCheck, defaultFacts, externalNeeds, revenueCheck, fileConditions, flaggedAccessions, fmtMetric, isAddAction, isAiWatch, isEntryAction, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
+import { EARLY_NOTE, EVIDENCE_TEXT, MAX_AI_WATCH, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultCheck, defaultFacts, entryConditions, externalNeeds, revenueCheck, fileConditions, flaggedAccessions, fmtMetric, isAddAction, isAiWatch, isEntryAction, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
 
 export { cikFor } from './filings';
 export { loadConditions } from './thesis';
@@ -554,17 +554,27 @@ function applyEarningsChecks(ctx: ApplyCtx, run: AiRun): void {
   ctx.acct = recordEarnCheck(ctx.acct, t, { date: run.asOf, runId: run.runId, confirmed: c.confirmed, why: c.why });
 }
 
-/** F25 → 你定的條件成立（甲類，當天通知）。 */
+/**
+ * F25 → 你定的條件成立（甲類，當天通知）。
+ * 候補（T85，allocation_redesign §4.5 第 21、23 點）：只看進場條件（出場與加碼條件在候補期間休眠，不能被用掉）；成立 → 記進 watch[t].entry 等月報。
+ * own_condition_v2 起照 condCite 再看引用（申報或財報；指名的網站要一手或產業研究機構），成立依據記 FILING_VOTE 或 WEB_VOTE。
+ */
 export async function applyOwnCondition(ctx: ApplyCtx, run: AiRun): Promise<void> {
   const t = run.ticker ?? '';
-  if (!run.outcome || !ctx.acct.own[t]) return void ctx.log.push(`${run.runId}：${ctx.acct.own[t] ? '沒有結論' : '已經不是自選股'}，不套用`);
-  const d = conditionDecision(run.outcome);
+  const watch = !ctx.acct.own[t] && !!ctx.acct.watch?.[t];
+  if (!run.outcome || (!ctx.acct.own[t] && !watch)) return void ctx.log.push(`${run.runId}：${ctx.acct.own[t] ? '沒有結論' : '已經不是自選股，也不在候補名單'}，不套用`);
+  const d = conditionDecision(run.outcome, run.pack);
   if (!d.condId) return void ctx.log.push(`${run.runId}：${d.why}`);
-  const cond = (await fileConditions(ctx.db, ctx.acct, t)).find((c) => c.condId === d.condId && c.status === 'ACTIVE');
-  if (!cond) return void ctx.log.push(`${run.runId}：條件 ${d.condId} 已經不在監測中（已撤下或已成立），不通知`);
-  ctx.stmts.push(metStmt(ctx.db, cond.id, ctx.now.toISOString(), `F25 ${run.runId} 3 票確認`, 'FILING_VOTE'));
+  // 候補只看進場條件；持股的進場條件已經補寫完（fileConditions 本來就不含進場條件）
+  const pool = watch ? await entryConditions(ctx.db, ctx.acct, t) : await fileConditions(ctx.db, ctx.acct, t);
+  const live = (c: FileCondition) => c.status === 'ACTIVE' || c.status === 'REVIEW_ONLY';
+  const cond = d.rowId ? pool.find((c) => c.id === d.rowId && live(c)) : pool.find((c) => c.condId === d.condId && c.status === 'ACTIVE');
+  if (!cond) return void ctx.log.push(`${run.runId}：條件 ${d.condId} 已經不在監測中（已撤下或已成立${watch ? '，或不是進場條件' : ''}），不通知`);
+  const month = (run.pack.rule?.detail as { mode?: string } | undefined)?.mode === 'MONTH_END';
+  const basis = d.basis ?? 'FILING_VOTE';
+  ctx.stmts.push(metStmt(ctx.db, cond.id, ctx.now.toISOString(), `F25 ${run.runId} 3 票確認${month ? '（月底檢查）' : ''}`, basis));
   // run_id：確認條件成立的 F25，和寫下條件的那次執行
-  notifyOwnCondition(ctx, cond, `${citedDoc(run) ?? '新申報'} 的原文，3 票確認（引用在網站）`, [run.runId, cond.runId], `${run.runId}：條件 ${d.condId} 成立`);
+  notifyOwnCondition(ctx, cond, `${citedDoc(run) ?? (month ? '月底檢查取到的文件' : '新申報')} 的原文，3 票確認（引用在網站）`, [run.runId, cond.runId], `${run.runId}：條件 ${d.condId} 成立`);
 }
 
 /**
@@ -576,7 +586,17 @@ export async function applyOwnCondition(ctx: ApplyCtx, run: AiRun): Promise<void
  */
 export async function ownXbrlConditions(ctx: ApplyCtx, facts: Map<string, QuarterRow[]>): Promise<void> {
   for (const [t, rows] of facts) {
-    const all = (await fileConditions(ctx.db, ctx.acct, t)).filter((x) => x.kind === 'XBRL' && !ctx.met?.has(x.id));
+    // 候補（T85，allocation_redesign §4.5 第 21 點）：只比進場條件；出場與加碼條件在候補期間休眠（一次性的條件不能在沒有持股時被用掉）
+    const watch = !ctx.acct.own[t] && !!ctx.acct.watch?.[t];
+    if (!ctx.acct.own[t] && !watch) continue;
+    const all = (watch ? await entryConditions(ctx.db, ctx.acct, t) : await fileConditions(ctx.db, ctx.acct, t)).filter((x) => x.kind === 'XBRL' && !ctx.met?.has(x.id));
+    // 從候補進場之後的第一次（T85，第 21 點）：補比一次財報類條件，記下比過了（entered.xbrlAt），之後照舊等新財報
+    const ent = ctx.acct.own[t]?.entered;
+    if (ent && !ent.xbrlAt) {
+      ctx.acct = clone(ctx.acct);
+      ctx.acct.own[t].entered!.xbrlAt = ctx.session;
+      ctx.log.push(`${t} 從候補進場之後第一次每日流程：補比一次財報類條件（候補期間休眠的出場、加碼條件）`);
+    }
     for (const c of all.filter((x) => x.status === 'MET' && x.metBasis === 'PRESS' && !x.verifiedAt)) pressVerify(ctx, c, rows);
     for (const c of all.filter((x) => x.status === 'ACTIVE' || x.status === 'PROPOSED')) {
       const check = c.check as { type: string; metric: string; level: number; quarters?: number };
@@ -619,11 +639,14 @@ function pressVerify(ctx: ApplyCtx, c: FileCondition, rows: QuarterRow[]): void 
   ctx.log.push(`${t} 財報條件 ${c.condId} 依財報新聞稿成立（${press}），${form} 算出來是 ${xbrl}，沒有過門檻：已經做的不撤回，列進要看的事`);
 }
 
-/** 自選股有新的 10-Q／10-K → 抓 XBRL（財報條件用）。 */
-export async function ownFacts(env: Env, fetcher: Fetcher, checks: FilingCheck[], own: Set<string>, session: string, log: string[]): Promise<Map<string, QuarterRow[]>> {
+/**
+ * 自選股有新的 10-Q／10-K → 抓 XBRL（財報條件用）。own 也放有財報類進場條件的候補（T85，§4.5 第 22 點）。
+ * always：沒有新財報也抓的代號（從候補進場之後的第一次每日流程，補比一次財報類條件，第 21 點）。
+ */
+export async function ownFacts(env: Env, fetcher: Fetcher, checks: FilingCheck[], own: Set<string>, session: string, log: string[], always: Set<string> = new Set()): Promise<Map<string, QuarterRow[]>> {
   const facts = new Map<string, QuarterRow[]>();
   for (const c of checks) {
-    if (!own.has(c.ticker) || !c.fresh.some((f) => /^10-[QK]/.test(f.form))) continue;
+    if (!(own.has(c.ticker) && c.fresh.some((f) => /^10-[QK]/.test(f.form))) && !always.has(c.ticker)) continue;
     try {
       facts.set(c.ticker, quarterTable(await fetchCompanyFacts(fetcher, c.cik, env.EDGAR_USER_AGENT!), session));
     } catch (e) {
@@ -661,7 +684,7 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
       try {
         const docs = await Promise.all(relevant.map(async (f) => docOf(await fetchFilingDoc(fetcher, c.cik, f, env.EDGAR_USER_AGENT!))));
         const { pack, notes } = conditionPack({ acct, view, ticker: c.ticker, runId: newRunId(session, OWN_CONDITION, c.ticker), conditions: events, filings: docs, now });
-        res.started.push((await startRun(env, fetcher, pack, now, notes)).runId);
+        res.started.push((await startRun(env, fetcher, pack, now, notes, filingOnlyCtx(session, acct.own[c.ticker].fileId ?? null))).runId);
       } catch (e) {
         res.log.push(`${c.ticker} 的條件監測沒有開成：${errText(e)}`);
       }
@@ -735,6 +758,100 @@ export async function startOwnRuns(sc: StartCtx): Promise<void> {
   if (Object.keys(patch).length) await patchOwn(env.DB, now, patch, res.log);
   // 你定的「重新審查」條件成立（§1.10）：今天還沒有審查的開一次
   await startCondReviews(sc);
+}
+
+/** 新申報那一種條件確認只讀申報原文（T85 起 OWN_CONDITION 可以取文件，只有月底檢查那一種開）：取文件的端點回 403。 */
+export const filingOnlyCtx = (asOf: string, fileId: string | null): DocCtx => ({ menu: [], notBefore: asOf, domains: [], fileId, off: '新申報的條件確認只讀申報原文，不取文件' });
+
+/** 月底檢查一次最多放幾份上次確認之後的申報（同 F25 的上限）。 */
+export const WATCH_MONTH_FILINGS = F25_MAX_FILINGS;
+
+/**
+ * 候補的進場條件月底檢查「有沒有新證據」（allocation_redesign §4.5 第 23 點；純函式）：
+ *   FILING：這份論點檔上一次條件確認（任何一種）之後有新的 8-K、10-Q、10-K；
+ *   WEB：有條件指名網頁來源，而且距上一次月底檢查（沒有就是條件定下的那天）滿 25 天（WEB_DUE_DAYS）。
+ * 都沒有 → 空的（不開）。filings：這檔的申報清單（抓不到是 null，只看網頁那一項）。
+ */
+export function watchNewEvidence(conds: Pick<FileCondition, 'check' | 'acceptedAt' | 'createdAt'>[], filings: Pick<Filing, 'form' | 'filingDate'>[] | null, lastAny: string | null, lastMonth: string | null, addedAt: string, session: string): { reasons: ('FILING' | 'WEB')[]; since: string; filings: Pick<Filing, 'form' | 'filingDate'>[] } {
+  const setAt = conds.map((c) => (c.acceptedAt ?? c.createdAt).slice(0, 10)).sort()[0] ?? addedAt;
+  const base = [lastAny, setAt, addedAt].filter((x): x is string => !!x).sort().at(-1)!;
+  const fresh = (filings ?? []).filter((f) => (f.form.startsWith('8-K') || /^10-[QK]/.test(f.form)) && f.filingDate > base && f.filingDate <= session);
+  const reasons: ('FILING' | 'WEB')[] = [];
+  if (fresh.length) reasons.push('FILING');
+  const webBase = lastMonth && lastMonth > setAt ? lastMonth : setAt;
+  if (conds.some((c) => namedWebDomains(c.check).length) && daysApart(webBase, session) >= WEB_DUE_DAYS) reasons.push('WEB');
+  return { reasons, since: base, filings: fresh };
+}
+
+/**
+ * 候補的非價格進場條件的確認（allocation_redesign §4.5 第 23 點；每日第一次流程，aiStep 在 startOwnRuns 之後呼叫）。每日流程替候補開的條件確認只有這兩種：
+ *   新申報：確認來源有申報的（監測中）→ 新申報是那種申報時開 F25，照持有中的做法（只讀申報原文）
+ *   月底檢查點（月報前一天）：只有法說會、新聞、網頁來源的（只在審查時判的）與指名網頁來源的 → 有新證據（watchNewEvidence）才開 own_condition_v2
+ *     （文件 = 上次確認之後的 8-K、10-Q、10-K，加目錄與取文件；引用照 condCite），都沒有就不開。
+ * 出場與加碼條件在候補期間不確認（第 21 點）；候補沒有審查、掃描、硬事件、新眼光。
+ */
+export async function startWatchRuns(sc: StartCtx): Promise<void> {
+  const { env, fetcher, acct, view, session, ov, now, res } = sc;
+  const watch = Object.keys(acct.watch ?? {}).filter((t) => !acct.own[t]);
+  if (!watch.length) return;
+  const checkpoint = isLastTradingDayOfMonth(nextTradingDay(session, ov), ov);
+  const ua = env.EDGAR_USER_AGENT ?? '';
+  for (const t of watch) {
+    const w = acct.watch![t];
+    const events = (await entryConditions(env.DB, acct, t)).filter((c) => c.kind === 'EVENT' && (c.status === 'ACTIVE' || c.status === 'REVIEW_ONLY'));
+    if (!events.length) continue;
+    const c = sc.checks.find((x) => x.ticker === t);
+    // 1. 新申報（確認來源有申報的）
+    const filingConds = events.filter((x) => x.status === 'ACTIVE' && confirmMode(x) === 'FILING');
+    if (c && filingConds.length && ua) {
+      const confirm = new Set(filingConds.flatMap((x) => ((x.check.confirm_by as string[] | undefined) ?? []).map((s) => (s === 'SEC' ? '8-K' : s))));
+      const relevant = c.fresh.filter((f) => [...confirm].some((k) => f.form.startsWith(k))).slice(0, F25_MAX_FILINGS);
+      if (relevant.length) {
+        try {
+          const docs = await Promise.all(relevant.map(async (f) => docOf(await fetchFilingDoc(fetcher, c.cik, f, ua))));
+          const { pack, notes } = conditionPack({ acct, view, ticker: t, runId: newRunId(session, OWN_CONDITION, t), conditions: filingConds, filings: docs, now });
+          res.started.push((await startRun(env, fetcher, pack, now, notes, filingOnlyCtx(session, w.fileId))).runId);
+          res.log.push(`${t}（候補）：新申報對上進場條件的確認來源，開條件確認`);
+        } catch (e) {
+          res.log.push(`${t}（候補）的條件確認沒有開成：${errText(e)}`);
+        }
+      }
+    }
+    // 2. 月底檢查點（只有法說會、新聞、網頁來源的，與指名網頁來源的）
+    if (!checkpoint) continue;
+    const monthConds = events.filter((x) => x.status === 'REVIEW_ONLY' || namedWebDomains(x.check).length > 0);
+    if (!monthConds.length) continue;
+    const last = async (month: boolean) =>
+      (await env.DB.prepare(`SELECT as_of FROM ai_runs WHERE fn = ? AND ticker = ? AND as_of >= ?${month ? " AND json_extract(pack, '$.rule.detail.mode') = 'MONTH_END'" : ''} ORDER BY as_of DESC LIMIT 1`).bind(OWN_CONDITION, t, w.addedAt).first<{ as_of: string }>())?.as_of ?? null;
+    const ev = watchNewEvidence(monthConds, c?.all ?? null, await last(false), await last(true), w.addedAt, session);
+    if (!ev.reasons.length) {
+      res.log.push(`${t}（候補）：月底檢查點，上次條件確認之後沒有新的申報${monthConds.some((x) => namedWebDomains(x.check).length) ? `、指名的網頁距上次不到 ${WEB_DUE_DAYS} 天` : ''}，不開條件確認`);
+      continue;
+    }
+    try {
+      const tf = await thesisFile(env.DB, acct, t, session);
+      if (!tf) continue;
+      const fresh = c ? c.all.filter((f) => (f.form.startsWith('8-K') || /^10-[QK]/.test(f.form)) && f.filingDate > ev.since && f.filingDate <= session).slice(0, WATCH_MONTH_FILINGS) : [];
+      const docs: PackDoc[] = [];
+      const notes: string[] = [];
+      for (const f of fresh) {
+        try {
+          docs.push(docOf(await fetchFilingDoc(fetcher, c!.cik, f, ua)));
+        } catch (e) {
+          notes.push(`${f.form} ${f.accession} 抓不到：${errText(e)}`);
+        }
+      }
+      const feed = await fetchHeadlineFeed(fetcher, t).catch((e: unknown) => (notes.push(`新聞標題：${errText(e)}`), null));
+      const menu = await buildDocMenu(env, fetcher, { ticker: t, tf, meta: w, asOf: session, headlines: feed?.items ?? null, anyKind: true });
+      notes.push(...menu.notes);
+      const news = feed ? newsDocOf(feed, t, session, ev.since) : null;
+      const { pack, notes: packNotes } = conditionPack({ acct, view, ticker: t, runId: newRunId(session, OWN_CONDITION, t), conditions: monthConds, filings: [...docs, ...(news ? [news] : [])], mode: 'MONTH_END', menuFacts: [...menu.facts, ...menu.sources.facts], now });
+      res.started.push((await startRun(env, fetcher, pack, now, [...notes, ...packNotes], menu.ctx)).runId);
+      res.log.push(`${t}（候補）：月底檢查點有新證據（${ev.reasons.map((r) => (r === 'FILING' ? `${ev.filings.length} 份新申報` : `指名的網頁滿 ${WEB_DUE_DAYS} 天`)).join('、')}），開條件確認（own_condition_v2）`);
+    } catch (e) {
+      res.log.push(`${t}（候補）的月底條件確認沒有開成：${errText(e)}`);
+    }
+  }
 }
 
 /**

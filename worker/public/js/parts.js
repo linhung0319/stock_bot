@@ -268,7 +268,7 @@ export function attentionList(list, opt = {}) {
   if (!list?.length) return null;
   const row = (x) => {
     const tk = x.link ?? x.ticker;
-    const link = opt.link === false ? null : h('a', { href: `#/h/${encodeURIComponent(tk)}` }, `看 ${tk} 的持股頁`);
+    const link = opt.link === false ? null : h('a', { href: `#/h/${encodeURIComponent(tk)}` }, x.src === 'watch' ? `看 ${tk}（候補）` : `看 ${tk} 的持股頁`);
     const since = x.since ? h('span', { class: 'faint' }, `${day(x.since, true)} 起`) : null;
     const act = opt.action ? opt.action(x) : null;
     return h('li', { class: 'attn' }, h('p', null, x.text), since || link || act ? h('div', { class: 'attn-meta' }, since, link, act) : null);
@@ -277,7 +277,9 @@ export function attentionList(list, opt = {}) {
   if (!opt.groups) return ul(list);
   const own = list.filter((x) => (x.src ?? 'own') === 'own');
   const mom = list.filter((x) => x.src === 'mom');
-  return [own.length ? [h('h5', { style: 'margin-top:10px' }, '自選股要看的事'), ul(own)] : null, mom.length ? [h('h5', { style: 'margin-top:14px' }, '動能持股要看的事'), ul(mom)] : null];
+  // 候補（T85 丙段，§4.5 第 24 點）：一年沒進場、草稿好了
+  const watch = list.filter((x) => x.src === 'watch');
+  return [own.length ? [h('h5', { style: 'margin-top:10px' }, '自選股要看的事'), ul(own)] : null, mom.length ? [h('h5', { style: 'margin-top:14px' }, '動能持股要看的事'), ul(mom)] : null, watch.length ? [h('h5', { style: 'margin-top:14px' }, '候補要看的事'), ul(watch)] : null];
 }
 
 /**

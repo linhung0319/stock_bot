@@ -592,7 +592,7 @@ export async function resendExits(ticker, exits, version = null) {
   return api.post('/ops/own-check', { ticker, exits, ...(version ? { version } : {}) });
 }
 
-const ACTION_NAME = { ...Object.fromEntries(COND_ACTIONS), FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）' };
+const ACTION_NAME = { ...Object.fromEntries(COND_ACTIONS), FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）', ENTRY: '候補進場（先買一半）' };
 const day2 = (iso) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '');
 
 /** 「出場條件還沒送去改寫」與「重送」（own_thesis §1.8 確認的第 3 點：不能沒有提示）。 */
@@ -682,7 +682,8 @@ function rewriteBlock(ctx, d) {
       let act = x.action;
       // 程式擋下的（加碼條件寫成價格條件，T84）不能勾
       const box = same || x.blocked ? null : h('input', { type: 'checkbox', checked: !x.manual, 'aria-label': '勾選：開始監測' });
-      return { x, same, box, get act() { return act; }, sel: same || x.manual ? null : actionSelect(act, (e) => (act = e.target.value)) };
+      // 進場條件（T85）成立時只有一種動作，不給選單
+      return { x, same, box, get act() { return act; }, sel: same || x.manual || act === 'ENTRY' ? null : actionSelect(act, (e) => (act = e.target.value)) };
     });
     const tag = (r) => {
       if (r.same) return h('span', { class: 'rw-tag same' }, `和現在的「${r.same.text}」相同：不新增，舊的接著監測${r.same.actionTo ? `（成立時改成${ACTION_NAME[r.same.actionTo]}）` : ''}`);
@@ -691,7 +692,7 @@ function rewriteBlock(ctx, d) {
     };
     const fresh = rows.filter((r) => !r.same).length;
     out.push(
-      h('h5', { style: 'margin-top:18px' }, `${c.conditions.some((x) => isAddAct(x.action)) ? '出場條件與加碼條件' : '出場條件'}的改寫結果，等你確認（第 ${c.exitsVersion ?? '—'} 版論點，${day2(c.createdAt)} 送出）`),
+      h('h5', { style: 'margin-top:18px' }, `${['出場條件', c.conditions.some((x) => isAddAct(x.action)) ? '加碼條件' : null, c.conditions.some((x) => x.action === 'ENTRY') ? '進場條件' : null].filter(Boolean).join('、')}的改寫結果，等你確認（第 ${c.exitsVersion ?? '—'} 版論點，${day2(c.createdAt)} 送出）`),
       h('p', { class: 'small dim' }, `你這次寫的是完整的出場條件，AI 對照了現在監測中的條件。${fresh ? '勾選的新條件確認後開始監測，成立時照你選的動作通知你。' : ''}確認之前，現在的條件照舊監測；不確認的話，30 天後這份結果不再列，舊的仍照舊監測。`),
       rows.map((r) =>
         h(
@@ -708,6 +709,8 @@ function rewriteBlock(ctx, d) {
               r.x.from ? h('span', { class: 'small faint', style: 'display:block' }, `你寫的：${r.x.from}`) : null,
               // 加碼條件（T84，§4.6「方向填錯」）：對照上寫明成立時是買進
               isAddAct(r.x.action) ? h('span', { class: 'small rw-buy', style: 'display:block' }, `成立時：${ACTION_NAME[r.x.action]}（加碼條件，進月報、預設照做）`) : null,
+              // 進場條件（T85）：對照上寫明成立時是候補進場
+              r.x.action === 'ENTRY' ? h('span', { class: 'small rw-buy', style: 'display:block' }, '成立時：候補進場，先買一半（進場條件，進月報、預設照做）') : null,
               r.same ? null : h('span', { class: `small ${r.x.blocked ? 'tone-warn' : 'dim'}`, style: 'display:block' }, r.x.then),
               tag(r),
             ),

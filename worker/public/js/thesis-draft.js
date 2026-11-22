@@ -18,7 +18,7 @@ export function hm(iso) {
 
 import { BELIEF_TEXT, VERIFY_TEXT, draftPremiseFields, verifyText } from './thesis-fields.js';
 
-export const ACTION_TEXT = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）' };
+export const ACTION_TEXT = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）', ENTRY: '候補進場（先買一半）' };
 export const ANSWER_TEXT = { YES: '會買', NO: '不會買', UNSURE: '說不準' };
 /** 前提查得到的來源（verify.by；T55 叫 checkable_by）→ 白話；NONE 是信念（T60）。 */
 export const CHECK_TEXT = VERIFY_TEXT;
@@ -44,6 +44,8 @@ export function draftItems(payload) {
     exits: (p.exits ?? []).map((x, k) => ({ k, text: x.text, action: x.action, threshold: !!x.threshold, kind: x.kind ?? null, check: x.check ?? null, premiseIndex: x.premise_index ?? null, evidence: x.evidence_ids ?? [] })),
     // 加碼條件（T84，own_draft_v4；舊草稿沒有）：k 接在出場條件後面（和採用時的編號一致）
     adds: (p.adds ?? []).map((x, k) => ({ k: (p.exits ?? []).length + k, text: x.text, action: x.action, threshold: !!x.threshold, kind: x.kind ?? null, check: x.check ?? null, premiseIndex: x.premise_index ?? null, evidence: x.evidence_ids ?? [] })),
+    // 進場條件（T85，候補的草稿才有）：k 接在加碼條件後面；metNow 是用草稿那份財報表比、現在已經成立的（採用時直接列進下一份月報）
+    entries: (p.entries ?? []).map((x, k) => ({ k: (p.exits ?? []).length + (p.adds ?? []).length + k, text: x.text, action: 'ENTRY', threshold: !!x.threshold, kind: x.kind ?? null, check: x.check ?? null, premiseIndex: x.premise_index ?? null, evidence: x.evidence_ids ?? [], metNow: x.met_now ?? null })),
     peers: (p.sources?.peers ?? []).map((x, k) => ({ k, name: x.name, edgar: x.edgar ?? null, yahoo: x.yahoo ?? null })),
     domains: (p.sources?.domains ?? []).map((x, k) => ({ k, domain: x.domain, state: x.state, note: x.note, checkable: false })),
   };
@@ -69,6 +71,20 @@ export function exitMonitorText(x) {
   return { tone: 'warn', text: '舊格式的草稿沒有寫用什麼確認：採用後這一條送 AI 改寫，回來後在持股頁確認才開始監測' };
 }
 
+/**
+ * 草稿的一條進場條件採用後怎麼監測（T85，allocation_redesign §4.5 第 19～23 點）：財報門檻 → 新財報出來時程式比對；
+ * 事件條件有申報類的確認來源 → 新申報出來時由 AI 確認；只有法說會、新聞、網頁 → 月底有新證據時由 AI 確認。
+ */
+export function entryMonitorText(x) {
+  const by = Array.isArray(x?.check?.confirm_by) ? x.check.confirm_by : null;
+  if (x?.kind === 'XBRL' && x.check) return { tone: 'ok', text: '財報數字門檻：採用後新財報出來時由程式比對' };
+  if (x?.kind === 'EVENT' && by?.length) {
+    const names = by.map((b) => (String(b).startsWith('web:') ? `${String(b).slice(4)} 的網頁` : (CONFIRM_TEXT[b] ?? b)));
+    return by.some((b) => FILING_BY.includes(b)) ? { tone: 'ok', text: `採用後就開始監測：新申報出來時由 AI 確認（${names.join('、')}）` } : { tone: 'ok', text: `採用後月底有新證據時由 AI 確認（${names.join('、')}）` };
+  }
+  return { tone: 'warn', text: '格式不完整：採用後送 AI 改寫，回來後確認才開始監測' };
+}
+
 /** 按鈕旁那一行（§2.1：不需要專業知識，只問意願）。 */
 export const ADOPT_HINT = '採用之前看一眼最上面的反方三點：還願意抱著這檔嗎？';
 /** 採用後持股頁那一行（§2.1）。 */
@@ -91,7 +107,7 @@ export function checkLine(item) {
  *   照的論點版本和現在不同 → 「這份草稿是照第 N 版寫的，之後你改過論點」（§2.3）；
  *   哪天之後不再列、誰開的。
  */
-export function draftNotices(draft) {
+export function draftNotices(draft, opt = {}) {
   const out = [];
   if (draft.broken) {
     out.push({ tone: 'hot', text: `${draft.broken.notice}。` });
@@ -100,7 +116,7 @@ export function draftNotices(draft) {
   if (draft.stale) {
     out.push({ tone: 'warn', text: draft.basedOn ? `這份草稿是照第 ${draft.basedOn} 版論點寫的，之後你改過論點（現在第 ${draft.version} 版）。左邊「現在的」才是你現在的論點；按「採用」之後會先列出哪幾條會被換掉。` : `這份草稿是在你還沒有論點的時候寫的，之後你自己存了論點（現在第 ${draft.version} 版）。按「採用」之後會先列出哪幾條會被換掉。` });
   }
-  out.push({ tone: 'dim', text: `${draft.trigger === 'AUTO' ? '新加進自選時自動草擬的' : `你在 ${md(draft.createdAt)} 請 stock bot 草擬的`}；${md(draft.until)} 之後不再列（30 天沒處理就過期）。採用就是整份照草稿存（論點、前提、出場條件、同業），出場條件採用後直接生效；之後要改字，在這一頁照平常的方式改。` });
+  out.push({ tone: 'dim', text: `${draft.trigger === 'AUTO' ? (opt.watch ? '加進候補時自動草擬的' : '新加進自選時自動草擬的') : `你在 ${md(draft.createdAt)} 請 stock bot 草擬的`}；${md(draft.until)} 之後不再列（30 天沒處理就過期）。採用就是整份照草稿存（論點、前提、出場條件、${opt.watch ? '進場條件、' : ''}同業），${opt.watch ? '進場條件採用後直接開始監測，出場條件進場之後才監測' : '出場條件採用後直接生效'}；之後要改字，在這一頁照平常的方式改。` });
   return out;
 }
 
@@ -130,12 +146,15 @@ export function adoptCompare(pv) {
   const ex = [
     ...ep.retire.map((x) => ({ tone: 'hot', text: `撤下：${x.text}` })),
     ...ep.keep.map((x) => ({ tone: 'core', text: `沿用：${x.text}${x.was && x.was !== x.action ? `（成立時 ${ACT[x.was]} → ${ACT[x.action]}）` : ''}` })),
-    ...ep.add.map((x) => ({ tone: 'dim', text: `新增：${x.text}（成立時${ACT[x.action] ?? x.action}；採用後${STATUS_TEXT[x.status] ?? x.status}）` })),
+    // 候補（T85）：進場條件只在審查時判的那種是「月底有新證據時由 AI 確認」；出場、加碼條件候補期間不監測
+    ...ep.add.map((x) => ({ tone: 'dim', text: `新增：${x.text}（成立時${ACT[x.action] ?? x.action}；${x.action === 'ENTRY' ? `採用後${x.status === 'REVIEW_ONLY' ? '月底有新證據時由 AI 確認' : (STATUS_TEXT[x.status] ?? x.status)}` : dr.watch && x.status !== 'MANUAL' ? '候補期間不監測，進場之後才開始' : `採用後${STATUS_TEXT[x.status] ?? x.status}`}）` })),
     ...ep.rewrite.map((x) => ({ tone: 'warn', text: `送 AI 改寫、回來後在持股頁確認：${x.text}（${x.why}）` })),
   ];
-  // 加碼條件（T84）和出場條件同一張表、一起整組取代：有加碼條件時標題寫兩種
-  const hasAdd = [...ep.add, ...ep.keep, ...ep.rewrite].some((x) => x.action === 'FILL' || x.action === 'RAISE');
-  if (ex.length) out.push({ h: hasAdd ? '出場條件與加碼條件' : '出場條件', rows: ex });
+  // 加碼條件（T84）、進場條件（T85）和出場條件同一張表、一起整組取代：有的話標題寫出來（你填的價格條件不在這裡，採用不會動它們）
+  const acts = [...ep.add, ...ep.keep, ...ep.rewrite].map((x) => x.action);
+  const hasAdd = acts.some((a) => a === 'FILL' || a === 'RAISE');
+  const hasEntry = acts.some((a) => a === 'ENTRY') || ep.retire.some((x) => x.entry);
+  if (ex.length) out.push({ h: ['出場條件', hasAdd ? '加碼條件' : null, hasEntry ? '進場條件（你填的價格條件不動）' : null].filter(Boolean).join('、'), rows: ex });
   const pp = dr.peerPlan ?? { save: [], skip: [], before: [] };
   const key = (p) => `${p.edgar ?? ''}|${p.yahoo ?? ''}`;
   const now = new Set(pp.save.map(key));
@@ -180,14 +199,14 @@ export function adoptResultLines(r, at) {
  *   ASK     可以按
  * button：按鈕上的字（沒有按鈕是 null）；text：旁邊的一句話。
  */
-export function draftButtonState(state, now = new Date()) {
+export function draftButtonState(state, now = new Date(), opt = {}) {
   if (!state) return { mode: 'ASK', button: '請 stock bot 草擬', text: null };
   if (state.ready) return { mode: 'READY', button: null, text: `草稿好了（${md(state.ready.at)}），${md(state.ready.until)} 之後不再列` };
-  if (state.pending) return { mode: 'PENDING', button: null, text: `${state.pending.trigger === 'AUTO' ? (state.pending.attn ? '為了「要看的事」裡列的事，stock bot 正在自動草擬' : '新加進自選，stock bot 正在自動草擬') : '草稿準備中'}（${hm(state.pending.createdAt)} 開始，通常 10 分鐘左右；好了${state.pending.trigger === 'AUTO' ? '會列在「要看的事」' : '推 LINE'}）` };
+  if (state.pending) return { mode: 'PENDING', button: null, text: `${state.pending.trigger === 'AUTO' ? (state.pending.attn ? '為了「要看的事」裡列的事，stock bot 正在自動草擬' : opt.watch ? '新加進候補，stock bot 正在自動草擬（含進場條件）' : '新加進自選，stock bot 正在自動草擬') : '草稿準備中'}（${hm(state.pending.createdAt)} 開始，通常 10 分鐘左右；好了${state.pending.trigger === 'AUTO' ? '會列在「要看的事」' : '推 LINE'}）` };
   if (!state.aiReady) return { mode: 'OFF', button: null, text: 'AI 層的雲端排程還沒設定，現在沒辦法草擬' };
   if (state.nextAt && Date.parse(state.nextAt) > now.getTime()) return { mode: 'WAIT', button: null, text: `${md(state.lastAt)} 已經草擬過一次（每檔 7 天一次），${md(state.nextAt)} 之後可以再按${state.last?.status === 'USED' ? '；那一份你已經用過' : state.last?.status === 'DISMISSED' ? '；那一份你標了不用' : state.last?.status === 'EXPIRED' ? '；那一份已經過期' : ''}` };
   if (state.last?.status === 'FAILED') return { mode: 'FAILED', button: '再試一次', text: `上次草擬沒有成功（${state.last.why ?? '原因不明'}）` };
-  if (state.autoSoon) return { mode: 'AUTO', button: '現在就草擬', text: '下一次每日流程（台灣早上 7:30）會自動草擬一次，不用按；不想等可以現在按' };
+  if (state.autoSoon) return { mode: 'AUTO', button: '現在就草擬', text: opt.watch ? '加進候補之後的下一次每日流程（台灣早上 7:30）會自動草擬一次（論點、前提與進場條件），不用按；不想等可以現在按' : '下一次每日流程（台灣早上 7:30）會自動草擬一次，不用按；不想等可以現在按' };
   const tail = state.last?.status === 'EXPIRED' ? `上一份草稿（${md(state.last.createdAt)}）30 天沒處理，已經過期` : state.last?.status === 'USED' ? `上一份草稿（${md(state.last.createdAt)}）你已經用過` : state.last?.status === 'DISMISSED' ? `上一份草稿（${md(state.last.createdAt)}）你標了不用` : null;
   return { mode: 'ASK', button: '請 stock bot 草擬', text: tail };
 }

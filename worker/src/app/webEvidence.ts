@@ -316,7 +316,7 @@ async function openDocTask(env: Env, id: string, now: Date): Promise<{ t: NonNul
   const t = await getTask(db, id);
   if (!t) return json({ error: 'not_found' }, 404);
   const run = t.kind === 'RUN' ? await db.prepare('SELECT run_id, fn, ticker, as_of, status, doc_ctx, added_docs FROM ai_runs WHERE task_id = ?').bind(id).first<RunRow>() : null;
-  if (!run || !(DOC_FNS as readonly string[]).includes(run.fn)) return json({ error: 'not_allowed', why: '這個任務不能取文件（只有定期審查、減半檢視、論點草稿、市場摘要可以）' }, 403);
+  if (!run || !(DOC_FNS as readonly string[]).includes(run.fn)) return json({ error: 'not_allowed', why: '這個任務不能取文件（只有定期審查、減半檢視、論點草稿、市場摘要、候補進場條件的月底檢查可以）' }, 403);
   if (!['PENDING', 'FETCHED'].includes(t.status) || run.status !== 'PENDING' || now.getTime() - Date.parse(t.created_at) > TASK_TIMEOUT_MS) return json({ error: 'task_closed', status: t.status }, 410);
   if (t.status === 'PENDING') return json({ error: 'evidence_not_fetched', why: '先取證據包，讀完再取文件' }, 409);
   const ctx = run.doc_ctx ? (JSON.parse(run.doc_ctx) as DocCtx) : await fallbackCtx(db, run.ticker, run.as_of);

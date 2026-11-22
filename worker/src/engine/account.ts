@@ -152,8 +152,9 @@ export interface OwnMeta {
    * 從候補名單進場的那一次（allocation_redesign §4.5 第 17 點，promoteWatch 寫）：via 是照月報的進場項目買的（F29）還是你自己先買的（SELF）；
    * date 進場那份快照的訊號日（= heldSince）；shares 那時自選桶的股數；state 進場後的狀態；addedAt 加入候補的訊號日（持股頁寫「11/20 加入候補 → 2/3 進場」）；
    * conds：列在那一項進場項目上的進場條件（own_conditions 的列編號）；synced：進場條件的狀態已經補寫（下一次每日流程的 syncWatchConds）。
+   * xbrlAt：進場之後補比過一次財報類條件的訊號日（T85 丙段，§4.5 第 21 點：候補期間休眠的出場、加碼條件，進場後的下一次每日流程比一次）。
    */
-  entered?: { via: 'F29' | 'SELF'; date: string; shares: number; state: OwnState; addedAt: string; conds?: number[]; synced?: boolean };
+  entered?: { via: 'F29' | 'SELF'; date: string; shares: number; state: OwnState; addedAt: string; conds?: number[]; synced?: boolean; xbrlAt?: string };
   /**
    * 最近一次 F24 的檔位（AI 層給的輸入）。suggest = 3 票一致、和目前不同、有一條不成立的前提 → 月報並列。
    * premiseId：三票都判不成立（有申報或財報引用）的那條前提，有多條時取編號最小的（own_thesis §1.6 第 1 點）。
@@ -415,7 +416,8 @@ export interface Attention {
   text: string;
   /** 從哪一天起成立（訊號日）。 */
   since: string;
-  src?: 'own' | 'mom';
+  /** own 自選、mom 動能、watch 候補（allocation_redesign §4.5 第 24 點：一年沒進場、草稿好了）。 */
+  src?: 'own' | 'mom' | 'watch';
   /** 點這一件要去哪一檔的持股頁（沒有 = ticker）。集中度那一件掛在字母排第一的自選股上（頻率用），但文字以占比最大的開頭，連到占比最大的那檔（T34）。 */
   link?: string;
   /** 已經自動請 stock bot 草擬（T72，confirm_audit_design §5）：開的時間。有的話網站不放「請 stock bot 草擬」的連結。 */
