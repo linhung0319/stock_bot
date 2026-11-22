@@ -16,6 +16,82 @@ function weightOf(input) {
 
 const weightText = (x) => (x.stdWeight !== null ? `打算放 ${pct(x.stdWeight)}` : x.recWeight !== null ? `留空（推薦 ${pct(x.recWeight)}）` : '比重留空');
 
+/** 進場條件與現在的狀態（「比 52 週高點低 25% 以上：現在 -27.0%，條件成立中…」）；沒有條件時一句話。 */
+function entryList(x) {
+  if (!x.entries.length) return h('p', { class: 'small faint watch-entries', style: 'margin:6px 0 0' }, '還沒有進場條件：沒有條件就不會列進月報。');
+  return h(
+    'ul',
+    { class: 'small watch-entries', style: 'margin:6px 0 0;padding-left:1.4em' },
+    x.entries.map((e) => h('li', null, h('span', null, `進場條件「${e.text}」`), '：', h('span', { class: /成立中|等下一份月報/.test(e.state) ? 'tone-ok' : 'dim' }, e.state))),
+  );
+}
+
+/**
+ * 價格型進場條件的表單（allocation_redesign §4.5 第 12 點）：結構化欄位（種類＋數字），最多 priceMax 條，存檔整組取代。
+ * 價格條件只能你自己填數字（AI 不談估值與目標價）；存了就開始比，不經 AI 改寫。
+ */
+function priceForm(ctx, d, fail) {
+  const x = d.watch;
+  const rows = [];
+  const list = h('div', { class: 'watch-price-rows' });
+  const unitOf = (type) => (type === 'close' ? '美元' : '% 以上');
+  const addRow = (c) => {
+    const kind = h('select', { 'aria-label': '條件的種類', style: 'width:auto;min-width:0;flex:0 1 auto' }, h('option', { value: 'drawdown', selected: !c || c.type === 'drawdown' }, '比 52 週高點低'), h('option', { value: 'close', selected: c?.type === 'close' }, '收盤低於'));
+    const val = h('input', { class: 'num-in short', type: 'text', inputmode: 'decimal', value: c ? String(c.value) : '', placeholder: '例如 25', 'aria-label': '數字' });
+    const unit = h('span', { class: 'small dim' }, unitOf(kind.value));
+    kind.addEventListener('change', () => {
+      unit.textContent = unitOf(kind.value);
+      val.placeholder = kind.value === 'close' ? '例如 150' : '例如 25';
+    });
+    val.placeholder = kind.value === 'close' ? '例如 150' : '例如 25';
+    const row = { kind, val };
+    const el = h('div', { class: 'btn-row watch-price-row', style: 'align-items:center;margin-top:6px;flex-wrap:nowrap;white-space:nowrap' }, kind, val, unit);
+    el.append(
+      linkButton('拿掉', () => {
+        rows.splice(rows.indexOf(row), 1);
+        el.remove();
+        more.hidden = rows.length >= x.priceMax;
+      }),
+    );
+    rows.push(row);
+    list.append(el);
+  };
+  const more = linkButton('再加一條', () => {
+    addRow(null);
+    more.hidden = rows.length >= x.priceMax;
+  });
+  (x.priceConds.length ? x.priceConds : [null]).forEach(addRow);
+  more.hidden = rows.length >= x.priceMax;
+  const save = actionButton('存進場條件', 'primary', async () => {
+    const conds = [];
+    for (const r of rows) {
+      const raw = r.val.value.replace(/[$%,\s]/g, '');
+      if (!raw) continue;
+      const v = Number(raw);
+      if (!Number.isFinite(v) || v <= 0) return fail(new Error('數字要大於 0：比高點低的填百分比（例如 25），收盤低於的填美元（例如 150）'));
+      conds.push({ type: r.kind.value, value: v });
+    }
+    try {
+      await api.post('/ops/watch-price', { ticker: d.ticker, conds });
+      toast(conds.length ? `${d.ticker} 的價格條件存好了，今天起每天比收盤` : `${d.ticker} 的價格條件清掉了`);
+      ctx.refresh();
+    } catch (e) {
+      fail(e);
+    }
+  });
+  return [
+    h('h5', { style: 'margin-top:18px' }, '進場條件'),
+    h('p', { class: 'small', style: 'margin:2px 0 6px' }, '條件到了，下一份月報會列一項「候補進場：先買一半」，預設照做；買進、在快照的自選那一桶填了股數，這檔就從候補轉成持股，論點沿用。沒有進場條件就不會列。'),
+    entryList(x),
+    x.blocked ? h('p', { class: 'small tone-warn', style: 'margin:6px 0 0' }, x.blocked) : null,
+    x.lastListed ? h('p', { class: 'small faint', style: 'margin:4px 0 0' }, `上次列進月報：${day(x.lastListed, true)}（同一檔每 90 天最多列一次）。`) : null,
+    h('h5', { style: 'margin-top:14px' }, `你填的價格條件（最多 ${x.priceMax} 條）`),
+    list,
+    h('div', { class: 'btn-row', style: 'margin-top:8px' }, save, more),
+    h('p', { class: 'small faint', style: 'margin-top:4px' }, '價格條件只收你自己填的數字，存了就生效（AI 不談估值與目標價，草稿不會替你定價位）。系統每天比收盤，這裡看得到離條件多遠；真正決定列不列的是月報那天的收盤——月中成立過、月報那天不成立的不算，也不算用掉。存檔會取代原本的價格條件；條件成立、列進月報之後就用掉了，要再等就重新填。'),
+  ];
+}
+
 /** 一列候補：代號（連到詳細頁）、加入日、那一句話、比重、價格與距高點。 */
 function watchRow(ctx, x) {
   const msg = h('div');
@@ -40,9 +116,9 @@ function watchRow(ctx, x) {
       { class: 'state' },
       x.note ? h('p', { style: 'margin:0 0 4px' }, `「${x.note}」`) : null,
       h('p', { class: 'small', style: 'margin:0' }, priceLine, h('span', { class: 'faint', style: 'margin-left:10px' }, x.kind === 'THESIS' ? '有你的論點' : x.hasThesisText ? '有論點本文' : '還沒有論點'), x.draft ? h('span', { class: 'chip now', style: 'margin-left:10px' }, x.draft) : null),
-      x.entries.length ? h('ul', { class: 'small', style: 'margin:6px 0 0;padding-left:1.4em' }, x.entries.map((e) => h('li', null, `${e.text}：${e.state}`))) : null,
+      entryList(x),
       x.blocked ? h('p', { class: 'small tone-warn', style: 'margin:4px 0 0' }, x.blocked) : null,
-      h('div', { class: 'btn-row', style: 'margin-top:6px' }, h('a', { class: 'linkbtn', href: `#/h/${encodeURIComponent(x.ticker)}` }, '論點與比重'), remove),
+      h('div', { class: 'btn-row', style: 'margin-top:6px' }, h('a', { class: 'linkbtn', href: `#/h/${encodeURIComponent(x.ticker)}` }, x.entries.length ? '論點、比重與進場條件' : '定進場條件、論點與比重'), remove),
       msg,
     ),
   );
@@ -97,7 +173,7 @@ export function watchSection(ctx, a) {
     'section',
     { class: 'watch-sec', 'data-b': 'own' },
     h('h2', { class: 'sec' }, '候補', h('span', { class: 'small dim', style: 'font-weight:400' }, `${rows.length} / ${a.watchMax} 檔`)),
-    h('p', { class: 'small group-who' }, '還沒持有、想等條件到了再買的股票。加進來不會下單、不發通知、不占自選的預算；系統每天抓它的價格，並替它開一份論點檔，你可以先寫為什麼想買。'),
+    h('p', { class: 'small group-who' }, '還沒持有、想等條件到了再買的股票。加進來不會下單、不發通知、不占自選的預算；系統每天抓它的價格，並替它開一份論點檔，你可以先寫為什麼想買。點進去定進場條件：條件到了，下一份月報會列「先買一半」。'),
     glass('', rows.length ? rows.map((x) => watchRow(ctx, x)) : h('p', { class: 'pad small faint' }, '還沒有候補。'), h('div', { class: 'watch-add-wrap' }, addForm(ctx, a))),
   );
 }
@@ -149,14 +225,15 @@ export function watchPanel(ctx, d) {
   return glass(
     'pad hp watch-panel',
     h('div', { class: 'panel-top' }, h('h2', { class: 'panel-h' }, '候補'), h('span', { class: 'chip' }, `${day(x.addedAt, true)} 加入`)),
-    h('p', null, '還沒持有。加進候補不會下單；系統每天抓它的價格，論點檔已經開好，可以在下面寫論點。'),
+    h('p', null, '還沒持有。加進候補不會下單；系統每天抓它的價格，論點檔已經開好，可以在下面寫論點。等不及條件、自己先買了也可以：到「填快照」的自選那一桶填股數，它就直接轉成持股。'),
     x.priceMissing ? h('p', { class: 'notice', style: 'margin-top:10px' }, '這次抓不到它的價格（代號可能打錯或已下市）。不影響其他股票的訊號；確定打錯的話，移出候補再用正確的代號加一次。') : null,
     h('h5', { style: 'margin-top:16px' }, '為什麼想買'),
     h('div', { class: 'btn-row', style: 'align-items:center' }, h('div', { style: 'flex:1 1 16em;min-width:0' }, note), saveNote),
     h('p', { class: 'small faint', style: 'margin-top:4px' }, '只當討論、草擬論點時的開場，不是前提。'),
     h('h5', { style: 'margin-top:16px' }, x.stdWeight !== null ? `打算放 ${pct(x.stdWeight)}` : `比重留空${x.recWeight !== null ? `（推薦 ${pct(x.recWeight)}）` : ''}`),
     h('div', { class: 'btn-row', style: 'align-items:center' }, w, h('span', null, '%'), save),
-    h('p', { class: 'small faint', style: 'margin-top:4px' }, '占總資產的百分比。清空再存 = 改回留空、用推薦值（自選的預算裡依波動度分配，加進候補時現算）。'),
+    h('p', { class: 'small faint', style: 'margin-top:4px' }, '占總資產的百分比。清空再存 = 改回留空、用推薦值（自選的預算裡依波動度分配，列進月報時現算）。進場時先買這個比重的一半。'),
+    ...priceForm(ctx, d, fail),
     h('div', { class: 'btn-row', style: 'margin-top:16px' }, remove),
     msg,
   );

@@ -42,9 +42,9 @@ import {
 } from './account';
 import { momSlotTarget, ownDepositFill, ownDepositScale, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
-import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SELF_HALVE_MIN, SKIPPED_REASON, addDispute, clearBuild, endDisputesFor, afterOpenLists, cancelThesisDrop, composeNotif, crashReviewOf, leaveWatch, monthlyReport, monthlyWait, rebuildThesisDrop, recordExternalFlow, refreshCoreBand, refreshOwnAiChoice, restoreSaved, thesisDropShadow, type MonthlyResult } from './report';
+import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SELF_HALVE_MIN, SKIPPED_REASON, addDispute, clearBuild, endDisputesFor, afterOpenLists, cancelThesisDrop, composeNotif, crashReviewOf, leaveWatch, monthlyReport, monthlyWait, rebuildThesisDrop, watchEntryWant, recordExternalFlow, refreshCoreBand, refreshOwnAiChoice, restoreSaved, thesisDropShadow, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
-import { lastBrokenAt } from './buy';
+import { buyAllowed, lastBrokenAt, watchBuyFacts, watchRecWeight } from './buy';
 import { appliedOf, cellKey, pickFrac, setApplied, type Bucket } from './types';
 
 const sumFor = (lines: OrderLine[], ticker: string) => lines.filter((l) => l.ticker === ticker).reduce((a, l) => a + l.shares, 0);
@@ -90,6 +90,11 @@ function applyEffects(acct: Account, view: MarketView, effects: Effect[] | undef
       // 下跌加碼照做了（allocation_redesign §4.4，T84）：記下哪一天（同一次下跌不會再提；提高到 125% 的 raisedAt 由同一個選項的 APPLY_TIER 記）
       const m = acct.own[e.ticker];
       if (m) m.dipAdd = { ...(m.dipAdd && m.dipAdd.episode === e.episode ? m.dipAdd : { episode: e.episode, level: m.watchLevel ?? 0, offered: view.date }), at: view.date };
+    } else if (e.type === 'WATCH_ENTER') {
+      // 候補進場（F29，allocation_redesign §4.5 第 17 點）：快照的自選桶這一檔真的有股數才轉成持股；沒買的還是候補
+      if (!((acct.lots.own[e.ticker] ?? 0) > 0)) continue;
+      // 候補已經不在（照做之後、填快照之前被別的路轉走）：這幾股還是要有人管，照自己買進開檔
+      if (!promoteWatch(acct, view, e.ticker, 'F29', { std: e.std, ...(e.conds ? { conds: e.conds } : {}) }) && !acct.own[e.ticker]) ensureOwnMeta(acct, view, e.ticker, 'MANUAL', undefined, { shares: acct.lots.own[e.ticker] ?? 0 });
     } else applyTier(acct, view, e.ticker, e.tier, f === 'F19' ? 'HARD_EVENT' : f === 'F25' ? 'EXIT_CONDITION' : 'EXIT_AI');
   }
 }
@@ -191,9 +196,32 @@ function recomputeLateStrategy(acct: Account, view: MarketView, it: Item): void 
   it.note = it.note && !it.note.includes('晚回覆') ? `${it.note}；${note}` : note;
 }
 
+/**
+ * 晚回覆的候補進場（F29，allocation_redesign §4.5）：候補已經不在（移除了、或自己先買轉成持股）→ 取消；
+ * 其餘照回覆當天的總資產與價格重算先買一半的股數，買進前的程式檢查（30 天內前提被判不成立、跨桶上限）再過一次，沒過就不用買。
+ * 這一行是 bucket own，但 rule.own 還沒有這檔，所以不走自選規則單那一套（那一套看慢規則狀態）。
+ */
+function recomputeLateEntry(acct: Account, view: MarketView, it: Item): void {
+  const tk = it.ticker!;
+  const c = it.choices.find((x) => x.id === 'DO');
+  if (!acct.watch?.[tk] || !c || !it.watchEntry) {
+    it.cancelled = true;
+    it.note = acct.own[tk] ? `${tk} 已經轉成持股，這一項取消` : `${tk} 已經不在候補名單，這一項取消`;
+    return;
+  }
+  const v = buyAllowed(watchBuyFacts(acct, view, tk, view.date, watchEntryWant(acct, view, tk, it.watchEntry.std)));
+  c.lines = v.ok ? [{ ticker: tk, bucket: 'own', shares: v.shares, reason: '候補進場' }] : [];
+  c.label = v.ok ? `照做：先買一半，買 ${v.shares} 股` : '照做（重算後不用買）';
+  it.note = `晚回覆：用 ${view.date} 收盤價重算${v.ok ? `，買 ${v.shares} 股` : `；${v.why ?? '買進前的程式檢查沒過'}，不用買`}`;
+}
+
 /** 晚回覆（提醒過才回）：規則狀態已反轉的自選項目取消，其餘自選規則單與策略項目用今天的價格重算（設計 §2.3.1「忘了」）。 */
 function recomputeLate(acct: Account, view: MarketView, n: Notif): void {
   for (const it of n.items) {
+    if (!it.cancelled && it.kind === 'WATCH_ENTRY') {
+      recomputeLateEntry(acct, view, it);
+      continue;
+    }
     if (!it.cancelled && it.kind !== 'OWN_RULE') recomputeLateStrategy(acct, view, it);
     if (it.kind !== 'OWN_RULE' || !it.ticker || it.cancelled) continue;
     const tk = it.ticker;
@@ -292,8 +320,8 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
       };
       // 慢規則項目上 AI 的那一行可能只是「同意減半」「沒有一致結論」（沒有另一個選項）：照規則做了就不用記
       // 崩盤項目一律記（每一次切換都有紀錄，§3.4）
-      // 補滿（F27）、你定的加碼條件（F28）每一次都記三條線（allocation_redesign §6；T84）：照做了也記，之後看得到加碼的效果
-      if (crash || rec.ai !== null || rec.actual !== rec.rule || (it.aiLine && it.kind !== 'OWN_RULE') || it.kind === 'OWN_FILL' || it.kind === 'OWN_ADD') acct.shadow.push(rec);
+      // 補滿（F27）、你定的加碼條件（F28）、候補進場（F29）每一次都記三條線（allocation_redesign §6；T84、T85）：照做了也記，之後看得到買進的效果
+      if (crash || rec.ai !== null || rec.actual !== rec.rule || (it.aiLine && it.kind !== 'OWN_RULE') || it.kind === 'OWN_FILL' || it.kind === 'OWN_ADD' || it.kind === 'WATCH_ENTRY') acct.shadow.push(rec);
       // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒。
       // 舊的崩盤項目（規則已經退場）與核心比例調回（F26，kind 是 CORE_BAND）不記欠單：下個月月報照持股重算（allocation_redesign §1.3）
       if (it.kind === 'STRATEGY' && it.choice === 'SKIP' && rec.rule !== 0 && !isCrashItem(it)) acct.mom.owe[tk] = { since: view.date, notif: n.id };
@@ -441,6 +469,8 @@ export interface SnapshotResult {
    * 狀態改成減半，站回 200 日均線會提醒加回。沒有就不留這個欄位。
    */
   watchHalved?: string[];
+  /** 這份快照從候補轉成持股的（allocation_redesign §4.5 第 17 點）：照月報的進場項目買的（F29）或你自己先買的（SELF），與進場後的狀態。沒有就不留這個欄位。 */
+  entered?: { ticker: string; via: 'F29' | 'SELF'; state: OwnMeta['slow']['state'] }[];
   /** 分桶快照不允許時的原因（帳戶不變）。 */
   error?: string;
 }
@@ -868,12 +898,21 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
   const cashRes = settleCash(acct, view, snap.cash - pendingAfter, expectedCash, withdrawn, traded);
   if (pendingAfter) acct.pendingWithdraw = pendingAfter;
   else delete acct.pendingWithdraw;
+  // 候補名單裡的代號在自選桶有了股數卻還沒轉（不該發生的組合，保險用）：照自己先買轉成持股（allocation_redesign §4.5 第 17 點）
+  for (const t of Object.keys(acct.watch ?? {})) if ((acct.lots.own[t] ?? 0) > 0) promoteWatch(acct, view, t, 'SELF');
+  // 這份快照從候補轉成持股的：進場時的股數照快照記好之後的
+  const entered: NonNullable<SnapshotResult['entered']> = [];
+  for (const [t, m] of Object.entries(acct.own)) {
+    if (!m.entered || m.entered.date !== view.date || acct0.own[t]) continue;
+    m.entered.shares = acct.lots.own[t] ?? 0;
+    entered.push({ ticker: t, via: m.entered.via, state: m.entered.state });
+  }
   // T43：新加進自選、沒填標準比重的 → 現在占總資產的比重（股數與現金都記好之後算）
   for (const t of fresh) if (acct.rule.own[t]) acct.rule.own[t].stdWeight = defaultStdFor(acct, view, t, acct.lots.own[t] ?? 0);
   const belowStd = belowStdAfterSelfSell(acct, view, selfSold);
   acct.snapshotDate = view.date;
   acct.splitAsOf = splitAsOfAfter(acct0, view, snap);
-  return { acct, completed, followUps, created: [], ...cashRes, removedOwn, belowStd, ...(watchHalved.length ? { watchHalved } : {}) };
+  return { acct, completed, followUps, created: [], ...cashRes, removedOwn, belowStd, ...(watchHalved.length ? { watchHalved } : {}), ...(entered.length ? { entered } : {}) };
 }
 
 /** 回答現金差額是什麼：入金／出金會調整單位數（不算報酬）；股利與其他算報酬。 */
@@ -902,7 +941,9 @@ export function resolveFollowUp(acct0: Account, view: MarketView, id: number, fi
   const items = n.followUp.map((x) => {
     const orig = (n.composed?.lines ?? []).filter((l) => l.ticker === x.ticker && l.shares !== 0);
     const bucket = orig.length ? orig[0].bucket : 'core';
-    return makeItem({ f: 'F17', kind: 'FIX', ticker: x.ticker, title: `${x.ticker} 補做差額`, choices: [{ id: 'DO', label: '補做', lines: [{ ticker: x.ticker, bucket, shares: x.listed - x.done, reason: '策略單補做' }] }] });
+    // 候補進場照做了但還沒買（候補還在）：補做的那幾股買進來之後一樣轉成持股（allocation_redesign §4.5 第 17 點）
+    const enter = acct.watch?.[x.ticker] ? n.items.flatMap((i) => (i.cancelled ? [] : (i.choices.find((c) => c.id === i.choice)?.effects ?? []))).filter((e) => e.type === 'WATCH_ENTER' && e.ticker === x.ticker) : [];
+    return makeItem({ f: 'F17', kind: 'FIX', ticker: x.ticker, title: `${x.ticker} 補做差額`, choices: [{ id: 'DO', label: '補做', lines: [{ ticker: x.ticker, bucket, shares: x.listed - x.done, reason: '策略單補做' }], ...(enter.length ? { effects: enter } : {}) }] });
   });
   const notif = newNotif(acct, view, { kind: 'FIX', title: '補做差額清單', items });
   notif.preview = composeNotif(acct, view, notif);
@@ -1177,12 +1218,27 @@ export function updateWatch(acct0: Account, view: MarketView, ticker: string, op
  * 移除候補（§4.5「其他」）：論點檔結案（原因 WATCH_REMOVED，存檔時寫 log 的 CLOSE）；條件不用動（跟著論點檔編號，之後不會再讀）。
  * ownClosed 每檔只有一筆，同時是「上一次持有時的論點」的來源：原本那一筆若是持有的結案就搬進 held（候補的論點不能蓋掉上一次持有的），
  * 前提被判不成立的日子（brokenAt）照帶（30 天的防線，§4.5 第 7 點）。
- * 還沒回覆的進場項目（F29）跟著取消——F29 是 T85 乙段才有，那時接上。
+ * 還沒回覆的進場項目（F29）跟著取消；已經決定照做、還沒填快照的不能移除（先改決定）。
  */
 export function removeWatch(acct0: Account, view: MarketView, ticker: string): Account {
   const acct = clone(acct0);
   const meta = acct.watch?.[ticker];
   if (!meta) throw new WatchError(`${ticker} 不在候補名單裡`);
+  // 進場項目（F29）已經決定照做、還沒填快照：先改決定再移除（不然買進來的股數沒有論點檔接）
+  const decided = acct.notifs.find((n) => n.status === 'RESPONDED' && !!n.composed && n.items.some((i) => !i.cancelled && i.kind === 'WATCH_ENTRY' && i.ticker === ticker && i.choice === 'DO'));
+  if (decided) throw new WatchError(`${ticker} 的進場項目已經決定照做、還沒填快照（${notifDay(decided.date)} 的「${decided.title}」）：已經買了就先填快照；還沒買就到那則通知改決定，再移除候補`);
+  // 還沒回覆的進場項目跟著取消
+  for (const n of acct.notifs) {
+    if (n.status !== 'PENDING') continue;
+    let hit = false;
+    for (const it of n.items) {
+      if (it.cancelled || it.kind !== 'WATCH_ENTRY' || it.ticker !== ticker) continue;
+      it.cancelled = true;
+      it.note = `${notifDay(view.date)} ${ticker} 已經移出候補，這一項取消`;
+      hit = true;
+    }
+    if (hit) n.preview = composeNotif(acct, view, n);
+  }
   const prev = acct.ownClosed?.[ticker];
   const held = prev ? (prev.reason === 'WATCH_REMOVED' ? (prev.held ?? null) : { fileId: prev.fileId, reason: prev.reason, date: prev.date, ...(prev.last ? { last: prev.last } : {}) }) : null;
   acct.ownClosed = {
@@ -1191,16 +1247,6 @@ export function removeWatch(acct0: Account, view: MarketView, ticker: string): A
   };
   delete acct.watch![ticker];
   return acct;
-}
-
-/** 候補的推薦標準比重（§4.5：自選預算內依波動度反比，現有的算法；分母是現在的自選加上這一檔，其他候補不算）。算不出來是 null。 */
-export function watchRecWeight(acct: Account, view: MarketView, ticker: string): number | null {
-  try {
-    const w = recommendStdWeights(view, [...Object.keys(acct.rule.own).filter((t) => t !== ticker), ticker], acct.cfg.ratio.own)[ticker];
-    return Number.isFinite(w) ? w : null;
-  } catch {
-    return null;
-  }
 }
 
 // ---------------------------------------------------------------- 月報上的動作：轉入自選、排除、認養
@@ -1486,6 +1532,54 @@ export function endBuild(acct0: Account, view: MarketView, ticker: string, keep:
 }
 
 /**
+ * 候補 → 持股（allocation_redesign §4.5 第 17 點）。直接改傳進來的帳戶；不是候補（或已經在自選）回傳 false。
+ *   論點檔沿用（fileId、論點、前提、編號、網頁來源、那一句話、要看的事的紀錄），origin = WATCH，heldSince = 進場那份快照的訊號日
+ *   （「開檔滿幾天」「先買一半的 200 天」從進場算，不從加入候補算）。
+ *   via F29（照月報的進場項目買的）：先買一半（BUILD），不問；只有預設前提、進場時已經比高點低 20% 以上的照 §4.1 既有規則從減半開始。
+ *   via SELF（你自己先買的）：標準（STD）＋ buildAsk（持股頁問一次，預選「先買一半」）；跌深的同上（有論點 → 先買一半；只有預設 → 減半）。
+ *   有論點、已經比高點低 20% 以上的開在先買一半：之後的每日流程照常觸發跌幅審查（§3，不因為剛買而例外）。
+ *   標準比重：opt.std（項目上用的、或快照表單填的）→ 候補那一欄 → 推薦值。還沒回覆的進場項目取消（自己先買時）。
+ *   進場條件在資料庫、不跟帳戶版本走：這裡不改，下一次每日流程（syncWatchConds）照 entered 補寫。
+ */
+export function promoteWatch(acct: Account, view: MarketView, ticker: string, via: 'F29' | 'SELF', opt: { std?: number; shares?: number; conds?: number[] } = {}): boolean {
+  const w = acct.watch?.[ticker];
+  if (!w || acct.own[ticker]) return false;
+  const meta = newOwnMeta(view, ticker, 'WATCH', clone(w.premises));
+  meta.fileId = w.fileId;
+  meta.thesis = w.thesis ?? null;
+  meta.premiseSeq = Math.max(w.premiseSeq ?? 0, nextPremiseSeq(w));
+  if (w.webSources) meta.webSources = w.webSources;
+  if (w.buyNote) meta.buyNote = w.buyNote;
+  if (w.attnShown) meta.attnShown = w.attnShown;
+  meta.heldSince = view.date;
+  if (via === 'F29' && meta.slow.state === 'STD') {
+    meta.slow = { ...meta.slow, state: 'BUILD' };
+    meta.build = { since: view.date, confirmBy: 'EARNINGS', misses: 0 };
+    delete meta.buildAsk;
+    meta.opened = { startState: 'BUILD', drawdownAtOpen: meta.opened?.drawdownAtOpen ?? null };
+  }
+  const std = opt.std ?? w.stdWeight ?? watchRecWeight(acct, view, ticker) ?? defaultStdFor(acct, view, ticker, opt.shares ?? acct.lots.own[ticker] ?? 0);
+  meta.entered = { via, date: view.date, shares: opt.shares ?? acct.lots.own[ticker] ?? 0, state: meta.slow.state, addedAt: w.addedAt, ...(opt.conds?.length ? { conds: [...opt.conds] } : {}) };
+  acct.own[ticker] = meta;
+  acct.rule.own[ticker] = { applied: appliedOf(meta.slow.state, !!meta.build), stdWeight: std };
+  delete acct.watch![ticker];
+  if (via === 'SELF') {
+    for (const n of acct.notifs) {
+      if (n.status !== 'PENDING') continue;
+      let hit = false;
+      for (const it of n.items) {
+        if (it.cancelled || it.kind !== 'WATCH_ENTRY' || it.ticker !== ticker) continue;
+        it.cancelled = true;
+        it.note = `${notifDay(view.date)} 你自己先買了，${ticker} 已經從候補轉成持股，這一項取消`;
+        hit = true;
+      }
+      if (hit) n.preview = composeNotif(acct, view, n);
+    }
+  }
+  return true;
+}
+
+/**
  * 清單外買進、轉入、認養時建立這檔自選（已經在自選就不重建；回傳有沒有新建）。
  * 標準比重：opt.std（使用者填的）→ opt.shares 股占現在總資產的比重（T43，不超過單檔上限）→ 0 股用推薦值。
  * reason：使用者寫的那一句 → 買進時的一句話（T40，own_thesis §1.8）：不是前提，這檔維持「只有預設」直到第一次存論點；
@@ -1493,6 +1587,14 @@ export function endBuild(acct0: Account, view: MarketView, ticker: string, keep:
  */
 function ensureOwnMeta(acct: Account, view: MarketView, ticker: string, origin: 'TRANSFER' | 'ADOPT' | 'MANUAL', reason?: string, opt: { shares?: number; std?: number } = {}): boolean {
   const note = reason?.trim() ? { text: reason.trim().slice(0, 300), at: view.date } : null;
+  // 候補中的代號（allocation_redesign §4.5 第 17 點）：你沒等條件、自己先買了（清單外買進、轉入自選、認養、舊式分類都算）→ 候補直接轉成持股，
+  // 論點檔沿用、不重複開檔。回傳 false（不是新建：標準比重用候補那一欄，不改成現在的比重）
+  if (!acct.own[ticker] && acct.watch?.[ticker]) {
+    promoteWatch(acct, view, ticker, 'SELF', { ...(opt.std ? { std: opt.std } : {}), ...(opt.shares !== undefined ? { shares: opt.shares } : {}) });
+    const m: OwnMeta | undefined = Object.entries(acct.own).find(([t]) => t === ticker)?.[1];
+    if (m && note && !m.buyNote) m.buyNote = note;
+    return false;
+  }
   if (acct.own[ticker]) {
     if (note && !acct.own[ticker].buyNote) acct.own[ticker].buyNote = note;
     return false;

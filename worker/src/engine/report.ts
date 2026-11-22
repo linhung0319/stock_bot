@@ -30,12 +30,14 @@ import {
   type SavedState,
   type ShadowRecord,
   type Tier,
+  type WatchEntryInput,
+  type WatchMeta,
   usd,
 } from './account';
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
 import { drawdownFromHigh, excessVol } from './indicators';
 import { composeWithCore, coreBandLines, crashCoreLines, mergeByTicker, planToLines, tenths, type Composed, type CoreBand, type CoreContext, type OrderLine } from './orders';
-import { buyCheck, raiseGapWhy } from './buy';
+import { WATCH_ENTRY_EXPIRE_DAYS, WATCH_LIST_GAP_DAYS, buyAllowed, buyCheck, raiseGapWhy, watchBuyFacts, watchRecWeight } from './buy';
 import { DROP_LADDER, SLOW, dropLadder, halveShares, slowDayInput, stepSlowRule, stepWatch } from './slowRule';
 import { cellKey, coreCfg, setApplied, type OwnAction, type OwnState } from './types';
 
@@ -94,6 +96,9 @@ export function afterOpenLists(acct: Account, view: MarketView, opt: { except?: 
         if (e.tier === 'HALF') setApplied(o, 'HALF');
         else if (e.tier === 'STANDARD') setApplied(o, 'STD');
         else if (e.tier === 'RAISE') o.stdWeight *= 1.25;
+      } else if (e.type === 'WATCH_ENTER') {
+        // 候補進場照做之後（allocation_redesign §4.5）：自選桶有了股數才算進場；目標是標準比重的一半（先買一半，或只有預設前提跌深的從減半開始）
+        if (!rule.own[e.ticker] && (lots.own[e.ticker] ?? 0) > 0) ruleW().own[e.ticker] = { applied: e.half ? 'HALF' : 'BUILD', stdWeight: e.std };
       } else if (e.type === 'BUILD_END' && rule.own[e.ticker]?.applied === 'BUILD') {
         // 補滿照做：目標回到標準比重；不做：標準比重改成那時的實際比重（allocation_redesign §4.1）
         const o = ruleW().own[e.ticker];
@@ -1120,7 +1125,8 @@ export function monthlyWait(acct: Account): { kind: 'UNC' } | { kind: 'FILL'; no
 
 /** 月報前的狀態（暫停後、入金合併、排除重算時還原；restoreSaved）。 */
 function savedState(acct: Account): SavedState {
-  return { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), cash: acct.cash };
+  const watch = Object.fromEntries(Object.entries(acct.watch ?? {}).map(([t, w]) => [t, clone({ lastListed: w.lastListed, ...(w.entry ? { entry: w.entry } : {}), ...(w.blocked ? { blocked: w.blocked } : {}) })]));
+  return { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), cash: acct.cash, ...(Object.keys(watch).length ? { watch } : {}) };
 }
 
 /**
@@ -1132,6 +1138,16 @@ export function restoreSaved(acct: Account, before: SavedState): void {
   acct.own = clone(before.own);
   acct.mom.owe = clone(before.owe);
   delete acct.coreOwe;
+  // 候補裡月報會改的欄位（上次列進月報、等月報的進場條件、沒提的原因）：還在候補名單裡的才還原，重算時進場項目照同一份輸入再列一次
+  for (const [t, w0] of Object.entries(before.watch ?? {})) {
+    const w = acct.watch?.[t];
+    if (!w) continue;
+    w.lastListed = w0.lastListed;
+    if (w0.entry) w.entry = clone(w0.entry);
+    else delete w.entry;
+    if (w0.blocked) w.blocked = clone(w0.blocked);
+    else delete w.blocked;
+  }
 }
 
 /**
@@ -1301,6 +1317,12 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
   for (const tk of Object.keys(acct.own)) {
     if (addBuild.has(tk)) continue;
     const it = fillItem(acct, view, tk);
+    if (it) items.push(it);
+  }
+  // F29：候補進場（allocation_redesign §4.5）：進場條件成立、程式檢查過了 → 列一項，預設照做；沒過的寫在候補那一塊，下個月再看
+  expireWatchEntries(acct, view.date);
+  for (const t of new Set([...(input.watchEntries ?? []).map((e) => e.ticker), ...Object.entries(acct.watch ?? {}).filter(([, w]) => w.entry?.length).map(([t]) => t)])) {
+    const it = watchEntryItem(acct, view, input.watchEntries?.find((e) => e.ticker === t) ?? null, t);
     if (it) items.push(it);
   }
   // 還沒回覆的「補做差額」清單和本月重列的策略單重疊 → 以月報為準（原型假設 10）
@@ -2015,4 +2037,90 @@ export function recordEarnCheck(acct0: Account, ticker: string, c: { date: strin
   const m = acct.own[ticker];
   m.earnChecks = [...(m.earnChecks ?? []).filter((x) => x.date !== c.date || x.runId !== c.runId), { date: c.date, ...(c.runId ? { runId: c.runId } : {}), confirmed: c.confirmed, why: c.why }].slice(-2);
   return acct;
+}
+
+// ---------------------------------------------------------------- 候補進場（F29，allocation_redesign §4.5，T85 乙段）
+
+const plusDaysOf = (d: string, n: number) => new Date(Date.parse(d) + n * 86400_000).toISOString().slice(0, 10);
+
+/** 成立超過 100 個日曆天還沒列進月報的非價格進場條件：丟掉，候補那一塊寫「要再用就重新定」（§4.5 第 16 點）。直接改傳進來的帳戶。 */
+export function expireWatchEntries(acct: Account, date: string): void {
+  for (const w of Object.values(acct.watch ?? {})) {
+    const old = (w.entry ?? []).filter((x) => calDays(x.metOn, date) > WATCH_ENTRY_EXPIRE_DAYS);
+    if (!old.length) continue;
+    w.entry = (w.entry ?? []).filter((x) => !old.includes(x));
+    if (!w.entry.length) delete w.entry;
+    w.blocked = { date, text: `進場條件「${old[0].text}」${mdOf(old[0].metOn)} 成立，超過 ${WATCH_ENTRY_EXPIRE_DAYS} 天都沒能列進月報，已經丟掉；要再用就重新定一條。` };
+  }
+}
+
+/** 候補進場買幾股（先買一半）：floor(標準比重 × 0.5 × 總資產 ÷ 價格)。 */
+export const watchEntryWant = (acct: Account, view: MarketView, ticker: string, std: number): number => Math.floor((std * 0.5 * totalValue(acct, view)) / priceOf(view, ticker) + 1e-9);
+
+/**
+ * 月報的候補進場（F29，§4.5 第 13～16 點）：這檔候補有成立的進場條件（e.conds：訊號日收盤仍成立的價格條件；加上 watch.entry：成立後等月報的非價格條件）
+ * → 先買一半，預設照做、不做不用理由。以下任何一項不過就不列，原因寫在候補那一塊（watch.blocked），**留到下個月再看**（進場條件是唯一的入口）：
+ *   自選的比例是 0%；訊號日沒有收盤價；距上次列進月報不到 90 個日曆天；這個月的進場前檢查沒有跑（e 是 null）；申報清單抓不到；
+ *   規則偵測到硬傷；你定的財報類出場條件已經成立；買進前的程式檢查（§4.0：30 天內前提被判不成立、跨桶上限砍到 0、算不到 1 股）
+ * 列了：lastListed = 這份月報的訊號日，watch.entry 清掉（同一份月報同一檔只列一項，其他成立的在說明裡帶過、一起算用掉）。
+ * 這一行是 bucket own，但 rule.own 還沒有這檔：照做、快照的自選桶有股數才轉成持股（選項的 WATCH_ENTER 效果）。直接改傳進來的帳戶。
+ */
+export function watchEntryItem(acct: Account, view: MarketView, e: WatchEntryInput | null, ticker: string): Item | null {
+  const w: WatchMeta | undefined = acct.watch?.[ticker];
+  if (!w || acct.own[ticker]) return null;
+  const seen = new Set((e?.conds ?? []).map((c) => c.id));
+  const conds = [...(e?.conds ?? []), ...(w.entry ?? []).filter((x) => !seen.has(x.id)).map((x) => ({ id: x.id, text: x.text, setAt: x.setAt, why: x.why, price: false }))];
+  if (!conds.length) return null;
+  const c0 = conds[0];
+  const block = (reason: string): null => {
+    w.blocked = { date: view.date, text: `進場條件「${c0.text}」成立，但${/^[0-9A-Za-z]/.test(reason) ? ' ' : ''}${reason}，這個月不提進場；下個月月報再看一次。` };
+    return null;
+  };
+  if (!(acct.cfg.ratio.own > 0)) return block('自選的比例是 0%');
+  const c = view.close[ticker];
+  if (!c || !Number.isFinite(c[view.i]) || !(c[view.i] > 0)) return block(`${mdOf(view.date)} 沒有它的收盤價`);
+  if (w.lastListed && w.lastListed < view.date && calDays(w.lastListed, view.date) < WATCH_LIST_GAP_DAYS)
+    return block(`${mdOf(w.lastListed)} 的月報已經列過這檔的進場（每 ${WATCH_LIST_GAP_DAYS} 天最多列一次，${mdOf(plusDaysOf(w.lastListed, WATCH_LIST_GAP_DAYS))} 之後才會再列）`);
+  if (!e) return block('這個月的進場前檢查（申報、財報類出場條件）沒有跑成');
+  if (e.noFilings) return block(`申報清單抓不到（${e.noFilings}），沒辦法檢查有沒有硬傷`);
+  if (e.hard) return block(`規則偵測到硬傷（${e.hard}）`);
+  if (e.exitMet) return block(`你定的財報類出場條件已經成立（${e.exitMet}）`);
+  const rec = w.stdWeight === null ? watchRecWeight(acct, view, ticker) : null;
+  const std = w.stdWeight ?? rec;
+  if (!std || !(std > 0)) return block('算不出推薦的標準比重（到候補那一塊填一個比重）');
+  const want = watchEntryWant(acct, view, ticker, std);
+  if (want <= 0) return block(`照標準比重 ${pct1(std)} 的一半算不到 1 股`);
+  const v = buyAllowed(watchBuyFacts(acct, view, ticker, view.date, want));
+  if (!v.ok) return block(v.why ?? '買進前的程式檢查沒過');
+  const dd = drawdownFromHigh(c, view.i, SLOW.highDays);
+  // 只有預設前提、已經比高點低 20% 以上：照 §4.1 既有規則從減半開始（目標一樣是標準的一半，補回看 200 日線）；有論點的先買一半、之後照 §3 審查
+  const half = defaultOnly(w) && dd <= SLOW.drawdown;
+  const total = totalValue(acct, view);
+  const ownShare = total > 0 ? bucketValue(acct, view, 'own') / total : 0;
+  const others = conds.slice(1);
+  const notes = [
+    others.length ? `另外成立的進場條件：${others.map((x) => `「${x.text}」`).join('、')}（一起算用掉）` : '',
+    rec !== null ? `比重你留空，用今天的推薦值 ${pct1(std)}` : '',
+    ownShare > acct.cfg.ratio.own + 1e-9 ? `自選目前占 ${pct0(ownShare)}（預算 ${pct0(acct.cfg.ratio.own)}）` : '',
+    v.cut && v.why ? v.why : '',
+  ].filter(Boolean);
+  w.lastListed = view.date;
+  delete w.blocked;
+  delete w.entry;
+  const cids = conds.map((x) => x.id);
+  return makeItem({
+    f: 'F29',
+    kind: 'WATCH_ENTRY',
+    ticker,
+    title: `候補 ${ticker}：你在 ${c0.setAt} 定的進場條件「${c0.text}」成立${Number.isFinite(dd) && dd < -0.0005 ? `（現在比 52 週高點低 ${(-dd * 100).toFixed(1)}%）` : ''} → 先買一半：買 ${v.shares} 股（標準比重 ${pct1(std)}，錢從核心拿）${half ? '；只有預設前提、已經比高點低 20% 以上，進場後從減半開始' : ''}`,
+    why: `${c0.why}。這是你事先定的，預設照做；不做不用寫理由（不買沒有風險要記），這條進場條件已經用掉，候補留著，要再等就重新定條件。照做、在快照的自選桶填了股數之後，候補轉成持股，論點沿用；${half ? '這檔只有系統預設前提、已經比高點低 20% 以上，所以從減半開始（目標一樣是標準比重的一半），補回看 200 日線。' : '先買標準比重的一半，開始持有之後第一份財報過關再補滿。'}同一檔的進場項目每 ${WATCH_LIST_GAP_DAYS} 天最多列一次。`,
+    choices: [
+      { id: 'DO', label: `照做：先買一半，買 ${v.shares} 股`, lines: [{ ticker, bucket: 'own', shares: v.shares, reason: '候補進場' }], effects: [{ type: 'WATCH_ENTER', ticker, std, ...(half ? { half: true } : {}), conds: cids }] },
+      { id: 'SKIP', label: '這次不做', lines: [] },
+    ],
+    choice: 'DO',
+    ruleChoice: 'DO',
+    ...(notes.length ? { note: notes.join('；') } : {}),
+    watchEntry: { std, recUsed: rec !== null, conds: conds.map((x) => ({ id: x.id, price: x.price })), fromHigh: Number.isFinite(dd) ? dd : null, half, wouldBuy: e.wouldBuy ?? null },
+  });
 }

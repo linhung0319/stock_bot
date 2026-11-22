@@ -33,6 +33,8 @@ import { realDiscussion } from '../discussion';
 import { conditionOp, type CondOp } from '../ownConds';
 import { holdingAttention, loadPrevFile, thesisFile, type ExitSet, type PrevFile } from '../thesis';
 import { thesisView, type ThesisView } from './thesisView';
+import { listedPriceStmts, loadEntryConds, priceCheckOf, priceEntriesAt, setWatchPrice, MAX_ENTRY_PRICE, WatchCondError, type EntryCond, type PriceInput, type SplitLike } from '../watchEntry';
+import { loadSplits } from '../../data/store';
 import { holdingMom, vetoEpisodes, type HoldingMom, type VetoEpisode } from '../momNotes';
 import { annotate } from './explain';
 import type { AiNote } from './types';
@@ -81,6 +83,10 @@ export interface SiteData {
   brief?: HomeBrief | null;
   /** 首頁一次性的說明（崩盤規則退場，allocation_redesign §2.4）：還沒按「知道了」時才有。 */
   notice?: NoCrashNote | null;
+  /** 各檔候補的進場條件（allocation_redesign §4.5 第 12 點；帳戶頁候補那一塊「現在 -27%，條件成立中」）。 */
+  watchConds?: Record<string, EntryCond[]>;
+  /** 拆股紀錄（「收盤低於 $X」的條件填了之後才生效的拆股要換算；示範模式沒有）。 */
+  splits?: SplitLike[];
 }
 
 export interface SiteBackend {
@@ -105,6 +111,8 @@ export interface SiteBackend {
   probeSources?(ws: OwnWebSources): Promise<WebSourceCheck[]>;
   /** 首頁一次性說明按「知道了」（allocation_redesign §2.4）。 */
   ackNotice(id: NoCrashNoteId): Promise<void>;
+  /** 候補那一塊存價格型進場條件（allocation_redesign §4.5 第 12 點）：整組取代價格那一組；不行時丟 WatchCondError。 */
+  watchPrice(ticker: string, inputs: PriceInput[]): Promise<void>;
   /** AI 層的網站操作（只有真實模式有）。 */
   ai?: SiteAi;
 }
@@ -235,13 +243,24 @@ export function realBackend(env: Env, fetcher: Fetcher, now: Date): SiteBackend 
       // 首頁那一行市場摘要（T65）：也放在 listRuns 之後（逾時的那一次先結束）；讀不到不擋網站
       const brief = acct && view ? await homeBrief(env.DB, axis).catch((e) => (console.error('市場摘要', e), null)) : null;
       const notice = acct && view ? await noCrashNote(env.DB, acct, axis).catch((e) => (console.error('首頁的一次性說明', e), null)) : null;
-      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), asOf: easternTime(now).date, warnings, undoable, strategy, drafts, aiReady: routineReady(env), brief, notice };
+      // 候補的進場條件（有候補才讀）；讀不到不擋網站
+      const hasWatch = !!acct && watchTickers(acct).length > 0;
+      const watchConds = hasWatch ? await loadEntryConds(env.DB, acct!).catch((e) => (console.error('候補的進場條件', e), {})) : {};
+      const splits = hasWatch ? await loadSplits(env.DB, '1900-01-01').catch(() => []) : [];
+      return { mode: 'real', acct, view, axis, rankOrder: ranking?.order ?? [], rankSession: ranking?.session ?? null, aiNotes, events, shadow, today: taipeiDate(now), asOf: easternTime(now).date, warnings, undoable, strategy, drafts, aiReady: routineReady(env), brief, notice, watchConds, splits };
     },
     async save(acct, cause, log = []) {
       // 論點檔紀錄和這一版帳戶同一筆交易寫（account_version = 這次存檔的 rev，復原快照時一起刪）
       const next = (loaded?.rev ?? 0) + 1;
       const at = now.toISOString();
-      rev = await saveAccount(env.DB, acct, loaded, cause, now, log.map((l) => thesisLogStmt(env.DB, l, next, at)));
+      // 這次新產生的月報列了候補進場（暫停後重算、排除重算、入金合併）：列在項目上的價格條件這一刻標成立（allocation_redesign §4.5 第 13 點）
+      const met = listedPriceStmts(env.DB, acct.notifs.filter((n) => !loaded?.notifJson.has(n.id)), at);
+      rev = await saveAccount(env.DB, acct, loaded, cause, now, [...log.map((l) => thesisLogStmt(env.DB, l, next, at)), ...met]);
+    },
+    async watchPrice(ticker, inputs) {
+      const acct = (await loadAccount(env.DB))?.acct;
+      if (!acct) throw new WatchCondError('還沒有帳戶');
+      await setWatchPrice(env.DB, acct, ticker, inputs, lastCompletedSession(now, await loadCalendarOverrides(env.DB)), now);
     },
     ackNotice: (id) => ackNoCrashNote(env.DB, id, now),
     runs: () => listRuns(env.DB, now, { limit: 200 }),
@@ -355,9 +374,23 @@ export interface DemoBackend extends SiteBackend {
   advance(mode: AdvanceMode): Promise<{ days: number; created: number[] }>;
 }
 
+/** 示範模式的候補進場條件（只有你填的價格條件）：存在 flow_state 的一格，和真實帳本的 own_conditions 完全分開；重新開始情境時清掉。 */
+export const DEMO_WATCH_KEY = 'demo:watch-conds';
+
 export function demoBackend(env: Env, now: Date): DemoBackend {
   let st: DemoState | null = null;
   let rev = 0;
+  const readConds = async (): Promise<EntryCond[]> => {
+    const row = await env.DB.prepare('SELECT value FROM flow_state WHERE key = ?').bind(DEMO_WATCH_KEY).first<{ value: string }>();
+    try {
+      return row ? (JSON.parse(row.value) as EntryCond[]) : [];
+    } catch {
+      return [];
+    }
+  };
+  const writeConds = (conds: EntryCond[]) =>
+    env.DB.prepare('INSERT INTO flow_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at').bind(DEMO_WATCH_KEY, JSON.stringify(conds), now.toISOString()).run();
+  const byTicker = (conds: EntryCond[]) => conds.reduce<Record<string, EntryCond[]>>((o, c) => ((o[c.ticker] = [...(o[c.ticker] ?? []), c]), o), {});
   const onNotifs: OnNotifs = (acct, view, rankOrder) => {
     const m = demoMarket(st?.scenario ?? 's1');
     annotate({ acct, view, axis: m.days.slice(0, view.i + 1), rankOrder, aiNotes: DEMO_SCRIPTS[st?.scenario ?? 's1'].notes });
@@ -423,6 +456,7 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
         undoable: await demoUndoable(),
         autofill: (extra, exact) => demoFilledSnapshot({ ...s, acct: st!.acct }, extra, exact),
         notice: await noCrashNote(env.DB, s.acct, [], true).catch(() => null),
+        watchConds: Object.keys(s.acct.watch ?? {}).length ? byTicker(await readConds()) : {},
       };
     },
     async save(acct) {
@@ -447,8 +481,21 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
     runs: async () => [],
     run: async () => null,
     ackNotice: (id) => ackNoCrashNote(env.DB, id, now, true),
+    async watchPrice(ticker, inputs) {
+      await read();
+      const w = st?.acct.watch?.[ticker];
+      if (!st || !w) throw new WatchCondError(st?.acct.own[ticker] ? `${ticker} 已經是持股，進場條件用不到了` : `${ticker} 不在候補名單裡`);
+      if (inputs.length > MAX_ENTRY_PRICE) throw new WatchCondError(`價格條件最多 ${MAX_ENTRY_PRICE} 條`);
+      const asOf = demoView(st).date;
+      const next = inputs.map((x) => priceCheckOf(x, asOf));
+      if (new Set(next.map((x) => x.text)).size !== next.length) throw new WatchCondError('兩條價格條件一樣，留一條就好');
+      const all = await readConds();
+      for (const c of all) if (c.ticker === ticker && c.fileId === w.fileId && c.price && c.status === 'ACTIVE') Object.assign(c, { status: 'RETIRED', note: `你在 ${asOf} 改了價格條件` });
+      let id = Math.max(9100, ...all.map((c) => c.id));
+      await writeConds([...all, ...next.map((x) => ({ id: ++id, ticker, fileId: w.fileId, text: x.text, price: true, check: x.check, status: 'ACTIVE', setAt: asOf, metAt: null, note: null }))]);
+    },
     async reset(id) {
-      await env.DB.prepare('DELETE FROM flow_state WHERE key LIKE ?').bind(`${DEMO_NOTE_PREFIX}%`).run();
+      await env.DB.prepare('DELETE FROM flow_state WHERE key LIKE ? OR key = ?').bind(`${DEMO_NOTE_PREFIX}%`, DEMO_WATCH_KEY).run();
       await read();
       st = st ?? { scenario: id, d: 0, acct: null as unknown as Account };
       st = { ...st, scenario: id };
@@ -457,7 +504,23 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
     async advance(mode) {
       await read();
       if (!st) throw new Error('示範資料還沒有開始');
-      const r = advanceDemo(st, mode, onNotifs);
+      // 候補的價格條件（示範的那一格）：月報那天看訊號日的收盤；列了的標成立、進場之後其餘的撤下（真實模式是 listedPriceStmts、syncWatchConds）
+      const conds = await readConds();
+      const before = JSON.stringify(conds);
+      const r = advanceDemo(st, mode, onNotifs, { watchEntries: (acct, view) => priceEntriesAt(acct, view, byTicker(conds)) });
+      for (const n of r.state.acct.notifs) {
+        if (!r.created.includes(n.id)) continue;
+        for (const it of n.items) for (const c of it.kind === 'WATCH_ENTRY' && !it.cancelled ? (it.watchEntry?.conds ?? []) : []) {
+          const hit = conds.find((x) => x.id === c.id && x.status === 'ACTIVE');
+          if (hit) Object.assign(hit, { status: 'MET', metAt: n.date, note: `${n.date} 收盤仍然成立，列進${n.title}` });
+        }
+      }
+      for (const m of Object.values(r.state.acct.own)) {
+        if (!m.entered || m.entered.synced) continue;
+        for (const c of conds) if (c.fileId === m.fileId && c.status === 'ACTIVE') Object.assign(c, { status: 'RETIRED', note: `${m.entered.date} ${m.entered.via === 'F29' ? '已進場' : '你自己先買了'}，這條進場條件撤下` });
+        m.entered.synced = true;
+      }
+      if (JSON.stringify(conds) !== before) await writeConds(conds);
       await write(r.state);
       return { days: r.days, created: r.created };
     },

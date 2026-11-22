@@ -561,6 +561,8 @@ export interface MonthInputs {
   crashReview?: MonthlyContext['crashReview'];
   /** 這些輸入來自哪幾次 AI 執行（T13：月報的項目與通知帶 run_id）。 */
   runIds?: MonthlyContext['runIds'];
+  /** 這個月可以列的候補進場（F29，allocation_redesign §4.5；app/watchEntry.ts 的 prepareWatchEntries）。 */
+  watchEntries?: MonthlyContext['watchEntries'];
 }
 
 /** 本月審查過、由 AI 執行下結論（或還在等）的代號 → run_id。 */

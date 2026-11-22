@@ -4,7 +4,7 @@
 import { annualizedVol, drawdownFromHigh } from './indicators';
 import type { OrderLine, Composed } from './orders';
 import { initialSlowState, initialStateForNewPick, type SlowRuleState } from './slowRule';
-import { CASH, DEFAULT_CONFIG, cellKey, emptyRuleState, type CellMap, type EngineConfig, type OwnAction, type RuleState } from './types';
+import { CASH, DEFAULT_CONFIG, cellKey, emptyRuleState, type CellMap, type EngineConfig, type OwnAction, type OwnState, type RuleState } from './types';
 
 /** AI 的固定檔位（設計 §0）。HALF 原稱「標準的一半」，2026-11-11 起和規則的「減半」是同一個動作。 */
 export type Tier = 'EXIT' | 'HALF' | 'HOLD' | 'STANDARD' | 'RAISE';
@@ -141,13 +141,19 @@ export interface OwnMeta {
   /** 2026-11-15 拿掉 R1（own_thesis §3.9）：不讀不寫，舊資料留著。 */
   r1?: boolean | null;
   premises: Premise[];
-  /** WATCH：從候補名單進場（allocation_redesign §4.5，T85 乙段才會寫）。 */
+  /** WATCH：從候補名單進場（allocation_redesign §4.5，promoteWatch 寫）。 */
   origin: 'INITIAL' | 'NEW' | 'TRANSFER' | 'ADOPT' | 'MANUAL' | 'WATCH';
   /**
    * 開始持有的訊號日（allocation_redesign §4.5 第 4 點，T85）：候補進場時寫進場那份快照的訊號日（論點檔編號的日期是加入候補那天）。
    * 「開檔滿幾天」「先買一半的 200 天」這類算「持有多久」的地方看它；沒有（舊資料、不是從候補進場的）= 用論點檔編號的日期。
    */
   heldSince?: string;
+  /**
+   * 從候補名單進場的那一次（allocation_redesign §4.5 第 17 點，promoteWatch 寫）：via 是照月報的進場項目買的（F29）還是你自己先買的（SELF）；
+   * date 進場那份快照的訊號日（= heldSince）；shares 那時自選桶的股數；state 進場後的狀態；addedAt 加入候補的訊號日（持股頁寫「11/20 加入候補 → 2/3 進場」）；
+   * conds：列在那一項進場項目上的進場條件（own_conditions 的列編號）；synced：進場條件的狀態已經補寫（下一次每日流程的 syncWatchConds）。
+   */
+  entered?: { via: 'F29' | 'SELF'; date: string; shares: number; state: OwnState; addedAt: string; conds?: number[]; synced?: boolean };
   /**
    * 最近一次 F24 的檔位（AI 層給的輸入）。suggest = 3 票一致、和目前不同、有一條不成立的前提 → 月報並列。
    * premiseId：三票都判不成立（有申報或財報引用）的那條前提，有多條時取編號最小的（own_thesis §1.6 第 1 點）。
@@ -465,8 +471,9 @@ export interface AddNotice {
  * CORE_BAND：核心比例調回（F26，allocation_redesign §1.3）：預設照做、「這次不做」不用理由也不記欠單，下個月月報重算。
  * OWN_FILL：先買一半的補滿（F27，allocation_redesign §4.1）：只進月報、預設照做、不做不用理由；照做或不做都離開先買一半。
  * OWN_ADD：你定的加碼條件成立（F28，§4.2）：只進月報、預設照做、不做不用理由（不買沒有風險要記）。
+ * WATCH_ENTRY：候補進場（F29，§4.5）：你定的進場條件成立 → 先買一半，只進月報、預設照做、不做不用理由；這一行是 bucket own，但 rule.own 還沒有這檔（快照的自選桶有股數才轉成持股）。
  */
-export type ItemKind = 'STRATEGY' | 'OWN_RULE' | 'AI_ONLY' | 'HARD' | 'CASHFLOW' | 'FIX' | 'OWN_COND' | 'CORE_BAND' | 'OWN_FILL' | 'OWN_ADD';
+export type ItemKind = 'STRATEGY' | 'OWN_RULE' | 'AI_ONLY' | 'HARD' | 'CASHFLOW' | 'FIX' | 'OWN_COND' | 'CORE_BAND' | 'OWN_FILL' | 'OWN_ADD' | 'WATCH_ENTRY';
 export type ChoiceId = 'RULE' | 'AI' | 'DO' | 'SKIP';
 
 /** 清單上的選項做完之後，帳戶狀態要跟著改的事（存成資料，不存函式）。 */
@@ -482,7 +489,13 @@ export type Effect =
    */
   | { type: 'BUILD_END'; ticker: string; keep: boolean }
   /** 下跌加碼照做了（allocation_redesign §4.4，T84）：OwnMeta.dipAdd.at 記那一天（提高到 125% 的 raisedAt 由同一個選項上的 APPLY_TIER RAISE 記）。 */
-  | { type: 'DIP_ADD'; ticker: string; episode: string };
+  | { type: 'DIP_ADD'; ticker: string; episode: string }
+  /**
+   * 候補進場（F29，allocation_redesign §4.5 第 17 點）：**快照的自選桶這一檔有股數才套用**——候補轉成持股（promoteWatch）。沒買的還是候補。
+   * std：列這一項時用的標準比重（你填的，或那時的推薦值）；half：只有預設前提、進場時已經比高點低 20% 以上 → 從減半開始（其餘是先買一半）；
+   * conds：列在這一項上的進場條件。
+   */
+  | { type: 'WATCH_ENTER'; ticker: string; std: number; half?: boolean; conds?: number[] };
 
 export interface Choice {
   id: ChoiceId;
@@ -544,6 +557,13 @@ export interface Item {
    * mode：RAISE 提高到標準的 125%（標準、審查後持有）／FILL 補滿到標準比重（先買一半）；note 是選項說明固定的那一句。
    */
   dipAdd?: { mode: 'RAISE' | 'FILL'; shares: number; note: string };
+  /**
+   * 候補進場（F29，allocation_redesign §4.5）：這一項用的數字——std 標準比重（recUsed：你留空、用的是列的當下的推薦值）、
+   * conds 列在這一項上的進場條件（列編號；price = 你填的價格條件，月報存檔時標成立）、fromHigh 訊號日比 52 週高點低多少（負數）、
+   * half 進場後從減半開始（只有預設前提、已經比高點低 20% 以上）、
+   * wouldBuy：論點草稿「今天沒持股的話會不會買」那一題的答案與草稿日期（只是資訊；T85 丙段接上，沒有草稿是 null）。
+   */
+  watchEntry?: { std: number; recUsed: boolean; conds: { id: number; price: boolean }[]; fromHigh: number | null; half: boolean; wouldBuy: { answer: string; date: string } | null };
   /**
    * 併進這個減半項目的乙類通知（own_thesis §3.4：慢規則通知產生時同一檔有還沒回覆的乙類 → 那一則標 SUPERSEDED，內容併進來）。
    * 之後重算「照 AI」時（refreshOwnAiChoice）沿用。
@@ -683,6 +703,25 @@ export interface MonthlyContext {
   coreCheck?: string[];
   /** 那一句 note（帶數字，每日流程寫好；引擎只照抄）。沒有 DAY_GAP、MA_GAP 時沒有。 */
   coreNote?: string;
+  /**
+   * 這份月報可以列的候補進場（F29，allocation_redesign §4.5 第 13 點）：每日流程在產生月報前算好（prepareWatchEntries：訊號日收盤仍成立的價格條件、
+   * 成立後等月報的非價格條件、硬傷、財報類出場條件）。月報暫停後重算、入金合併、排除重算沿用同一份。沒有這個欄位 = 這個月沒有候補進場可列。
+   */
+  watchEntries?: WatchEntryInput[];
+}
+
+/**
+ * 一檔候補這個月的進場輸入（MonthlyContext.watchEntries）。conds：成立的進場條件，第一條是列在標題上的（價格條件在前）；
+ * hard：規則偵測到的硬傷（申報來的被收購方、延遲申報、財報重編、會計師辭任）→ 不提；noFilings：申報清單抓不到 → 這個月不提；
+ * exitMet：這檔你定的財報類出場條件現在已經成立 → 不提；wouldBuy：草稿「今天會不會買」（T85 丙段寫）。
+ */
+export interface WatchEntryInput {
+  ticker: string;
+  conds: { id: number; text: string; setAt: string; why: string; price: boolean }[];
+  hard?: string | null;
+  noFilings?: string | null;
+  exitMet?: string | null;
+  wouldBuy?: { answer: string; date: string } | null;
 }
 
 export interface SavedState {
@@ -692,6 +731,11 @@ export interface SavedState {
   /** 2026-11-22 之前的月報才有（core_ai §3.6 的欠單）；還原時不讀（allocation_redesign §1.3）。 */
   coreOwe?: CoreOwe;
   cash: number;
+  /**
+   * 候補裡月報會改的三個欄位（allocation_redesign §4.5；T85 乙段）：重算月報時還原，F29 才會照同一份輸入再列一次。
+   * 只還原還在候補名單裡的；期間加的、移除的、改的比重與論點不動。舊月報沒有這個欄位。
+   */
+  watch?: Record<string, Pick<WatchMeta, 'lastListed' | 'entry' | 'blocked'>>;
 }
 
 /**

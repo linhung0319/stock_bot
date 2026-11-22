@@ -18,6 +18,7 @@ import {
   type InitialAccount,
   type MarketView,
   type Snapshot,
+  type WatchEntryInput,
 } from '../engine';
 import { DEMO_SCRIPTS, type DemoId, type DemoScript } from './demoScripts';
 import { ranksAt, viewAt, type Market } from './market';
@@ -32,6 +33,11 @@ export interface DemoState {
 
 /** 每次引擎產生新通知之後呼叫（網站用它替每一項寫下理由）。 */
 export type OnNotifs = (acct: Account, view: MarketView, rankOrder: string[]) => void;
+
+/** 示範模式要從外面給的東西（網站的示範後端）：月報那天各檔候補可以列的進場（價格條件存在示範的那一格，不在帳戶裡）。 */
+export interface DemoHooks {
+  watchEntries?: (acct: Account, view: MarketView) => WatchEntryInput[];
+}
 
 const marketCache = new Map<DemoId, Market>();
 export function demoMarket(id: DemoId): Market {
@@ -65,14 +71,16 @@ export function createDemoAccount(market: Market, init: InitialAccount, sigmaMed
 const isFirstOfMonth = (m: Market, d: number) => m.days[d - 1].slice(0, 7) !== m.days[d].slice(0, 7);
 
 /** 早上：先記下腳本裡這一天的 F24 檔位，月報日就出月報。 */
-function morning(st: DemoState, m: Market, script: DemoScript, on?: OnNotifs): void {
+function morning(st: DemoState, m: Market, script: DemoScript, on?: OnNotifs, hooks?: DemoHooks): void {
   const date = m.days[st.d];
   for (const t of script.aiTiers ?? []) if (t.on === date) st.acct = recordAiTier(st.acct, t.ticker, t.tier, t.date, t.suggest, undefined, t.premiseId ? { premiseId: t.premiseId, agreed: true } : undefined);
   if (!isFirstOfMonth(m, st.d)) return;
   const view = viewAt(m, st.d - 1);
   const month = date.slice(0, 7);
   const order = ranksAt(m, st.d - 1);
-  st.acct = monthlyReport(st.acct, view, { order, vetoed: script.vetoes?.[month], month }).acct;
+  // 候補進場（F29，allocation_redesign §4.5）：示範模式沒有申報，只看訊號日收盤仍成立的價格條件
+  const watchEntries = hooks?.watchEntries?.(st.acct, view) ?? [];
+  st.acct = monthlyReport(st.acct, view, { order, vetoed: script.vetoes?.[month], month, ...(watchEntries.length ? { watchEntries } : {}) }).acct;
   on?.(st.acct, view, order);
 }
 
@@ -143,7 +151,7 @@ export type AdvanceMode = 'day' | 'notif' | 'month';
  * 時間前進：day = 到下一個交易日的早上；notif = 一直走到有新通知；month = 走到下一份月報。
  * 回傳走了幾天、這段時間新產生的通知編號。
  */
-export function advanceDemo(st0: DemoState, mode: AdvanceMode, on?: OnNotifs): { state: DemoState; days: number; created: number[] } {
+export function advanceDemo(st0: DemoState, mode: AdvanceMode, on?: OnNotifs, hooks?: DemoHooks): { state: DemoState; days: number; created: number[] } {
   const st: DemoState = { ...st0 };
   const m = demoMarket(st.scenario);
   const script = DEMO_SCRIPTS[st.scenario];
@@ -153,7 +161,7 @@ export function advanceDemo(st0: DemoState, mode: AdvanceMode, on?: OnNotifs): {
   while (!demoAtEnd(st)) {
     evening(st, m, script, on);
     st.d++;
-    morning(st, m, script, on);
+    morning(st, m, script, on, hooks);
     days++;
     if (mode === 'day') break;
     if (mode === 'notif' && fresh().length) break;

@@ -41,6 +41,7 @@ import {
   isBelief,
   type PremiseVerify,
   MAX_WATCH,
+  notifDay,
   watchRecWeight,
   type WatchMeta,
 } from '../../engine';
@@ -49,6 +50,7 @@ import { HORIZONS, indexOn, type PriceBook } from '../../ai/shadow';
 import type { AiRun } from '../aiRuns';
 import type { RunRow } from './aiViews';
 import { buildStaleLine, fileKind, prevFileOf, type PrevFile } from '../thesis';
+import { MAX_ENTRY_PRICE, entryStateText, splitFactor, type EntryCond, type PriceInput, type SplitLike } from '../watchEntry';
 import { draftStateOf, type DraftState } from '../ownDraft';
 import type { SiteData } from './backend';
 import type { HomeBrief } from '../marketBrief';
@@ -93,6 +95,7 @@ const ITEM_LABEL: Record<string, string> = {
   F26: '核心比例調回',
   F27: '補滿（先買一半）',
   F28: '你定的加碼條件成立',
+  F29: '候補進場',
   CORE: '閒置現金',
 };
 
@@ -211,6 +214,11 @@ export interface ItemView {
   thesisDrop: boolean;
   /** 乙類用「修正論點」結案的訊號日（這一項同時是取消的，own_thesis §1.10）。 */
   revised: string | null;
+  /**
+   * 候補進場（F29，allocation_redesign §4.5）：論點草稿「今天沒持股的話會不會買」那一題的那一行（只是資訊，不影響這一項）。
+   * 草稿的答案由 T85 丙段寫進項目的 watchEntry.wouldBuy；沒有草稿時寫「還沒有論點草稿」。不是候補進場是 null。
+   */
+  entryInfo: string | null;
 }
 
 export interface OrderView {
@@ -432,6 +440,12 @@ export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: st
 
 const thirdName = (w: number) => (w >= 0.999 ? '全額' : Math.abs(w - 2 / 3) < 0.01 ? '2/3' : Math.abs(w - 1 / 3) < 0.01 ? '1/3' : '0');
 
+/** 候補進場項目上「今天沒持股的話會不會買」那一行（§4.5：只是資訊；反方的答案與草稿日期）。 */
+export function wouldBuyLine(w: { answer: string; date: string } | null): string {
+  if (!w) return '「今天沒持股的話會不會買」：這檔還沒有論點草稿，沒有這一題的答案。（只是資訊，不影響這一項；有草稿之後會寫在這裡。）';
+  return `「今天沒持股的話會不會買」：${w.answer}（${notifDay(w.date)} 的論點草稿裡反方的答案；只是資訊，不影響這一項）`;
+}
+
 function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   const it = it0 as ItemX;
   // 慢規則項目上 AI 的那一部分會在通知產生之後才更新（減半檢視晚一點回來），每次讀的時候重算
@@ -503,6 +517,7 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
     // 有論點的股票的跌幅審查（allocation_redesign §3.2）：選項與理由欄的說明不同
     thesisDrop: !!it.thesisDrop,
     revised: it.revised ?? null,
+    entryInfo: it.watchEntry ? wouldBuyLine(it.watchEntry.wouldBuy) : null,
   };
 }
 
@@ -526,7 +541,7 @@ export function capNoteOf(c: Composed): string | null {
 
 // 建議單的順序照因果排：先是整個帳戶的規則，再來動能（先出場才有位置進場），然後自選、AI 的建議、現金流
 // 核心比例調回（F26）是其他單合成之後才算的，排最後
-const ITEM_ORDER = ['F5', 'F6', 'F19', 'F2', 'F1', 'F17', 'F3', 'F4', 'F10', 'F7', 'F8', 'F25', 'F24', 'F23', 'F27', 'F28', 'F11', 'F12', 'F13', 'F14', 'F15', 'F26', 'CORE'];
+const ITEM_ORDER = ['F5', 'F6', 'F19', 'F2', 'F1', 'F17', 'F3', 'F4', 'F10', 'F7', 'F8', 'F25', 'F24', 'F23', 'F27', 'F28', 'F29', 'F11', 'F12', 'F13', 'F14', 'F15', 'F26', 'CORE'];
 const orderOf = (f: string) => {
   const k = ITEM_ORDER.indexOf(f);
   return k < 0 ? ITEM_ORDER.length : k;
@@ -689,7 +704,9 @@ export interface AccountView {
  * 帳戶頁候補那一塊的一列（allocation_redesign §4.5 第 10 點）。
  * stdWeight：你填的標準比重（null = 留空）；recWeight：推薦值（留空時列進場項目用它；自選預算內依波動度反比）。
  * fromHigh：比 52 週高點低多少（負數）；priceMissing：這次沒有它的收盤價（抓不到的候補不擋整個帳戶，頁面寫「價格抓不到」）。
- * entries（進場條件與現在的狀態）、blocked（條件成立但沒提的原因）、lastListed（上次列進月報）是 T85 乙段接上的；甲段是空的。
+ * entries：進場條件與現在的狀態（`現在 -27.0%，條件成立中…`；每天比只用來顯示，月報那天仍成立才列）；
+ * priceConds：監測中的價格條件（結構化欄位，表單預先填上）；priceMax：價格條件最多幾條；
+ * blocked：條件成立但這個月沒提的原因；lastListed：上次列進月報的訊號日（每 90 天最多一次）。
  */
 export interface WatchRow {
   ticker: string;
@@ -704,8 +721,28 @@ export interface WatchRow {
   hasThesisText: boolean;
   draft: string | null;
   entries: { text: string; state: string }[];
+  priceConds: PriceInput[];
+  priceMax: number;
   blocked: string | null;
   lastListed: string | null;
+}
+
+/** 候補那一塊的進場條件（§4.5 第 13 點）：監測中的、最近 120 天成立過的；成立後等月報的非價格條件（watch.entry）。 */
+function watchEntriesOf(d: { view: MarketView; watchConds?: Record<string, EntryCond[]>; splits?: SplitLike[] }, ticker: string, meta: WatchMeta): Pick<WatchRow, 'entries' | 'priceConds'> {
+  const { view } = d;
+  const c = view.close[ticker];
+  const all = (d.watchConds?.[ticker] ?? []).filter((x) => x.fileId === meta.fileId);
+  const recent = (x: EntryCond) => !!x.metAt && Date.parse(view.date) - Date.parse(x.metAt.slice(0, 10)) <= 120 * 86400_000;
+  const waiting = new Set((meta.entry ?? []).map((x) => x.id));
+  const shown = all.filter((x) => !waiting.has(x.id) && (['ACTIVE', 'REVIEW_ONLY', 'MANUAL'].includes(x.status) || (x.status === 'MET' && recent(x))));
+  const live = all.filter((x) => x.price && x.status === 'ACTIVE');
+  return {
+    entries: [
+      ...shown.map((x) => ({ text: x.text, state: entryStateText(x, c, view.i, splitFactor(d.splits ?? [], ticker, String(x.check.asOf ?? x.setAt))) })),
+      ...(meta.entry ?? []).map((x) => ({ text: x.text, state: `已成立（${notifDay(x.metOn)}），等下一份月報` })),
+    ],
+    priceConds: live.flatMap((x): PriceInput[] => (x.check.type === 'price_close_below' ? [{ type: 'close' as const, value: Number(x.check.level) }] : x.check.type === 'price_drawdown_below' ? [{ type: 'drawdown' as const, value: Number(x.check.pct) }] : [])),
+  };
 }
 
 /** 候補的草稿狀態一句（帳戶頁；沒有草稿是 null）。 */
@@ -734,7 +771,8 @@ export function watchRowOf(d: Ready, ticker: string, meta: WatchMeta): WatchRow 
     kind: fileKind(meta),
     hasThesisText: !!meta.thesis?.text,
     draft: watchDraftLine(d.drafts?.[ticker]),
-    entries: [],
+    ...watchEntriesOf(d, ticker, meta),
+    priceMax: MAX_ENTRY_PRICE,
     blocked: meta.blocked?.text ?? null,
     lastListed: meta.lastListed,
   };
@@ -837,7 +875,7 @@ export function buildViewOf(acct: Account, view: MarketView, ticker: string, wei
   const how = thesis ? '那份財報觸發的審查 3 票一致、沒有任何前提被判不成立' : '程式比對系統預設前提 D1～D3 都沒有不成立';
   const text = b.ok
     ? `先買的一半已確認（${b.ok.text}）：下一份月報會列「補滿到標準比重 ${std}」，預設照做。`
-    : `你選了先買一半：現在的目標是標準比重 ${std} 的一半（${fmtPct(rule.stdWeight / 2, 1)}），還沒買的部分留在核心。開檔之後的第一份財報過關（${how}）就在下一份月報補滿。${b.last ? `${b.last.text}，等下一份財報。` : ''}`;
+    : `${meta.entered?.via === 'F29' ? '從候補名單進場，先買一半' : '你選了先買一半'}：現在的目標是標準比重 ${std} 的一半（${fmtPct(rule.stdWeight / 2, 1)}），還沒買的部分留在核心。${meta.entered ? '開始持有' : '開檔'}之後的第一份財報過關（${how}）就在下一份月報補滿。${b.last ? `${b.last.text}，等下一份財報。` : ''}`;
   const blocked = b.ok ? buyBlockedText(meta, '補滿', view.date) : null;
   const stale = buildStale(meta, view.date) ? (buildStaleLine(ticker, meta, view.date)[0]?.text ?? null) : null;
   const full = weight >= rule.stdWeight * BUILD_FULL_AT ? '你選了先買一半，但現在已經是打算的比例；要改成「已經買到這個比例」嗎？' : null;
@@ -1392,6 +1430,10 @@ export interface HoldingDetail {
     build: BuildView | null;
     /** 開檔後第一次設定標準比重：標準比重那一欄多「先買一半，確認後再補滿」的選項。 */
     askBuild: boolean;
+    /** 從候補名單進場的（你自己先買的）：那個選項預選「先買一半」（allocation_redesign §4.1 表單上的「從候補名單進場的預設」）。 */
+    askBuildHalf: boolean;
+    /** 從候補名單進場的那一行：`11/20 加入候補 → 2/3 進場（照月報的進場項目買的，先買一半）`；不是從候補進場的是 null。 */
+    entered: string | null;
     /** 買進的條件成立、但買進前的程式檢查沒過的那一行（allocation_redesign §4.0；補滿的不在這裡）。 */
     buyBlocked: string | null;
     stdWeight: number;
@@ -1552,6 +1594,8 @@ function watchOwnOf(d: Ready, ticker: string, w: WatchMeta): NonNullable<Holding
     watch: null,
     build: null,
     askBuild: false,
+    askBuildHalf: false,
+    entered: null,
     buyBlocked: null,
     stdWeight: w.stdWeight ?? watchRecWeight(acct, view, ticker) ?? 0,
     weight: 0,
@@ -1584,6 +1628,15 @@ function watchOwnOf(d: Ready, ticker: string, w: WatchMeta): NonNullable<Holding
     webSources: w.webSources ?? null,
     draft: d.drafts?.[ticker] ?? null,
   };
+}
+
+const ENTERED_STATE: Record<string, string> = { BUILD: '先買一半', HALF: '從減半開始', STD: '標準', WATCH: '審查後持有' };
+
+/** 從候補名單進場的那一行（allocation_redesign §4.5 第 4 點）。 */
+export function enteredLine(meta: Pick<Account['own'][string], 'entered'>): string | null {
+  const e = meta.entered;
+  if (!e) return null;
+  return `${notifDay(e.addedAt)} 加入候補 → ${notifDay(e.date)} 進場（${e.via === 'F29' ? '照月報的進場項目買的' : '你沒等進場條件、自己先買的'}，${ENTERED_STATE[e.state] ?? e.state}${e.via === 'SELF' && e.state === 'STD' ? '；下面第一次存標準比重時可以選先買一半' : ''}）。論點沿用候補時寫的那一份。`;
 }
 
 export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
@@ -1634,6 +1687,8 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
             build: buildViewOf(acct, view, ticker, positions.find((p) => p.bucket === 'own')?.pct ?? 0),
             // 開檔後第一次設定標準比重：多「先買一半，確認後再補滿」的選項（只問這一次；減半中、審查後持有的不問）
             askBuild: !!meta.buildAsk && meta.slow.state === 'STD' && rule.applied === 'STD',
+            askBuildHalf: meta.origin === 'WATCH',
+            entered: enteredLine(meta),
             // 提高到 125% 的條件成立、但買進前的程式檢查沒過的那一行（補滿的那一行寫在先買一半那一塊）
             buyBlocked: meta.buyBlocked?.what === '補滿' ? null : buyBlockedText(meta, null, view.date),
             // 有論點的股票：比高點低 20% 只觸發跌幅審查（allocation_redesign §3.1）；持股頁那一塊的標題與說明跟著變

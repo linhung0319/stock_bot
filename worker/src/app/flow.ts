@@ -36,6 +36,7 @@ import { alertText, lineConfigured, notifLink, notifText, pushLine, type AlertRo
 import { briefLinesFor } from './marketBrief';
 import { dbSizeAlert } from './opsReport';
 import { PUSH_HELD_KEY, PUSH_WAITERS, parseHeld, pushWaiting, type PushFollowUp } from './pushHold';
+import { listedPriceStmts, prepareWatchEntries } from './watchEntry';
 import { SCHEDULE, finalStarts, type Attempt } from './schedule';
 
 export type { Attempt } from './schedule';
@@ -153,7 +154,8 @@ export async function processSessions(db: D1Database, acct0: Account, sessions: 
   for (const s of sessions) if (isLastTradingDayOfMonth(s, ov)) rankings.set(s, await loadRanking(db, s));
   const extra = [...rankings.values()].flatMap((r) => r?.order ?? []);
   // 基準（SPY）：核心 ETF 的資料檢查用（core_ai §3.10）
-  const series = await loadSeries(db, [...new Set([...requiredTickers(acct), ...extra, BENCHMARK])]);
+  // 候補（allocation_redesign §4.5）：月報列進場項目要它訊號日的收盤；不是必要的代號，沒有價格的那一檔這個月不列
+  const series = await loadSeries(db, [...new Set([...requiredTickers(acct), ...extra, BENCHMARK, ...watchTickers(acct)])]);
   const latest = await loadRanking(db);
   for (const s of sessions) {
     const built = buildMarketView(series, s, core);
@@ -404,6 +406,13 @@ async function monthEndInputs(env: Env, fetcher: Fetcher, acct: Account, signal:
   } catch (e) {
     log.push(`任務 A 的月報輸入出錯，照規則准許：${errText(e)}`);
   }
+  // 候補進場（F29，allocation_redesign §4.5 第 13～15 點）：訊號日收盤仍成立的價格條件、等月報的非價格條件、硬傷與財報類出場條件的檢查
+  try {
+    const entries = await prepareWatchEntries(env, fetcher, acct, signal, log);
+    if (entries.length) out.watchEntries = entries;
+  } catch (e) {
+    log.push(`候補進場的月報輸入出錯，這個月不列候補進場：${errText(e)}`);
+  }
   return out;
 }
 
@@ -469,8 +478,11 @@ export async function runFlow(env: Env, fetcher: Fetcher, opt: FlowOptions): Pro
           aiPrep.push(...p.log);
           try {
             // 月報裡的失效通知項目（甲類、乙類）→ 論點檔的 BREAK_NOTICE（own_thesis §1.10）
-            const brk = breakLogs(p.acct, p.acct.notifs.filter((n) => p.created.includes(n.id))).map((l) => thesisLogStmt(db, l, null, at));
-            await saveAccount(db, p.acct, loaded, `每日流程 ${session}${p.monthly !== null ? '（含月報）' : ''}`, opt.now, [setFlowStateStmt(db, 'lastSession', session, at), setFlowStateStmt(db, STRATEGY_STATE_KEY, JSON.stringify(p.strategy), at), ...brk]);
+            const fresh = p.acct.notifs.filter((n) => p.created.includes(n.id));
+            const brk = breakLogs(p.acct, fresh).map((l) => thesisLogStmt(db, l, null, at));
+            // 月報列了候補進場（F29）：列在項目上的價格條件這一刻才標成立（allocation_redesign §4.5 第 13 點）
+            const met = listedPriceStmts(db, fresh, at);
+            await saveAccount(db, p.acct, loaded, `每日流程 ${session}${p.monthly !== null ? '（含月報）' : ''}`, opt.now, [setFlowStateStmt(db, 'lastSession', session, at), setFlowStateStmt(db, STRATEGY_STATE_KEY, JSON.stringify(p.strategy), at), ...brk, ...met]);
           } catch (e) {
             if (e instanceof ConflictError && tryNo < 2) continue;
             throw e;

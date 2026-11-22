@@ -19,6 +19,8 @@ export interface LoadedAccount {
   notifJson: Map<number, string>;
   /** 載入時每檔自選與候補的論點檔編號（存檔時比較，寫開檔與結案）。 */
   ownFiles?: Record<string, string | undefined>;
+  /** 載入時在候補名單裡的論點檔編號（存檔時認得出「這次從候補轉成持股」，寫 ENTERED；allocation_redesign §4.5 第 4 點）。 */
+  watchFiles?: string[];
 }
 
 type StateOnly = Omit<Account, 'notifs' | 'events' | 'shadow'>;
@@ -31,7 +33,7 @@ export async function loadAccount(db: D1Database): Promise<LoadedAccount | null>
   // 舊版存的狀態（崩盤規則的欄位、沒有核心比例的設定）轉成現在的（allocation_redesign §1.5）；和這次操作一起存，只讀的請求下次載入再轉一次（結果相同）
   let acct: Account = migrateAccount({ ...state, notifs: notifRows.map((r) => JSON.parse(r.body) as Notif), events: [], shadow: [] });
   acct = await withSplits(db, acct);
-  return { acct, rev: row.rev, notifJson: new Map(notifRows.map((r) => [r.id, r.body])), ownFiles: ownFilesOf(acct) };
+  return { acct, rev: row.rev, notifJson: new Map(notifRows.map((r) => [r.id, r.body])), ownFiles: ownFilesOf(acct), watchFiles: watchFilesOf(acct) };
 }
 
 /**
@@ -58,9 +60,13 @@ export const ownFilesOf = (acct: Pick<Account, 'own'> & Partial<Pick<Account, 'w
   ...Object.fromEntries(Object.entries(acct.own ?? {}).map(([t, m]) => [t, m.fileId])),
 });
 
+/** 候補名單裡的論點檔編號。 */
+export const watchFilesOf = (acct: Partial<Pick<Account, 'watch'>>): string[] => Object.values(acct.watch ?? {}).map((m) => m.fileId);
+
 /** PRESS_CHECK：財報新聞稿成立的條件，10-Q／10-K 核對不一致（T29c，own_thesis §1.11 的「log 記一筆」）。 */
 /** RISK_SEEN：新眼光提到的前提以外的風險，你看過不採用、或帶進論點（T63，composite_layer_design §3）。 */
-export type ThesisLogKind = 'OPEN' | 'THESIS' | 'BREAK_NOTICE' | 'RESPONSE' | 'CONDITION' | 'CLOSE' | 'PRESS_CHECK' | 'EXITS_CONFIRMED' | 'RISK_SEEN';
+/** ENTERED：候補轉成持股（allocation_redesign §4.5 第 4 點，T85）：`{ via: 'F29' | 'SELF', shares, state, addedAt }`；同一份論點檔，不寫 OPEN／CLOSE。 */
+export type ThesisLogKind = 'OPEN' | 'THESIS' | 'BREAK_NOTICE' | 'RESPONSE' | 'CONDITION' | 'CLOSE' | 'PRESS_CHECK' | 'EXITS_CONFIRMED' | 'RISK_SEEN' | 'ENTERED';
 export interface ThesisLogInput {
   ticker: string;
   fileId: string;
@@ -78,9 +84,14 @@ export const thesisLogStmt = (db: D1Database, l: ThesisLogInput, accountVersion:
  * 不見的（移出、出清、股數改 0、移除候補）→ CLOSE。同一個編號從候補搬到自選（進場）不寫 OPEN／CLOSE。
  * 沒有 fileId 的舊資料不寫。
  */
-export function fileChanges(before: Record<string, string | undefined>, acct: Account, now: Date): ThesisLogInput[] {
+export function fileChanges(before: Record<string, string | undefined>, acct: Account, now: Date, beforeWatch: readonly string[] = []): ThesisLogInput[] {
   const out: ThesisLogInput[] = [];
   const own = acct.own ?? {};
+  // 這次存檔從候補轉成持股的（同一個編號，存檔前在候補、現在在自選）：寫 ENTERED，和這一版帳戶一起存（復原快照時一起刪）
+  for (const [t, m] of Object.entries(own)) {
+    if (!m.fileId || !m.entered || !beforeWatch.includes(m.fileId)) continue;
+    out.push({ ticker: t, fileId: m.fileId, session: m.entered.date, kind: 'ENTERED', body: { via: m.entered.via, shares: m.entered.shares, state: m.entered.state, addedAt: m.entered.addedAt } });
+  }
   const watch = acct.watch ?? {};
   const after = new Set([...Object.values(own), ...Object.values(watch)].map((m) => m.fileId).filter(Boolean));
   for (const [t, fid] of Object.entries(before)) {
@@ -139,7 +150,7 @@ export async function saveAccount(db: D1Database, acct: Account, prev: LoadedAcc
   const sh = db.prepare('INSERT INTO shadow_records (rev, date, f, ticker, body) VALUES (?, ?, ?, ?, ?)');
   for (const s of shadow) stmts.push(sh.bind(rev, s.date, s.f, s.ticker, JSON.stringify(s)));
   // 論點檔的開檔與結案（和這一版帳戶一起存，復原快照時一起刪）
-  for (const l of fileChanges(prev ? (prev.ownFiles ?? ownFilesOf(prev.acct)) : {}, acct, now)) stmts.push(thesisLogStmt(db, l, rev, at));
+  for (const l of fileChanges(prev ? (prev.ownFiles ?? ownFilesOf(prev.acct)) : {}, acct, now, prev ? (prev.watchFiles ?? watchFilesOf(prev.acct)) : [])) stmts.push(thesisLogStmt(db, l, rev, at));
   // 和帳戶同一筆交易一起寫的（例如每日流程處理到哪一天）
   stmts.push(...extra);
   try {

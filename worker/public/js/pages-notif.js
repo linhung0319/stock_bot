@@ -353,6 +353,8 @@ function slip(it, v, ui) {
   // 慢規則項目：先寫 AI 論點檢查的結果，下面才是規則的底線與選項（own_thesis §3.2、§3.4）
   if (it.aiLine) act.push(h('p', { class: 'ai-line' }, it.aiLine));
   if (it.note) act.push(h('p', { class: 'note-line' }, it.note));
+  // 候補進場（F29）：論點草稿「今天沒持股的話會不會買」那一題（只是資訊）
+  if (it.entryInfo) act.push(h('p', { class: 'small dim entry-info' }, it.entryInfo));
   let pick = null;
   if (it.cancelled) pick = h('p', { class: 'picked' }, it.revised ? '你用「修正論點」回應了這一項，不用下單。' : '這一項已取消，不用下單。');
   else if (!editable && v.status === 'PENDING') {
@@ -1102,6 +1104,23 @@ export async function snapshotPage(ctx) {
           r.removedOwn.length ? h('p', null, `${r.removedOwn.join('、')} 賣光了，已移出自選（之後不再追蹤，也不會被買回）。`) : null,
           // 審查後持有、你自己賣了一半（allocation_redesign §3.6）：之後照減半處理
           (r.watchHalved ?? []).map((t) => h('p', { class: 'below-std' }, `${t} 在審查後持有中；你賣了一半，之後照減半處理（站回 200 日線會提醒加回）。`)),
+          (r.entered ?? []).map((e) =>
+            h(
+              'p',
+              { class: 'watch-entered' },
+              `${e.ticker} 從候補轉成持股了，論點沿用候補時寫的那一份。`,
+              e.via === 'F29'
+                ? e.state === 'HALF'
+                  ? '只有預設前提、進場時已經比高點低 20% 以上，所以從減半開始（目標是標準比重的一半），補回看 200 日線。'
+                  : '先買一半：開始持有之後第一份財報過關，月報會列「補滿」。'
+                : e.state === 'STD'
+                  ? '你沒等進場條件、自己先買的：'
+                  : e.state === 'BUILD'
+                    ? '你自己先買的；已經比高點低 20% 以上、有你的論點，所以算先買一半。'
+                    : '你自己先買的；只有預設前提、已經比高點低 20% 以上，所以從減半開始。',
+              e.via === 'SELF' && e.state === 'STD' ? [h('a', { href: `#/h/${encodeURIComponent(e.ticker)}` }, `到 ${e.ticker} 的頁面`), '確認是買足了還是先買一半（預選先買一半）。'] : null,
+            ),
+          ),
           // 自己減碼之後低於標準比重（T43）：之後入金與加回會補回來，不想補回到持股頁改標準比重
           (r.belowStd ?? []).map((x) =>
             h(

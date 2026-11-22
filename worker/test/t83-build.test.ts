@@ -608,7 +608,9 @@ describe('T83：拖太久、兩個按鈕、選了先買一半但其實買足了�
     expect(js).toContain("actionButton('改成已經買到這個比例'");
     expect(js).toContain("'/ops/build-full'");
     expect(js).toContain('draftAction(d.ticker, d.own.draft, { before: [keep] })');
-    expect(js).toContain("radio('half', '先買一半，確認後再補滿', false)");
+    // T85 乙段：從候補名單進場（自己先買）的預選「先買一半」（allocation_redesign §4.1 表單上的預設）；其他的照舊預選「已經買到這個比例」
+    expect(js).toContain("radio('full', '已經買到這個比例', !d.own.askBuildHalf)");
+    expect(js).toContain("d.own.askBuildHalf ? '先買一半，確認後再補滿（從候補名單進場的預設）' : '先買一半，確認後再補滿', !!d.own.askBuildHalf)");
   });
 
   it('「維持現在的大小」：標準比重改成實際比重、離開先買一半；「改成已經買到這個比例」：目標回到標準比重；還沒回覆的補滿跟著取消', () => {

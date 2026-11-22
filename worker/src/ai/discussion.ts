@@ -204,7 +204,7 @@ const TRIGGER_TEXT: Record<string, string> = { MONTHLY: '月審', EARNINGS: '財
 const STATUS_TEXT: Record<string, string> = { SPLIT: '沒有一致結論', INVALID: '格式不合格，沒有結論', DATA_MISSING: '資料缺漏', TIMEOUT: '逾時，沒有結論', NO_RESULT: '沒有結果' };
 const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
 const COND_STATE: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '只在定期審查時檢查', MANUAL: '只記錄', MET: '已成立' };
-const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '加碼：補到標準比重', RAISE: '加碼：提高到標準的 125%' };
+const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '加碼：補到標準比重', RAISE: '加碼：提高到標準的 125%', ENTRY: '候補進場：先買一半' };
 const isAdd = (a: CondAction | null) => a === 'FILL' || a === 'RAISE';
 /** 全形空白（討論包裡日期與內容之間的分隔，照 §1.7 的範例）。 */
 const SP = '　';

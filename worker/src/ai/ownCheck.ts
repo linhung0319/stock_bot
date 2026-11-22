@@ -23,7 +23,7 @@ export interface ExitLine {
   text: string;
   action: CondAction;
 }
-const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）' };
+const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）', ENTRY: '候補進場（先買一半）' };
 const COND_ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW', 'FILL', 'RAISE'];
 const isAdd = (a: CondAction | null | undefined): a is 'FILL' | 'RAISE' => a === 'FILL' || a === 'RAISE';
 /** 出場條件加加碼條件一次最多送幾條（你定的條件 8 條上限合計，T84）。 */

@@ -1,7 +1,7 @@
 // 買進前的程式檢查（allocation_redesign §4.0，T83）：自選的每一種買進——先買一半的補滿（F27）、提高到 125%（F23）、
 // 你定的加碼條件（F28，T84）、下跌加碼（T84）、之後的候補進場——都先過同一組檢查，任何一項不過就不提。
 // buyAllowed 是純函式（只看傳進來的事實）；buyFacts 從帳戶狀態把事實整理出來。
-import { dropReviewOpen, priceOf, totalValue, type Account, type MarketView, type OwnMeta } from './account';
+import { dropReviewOpen, priceOf, recommendStdWeights, totalValue, type Account, type MarketView, type OwnMeta } from './account';
 import type { OwnApplied, OwnState } from './types';
 
 /** 最近幾個日曆天內有前提被 3 票判不成立就不提買進。 */
@@ -118,4 +118,31 @@ export const RAISE_GAP_DAYS = 365;
 export function raiseGapWhy(meta: { raisedAt: string | null }, asOf: string): string | null {
   if (!meta.raisedAt || calDays(meta.raisedAt, asOf) >= RAISE_GAP_DAYS) return null;
   return `上次提高到 125% 是 ${meta.raisedAt}，還沒滿 12 個月`;
+}
+
+// ---------------------------------------------------------------- 候補進場（F29，allocation_redesign §4.5 第 15 點）
+
+/** 同一檔候補的進場項目每幾個日曆天最多列一次（§4.5）。 */
+export const WATCH_LIST_GAP_DAYS = 90;
+/** 非價格的進場條件成立之後超過幾個日曆天還沒列進月報就丟掉（§4.5 第 16 點）。 */
+export const WATCH_ENTRY_EXPIRE_DAYS = 100;
+
+/** 候補的推薦標準比重（§4.5：自選預算內依波動度反比，現有的算法；分母是現在的自選加上這一檔，其他候補不算）。算不出來是 null。 */
+export function watchRecWeight(acct: Account, view: MarketView, ticker: string): number | null {
+  try {
+    const w = recommendStdWeights(view, [...Object.keys(acct.rule.own).filter((t) => t !== ticker), ticker], acct.cfg.ratio.own)[ticker];
+    return Number.isFinite(w) ? w : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 候補進場的事實（給 buyAllowed）：候補沒有慢規則狀態、審查、硬事件標記，有意義的只有
+ * 「30 天內前提被判不成立」（上一次持有結案時抄進 ownClosed 的 brokenAt，§4.5 第 7 點）、跨桶上限（動能已經持有的算進去）、有沒有要買的股數。
+ */
+export function watchBuyFacts(acct: Account, view: MarketView, ticker: string, asOf: string, want: number): BuyFacts {
+  const price = priceOf(view, ticker);
+  const b = acct.ownClosed?.[ticker]?.brokenAt ?? null;
+  return { state: 'STD', applied: 'STD', flags: [], openDrop: false, openBreak: false, brokenAt: b && b <= asOf ? b : null, asOf, want, price, total: totalValue(acct, view), held: (acct.lots.mom[ticker] ?? 0) * price, cap: acct.cfg.crossCapBuy };
 }

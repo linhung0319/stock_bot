@@ -88,6 +88,7 @@ import { choiceEffect } from './bubble';
 import { annotate } from './explain';
 import { accountView, composedView, crashLogView, ctxOf, historyView, withPreviewNote, holdingDetail, notifView, pendingBreakOf, snapshotForm, stateView, thesisTodoOf, newOwnDrafts } from './views';
 import { demoHolding, type RiskView } from './thesisView';
+import { WatchCondError, type PriceInput } from '../watchEntry';
 import { eventDetail, eventSource } from '../eventText';
 import { isNoCrashNoteId } from '../noCrashNote';
 
@@ -1220,7 +1221,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
         acct,
         snapshot: snap,
         // newOwnRows：結果頁那張清單的每一行（買進時的一句話；賣光又買回、上次有論點的帶 prev，T44）
-        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, belowStd: out.belowStd, watchHalved: out.watchHalved ?? [], startsHalved, monthlyId, newOwn, newOwnRows: thesisTodoOf(acct, newOwn), newOwnDrafts: newOwnDrafts(d, acct, newOwn) },
+        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, belowStd: out.belowStd, watchHalved: out.watchHalved ?? [], entered: out.entered ?? [], startsHalved, monthlyId, newOwn, newOwnRows: thesisTodoOf(acct, newOwn), newOwnDrafts: newOwnDrafts(d, acct, newOwn) },
       };
     });
     // 送出前的帳戶留下來，填錯了可以復原（只留最後一份；之後帳戶有變動就不能復原）
@@ -1355,6 +1356,26 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       return { acct: watchOp(() => updateWatch(d.acct, d.view, tk, { ...(std !== undefined ? { stdWeight: std } : {}), ...(note !== undefined ? { note } : {}) })) };
     });
     return json({ ok: true });
+  }
+  // 候補的價格型進場條件（§4.5 第 12 點）：結構化欄位（種類＋數字），整組取代價格那一組；不經 AI 改寫
+  if (rest === 'ops/watch-price' && post) {
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const raw = Array.isArray(b.conds) ? b.conds.slice(0, 5) : [];
+    const conds: PriceInput[] = raw.map((x) => {
+      const o = (x ?? {}) as Record<string, unknown>;
+      if (o.type !== 'close' && o.type !== 'drawdown') throw new SiteError(422, '價格條件只有兩種：收盤低於多少、比 52 週高點低百分之幾以上');
+      const v = Number(String(o.value ?? '').replace(/[$%,\s]/g, ''));
+      if (!Number.isFinite(v)) throw new SiteError(422, '價格條件的數字沒有填');
+      return { type: o.type, value: v };
+    });
+    try {
+      await backend.watchPrice(tk, conds);
+    } catch (e) {
+      if (e instanceof WatchCondError) throw new SiteError(422, e.message);
+      throw e;
+    }
+    return json({ ok: true, count: conds.length });
   }
   if (rest === 'ops/watch-remove' && post) {
     const b = await body(req);

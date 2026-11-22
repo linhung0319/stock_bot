@@ -240,11 +240,16 @@ export function webConfirmText(check: Record<string, unknown>, ratings?: Readonl
  *   FILING      事件條件，確認來源裡有申報類型 → 新申報出現時 F25 三票讀原文（另外指名了網頁來源的，審查時也用那個來源檢查）
  *   REVIEW_ONLY 事件條件，確認來源只有 earnings_call、major_news、`web:<網域>` → 沒有申報可讀，只在定期審查時由三票判斷（P4）；
  *               指名了網頁來源的（T53，web_evidence_design §1.6）審查時用那個來源的網頁檢查，不每天監測
+ *   PRICE       候補的價格型進場條件（allocation_redesign §4.5 第 12 點，T85）：只有「動作是 ENTRY＋check.type 是 price_close_below 或
+ *               price_drawdown_below」才算，程式比收盤；其他價格條件照舊只記錄
  *   NONE        價格條件、或沒通過格式檢查的（含事件條件沒寫確認來源）→ 只記錄
  */
-export type ConfirmMode = 'XBRL' | 'FILING' | 'REVIEW_ONLY' | 'NONE';
-export function confirmMode(c: { kind: string; check: Record<string, unknown>; manual?: boolean }): ConfirmMode {
+export type ConfirmMode = 'XBRL' | 'FILING' | 'REVIEW_ONLY' | 'PRICE' | 'NONE';
+/** 候補的價格型進場條件的兩種 check.type。 */
+export const ENTRY_PRICE_TYPES: readonly string[] = ['price_close_below', 'price_drawdown_below'];
+export function confirmMode(c: { kind: string; check: Record<string, unknown>; manual?: boolean; action?: string | null }): ConfirmMode {
   if (c.manual) return 'NONE';
+  if (c.kind === 'PRICE') return c.action === 'ENTRY' && ENTRY_PRICE_TYPES.includes(String(c.check.type)) ? 'PRICE' : 'NONE';
   if (c.kind === 'XBRL') return 'XBRL';
   if (c.kind !== 'EVENT') return 'NONE';
   const by = Array.isArray(c.check.confirm_by) ? c.check.confirm_by.map(String) : [];

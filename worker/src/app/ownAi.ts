@@ -34,7 +34,7 @@ import type { Env, Fetcher } from './env';
 import { accOf, cikFor, fetchFilingChecks, handledStmt, loadEvents, sectorEtfs, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { briefNote } from './marketBrief';
 import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
-import { EARLY_NOTE, EVIDENCE_TEXT, MAX_AI_WATCH, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultCheck, defaultFacts, externalNeeds, revenueCheck, fileConditions, flaggedAccessions, fmtMetric, isAddAction, isAiWatch, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
+import { EARLY_NOTE, EVIDENCE_TEXT, MAX_AI_WATCH, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultCheck, defaultFacts, externalNeeds, revenueCheck, fileConditions, flaggedAccessions, fmtMetric, isAddAction, isAiWatch, isEntryAction, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
 
 export { cikFor } from './filings';
 export { loadConditions } from './thesis';
@@ -90,8 +90,9 @@ export function insertConditionStmts(db: D1Database, ticker: string, runId: stri
   });
 }
 
+/** PRICE（T85）：候補的價格型進場條件，月報訊號日的收盤仍成立、列進月報的那一刻。 */
 /** 條件成立（met_basis：XBRL 程式比對、PRESS 財報新聞稿擷取、FILING_VOTE 申報原文三票、REVIEW_VOTE 審查三票、WEB_VOTE 審查三票依條件指名的網頁來源，T53）。 */
-export const metStmt = (db: D1Database, id: number, at: string, note: string, basis: 'XBRL' | 'PRESS' | 'FILING_VOTE' | 'REVIEW_VOTE' | 'WEB_VOTE') => db.prepare("UPDATE own_conditions SET status = 'MET', met_at = ?, note = ?, met_basis = ? WHERE id = ?").bind(at, note, basis, id);
+export const metStmt = (db: D1Database, id: number, at: string, note: string, basis: 'XBRL' | 'PRESS' | 'FILING_VOTE' | 'REVIEW_VOTE' | 'WEB_VOTE' | 'PRICE') => db.prepare("UPDATE own_conditions SET status = 'MET', met_at = ?, note = ?, met_basis = ? WHERE id = ?").bind(at, note, basis, id);
 
 // ---------------------------------------------------------------- 證據
 
@@ -368,6 +369,8 @@ export function xbrlWhy(check: Record<string, unknown>, values: (number | null)[
  */
 export function notifyOwnCondition(ctx: ApplyCtx, c: FileCondition, why: string, runIds: string[], label: string, monthly = false): void {
   const t = c.ticker;
+  // 進場條件（候補，allocation_redesign §4.5 第 16 點）：不發通知，記進 watch[t].entry 等下一份月報（F29）
+  if (isEntryAction(c.action)) return queueWatchEntry(ctx, c, why, runIds, label);
   if (!ctx.acct.own[t]) return;
   const owned = isOwned(c);
   if (owned && isAddAction(c.action)) return queueAddCondition(ctx, c, c.action, why, runIds, label);
@@ -397,6 +400,22 @@ export function notifyOwnCondition(ctx: ApplyCtx, c: FileCondition, why: string,
   const r = condMetNotice(ctx.acct, ctx.view, t, spec);
   ctx.acct = r.acct;
   ctx.log.push(`${label} → ${r.notif ? `當天通知 #${r.notif.id}` : `不通知（${r.why}），列進要看的事`}`);
+}
+
+/**
+ * 候補的非價格進場條件成立（allocation_redesign §4.5 第 16 點，T85）：買進的建議只進月報（§4.0 第 2 點），不發當天通知。
+ * 記進 watch[t].entry（成立的訊號日、怎麼確認的），下一份月報的 F29 讀它；被 90 天、硬傷、程式檢查擋下時留到下個月，成立超過 100 天還沒列才丟掉。
+ * 這檔已經不是候補（已經進場、或移除了）→ 略過：進場條件對持股沒有意義，狀態由 syncWatchConds 補寫。同一條不重複記。
+ * 這是丙段（草稿的進場條件、新申報與月底的條件確認）寫入的接口：呼叫的地方先把條件標成立（metStmt），再呼叫 notifyOwnCondition。
+ */
+export function queueWatchEntry(ctx: ApplyCtx, c: FileCondition, why: string, runIds: string[], label: string): void {
+  const t = c.ticker;
+  if (!ctx.acct.watch?.[t]) return void ctx.log.push(`${label}（進場條件）→ ${t} 已經不在候補名單，不記`);
+  ctx.acct = clone(ctx.acct);
+  const w = ctx.acct.watch![t];
+  if ((w.entry ?? []).some((x) => x.id === c.id)) return;
+  w.entry = [...(w.entry ?? []), { id: c.id, text: c.text, setAt: (c.acceptedAt ?? c.createdAt).slice(0, 10), why, metOn: ctx.session, ...(runIds.length ? { runIds } : {}) }];
+  ctx.log.push(`${label}（進場條件）→ 等下一份月報（F29），不發當天通知`);
 }
 
 /**

@@ -145,6 +145,8 @@ function thesisPanel(d, opt = {}) {
       : null,
     // 賣光之後又買回（T44）：還沒有這一次的論點時，上一次持有時的論點整塊攤開放在這裡
     def && o.prev ? prevBlock(o.prev, true) : null,
+    // 從候補名單進場的（allocation_redesign §4.5）：`11/20 加入候補 → 2/3 進場`
+    o.entered ? h('p', { class: 'small dim entered-line', style: 'margin-top:10px' }, o.entered) : null,
     o.openNote ? h('p', { class: 'notice', style: 'margin-top:12px' }, o.openNote) : null,
     h('h5', { style: 'margin-top:18px' }, def ? '前提（系統預設）' : `前提（${o.premises.length} 條，你為什麼${watch ? '想買' : '持有'}它）`),
     premiseList(o, t, premiseChecks(d)),
@@ -399,8 +401,9 @@ function stdWeightEdit(ctx, d) {
     ? h(
         'div',
         { class: 'build-ask', style: 'margin:6px 0 10px' },
-        radio('full', '已經買到這個比例', true),
-        radio('half', '先買一半，確認後再補滿', false),
+        // 從候補名單進場的（你自己先買的）：預選「先買一半」（allocation_redesign §4.1 表單上的預設）
+        radio('full', '已經買到這個比例', !d.own.askBuildHalf),
+        radio('half', d.own.askBuildHalf ? '先買一半，確認後再補滿（從候補名單進場的預設）' : '先買一半，確認後再補滿', !!d.own.askBuildHalf),
         h('p', { class: 'small faint', style: 'margin-top:4px' }, '只在第一次設定時問。先買一半：目標是這個比例的一半，還沒買的部分留在核心；開檔之後的第一份財報過關，下一份月報列「補滿」（預設照做）。不選就是已經買到，系統不會因為你一次買足而提醒。'),
       )
     : null;

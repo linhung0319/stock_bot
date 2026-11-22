@@ -1143,12 +1143,37 @@ function owed(ctx: ExplainContext, _n: Notif, it: Item): Explain {
   };
 }
 
+/** 候補進場（F29，allocation_redesign §4.5，T85）：你定的進場條件成立 → 先買一半（預設照做），不用理由。 */
+function watchEntry(ctx: ExplainContext, it: Item): Explain {
+  const { acct, view } = ctx;
+  const t = it.ticker!;
+  const we = it.watchEntry;
+  const sh = sharesOf(it.choices.find((c) => c.id === 'DO')?.lines ?? [], t);
+  const c = closeOf(view, t);
+  const px = c ? c[view.i] : NaN;
+  const total = totalValue(acct, view);
+  const m = /你在 (\d{4}-\d{2}-\d{2}) 定的進場條件「(.+?)」成立/.exec(it.title);
+  const std = we?.std ?? 0;
+  return {
+    short: `候補的進場條件成立：${m?.[2] ?? ''}`,
+    why: `${t} 在候補名單，還沒持有。${m ? `你在 ${md(m[1])} 定的進場條件「${m[2]}」成立了。` : ''}${it.why ?? ''}`,
+    rule: '候補的進場是你事先定的，條件到了照做（預設）；買進的建議只進月報、不發當天通知。列之前先過程式檢查：沒有申報來的硬傷（被收購、延遲申報、財報重編、會計師辭任）、30 天內沒有前提被判不成立、你定的財報類出場條件沒有成立、這檔自選加動能不超過總資產 10%；價格條件要在月報那天的收盤仍然成立。',
+    math: Number.isFinite(px) && std ? [`標準比重 ${fmtPct(std, 1)}${we?.recUsed ? '（你留空，用推薦值）' : ''} × 一半 × 總資產 ${fmtMoney(total)} ÷ 前一日收盤 ${fmtPx(px)} = ${Math.floor((std * 0.5 * total) / px)} 股`, `買 ${sh} 股`] : undefined,
+    chart: t,
+    choiceNotes: {
+      DO: `買進之後到「填快照」的自選那一桶填股數，${t} 就從候補轉成持股（${we?.half ? '從減半開始' : '先買一半'}），論點沿用；錢從核心照比例拿。沒買就還是候補。`,
+      SKIP: '不買。這條進場條件已經用掉，候補留著；要再等就到候補那一塊重新定條件。',
+    },
+  };
+}
+
 /** 一項建議的理由。 */
 export function explainItem(ctx: ExplainContext, n: Notif, it: Item): Explain {
   try {
     if (it.kind === 'OWN_COND') return ownCond(ctx, n, it);
     if (it.kind === 'OWN_FILL') return ownFill(ctx, n, it);
     if (it.kind === 'OWN_ADD') return ownAdd(ctx, n, it);
+    if (it.kind === 'WATCH_ENTRY') return watchEntry(ctx, it);
     if (it.kind === 'AI_ONLY') return aiOnly(ctx, n, it);
     if (it.kind === 'HARD') return hard(ctx, n, it);
     switch (it.f) {

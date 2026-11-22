@@ -41,6 +41,7 @@ import type { AiNote } from './site/types';
 import { STRATEGY_REVIEW } from '../ai/strategy';
 import { applyStrategyReview, loadStrategyState, startStrategyRun, strategyHistory, withHistory } from './strategyAi';
 import { breakLogs, ruleBreakLogs, withRuleKeys } from './thesis';
+import { syncWatchConds } from './watchEntry';
 import { endDisputes, ownHeld } from '../engine';
 
 export type { StepResult as AiStepResult } from './aiCtx';
@@ -132,6 +133,8 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
     }
     await ownXbrlConditions(ctx, facts);
     await applyRuleEvents(ctx, classified);
+    // 從候補進場之後的第一次每日流程：進場條件的狀態補寫（allocation_redesign §4.5 第 17 點）
+    await syncWatchConds(ctx);
     if (extras.strategyHistory) ctx.acct = withHistory(ctx.acct, reminders, extras.strategyHistory.line) ?? ctx.acct;
     // 新的失效通知（甲類、乙類）→ 論點檔的 BREAK_NOTICE（own_thesis §1.10），和帳戶同一筆存
     ctx.stmts.push(...breakLogs(ctx.acct, ctx.acct.notifs.filter((n) => !before.has(n.id))).map((l) => thesisLogStmt(db, l, null, now.toISOString())));

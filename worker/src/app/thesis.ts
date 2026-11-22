@@ -54,16 +54,25 @@ interface CondRow {
  * 成立時做什麼（own_thesis §1.5）：出清／減半／重新審查（出場條件）；T84（allocation_redesign §4.2）起多兩個加碼條件的動作：
  * FILL 補到標準比重、RAISE 提高到標準的 125%。加碼條件和出場條件同一張表、同一種格式、同一套監測，8 條上限合計。
  */
-export type CondAction = 'EXIT' | 'HALF' | 'REVIEW' | 'FILL' | 'RAISE';
+export type CondAction = 'EXIT' | 'HALF' | 'REVIEW' | 'FILL' | 'RAISE' | 'ENTRY';
+/** 持股的條件可以選的動作（出場與加碼）：編輯論點、改寫、改動作的輸入只收這一組。候補的進場（ENTRY）另算，見 ENTRY_ACTIONS。 */
 export const COND_ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW', 'FILL', 'RAISE'];
+/**
+ * 進場條件的動作（allocation_redesign §4.5 第 11 點，T85）：候補的進場條件成立時「候補進場，先買一半」（月報 F29）。
+ * 進場條件另算、不占你定的 8 條：loadConditions 預設不讀它們（持股的監測、證據包、整組取代、8 條上限都看不到），要讀用 entryConditions。
+ */
+export const ENTRY_ACTIONS: readonly CondAction[] = ['ENTRY'];
+export const isEntryAction = (a: unknown): a is 'ENTRY' => a === 'ENTRY';
+const ALL_ACTIONS: readonly CondAction[] = [...COND_ACTIONS, ...ENTRY_ACTIONS];
 /** 出場條件的動作（AI 監測中的條件只會是這一組；AI 不能自己提加碼條件，§4.2）。 */
 export const EXIT_ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
 /** 加碼條件的動作（§4.2）。 */
 export const ADD_ACTIONS: readonly CondAction[] = ['FILL', 'RAISE'];
 /** 這個動作是加碼（成立時買進）嗎。 */
 export const isAddAction = (a: unknown): a is 'FILL' | 'RAISE' => a === 'FILL' || a === 'RAISE';
-/** 兩個動作是不是同一種（都是出場、或都是加碼）：出場條件與加碼條件之間不能只改動作互換（要重新寫、送改寫，讓你看到「成立時：買進」）。 */
-export const sameActionKind = (a: CondAction | null | undefined, b: CondAction | null | undefined): boolean => isAddAction(a) === isAddAction(b);
+/** 兩個動作是不是同一種（出場／加碼／進場三組）：出場條件與加碼條件之間不能只改動作互換（要重新寫、送改寫，讓你看到「成立時：買進」）。 */
+const actionGroup = (a: CondAction | null | undefined): 'EXIT' | 'ADD' | 'ENTRY' => (isEntryAction(a) ? 'ENTRY' : isAddAction(a) ? 'ADD' : 'EXIT');
+export const sameActionKind = (a: CondAction | null | undefined, b: CondAction | null | undefined): boolean => actionGroup(a) === actionGroup(b);
 /** 加碼條件不收價格條件（§4.2）：程式檢查擋下的那一句（定義在 ai/ownCheck.ts，改寫、草稿共用）。 */
 export { ADD_PRICE_ISSUE } from '../ai/ownCheck';
 /** 財報類條件的進度（own_thesis §3.6.2）。values 新到舊；streak 是從最新一季起連續符合幾季。 */
@@ -118,7 +127,7 @@ const toCond = (r: CondRow): FileCondition => ({
   origin: r.origin === 'USER' || r.origin === 'AI_DRAFT_ACCEPTED' ? r.origin : 'AI',
   fileId: r.file_id ?? null,
   acceptedAt: r.accepted_at ?? null,
-  action: COND_ACTIONS.includes(r.action as CondAction) ? (r.action as CondAction) : null,
+  action: ALL_ACTIONS.includes(r.action as CondAction) ? (r.action as CondAction) : null,
   premiseId: r.premise_id ?? null,
   supersedes: r.supersedes ?? null,
   metBasis: r.met_basis ?? null,
@@ -130,9 +139,11 @@ const toCond = (r: CondRow): FileCondition => ({
 /**
  * 條件（被替換的不算）。file：string = 那一份論點檔的；null = 沒有論點檔編號的舊列；
  * 不給 = 這一檔所有論點檔的（只給歷史與測試看；監測、證據包一律用 fileConditions）。
+ * entry（allocation_redesign §4.5 第 11 點）：預設不含進場條件（action = ENTRY；另算、不占 8 條，持股的監測與整組取代都不該碰到）；
+ * 'only' = 只讀進場條件（entryConditions）。
  */
-export async function loadConditions(db: D1Database, ticker?: string, file?: string | null): Promise<FileCondition[]> {
-  const where = ["status != 'REPLACED'"];
+export async function loadConditions(db: D1Database, ticker?: string, file?: string | null, entry: false | 'only' = false): Promise<FileCondition[]> {
+  const where = ["status != 'REPLACED'", entry === 'only' ? "action = 'ENTRY'" : "(action IS NULL OR action != 'ENTRY')"];
   const args: unknown[] = [];
   if (ticker) {
     where.push('ticker = ?');
@@ -153,6 +164,12 @@ export async function loadConditions(db: D1Database, ticker?: string, file?: str
 export async function fileConditions(db: D1Database, acct: Pick<Account, 'own'> & Partial<Pick<Account, 'watch'>>, ticker: string): Promise<FileCondition[]> {
   const meta = fileMeta(acct, ticker)?.meta;
   return meta ? loadConditions(db, ticker, meta.fileId ?? null) : [];
+}
+
+/** 這檔現在這份論點檔的進場條件（候補的；進場之後的下一次每日流程補寫狀態時也讀）。沒有論點檔是空的。 */
+export async function entryConditions(db: D1Database, acct: Pick<Account, 'own'> & Partial<Pick<Account, 'watch'>>, ticker: string): Promise<FileCondition[]> {
+  const meta = fileMeta(acct, ticker)?.meta;
+  return meta?.fileId ? loadConditions(db, ticker, meta.fileId, 'only') : [];
 }
 
 // ---------------------------------------------------------------- 論點檔
@@ -1019,17 +1036,17 @@ export function defaultAction(c: Pick<FileCondition, 'direction' | 'tierIfMet'>)
 }
 
 /** 勾選之後的狀態（§1.5「怎麼確認」）：程式比對或新申報確認 → 監測中；只有法說會、新聞 → 只在審查時檢查；其他 → 只記錄。 */
-export function acceptStatus(c: Pick<FileCondition, 'kind' | 'check' | 'auto' | 'status'>): 'ACTIVE' | 'REVIEW_ONLY' | 'MANUAL' {
+export function acceptStatus(c: Pick<FileCondition, 'kind' | 'check' | 'auto' | 'status'> & { action?: CondAction | null }): 'ACTIVE' | 'REVIEW_ONLY' | 'MANUAL' {
   const manual = c.auto === false || (c.auto === null && c.status === 'MANUAL');
-  const m = confirmMode({ kind: c.kind, check: c.check, manual });
-  return m === 'XBRL' || m === 'FILING' ? 'ACTIVE' : m === 'REVIEW_ONLY' ? 'REVIEW_ONLY' : 'MANUAL';
+  const m = confirmMode({ kind: c.kind, check: c.check, manual, action: c.action });
+  return m === 'XBRL' || m === 'FILING' || m === 'PRICE' ? 'ACTIVE' : m === 'REVIEW_ONLY' ? 'REVIEW_ONLY' : 'MANUAL';
 }
 
 /** 成立時要通知的檔位：動作是出清或減半；重新審查不發通知。沒有動作的舊列照舊（降級條件的 tier_if_met）。 */
 export function notifyTier(c: Pick<FileCondition, 'action' | 'direction' | 'tierIfMet'>): Tier | null {
   if (c.action === 'EXIT' || c.action === 'HALF') return c.action;
-  // 重新審查不發通知；加碼條件（T84）不走甲類，進月報（F28，ownAi.ts 的 notifyOwnCondition）
-  if (c.action === 'REVIEW' || isAddAction(c.action)) return null;
+  // 重新審查不發通知；加碼條件（T84）不走甲類，進月報（F28，ownAi.ts 的 notifyOwnCondition）；進場條件（T85）一樣只進月報（F29）
+  if (c.action === 'REVIEW' || isAddAction(c.action) || isEntryAction(c.action)) return null;
   return c.direction === 'DOWN' && c.tierIfMet ? c.tierIfMet : null;
 }
 
@@ -1060,7 +1077,7 @@ export const fmtMetric = (metric: string, v: number | null) => {
   return Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(0)}M` : v.toFixed(2);
 };
 const KIND_TEXT: Record<string, string> = { XBRL: '財報', EVENT: '事件', PRICE: '價格' };
-export const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）' };
+export const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）', ENTRY: '候補進場（先買一半）' };
 const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '—');
 
 /** 持股頁的一行進度：`最新一季 71.2%（門檻 70%）；已連續 1／2 季`。 */
@@ -1088,7 +1105,9 @@ const FILING_CONFIRM_TEXT = '新申報出來時由 AI 確認';
  * 怎麼確認（§1.5 的顯示）；指名了網頁來源的事件條件寫「審查時用 <來源> 的網頁檢查」（T53，web_evidence_design §1.6）。
  * ratings（T68，confirm_audit_design §1.6）：評級表；網站上給，來源後面加級別或「還沒評級」。證據包裡的說明不給。
  */
-export function confirmText(c: Pick<FileCondition, 'kind' | 'check' | 'auto' | 'status'>, ratings?: ReadonlyMap<string, WebRatingRow> | null): string {
+export function confirmText(c: Pick<FileCondition, 'kind' | 'check' | 'auto' | 'status'> & { action?: CondAction | null }, ratings?: ReadonlyMap<string, WebRatingRow> | null): string {
+  // 候補的價格型進場條件（allocation_redesign §4.5 第 12、13 點）：程式比；決定列不列的是月報訊號日的收盤
+  if (c.kind === 'PRICE' && confirmMode({ kind: c.kind, check: c.check, action: c.action }) === 'PRICE') return '程式每天比收盤；月報訊號日仍然成立才列進月報';
   const s = acceptStatus(c);
   if (s === 'MANUAL') return '只記錄';
   const web = c.kind === 'EVENT' ? webConfirmText(c.check, ratings) : null;
