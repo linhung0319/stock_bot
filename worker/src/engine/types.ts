@@ -54,6 +54,7 @@ export type OwnAction = 'REDUCE' | 'READD';
 export type Reason =
   | '動能換股'
   | '自選訊號'
+  | '自選補滿'
   | '波動度減碼'
   | '崩盤規則'
   | '核心比例'

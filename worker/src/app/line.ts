@@ -111,9 +111,9 @@ export function notifText(acct: Account, n: Notif, link: string | null, brief: s
   return out.join('\n');
 }
 
-/** 月報訊號日的資料檢查有 DAY_GAP 或 MA_GAP，而且這份月報有崩盤規則切換的那一項（不是重列的）。 */
+/** 月報訊號日的資料檢查有 DAY_GAP，而且這份月報有用到核心價格的項目：舊的崩盤規則切換（F5／F6，不是重列的）或核心比例調回 F26（T86 P14：它的股數就是照這個價格算的）。 */
 export const corePriceWarn = (n: Pick<Notif, 'kind' | 'items' | 'monthly'>): boolean =>
-  (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY') && !!n.monthly?.input.coreCheck?.some((c) => PRICE_CODES.has(c)) && n.items.some((it) => (it.f === 'F5' || it.f === 'F6') && !it.relist && !it.cancelled);
+  (n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY') && !!n.monthly?.input.coreCheck?.some((c) => PRICE_CODES.has(c)) && n.items.some((it) => (it.f === 'F5' || it.f === 'F6' || it.f === 'F26') && !it.relist && !it.cancelled);
 
 /** 乙類的當天通知：只有 AI 判斷前提不成立的那一項（月報裡的乙類項目照月報的格式；慢規則減半項目上帶「AI 建議出清」的不算）。 */
 export const isBreakNotice = (n: Pick<Notif, 'kind' | 'items'>): boolean => n.kind === 'URGENT' && n.items.length > 0 && n.items.every((it) => it.brk?.type === 'B' && !it.brk.withRule);

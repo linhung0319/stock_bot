@@ -33,7 +33,7 @@ export const FUNCTIONS: Record<string, FnInfo> = {
   EVENT_SCAN: { label: '每日事件掃描', note: null, verdicts: { FLAGGED: '有標記', NOTHING: '沒有值得標的事' }, askPrompt: GENERIC_ASK + '\n請檢查：有沒有漏標的重大事件（被收購、會計問題、監管），或把例行公告標成大事。' },
   // MOM_SCORE、DROP_EXPLAIN：T32d 起不再開（momentum_ai §3.6、§3.7），留著給舊紀錄的顯示
   MOM_SCORE: { label: '動能前 15 名擬事件打分', note: null, verdicts: { SCORED: '已打分', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK + '\n請檢查：分數是不是只反映漲多漲少，而不是前提失效的證據。' },
-  OWN_DROP: { label: '自選減半檢視', note: 'REVIEW', verdicts: { EXIT: '出清', HALF: '減半（照規則）', HOLD: '不動' }, askPrompt: GENERIC_ASK + '\n請特別檢查：跌幅的歸類（大盤、產業、公司本身）有沒有被證據支持，「價格跌了」是不是被當成「論點壞了」。' },
+  OWN_DROP: { label: '自選跌幅審查', note: 'REVIEW', verdicts: { EXIT: '出清', HALF: '減半（照規則）', HOLD: '不動' }, askPrompt: GENERIC_ASK + '\n請特別檢查：跌幅的歸類（大盤、產業、公司本身）有沒有被證據支持，「價格跌了」是不是被當成「論點壞了」。' },
   DROP_EXPLAIN: { label: '持股單月大跌說明', note: null, verdicts: { EXPLAINED: '已說明', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK },
   STRATEGY_REVIEW: { label: '策略檢討說明', note: null, verdicts: { DONE: '已列出正反證據', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK + '\n請特別檢查：正反兩邊的證據是不是一樣認真；有沒有暗示該停用或該繼續。' },
   OWN_CHECK: { label: '出場條件改寫', note: null, verdicts: { DONE: '完成', INSUFFICIENT: '證據不足' }, askPrompt: GENERIC_ASK + '\n請檢查：改寫的出場條件有沒有忠於我原本的意思、成立時的動作有沒有照我選的；數字門檻有沒有對應證據包裡的數字；有沒有和我既有的條件重複。' },

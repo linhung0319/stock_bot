@@ -801,7 +801,7 @@ describe('T63：使用者看過不採用的，同一件事 180 天內不再列',
     // 之後的減半檢視有列東西：換成新的
     const drop = rev('d1', '2027-01-10', { fn: 'OWN_DROP', label: '減半檢視', newRisks: [item(0, '客戶集中度升高')] });
     const got = openRisks(fileOf({ reviews: [drop, old] }), {}, '2027-01-11');
-    expect(got.map((x) => [x.runId, x.label, x.text])).toEqual([['d1', '減半檢視', '客戶集中度升高']]);
+    expect(got.map((x) => [x.runId, x.label, x.text])).toEqual([['d1', '跌幅審查', '客戶集中度升高']]);
     // 還在跑的不算；硬事件法庭之類的不算
     expect(keys(openRisks(fileOf({ reviews: [rev('p', '2027-01-12', { status: 'PENDING', newRisks: [item(0, 'x 還在跑')] }), rev('h', '2027-01-12', { fn: 'HARD_EVENT', newRisks: [item(0, 'y 不是審查')] }), old] }), {}, '2027-01-13'))).toEqual(['r1#0']);
     // 那次執行滿 180 天就不再列

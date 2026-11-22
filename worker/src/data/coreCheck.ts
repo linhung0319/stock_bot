@@ -73,7 +73,7 @@ export function coreAlertText(x: CoreIssue, t: { core: string; bench: string; bo
 export function corePriceNote(issues: CoreIssue[], t: { core: string; bench: string }): string | null {
   const x = issues.find((i) => PRICE_CODES.has(i.code));
   if (!x) return null;
-  return `${t.core} 的價格和 ${t.bench} 對不上（${gapText(x, t.core, t.bench)}），下單前請核對券商顯示的 ${t.core} 收盤價；對不上就選「這次不做」並寫理由。`;
+  return `${t.core} 的價格和 ${t.bench} 對不上（${gapText(x, t.core, t.bench)}），下單前請核對券商顯示的 ${t.core} 收盤價；對不上就選「這次不做」。`;
 }
 
 /** LINE 月報在下單清單後面加的那一行（core_ai §3.10）。 */

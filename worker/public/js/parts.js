@@ -111,7 +111,7 @@ export function chart(c) {
       cross.setAttribute('x2', X(k));
       cross.setAttribute('visibility', 'visible');
       tip.hidden = false;
-      put(tip, h('b', null, c.dates[k]), h('br'), `收盤 ${money(c.close[k], 2)}`, c.ma200[k] === null ? null : [h('br'), `200 日均線 ${money(c.ma200[k], 2)}`], c.halfLine[k] === null ? null : [h('br'), `減半線 ${money(c.halfLine[k], 2)}`]);
+      put(tip, h('b', null, c.dates[k]), h('br'), `收盤 ${money(c.close[k], 2)}`, c.ma200[k] === null ? null : [h('br'), `200 日均線 ${money(c.ma200[k], 2)}`], c.halfLine[k] === null ? null : [h('br'), `${c.lineName ?? '減半線'} ${money(c.halfLine[k], 2)}`]);
       tip.style.left = Math.min(W - tip.offsetWidth - 4, Math.max(0, X(k) + 10)) + 'px';
     };
     svg.addEventListener('pointermove', move);
@@ -129,7 +129,7 @@ export function chart(c) {
     'div',
     null,
     // 減半線只有自選股有（動能、核心沒有這條規則，伺服器不給，T39a）
-    h('div', { class: 'chart-legend' }, h('span', null, h('i'), '收盤'), h('span', null, h('i', { class: 'ma' }), '200 日均線'), c.halfLine.some((v) => v !== null) ? h('span', null, h('i', { class: 'half' }), '減半線（52 週高點 −20%）') : null, c.marks.length ? h('span', null, '● 這檔出現在通知的日子') : null),
+    h('div', { class: 'chart-legend' }, h('span', null, h('i'), '收盤'), h('span', null, h('i', { class: 'ma' }), '200 日均線'), c.halfLine.some((v) => v !== null) ? h('span', null, h('i', { class: 'half' }), `${c.lineName ?? '減半線'}（52 週高點 −20%）`) : null, c.marks.length ? h('span', null, '● 這檔出現在通知的日子') : null),
     box,
   );
 }

@@ -373,7 +373,7 @@ describe('T69 草稿的證據包帶新眼光提出的風險（§4）', () => {
     expect(listed).toEqual(['第 7 件風險', '第 8 件風險', '換句話說的第 2 件', '第 4 件風險', '第 5 件風險', '第 6 件風險']);
     expect(doc.text).toContain('（共 8 件，只列最新的 6 件）');
     expect(doc.text).toContain('換句話說的第 2 件（2026-11-10 定期審查提出；2026-06-01 也提過）');
-    expect(doc.text).toContain('第 4 件風險（2026-09-01 減半檢視提出）');
+    expect(doc.text).toContain('第 4 件風險（2026-09-01 跌幅審查提出）');
     expect(doc.text).toContain('原文片段：「quote number 7 from the source document」');
     expect(doc.text).toContain(`出處：報導 ${SID(7)}（2026-11-10）〔${SID(7)}〕`);
     expect(doc.text).not.toContain('第 1 件風險');

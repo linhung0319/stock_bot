@@ -352,14 +352,20 @@ describe('T34：自選股的流程走一遍找到的缺口', () => {
     });
   });
 
-  it('標準比重填錯（填成小數或超過 50%）：錯誤訊息用畫面上的百分比講', async () => {
+  it('標準比重填錯（填成小數或超過單檔上限 15%）：錯誤訊息用畫面上的百分比講', async () => {
     await withWorld(async (c) => {
       const r = await c.api<{ error: string }>('POST', 'ops/std-weight', { ticker: 'NVDA', stdWeight: 0.0005 });
       expect(r.status).toBe(422);
-      expect(r.body.error).toBe('標準比重要在 0.1% 到 50% 之間（畫面上填百分比，例如 5 代表 5%）');
+      expect(r.body.error).toBe('標準比重要在 0.1% 到 15% 之間（畫面上填百分比，例如 5 代表 5%）');
+      // 40（6 打成 60 之後少改一位）：超過單檔上限 15% 不收，訊息寫明上限與原因（T86 P3）
+      const big = await c.api<{ error: string }>('POST', 'ops/std-weight', { ticker: 'NVDA', stdWeight: 0.4 });
+      expect(big.status).toBe(422);
+      expect(big.body.error).toContain('標準比重最多 15%（單檔上限）');
+      expect(big.body.error).toContain('減回 10%');
+      expect((await c.api('POST', 'ops/std-weight', { ticker: 'NVDA', stdWeight: 0.15 })).status).toBe(200);
       expect((await c.api('POST', 'ops/std-weight', { ticker: 'NVDA', stdWeight: 0.06 })).status).toBe(200);
       expect((await loadAccount(c.db))!.acct.rule.own.NVDA.stdWeight).toBe(0.06);
-      expect(readFileSync(join(HERE, '..', 'public', 'js', 'pages-holding.js'), 'utf8')).toContain('v >= 0.1 && v <= 50');
+      expect(readFileSync(join(HERE, '..', 'public', 'js', 'pages-holding.js'), 'utf8')).toContain('v >= 0.1 && v <= 15');
     });
   });
 });

@@ -206,7 +206,7 @@ const spc = (x: number | null, d = 1) => (x === null || !Number.isFinite(x) ? '�
 const px = (x: number | null) => (x === null || !Number.isFinite(x) ? '—' : x.toFixed(2));
 
 const SOURCE_TEXT: Record<string, string> = { EDGAR: '申報分類', SCAN: '每日掃描標記', AI: 'AI 轉交', PRICE: '價格規則' };
-const TRIGGER_TEXT: Record<string, string> = { MONTHLY: '月審', EARNINGS: '財報後審查', THESIS: '論點變動後審查', MANUAL: '審查', EARLY: '提前審查', CONDITION: '條件觸發的審查', 慢規則減半: '減半檢視' };
+const TRIGGER_TEXT: Record<string, string> = { MONTHLY: '月審', EARNINGS: '財報後審查', THESIS: '論點變動後審查', MANUAL: '審查', EARLY: '提前審查', CONDITION: '條件觸發的審查', 慢規則減半: '跌幅審查' };
 const STATUS_TEXT: Record<string, string> = { SPLIT: '沒有一致結論', INVALID: '格式不合格，沒有結論', DATA_MISSING: '資料缺漏', TIMEOUT: '逾時，沒有結論', NO_RESULT: '沒有結果' };
 const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
 const COND_STATE: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '只在定期審查時檢查', MANUAL: '只記錄', MET: '已成立' };

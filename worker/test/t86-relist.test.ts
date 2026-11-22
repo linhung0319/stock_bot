@@ -67,7 +67,8 @@ describe('T86 修正 P1：選了先買一半，還沒回覆的新增自選清單
     const it = f14(a, id);
     expect(buyOf(it)).toBe(half);
     expect(Math.abs(2 * half - full)).toBeLessThanOrEqual(1);
-    expect(it.title).toBe('新增自選 AAPL：你選了先買一半 → 先買標準比重 6.0% 的一半，開檔後第一份財報的審查過關再補滿');
+    // P16：標題跟著新的買法，後面註明是 12/9 才改的（持股頁「這檔的紀錄」看起來才不像新增那天就選了）
+    expect(it.title).toBe('新增自選 AAPL：你選了先買一半 → 先買標準比重 6.0% 的一半，開檔後第一份財報的審查過關再補滿（12/9 你在持股頁選了先買一半）');
     expect(it.note).toBe(`12/9 你在持股頁選了先買一半：照標準比重 6.0% 的一半重算，買 ${half} 股（原本 ${full} 股）`);
     // 錢從核心照比例拿：預覽照現有的合成重算，核心少賣了約 (full − half) 股 AAPL 的錢
     const n = notifOf(a, id);
@@ -104,7 +105,7 @@ describe('T86 修正 P1：選了先買一半，還沒回覆的新增自選清單
     expect(back.rule.own.AAPL).toEqual({ applied: 'STD', stdWeight: 0.06 });
     const it = f14(back, id);
     expect(buyOf(it)).toBe(full);
-    expect(it.title).toBe('新增自選 AAPL：買到標準比重 6.0%');
+    expect(it.title).toBe('新增自選 AAPL：買到標準比重 6.0%（12/9 你改成已經買到這個比例）');
     expect(it.note).toBe(`12/9 你改成已經買到這個比例：照標準比重 6.0% 重算，買 ${full} 股（原本 ${half} 股）`);
     const n = notifOf(back, id);
     expect(n.preview).toEqual(composeNotif(back, sim.pre, n));

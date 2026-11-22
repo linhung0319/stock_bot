@@ -170,9 +170,11 @@ export function coreStatusText(acct: Pick<Account, 'cfg' | 'bondTicker'>, check:
   const lo = pct0(bond - band);
   const hi = pct0(bond + band);
   const head = `核心：${acct.bondTicker} 與現金 ${pct1(check.s)}`;
-  if (!check.out) return `${head}（${lo}～${hi} 之內不調）`;
+  // T86 P12e：這個比例是這份月報其他單做完之後的（首頁的核心比例是現在的，兩個數字不同）
+  const after = '這份月報其他單做完之後';
+  if (!check.out) return `${head}（${after}，${lo}～${hi} 之內不調）`;
   const side = check.s > bond ? `超過 ${hi}` : `低於 ${lo}`;
-  return `${head}（${side}，${hasItem ? `下面有調回 ${pct0(bond)} 的一項` : '這次換算不出整股，下個月再算'}）`;
+  return `${head}（${after}，${side}，${hasItem ? `下面有調回 ${pct0(bond)} 的一項` : '這次換算不出整股，下個月再算'}）`;
 }
 
 /** F26 的標題與理由（allocation_redesign §1.3 的項目文字）。 */
@@ -183,7 +185,8 @@ function coreBandText(acct: Account, check: CoreBand, first: boolean): { title: 
   const high = check.s > bond;
   const title = `核心比例調回：${b} 那一邊占核心 ${pct1(check.s)}，${high ? `超過 ${pct0(bond + band)}` : `低於 ${pct0(bond - band)}`} → 調回 ${pct0(bond)}`;
   const base = `核心固定放 ${v} ${tenths(1 - bond)}、${b} 與現金${tenths(bond)}。平常不調，超出 ${pct0(bond - band)}～${pct0(bond + band)} 才調回。`;
-  const dir = high ? `這次是股票跌多了，調回等於跌深買 ${v}。` : `這次是股票漲多了，調回等於漲多買 ${b}。`;
+  // T86 P5：不猜原因（自己買賣、出金、從全 VOO 起步也會偏離），只描述事實與調回的方向
+  const dir = `${b} 那一邊占核心 ${pct1(check.s)}，${high ? `超過 ${pct0(bond + band)}` : `低於 ${pct0(bond - band)}`}，調回 ${pct0(bond)}：${high ? `賣 ${b}、買 ${v}` : `賣 ${v}、買 ${b}`}。`;
   return { title, why: base + (first ? '' : dir) };
 }
 
@@ -1363,10 +1366,14 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     const alt = monthlyReport(acct0, view, input, flow, flowCashAlreadyIn, true);
     if (alt.notif.items.some((i) => i.f === 'F26')) return alt;
   }
-  if (band.item) items.push(band.item);
+  if (band.item) {
+    // 核心價格和基準對不上（core_ai §3.10；T86 P14）：F26 的股數就是照這個價格算的，項目上也寫一句
+    if (input.coreNote) band.item.note = [band.item.note, input.coreNote].filter(Boolean).join('；');
+    items.push(band.item);
+  }
   const coreBand = { s: band.check.s, bond: band.check.bond, core: band.check.core };
   // 狀態文字（allocation_redesign §1.6）：核心比例；崩盤規則已經退場
-  const status = `${coreStatusText(acct, band.check, !!band.item)}；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '');
+  const status = `${coreStatusText(acct, band.check, !!band.item)}；動能部位${thirdLabel(acct.rule.volW ?? 1) === '1' ? '全額' : ` ${thirdLabel(acct.rule.volW ?? 1)}`}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '');
   const notif = newNotif(acct, view, {
     kind: items.length ? 'MONTHLY' : 'MONTHLY_EMPTY',
     title: items.length ? `${input.month} 月報` : `${input.month} 月報：本月不用動`,
@@ -1952,7 +1959,8 @@ export function fillItem(acct: Account, view: MarketView, ticker: string): Item 
       ? '你開檔時選了先買一半、確認後再補滿；你另外定的加碼條件成立，和開檔之後第一份財報過關一樣算確認（兩者先到的算）。這是你事先定的，預設照做；不做的話標準比重改成現在的比重，之後不再提。'
       : '你開檔時選了先買一半、確認後再補滿；確認的條件是開檔之後的第一份財報過關。這是你事先定的，預設照做；不做的話標準比重改成現在的比重，之後不再提。',
     choices: [
-      { id: 'RULE', label: `照做：補滿，買 ${v.shares} 股`, lines: [{ ticker, bucket: 'own', shares: v.shares, reason: '自選訊號' }], effects: [{ type: 'BUILD_END', ticker, keep: false }] },
+      { id: 'RULE', label: `照做：補滿，買 ${v.shares} 股`, // T86 P12c：原因寫「自選補滿」（原本「自選訊號」，LINE 上看不出是先買一半的補滿）
+        lines: [{ ticker, bucket: 'own', shares: v.shares, reason: '自選補滿' }], effects: [{ type: 'BUILD_END', ticker, keep: false }] },
       { id: 'SKIP', label: '這次不做（維持現在的大小）', lines: [], effects: [{ type: 'BUILD_END', ticker, keep: true }] },
     ],
     choice: 'RULE',

@@ -138,7 +138,9 @@ function num(v: unknown, name: string, min: number, max: number): number {
 /** 標準比重（小數）。畫面上填的是百分比，超出範圍時用百分比講（T34 走一遍的缺口：原本寫「要在 0.001 到 0.5 之間」，和畫面上的 % 對不起來）。 */
 function stdWeightOf(v: unknown): number {
   const x = typeof v === 'string' && v.trim() !== '' ? Number(v.replace(/[,\s%]/g, '')) : v;
-  if (typeof x !== 'number' || !Number.isFinite(x) || x < 0.001 || x > 0.5) throw new SiteError(422, '標準比重要在 0.1% 到 50% 之間（畫面上填百分比，例如 5 代表 5%）');
+  if (typeof x !== 'number' || !Number.isFinite(x) || x < 0.001) throw new SiteError(422, '標準比重要在 0.1% 到 15% 之間（畫面上填百分比，例如 5 代表 5%）');
+  // 上限是單檔上限（allocation_redesign §4.6；T86 P3）：一檔自選超過它月報就會叫你減回 10%，標準比重填得比它高沒有意義，多半是少打了小數點（6 打成 60）
+  if (x > DEFAULT_CONFIG.ownCapHi) throw new SiteError(422, `標準比重最多 ${Math.round(DEFAULT_CONFIG.ownCapHi * 100)}%（單檔上限）：一檔自選超過總資產的 ${Math.round(DEFAULT_CONFIG.ownCapHi * 100)}% 月報就會叫你減回 ${Math.round(DEFAULT_CONFIG.ownCapTo * 100)}%，所以填得比它高沒有意義。畫面上填百分比，例如 5 代表 5%，沒有打錯小數點嗎？`);
   return x;
 }
 
@@ -702,10 +704,12 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
                 watch: !fileMeta(d.acct, tk)!.held,
                 thesisBefore: out.before.text,
                 exitPlan: {
-                  add: adopt.plan.add.map((x) => ({ text: x.text, action: x.action, kind: x.kind, status: x.status })),
+                  add: adopt.plan.add.map((x) => ({ text: x.text, action: x.action, kind: x.kind, status: x.status, ...(x.metNow ? { metNow: true } : {}) })),
                   keep: adopt.plan.keep.map((x) => ({ id: x.id, text: x.text, action: x.action, was: x.was })),
                   retire: adopt.plan.retire.map((c) => ({ id: c.id, text: c.text, ...(isEntryAction(c.action) ? { entry: true } : {}) })),
                   rewrite: adopt.plan.rewrite.map((x) => ({ text: x.text, action: x.action, why: x.why })),
+                  // 草稿沒有加碼條件：你現在的加碼條件不動（T86 P10）
+                  stay: adopt.plan.stay.map((c) => ({ id: c.id, text: c.text, action: c.action })),
                 },
                 peerPlan: { save: adopt.peers.save, skip: adopt.peers.skip.map(peerSkipText), before: wsBefore?.peers ?? [] },
               }

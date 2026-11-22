@@ -10,7 +10,7 @@ function weightOf(input) {
   const raw = input.value.replace(/[%\s]/g, '');
   if (!raw) return null;
   const v = Number(raw);
-  if (!(v >= 0.1 && v <= 50)) throw new Error('比重填百分比，0.1～50；例如 4 代表 4%。不確定就留空，用推薦值');
+  if (!(v >= 0.1 && v <= 15)) throw new Error('比重填百分比，0.1～15；例如 4 代表 4%。上限 15% 是單檔上限：一檔超過總資產的 15% 月報就會叫你減回 10%。不確定就留空，用推薦值');
   return v / 100;
 }
 

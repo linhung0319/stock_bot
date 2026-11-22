@@ -490,6 +490,14 @@ function settleCash(acct: Account, view: MarketView, cash: number, expected: num
 }
 
 /**
+ * 清單上買短債（核心 SGOV）的單沒有照買、錢還在帳上（T86 P9，allocation_redesign §1.7）：現金本來就算 SGOV 那一邊，比例沒有變，
+ * 不問「補做差額或就這樣」。只限整行都在核心桶、買進、買得比清單少（沒買或少買，沒有買過頭、沒有賣）；其他差額照舊問。
+ */
+function cashStaysAsBond(acct: Account, m: { ticker: string; shares: number; parts: { bucket: string }[] }, done: number): boolean {
+  return m.ticker === acct.bondTicker && m.shares > 0 && done >= 0 && done < m.shares && m.parts.every((l) => l.bucket === 'core');
+}
+
+/**
  * 使用者填快照（每檔股數＋現金）。系統把「上一份快照 → 這一份」的差異拆成事件、分到各桶：
  *   清單上有的代號 → 照清單分到下單的那一桶（兩桶都有單時按股數比例）；差超過 1 股 → 問補做或就這樣
  *   清單上沒有的代號 → 核心 ETF／短債直接歸核心；其他問使用者屬於哪一桶，分類前月報不下單
@@ -548,7 +556,7 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
         });
         expectedCash -= q * px(m.ticker);
         traded += Math.abs(q * px(m.ticker));
-        if (Math.abs(q - m.shares) > 1) {
+        if (Math.abs(q - m.shares) > 1 && !cashStaysAsBond(acct, m, q)) {
           fu.push({ ticker: m.ticker, listed: m.shares, done: q });
           // 策略類的差額，下個月月報再列
           if (n.items.some((i) => i.kind === 'STRATEGY' && !i.cancelled && i.choice !== 'SKIP' && (i.choices.find((c) => c.id === i.choice)?.lines ?? []).some((l) => l.ticker === m.ticker && l.bucket === 'mom'))) {
@@ -785,7 +793,7 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
           assign(b, m.ticker, q, p.reason, n.id);
           done += q;
         }
-        if (Math.abs(done - m.shares) > 1) {
+        if (Math.abs(done - m.shares) > 1 && !cashStaysAsBond(acct, m, done)) {
           fu.push({ ticker: m.ticker, listed: m.shares, done });
           if (n.items.some((i) => i.kind === 'STRATEGY' && !i.cancelled && i.choice !== 'SKIP' && (i.choices.find((c) => c.id === i.choice)?.lines ?? []).some((l) => l.ticker === m.ticker && l.bucket === 'mom'))) {
             acct.mom.owe[m.ticker] = { since: view.date, notif: n.id };
@@ -1576,7 +1584,8 @@ export function relistOwnBuys(acct: Account, view: MarketView, ticker: string, w
       }
       if (it.f === 'F14') {
         const meta = acct.own[ticker];
-        it.title = addOwnTitle(ticker, rule.stdWeight, rule.applied === 'HALF' ? 'HALF' : rule.applied === 'BUILD' ? (meta?.opened?.startState === 'BUILD' ? 'BUILD_DROP' : 'BUILD') : 'STD');
+        // 標題跟著新的買法，但後面註明是之後才改的（T86 P16）：持股頁「這檔的紀錄」用這個標題，不然看起來像新增那天就選了
+        it.title = `${addOwnTitle(ticker, rule.stdWeight, rule.applied === 'HALF' ? 'HALF' : rule.applied === 'BUILD' ? (meta?.opened?.startState === 'BUILD' ? 'BUILD_DROP' : 'BUILD') : 'STD')}（${notifDay(view.date)} ${why}）`;
       }
       it.note = `${notifDay(view.date)} ${why}：照${goal}重算，${to ? `買 ${to} 股` : '不用買了'}（原本 ${from} 股）`;
       delete (it as Item & { x?: unknown }).x;

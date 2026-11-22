@@ -178,7 +178,7 @@ describe('T38：同時有兩份還沒填快照的清單列了同一桶同一檔'
     const one = applySnapshot(a, view, filled(a, view, [lists[0]]));
     expect(one.followUps).toEqual([dep.notif.id]);
     expect(notif(one.acct, m.id).followUp).toBeUndefined();
-    expect(notif(one.acct, dep.notif.id).followUp!.map((x) => x.ticker).sort()).toEqual(lists[1].composed!.merged.filter((x) => Math.abs(x.shares) > 1).map((x) => x.ticker).sort());
+    expect(notif(one.acct, dep.notif.id).followUp!.map((x) => x.ticker).sort()).toEqual(lists[1].composed!.merged.filter((x) => Math.abs(x.shares) > 1 && !(x.ticker === a.bondTicker && x.shares > 0)).map((x) => x.ticker).sort());
   });
 
   it('入金清單已回覆、月報還沒回覆，兩份都照做了：月報當成照預設回覆，兩份都完成、都沒有差額', () => {

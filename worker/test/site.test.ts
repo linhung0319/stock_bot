@@ -150,7 +150,7 @@ describe('情境 ① 平常的月報：用網站走完', () => {
       items.map((i) => JSON.stringify([i.ticker ?? null, i.choice, i.choices.map((c) => [c.id, c.lines.map((l) => `${l.bucket}:${l.ticker}:${l.shares}`)])])).sort();
     expect(sig(v.items)).toEqual(sig(n.items));
     expect(v.items.map((i) => i.label)).toEqual(['動能出場', '動能進場', '動能比例調回', 'AI 建議提高比重']);
-    expect(v.text).toBe('核心：SGOV 與現金 20.6%（15%～25% 之內不調）。動能部位全額');
+    expect(v.text).toBe('核心：SGOV 與現金 20.6%（這份月報其他單做完之後，15%～25% 之內不調）。動能部位全額');
     const orcl = itemOf(v, '動能出場', 'ORCL');
     expect(orcl.headline).toBe('賣 ORCL 28 股（全部）');
     expect(orcl.bucket).toBe('mom');

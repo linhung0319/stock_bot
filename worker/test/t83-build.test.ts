@@ -545,7 +545,7 @@ describe('T83：確認與補滿（F27，§4.1、D4、D10）', () => {
     expect(m.items.some((i) => i.f === 'F27')).toBe(false);
     expect(sim.acct.own.MSFT.buyBlocked).toEqual({ date: sim.pre.date, what: '補滿', text: '11/25 有前提被判不成立' });
     const b = buildViewOf(sim.acct, sim.pre, 'MSFT', 0.01)!;
-    expect(b.blocked).toBe('補滿的條件過關了，但11/25 有前提被判不成立，這次不提補滿；下個月月報再看一次。');
+    expect(b.blocked).toBe('補滿的條件過關了，但 11/25 有前提被判不成立，這次不提補滿；下個月月報再看一次。');
     // 下下個月（30 天過了）就列
     sim.respond(m.id);
     sim.open();
@@ -597,7 +597,7 @@ describe('T83：拖太久、兩個按鈕、選了先買一半但其實買足了�
     expect(s.stale).toContain('MSFT 先買的一半已經');
     expect(s.text).toContain('11-10 的財報後審查沒有一致結論，等下一份財報。');
     const file = metaFile(sim.acct, 'MSFT', sim.pre.date)!;
-    expect(ownAttention([file], sim.acct, sim.pre).filter((x) => x.kind === 'BUILD_STALE').map((x) => x.text)).toEqual([s.stale]);
+    expect(ownAttention([file], sim.acct, sim.pre).filter((x) => x.kind === 'BUILD_STALE').map((x) => x.text)).toEqual([s.stale!.replace('在這一頁決定', '到持股頁決定')]); // 持股頁上寫「在這一頁決定」，「要看的事」寫「到持股頁決定」（T86 P12a）
     // 只有預設前提的寫法
     toBuild(sim.acct, 'META', 0.06);
     expect(holdingDetail(ready(sim), 'META')!.own!.build!.text).toContain('程式比對系統預設前提 D1～D3 都沒有不成立');

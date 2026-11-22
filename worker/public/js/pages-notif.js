@@ -55,6 +55,8 @@ const TODO = {
   TRADE: { chip: '等你下單、填快照', cls: 'now', cta: '下單、填快照' },
   DECIDE: { chip: '等你決定', cls: 'now', cta: '看理由、做決定' },
   INFO: { chip: '提醒', cls: 'warn', cta: '打開' },
+  // 預設不動的跌幅審查（T86 P2）：不用回覆，不算首頁的件數
+  FYI: { chip: '不用回覆', cls: '', cta: '看理由' },
 };
 
 function todoCard(t, ctx) {
@@ -69,7 +71,7 @@ function todoCard(t, ctx) {
       'div',
       { class: 'todo-foot btn-row' },
       // 決定好了的清單直接到填快照：那一頁每一檔有 +／− 幾股和做完的股數，照著下單（第二步「下單」併進來了）
-      h('a', { class: 'btn primary', href: t.type === 'TRADE' ? '#/snapshot' : `#/n/${t.id}` }, k.cta),
+      h('a', { class: t.type === 'FYI' ? 'btn' : 'btn primary', href: t.type === 'TRADE' ? '#/snapshot' : `#/n/${t.id}` }, k.cta),
       t.type === 'TRADE' ? h('a', { class: 'btn', href: `#/n/${t.id}` }, '看決定與理由') : null,
       t.type === 'INFO'
         ? actionButton('知道了', '', async () => {
@@ -170,7 +172,8 @@ export async function homePage(ctx, opt = {}) {
       h(
         'div',
         { class: 'todo-area' },
-        n ? st.todo.map((t) => todoCard(t, ctx)) : glass('empty', h('h3', null, '沒有要操作的事'), h('p', { class: 'dim small' }, '有事的時候才會出現在這裡：每月第一個交易日的月報、自選股的大變動、或你自己登記的入金出金。沒照清單做也沒關係，隨時可以填快照對帳。')),
+        ...(n ? st.todo.map((t) => todoCard(t, ctx)) : [glass('empty', h('h3', null, '沒有要操作的事'), h('p', { class: 'dim small' }, '有事的時候才會出現在這裡：每月第一個交易日的月報、自選股的大變動、或你自己登記的入金出金。沒照清單做也沒關係，隨時可以填快照對帳。'))]),
+        ...(st.fyi?.length ? [h('h2', { class: 'sec' }, '不用回覆'), h('p', { class: 'small faint', style: 'margin:0 0 8px' }, '預設不動的通知：不用下單，也不用回覆；想自己先賣或加碼才需要打開。'), ...st.fyi.map((t) => todoCard(t, ctx))] : []),
       ),
       homeBriefRow(st.brief),
       records(hist, opt.records ?? 0),
@@ -1073,7 +1076,7 @@ export async function snapshotPage(ctx) {
       if (r.why?.value.trim()) why[t] = r.why.value.trim();
       if (r.std?.value.trim()) {
         const w = parse(r.std);
-        if (!(w >= 0.1 && w <= 50)) return msg.replaceChildren(errBox(new Error(`${t} 的標準比重填百分比，0.1～50；例如 5 代表 5%。留空就用現在占總資產的比重。`)));
+        if (!(w >= 0.1 && w <= 15)) return msg.replaceChildren(errBox(new Error(`${t} 的標準比重填百分比，0.1～15；例如 5 代表 5%。上限 15% 是單檔上限：一檔自選超過總資產的 15% 月報就會叫你減回 10%。留空就用現在占總資產的比重。`)));
         std[t] = w / 100;
       }
     }

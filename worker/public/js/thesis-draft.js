@@ -147,12 +147,14 @@ export function adoptCompare(pv) {
     ...ep.retire.map((x) => ({ tone: 'hot', text: `撤下：${x.text}` })),
     ...ep.keep.map((x) => ({ tone: 'core', text: `沿用：${x.text}${x.was && x.was !== x.action ? `（成立時 ${ACT[x.was]} → ${ACT[x.action]}）` : ''}` })),
     // 候補（T85）：進場條件只在審查時判的那種是「月底有新證據時由 AI 確認」；出場、加碼條件候補期間不監測
-    ...ep.add.map((x) => ({ tone: 'dim', text: `新增：${x.text}（成立時${ACT[x.action] ?? x.action}；${x.action === 'ENTRY' ? `採用後${x.status === 'REVIEW_ONLY' ? '月底有新證據時由 AI 確認' : (STATUS_TEXT[x.status] ?? x.status)}` : dr.watch && x.status !== 'MANUAL' ? '候補期間不監測，進場之後才開始' : `採用後${STATUS_TEXT[x.status] ?? x.status}`}）` })),
+    ...ep.add.map((x) => ({ tone: 'dim', text: `新增：${x.text}（成立時${ACT[x.action] ?? x.action}；${x.action === 'ENTRY' ? x.metNow ? '現在已經成立：採用後直接成立，下一份月報會列進場' : `採用後${x.status === 'REVIEW_ONLY' ? '月底有新證據時由 AI 確認' : (STATUS_TEXT[x.status] ?? x.status)}` : dr.watch && x.status !== 'MANUAL' ? '候補期間不監測，進場之後才開始' : `採用後${STATUS_TEXT[x.status] ?? x.status}`}）` })),
     ...ep.rewrite.map((x) => ({ tone: 'warn', text: `送 AI 改寫、回來後在持股頁確認：${x.text}（${x.why}）` })),
+    // 草稿沒有加碼條件：你現在的加碼條件不動（T86 P10）
+    ...(ep.stay ?? []).map((x) => ({ tone: 'core', text: `不動：${x.text}（成立時 ${ACT[x.action] ?? x.action}；草稿沒有加碼條件，你的加碼條件照舊）` })),
   ];
   // 加碼條件（T84）、進場條件（T85）和出場條件同一張表、一起整組取代：有的話標題寫出來（你填的價格條件不在這裡，採用不會動它們）
   const acts = [...ep.add, ...ep.keep, ...ep.rewrite].map((x) => x.action);
-  const hasAdd = acts.some((a) => a === 'FILL' || a === 'RAISE');
+  const hasAdd = acts.some((a) => a === 'FILL' || a === 'RAISE') || (ep.stay ?? []).length > 0;
   const hasEntry = acts.some((a) => a === 'ENTRY') || ep.retire.some((x) => x.entry);
   if (ex.length) out.push({ h: ['出場條件', hasAdd ? '加碼條件' : null, hasEntry ? '進場條件（你填的價格條件不動）' : null].filter(Boolean).join('、'), rows: ex });
   const pp = dr.peerPlan ?? { save: [], skip: [], before: [] };

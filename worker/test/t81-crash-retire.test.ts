@@ -40,9 +40,9 @@ describe('T81：排程不再派崩盤檢視', () => {
 describe('T81：月報狀態文字（§1.6）', () => {
   const acct = { cfg: DEFAULT_CONFIG, bondTicker: 'SGOV' } as unknown as Account;
   it('界線內／太少／太多（有 F26、換算不出整股）', () => {
-    expect(coreStatusText(acct, coreBandCheck(19.2, 100, DEFAULT_CONFIG), false)).toBe('核心：SGOV 與現金 19.2%（15%～25% 之內不調）');
-    expect(coreStatusText(acct, coreBandCheck(26.3, 100, DEFAULT_CONFIG), true)).toBe('核心：SGOV 與現金 26.3%（超過 25%，下面有調回 20% 的一項）');
-    expect(coreStatusText(acct, coreBandCheck(12, 100, DEFAULT_CONFIG), false)).toBe('核心：SGOV 與現金 12.0%（低於 15%，這次換算不出整股，下個月再算）');
+    expect(coreStatusText(acct, coreBandCheck(19.2, 100, DEFAULT_CONFIG), false)).toBe('核心：SGOV 與現金 19.2%（這份月報其他單做完之後，15%～25% 之內不調）');
+    expect(coreStatusText(acct, coreBandCheck(26.3, 100, DEFAULT_CONFIG), true)).toBe('核心：SGOV 與現金 26.3%（這份月報其他單做完之後，超過 25%，下面有調回 20% 的一項）');
+    expect(coreStatusText(acct, coreBandCheck(12, 100, DEFAULT_CONFIG), false)).toBe('核心：SGOV 與現金 12.0%（這份月報其他單做完之後，低於 15%，這次換算不出整股，下個月再算）');
   });
 });
 

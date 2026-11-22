@@ -212,7 +212,7 @@ export function accountBubble(a: Pick<AccountView, 'buckets' | 'holdings' | 'cas
   } else say.push('沒有持股碰到規則的門檻。');
   // 核心比例超出界線（allocation_redesign §1.6）：下一份月報會列調回
   const core = a.status.find((s) => s.label === '核心比例');
-  if (core?.tone === 'warn') say.push('核心', neg(core.value), '，超出界線，下一份月報會調回。');
+  if (core?.tone === 'warn') say.push('核心', neg(core.value), core.detail.includes('這份月報已經列') ? '，超出界線，這份月報已經列了調回。' : '，超出界線，下一份月報會調回。');
   if (a.cash < NEG_CASH) say.push('帳上現金是 ', neg(money(a.cash)), '。');
   return { k: '現在的狀況', say: tidy(say), mood: alerts.length ? 'alert' : 'watch' };
 }

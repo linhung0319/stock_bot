@@ -434,7 +434,9 @@ describe('T80 月報的核心比例調回（F26，§1.3）', () => {
     expect(f26.kind).toBe('CORE_BAND');
     expect(f26.ticker).toBeUndefined();
     expect(f26.title).toMatch(/^核心比例調回：SGOV 那一邊占核心 \d+\.\d%，低於 15% → 調回 20%$/);
-    expect(f26.why).toBe('核心固定放 VOO 八成、SGOV 與現金兩成。平常不調，超出 15%～25% 才調回。這次是股票漲多了，調回等於漲多買 SGOV。');
+    // T86 P5：不猜原因，只寫事實與調回的方向
+    expect(f26.why).toMatch(/^核心固定放 VOO 八成、SGOV 與現金兩成。平常不調，超出 15%～25% 才調回。SGOV 那一邊占核心 [\d.]+%，低於 15%，調回 20%：賣 VOO、買 SGOV。$/);
+    expect(f26.why).not.toContain('漲多了');
     expect(f26.note).toBeUndefined();
     expect(f26.choices.map((c) => [c.id, c.label])).toEqual([
       ['DO', '照做'],
@@ -560,7 +562,8 @@ describe('T80 月報的核心比例調回（F26，§1.3）', () => {
     const hi = item(next, 'F26');
     expect(hi.note).toBeUndefined();
     expect(hi.title).toMatch(/超過 25% → 調回 20%$/);
-    expect(hi.why).toContain('這次是股票跌多了，調回等於跌深買 VOO。');
+    expect(hi.why).toMatch(/SGOV 那一邊占核心 [\d.]+%，超過 25%，調回 20%：賣 SGOV、買 VOO。$/);
+    expect(hi.why).not.toContain('跌多了');
     expect(hi.choices[0].lines.map((l) => [l.ticker, Math.sign(l.shares)])).toEqual([
       ['SGOV', -1],
       ['VOO', 1],

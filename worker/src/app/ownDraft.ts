@@ -38,7 +38,7 @@ import type { ApplyCtx, StartCtx } from './aiCtx';
 import { getRun, startRun, type AiRun } from './aiRuns';
 import type { Env, Fetcher } from './env';
 import { gatherOwnEvidence, reviewThesisEvidence, routineReady } from './ownAi';
-import { AUTO_KEY_TRIES, BROKEN_QUIET_DAYS, DRAFT_EXPIRE_DAYS, OWNED_LIVE, isEntryAction, acceptStatus, autoKeyUsed, condFacts, draftKeyOf, draftTriggers, draftUntil, fileKind, loadPrevFile, recentBroken, thesisFile, triggerRank, type CondAction, type PrevFile, type ThesisFile } from './thesis';
+import { AUTO_KEY_TRIES, BROKEN_QUIET_DAYS, DRAFT_EXPIRE_DAYS, OWNED_LIVE, isAddAction, isEntryAction, acceptStatus, autoKeyUsed, condFacts, draftKeyOf, draftTriggers, draftUntil, fileKind, loadPrevFile, recentBroken, thesisFile, triggerRank, type CondAction, type PrevFile, type ThesisFile } from './thesis';
 import { buildDocMenu, sourceFacts } from './webEvidence';
 import type { DocCtx } from '../ai/added';
 
@@ -139,7 +139,7 @@ export function prevFileDoc(prev: PrevFile | null, ticker: string, asOf: string)
 export const DRAFT_RISK_DAYS = 180;
 export const DRAFT_RISK_MAX = 6;
 const RISK_QUOTE_MAX = 300;
-const FN_TEXT: Record<string, string> = { OWN_REVIEW: '定期審查', OWN_DROP: '減半檢視' };
+const FN_TEXT: Record<string, string> = { OWN_REVIEW: '定期審查', OWN_DROP: '跌幅審查' };
 
 /** ai_runs 裡讀新眼光結果的那幾欄。 */
 export interface RiskRunRow {
@@ -875,6 +875,8 @@ export interface AdoptPlan {
   keep: { k: number; id: number; text: string; action: CondAction; was: CondAction | null }[];
   /** 現在監測中、草稿裡沒有的你定的條件：採用時撤下（T42 整組取代，草稿就是存檔後要的全部出場條件）。 */
   retire: LiveCondition[];
+  /** 草稿沒有加碼條件時，你現在監測中的加碼條件不動（T86 P10；和進場條件「沒送就不動」一致）。草稿有加碼條件時是空的（整組取代）。 */
+  stay: LiveCondition[];
 }
 
 /** 條件寫進去之後的狀態（同 ownAi.ts insertConditionStmts 的算法：價格、指標程式算不出來的財報條件只記錄）。 */
@@ -890,7 +892,10 @@ function adoptStatus(kind: AdoptExit['kind'], check: Record<string, unknown>): A
  *     和改寫同一個格式檢查）、價格條件（只記錄）→ 直接寫進條件（add）；監測不了格式的（舊草稿的事件條件沒有 confirm_by 等）→ 送改寫（rewrite）；
  *     監測中、草稿沒有的 → 撤下（retire）。
  */
-export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits' | 'adds' | 'entries'>, live: LiveCondition[]): AdoptPlan {
+export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits' | 'adds' | 'entries'>, live0: LiveCondition[]): AdoptPlan {
+  // T86 P10：草稿沒有加碼條件 → 不動你現在的加碼條件（不比對、不撤下）；草稿有加碼條件才和出場條件一起整組取代
+  const stay = d.adds?.length ? [] : live0.filter((c) => isAddAction(c.action));
+  const live = live0.filter((c) => !stay.includes(c));
   const premises: PremiseInput[] = d.premises.map((dp) => {
     const f = draftPremiseFields(dp);
     return dp.keep_id ? { id: dp.keep_id, text: dp.text, ...f } : { id: null, text: dp.text, origin: 'AI_DRAFT_ACCEPTED' as const, ...f };
@@ -924,7 +929,7 @@ export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits' | 'adds' |
     rewrite.push({ k, text: x.text, action, why });
   });
   const kept = new Set(keep.map((x) => x.id));
-  return { premises, add, rewrite, keep, retire: live.filter((c) => !kept.has(c.id)) };
+  return { premises, add, rewrite, keep, retire: live.filter((c) => !kept.has(c.id)), stay };
 }
 
 /**
@@ -933,12 +938,14 @@ export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits' | 'adds' |
  * 送改寫的（rewrite）之後在持股頁確認時另外檢查上限（acceptOwnConditions 的 checkCap）。
  * AI 監測中的條件不在 live 裡（不是你定的），採用不動它們，也不算在這 8 條裡。live 的 code 沒給（舊的呼叫端）時沿用的那條算一條。
  */
-export function adoptOwnedCount(plan: Pick<AdoptPlan, 'keep' | 'add'>, live: LiveCondition[]): number {
+export function adoptOwnedCount(plan: Pick<AdoptPlan, 'keep' | 'add'> & { stay?: LiveCondition[] }, live: LiveCondition[]): number {
   const kept = plan.keep.filter((k) => {
     const code = live.find((l) => l.id === k.id)?.code;
     return code === undefined || OWNED_LIVE.includes(code);
   }).length;
-  return kept + plan.add.filter((a) => OWNED_LIVE.includes(a.status) && !isEntryAction(a.action)).length;
+  // 不動的加碼條件（草稿沒有加碼條件）照樣算在 8 條裡
+  const stayed = (plan.stay ?? []).filter((c) => c.code === undefined || OWNED_LIVE.includes(c.code)).length;
+  return kept + stayed + plan.add.filter((a) => OWNED_LIVE.includes(a.status) && !isEntryAction(a.action)).length;
 }
 
 /** 採用之後監測中的非價格進場條件有幾條（T85：另算、最多 MAX_ENTRY_OTHER 條；沿用的看它的動作）。 */

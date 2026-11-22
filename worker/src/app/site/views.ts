@@ -139,6 +139,8 @@ function statusLabelOf(n: Notif): string {
   if (n.followUpOpen) return '快照和清單不同';
   const listLike = n.items.length > 0 && n.kind !== 'INFO';
   if (n.status === 'PENDING' && !listLike) return n.kind === 'INFO' || n.kind === 'MONTHLY_EMPTY' ? '未讀' : '等你回答';
+  // 預設不動、不用回覆的跌幅審查（T86 P2）：不是「等你決定」
+  if (n.status === 'PENDING' && isHoldNotice(n)) return '不用回覆';
   return keptAsRule(n) ?? STATUS_LABEL[n.status];
 }
 
@@ -552,6 +554,7 @@ const orderOf = (f: string) => {
 /** 月報上那一行狀態，換成白話。 */
 function plainText(t: string | undefined): string | null {
   if (!t) return null;
+  // 2026-11-23 起狀態行直接寫「動能部位全額」（LINE 與網站同一個字）；下面兩行只處理舊通知存的「動能比例 …」
   return t.replace(/動能比例 1$/, '動能部位全額').replace(/動能比例 (\S+)$/, '動能部位 $1').replace('；', '。');
 }
 
@@ -631,8 +634,8 @@ const refNameOf = (acct: Account, id: number | null | undefined): string | null 
 
 export interface TodoView {
   id: number;
-  /** ANSWER 要你回答；TRADE 已決定、等下單與快照；DECIDE 等你決定；INFO 提醒。 */
-  type: 'ANSWER' | 'TRADE' | 'DECIDE' | 'INFO';
+  /** ANSWER 要你回答；TRADE 已決定、等下單與快照；DECIDE 等你決定；INFO 提醒；FYI 預設不動、不用回覆（不算件數，stateView 另放在 fyi）。 */
+  type: 'ANSWER' | 'TRADE' | 'DECIDE' | 'INFO' | 'FYI';
   kindLabel: string;
   title: string;
   date: string;
@@ -656,7 +659,8 @@ function todoOf(d: Ready, n: Notif): TodoView | null {
   const v = notifView(d, n);
   return {
     ...base,
-    type: 'DECIDE',
+    // 預設不動、不用回覆的跌幅審查通知（T86 P2，§3.2）：不算「等你決定」、不算首頁件數；另列在「不用回覆」那一類
+    type: isHoldNotice(n) ? 'FYI' : 'DECIDE',
     lines: v.items.filter((i) => !i.cancelled).map((i) => ({ text: i.kind === 'AI_ONLY' || i.kind === 'HARD' ? `${i.headline}（${i.label}，預設不做）` : i.headline, why: i.explain.short, bucket: i.bucket })),
   };
 }
@@ -880,10 +884,13 @@ export function buildViewOf(acct: Account, view: MarketView, ticker: string, wei
     ? `先買的一半已確認（${b.ok.text}）：下一份月報會列「補滿到標準比重 ${std}」，預設照做。`
     : `${meta.entered?.via === 'F29' ? '從候補名單進場，先買一半' : '你選了先買一半'}：現在的目標是標準比重 ${std} 的一半（${fmtPct(rule.stdWeight / 2, 1)}），還沒買的部分留在核心。${meta.entered ? '開始持有' : '開檔'}之後的第一份財報過關（${how}）就在下一份月報補滿。${b.last ? `${b.last.text}，等下一份財報。` : ''}`;
   const blocked = b.ok ? buyBlockedText(meta, '補滿', view.date) : null;
-  const stale = buildStale(meta, view.date) ? (buildStaleLine(ticker, meta, view.date)[0]?.text ?? null) : null;
+  const stale = buildStale(meta, view.date) ? (buildStaleLine(ticker, meta, view.date)[0]?.text.replace('到持股頁決定', '在這一頁決定') ?? null) : null;
   const full = weight >= rule.stdWeight * BUILD_FULL_AT ? '你選了先買一半，但現在已經是打算的比例；要改成「已經買到這個比例」嗎？' : null;
   return { text, blocked, stale, full };
 }
+
+/** 「但」後面接英數字開頭的原因（例如日期 12/10）時補一個空白（T86 P12b）。 */
+const gap = (t: string): string => (/^[0-9A-Za-z]/.test(t) ? ' ' : '');
 
 /**
  * 買進前的程式檢查沒過、這次不提的那一行（allocation_redesign §4.0）：`補滿的條件過關了，但 11/06 有前提被判不成立，這次不提補滿；下個月月報再看一次。`
@@ -893,18 +900,21 @@ export function buyBlockedText(meta: Pick<Account['own'][string], 'buyBlocked'>,
   const x = meta.buyBlocked;
   if (!x || (what && x.what !== what) || Math.round((Date.parse(date) - Date.parse(x.date)) / 86400_000) >= 35) return null;
   // 你定的加碼條件（T84，§4.2）：條件是一次性的，不會下個月再看；line 是寫好的整句（減半中、不用買、同一份月報已經列了另一條）
-  if (x.what === '加碼') return `${x.line ?? `加碼條件成立，但${x.text}，這次不提加碼`}。加碼條件只成立一次，要再用就到編輯論點頁重新定一條。`;
-  return `${x.what}的條件${x.what === '補滿' ? '過關了' : '成立了'}，但${x.text}，這次不提${x.what}；下個月月報再看一次。`;
+  if (x.what === '加碼') return `${x.line ?? `加碼條件成立，但${gap(x.text)}${x.text}，這次不提加碼`}。加碼條件只成立一次，要再用就到編輯論點頁重新定一條。`;
+  return `${x.what}的條件${x.what === '補滿' ? '過關了' : '成立了'}，但${gap(x.text)}${x.text}，這次不提${x.what}；下個月月報再看一次。`;
 }
 
 /**
  * 下跌加碼那一段（allocation_redesign §4.4，T84）：跌幅審查前提都沒有被判不成立時，持股頁寫有沒有提加碼、沒提的原因。
  * 照做了：「；這次下跌選了加碼（M/D）」；提過：「；通知上有加碼的選項（預設不動）」；沒提：「；沒有提下跌加碼：<原因>」。
  */
+/** 月/日（和同頁的「1/13 的當天通知」同一個格式；T86 P8）。 */
+const mdOf = (date: string): string => `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
+
 function dipText(meta: Account['own'][string]): string {
   const dr = meta.dropReview;
   const ep = meta.watchSince ?? dr?.session;
-  if (meta.dipAdd?.at && meta.dipAdd.episode === ep) return `；這次下跌選了加碼（${meta.dipAdd.at.slice(5)}）`;
+  if (meta.dipAdd?.at && meta.dipAdd.episode === ep) return `；這次下跌選了加碼（${mdOf(meta.dipAdd.at)}）`;
   const o = dr?.dipOffer;
   if (!o) return '';
   return o.ok ? `；通知上有下跌加碼的選項（${o.mode === 'FILL' ? '補滿到標準比重' : '提高到標準的 125%'}，預設不動）` : `；沒有提下跌加碼：${o.why}`;
@@ -922,7 +932,7 @@ export function watchNote(acct: Pick<Account, 'own' | 'notifs'>, ticker: string,
   const meta = acct.own[ticker];
   if (!meta) return '';
   const dr = meta.dropReview;
-  const when = dr ? `${dr.session.slice(5)} 的論點檢查` : '跌幅審查';
+  const when = dr ? `${mdOf(dr.session)} 的論點檢查` : '跌幅審查';
   const open = acct.notifs.some((n) => n.status === 'PENDING' && n.items.some((i) => i.ticker === ticker && i.f === 'F7' && !!i.thesisDrop && !i.cancelled));
   let what: string;
   if (!dr) what = '跌幅審查之後沒有減半';
@@ -1037,12 +1047,14 @@ function coreStatus(d: Ready): AccountView['status'][number] {
   const b = acct.bondTicker;
   if (!bar) return { label: '核心比例', value: '算不出來', tone: 'ok', detail: `缺價格，暫時算不出 ${b} 與現金占核心的比例。`, coreBar: null };
   const out = bar.at !== 'in';
+  // 這份月報已經列了 F26、還沒回覆：不寫「下一份月報會列」（T86 P12d）
+  const listed = acct.notifs.some((n) => n.status === 'PENDING' && n.items.some((i) => i.f === 'F26' && !i.cancelled));
   return {
     label: '核心比例',
     value: `${b} 與現金 ${(bar.s * 100).toFixed(1)}%`,
     tone: out ? 'warn' : 'ok',
     detail: out
-      ? `目標 ${pctW(bond)}，界線 ${pctW(bond - band)}～${pctW(bond + band)}；現在${bar.at === 'low' ? '偏少' : '偏多'}，下一份月報會列一項調回。`
+      ? `目標 ${pctW(bond)}，界線 ${pctW(bond - band)}～${pctW(bond + band)}；現在${bar.at === 'low' ? '偏少' : '偏多'}，${listed ? '這份月報已經列了一項調回，回覆後照做' : '下一份月報會列一項調回'}。`
       : `目標 ${pctW(bond)}（核心固定放 ${acct.cfg.coreTicker} 八成、${b} 與現金兩成）。每月月報日檢查，超出 ${pctW(bond - band)}～${pctW(bond + band)} 才調回。`,
     coreBar: bar,
   };
@@ -1063,7 +1075,7 @@ function coreHoldings(d: Ready, total: number): HoldingView[] {
       out.push({ bucket: 'core', ticker: t, shares: sh, price: px, value, pct: value / total, state: '短債', detail: '核心的兩成（連同帳上現金）放在這裡', tone: 'muted', gauge: null, meter: null, target: null });
     }
   }
-  out.push({ bucket: 'core', ticker: '現金', shares: 0, price: null, value: acct.cash, pct: acct.cash / total, state: '帳上現金', detail: acct.pendingWithdraw ? `出金 ${fmtMoney(acct.pendingWithdraw)} 還沒從券商轉出：券商現在會多顯示這筆` : '股利與交易剩下的零頭；月報時交給核心', tone: 'muted', gauge: null, meter: null, target: null });
+  out.push({ bucket: 'core', ticker: '現金', shares: 0, price: null, value: acct.cash, pct: acct.cash / total, state: '帳上現金', detail: acct.pendingWithdraw ? `出金 ${fmtMoney(acct.pendingWithdraw)} 還沒從券商轉出：券商現在會多顯示這筆` : `算在 ${acct.bondTicker} 那一邊（核心的兩成連同帳上現金）；月報有其他單時順便買成 ${acct.bondTicker}`, tone: 'muted', gauge: null, meter: null, target: null });
   return out;
 }
 
@@ -1176,6 +1188,8 @@ export interface StateView {
   hasAccount: boolean;
   account: AccountView | null;
   todo: TodoView[];
+  /** 不用回覆的通知（預設不動的跌幅審查，T86 P2）：首頁另列一類，不算件數與紅點。 */
+  fyi: TodoView[];
   recent: HistoryRow[];
   /** 史萊姆在待辦頁、帳戶頁說的話。 */
   bubble: { todo: Bubble; account: Bubble | null };
@@ -1236,15 +1250,16 @@ export function decideRank(n: Notif): number {
 
 export function stateView(d: SiteData): StateView {
   const base = { mode: d.mode, demo: d.demo ?? null, today: d.today, priceDate: d.view?.date ?? null, rankDate: d.rankSession, warnings: d.warnings, undo: d.undoable ? { date: d.undoable.date, at: d.undoable.at, cashOther: d.undoable.cashOther, cashWarn: d.undoable.cashWarn } : null };
-  if (!d.acct || !d.view) return { ...base, hasAccount: !!d.acct, account: null, todo: [], recent: [], thesisTodo: [], bubble: { todo: { k: '開始', say: [d.acct ? '帳戶在，但還沒有可用的價格資料。' : '還沒有帳戶。填一次券商裡現在的持股，我就從那裡開始記帳。'], mood: 'idle' }, account: null } };
+  if (!d.acct || !d.view) return { ...base, hasAccount: !!d.acct, account: null, todo: [], fyi: [], recent: [], thesisTodo: [], bubble: { todo: { k: '開始', say: [d.acct ? '帳戶在，但還沒有可用的價格資料。' : '還沒有帳戶。填一次券商裡現在的持股，我就從那裡開始記帳。'], mood: 'idle' }, account: null } };
   const r = d as Ready;
-  const order = { ANSWER: 0, TRADE: 1, DECIDE: 2, INFO: 3 };
+  const order = { ANSWER: 0, TRADE: 1, DECIDE: 2, INFO: 3, FYI: 4 };
   const byId = new Map(r.acct.notifs.map((n) => [n.id, n]));
-  const todo = r.acct.notifs
-    .map((n) => todoOf(r, n))
-    .filter((x): x is TodoView => !!x)
+  const all = r.acct.notifs.map((n) => todoOf(r, n)).filter((x): x is TodoView => !!x);
+  const fyi = all.filter((x) => x.type === 'FYI').sort((a, b) => b.id - a.id);
+  const todo = all
+    .filter((x) => x.type !== 'FYI')
     .sort((a, b) => order[a.type] - order[b.type] || (a.type === 'DECIDE' && b.type === 'DECIDE' ? decideRank(byId.get(a.id)!) - decideRank(byId.get(b.id)!) || a.id - b.id : b.id - a.id));
-  const open = new Set(todo.map((t) => t.id));
+  const open = new Set([...todo, ...fyi].map((t) => t.id));
   const recent = r.acct.notifs
     .filter((n) => !open.has(n.id))
     .slice(-5)
@@ -1254,7 +1269,7 @@ export function stateView(d: SiteData): StateView {
   const first = todo[0];
   const firstN = first?.type === 'DECIDE' ? r.acct.notifs.find((n) => n.id === first.id) : undefined;
   const plan = firstN ? notifView(r, firstN) : null;
-  return { ...base, hasAccount: true, account, todo, recent, thesisTodo: thesisTodoOf(r.acct), drafts: d.drafts ?? {}, brief: d.brief ?? null, notice: d.notice ?? null, bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
+  return { ...base, hasAccount: true, account, todo, fyi, recent, thesisTodo: thesisTodoOf(r.acct), drafts: d.drafts ?? {}, brief: d.brief ?? null, notice: d.notice ?? null, bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
 }
 
 // ---------------------------------------------------------------- 紀錄
@@ -1423,7 +1438,7 @@ export interface HoldingDetail {
   date: string;
   price: number | null;
   positions: { bucket: string; bucketName: string; shares: number; value: number; pct: number }[];
-  chart: { dates: string[]; close: number[]; ma200: (number | null)[]; halfLine: (number | null)[]; marks: { date: string; label: string }[] } | null;
+  chart: { dates: string[]; close: number[]; ma200: (number | null)[]; halfLine: (number | null)[]; /** 那條線的名字：有論點的是「審查線」（碰到才跌幅審查），只有預設前提的是「減半線」（T86 P7） */ lineName?: string; marks: { date: string; label: string }[] } | null;
   facts: { label: string; value: string; note?: string }[];
   own: {
     state: string;
@@ -1534,7 +1549,7 @@ export function chartOf(d: Ready, ticker: string, days = 250): HoldingDetail['ch
     halfLine.push(Number.isFinite(hi) ? Math.round(hi * (1 + SLOW.drawdown) * 100) / 100 : null);
   }
   const marks = d.acct.notifs.filter((n) => n.items.some((i) => i.ticker === ticker) && n.date >= dates[0]).map((n) => ({ date: n.date, label: n.title }));
-  return { dates, close, ma200, halfLine, marks };
+  return { dates, close, ma200, halfLine, lineName: half && fileKind(d.acct.own[ticker]) === 'THESIS' ? '審查線' : '減半線', marks };
 }
 
 /**

@@ -700,7 +700,7 @@ export interface MonthlyContext {
   attention?: Attention[];
   /**
    * 訊號日核心 ETF 資料檢查的結果（core_ai §3.10）：代碼（MA_SHORT、DAY_GAP、MA_GAP、BOND_JUMP、NO_BENCH）。每日流程在產生月報前算好；重算沿用。
-   * 有 DAY_GAP 或 MA_GAP、而且這個月崩盤規則切換 → F5／F6 項目的 note 寫 coreNote，LINE 加一行「注意：…」。
+   * 有 DAY_GAP、而且這份月報有核心比例調回 F26（舊的是崩盤規則切換 F5/F6）→ 項目的 note 寫 coreNote，LINE 加一行「注意：…」（T86 P14）。
    */
   coreCheck?: string[];
   /** 那一句 note（帶數字，每日流程寫好；引擎只照抄）。沒有 DAY_GAP、MA_GAP 時沒有。 */

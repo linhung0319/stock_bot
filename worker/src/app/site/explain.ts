@@ -21,6 +21,7 @@ import {
   sma,
   pickFrac,
   totalValue,
+  recommendStdWeights,
   trailingReturn,
   type Account,
   type Composed,
@@ -107,6 +108,8 @@ const SKIP = {
   strategy: '這是策略本身的單。這次不做，下個月月報會把差額再列一次。',
   own: '規則照樣記成已切換，之後不再提醒，直到下一次狀態改變。差異記在紀錄裡。',
   ai: 'AI 的建議是一次性的。不做就不再提醒，差異記在紀錄裡。',
+  // F23（提高到 125%）：不做不會記 12 個月的間隔（間隔只在照做後才起算，allocation_redesign D6），之後的審查條件還成立可能再提（T86 P13）
+  aiRaise: '這一則建議不做就結案，不會催你。但之後的審查如果條件還成立，AI 可能再提一次；「每 12 個月最多一次」只在你照做之後才起算。差異記在紀錄裡。',
 };
 
 // ---------------------------------------------------------------- 門檻尺
@@ -740,9 +743,10 @@ function ownScaleNote(acct: Account): string {
 }
 
 /** 每一行現在占多少、目標是多少（入金、出金、改比例的清單用）。deposit：入金清單，補自選的那一行寫「補到標準比重 X%」（T43）。 */
-function lineFacts(ctx: ExplainContext, lines: OrderLine[], deposit = false): Fact[] {
+function lineFacts(ctx: ExplainContext, lines: OrderLine[], deposit = false, opt: { withdraw?: number; scale?: boolean } = {}): Fact[] {
   const { acct, view } = ctx;
-  const total = totalValue(acct, view);
+  // 出金清單（T86 P4）：目標是出金後的比重，「目前」也用出金後的總資產當分母，不然看起來低於目標還在賣
+  const total = totalValue(acct, view) - (opt.withdraw ?? 0);
   const slot = momSlotTarget(acct.cfg, total, acct.rule.effPrev ?? 1);
   return lines.map((l) => {
     const c = closeOf(view, l.ticker);
@@ -754,7 +758,10 @@ function lineFacts(ctx: ExplainContext, lines: OrderLine[], deposit = false): Fa
     if (l.bucket === 'mom' && acct.rule.heldMom.includes(l.ticker)) tgt = slot / total;
     // 入金補自選（T43）：補的是標準比重（減半中只補到一半）；自選各檔合計超過自選比例時入金照比例少補，寫出實際補到多少
     const ownFill = deposit && ownRule && l.shares > 0 ? `目前 ${fmtPct(cur, 1)}，${depositFillText(acct, l.ticker)}` : null;
-    const why = ownFill ? ownFill : l.reason === '單檔上限' ? '出金後會超過單檔上限 15%，先減回 10%' : l.reason === '跨桶上限' ? '自選＋動能合計超過上限' : tgt !== null ? `目前 ${fmtPct(cur, 1)}，目標 ${fmtPct(tgt, 1)}` : `目前 ${fmtPct(cur, 1)}`;
+    // 改比例清單（T86 P4）：自選的股數是照新舊比例放大或縮小，不是買到目標比重；寫股數，不寫「目前 7.5%，目標 7.5%」
+    const have = acct.lots[l.bucket][l.ticker] ?? 0;
+    const scaled = opt.scale && ownRule ? `股數照比例 ${have} → ${have + l.shares}` : null;
+    const why = scaled ? scaled : ownFill ? ownFill : l.reason === '單檔上限' ? '出金後會超過單檔上限 15%，先減回 10%' : l.reason === '跨桶上限' ? '自選＋動能合計超過上限' : tgt !== null ? `目前 ${fmtPct(cur, 1)}，目標 ${fmtPct(tgt, 1)}` : `目前 ${fmtPct(cur, 1)}`;
     return { label: `${BUCKET_NAME[l.bucket]} ${l.ticker}`, value: sharesText(l.shares), note: why };
   });
 }
@@ -890,7 +897,7 @@ function cashflow(ctx: ExplainContext, n: Notif, it: Item): Explain {
       short: `出金 ${fmtMoney(amt)}：只賣不買${cap.length ? `，${cap.join('、')} 先減回 10%` : ''}`,
       why: `你要出金 ${fmtMoney(amt)}。出金只賣不買${cap.length ? `：${cap.join('、')} 在出金後會超過總資產 15%，所以先在這份清單減回 10%，賣得的錢抵出金` : ''}；其餘依序從：動能高於每檔目標的部分（賣回目標）→ 核心（照比例賣 ${core} 與 ${acct.bondTicker}，帳上現金先用）→ 動能其餘的部分 → 最後才是自選。清單做完後，從券商轉出 ${fmtMoney(amt)}，再回來填快照。`,
       rule: RULE.withdraw,
-      facts: [...head, ...lineFacts(ctx, lines)],
+      facts: [...head, ...lineFacts(ctx, lines, false, { withdraw: amt })],
     };
   }
   if (it.f === 'F13') {
@@ -910,7 +917,7 @@ function cashflow(ctx: ExplainContext, n: Notif, it: Item): Explain {
       short: m ? `比例 ${m[1]} → ${m[3]}` : '改比例',
       why: `你把自選／動能／核心的比例${m ? `從 ${m[1]} 改成 ${m[3]}` : '改了'}。${ownWhy}動能每檔的目標照新的比例重算，差額由核心吸收。原本的比例會繼續記在紀錄裡，之後可以回頭看這次調整是加分還是扣分。`,
       rule: RULE.ratio,
-      facts: [...head, ...(rel ? [rel] : []), ...lineFacts(ctx, lines), { label: '提醒', value: '', note: '在動能落後大盤的時候把它調成 0，等於在相對低點放棄它。系統不會擋，由你決定。' }],
+      facts: [...head, ...(rel ? [rel] : []), ...lineFacts(ctx, lines, false, { scale: true }), { label: '提醒', value: '', note: '在動能落後大盤的時候把它調成 0，等於在相對低點放棄它。系統不會擋，由你決定。' }],
     };
   }
   if (it.f === 'F14') return addOwnExplain(ctx, it);
@@ -938,6 +945,9 @@ function addOwnExplain(ctx: ExplainContext, it: Item): Explain {
   // 有論點、已跌 20% 以上：先買一半（allocation_redesign §4.1）；chose：不是跌深，是你在持股頁第一次設定標準比重時選的（清單照選擇重算過，T86 修正 P1）
   const chose = acct.rule.own[t]?.applied === 'BUILD' && acct.own[t]?.opened?.startState !== 'BUILD';
   const build = acct.rule.own[t]?.applied === 'BUILD' && !chose;
+  // 標準比重是推薦值才寫「建議的」；你自己填的（或照現在的持股比重）照實寫（T86 P12f）
+  const rec = recommendStdWeights(view, [...new Set([...Object.keys(acct.rule.own), t])], acct.cfg.ratio.own)[t];
+  const stdLead = rec !== undefined && Math.abs(rec - std) < 0.0005 ? `建議的標準比重是 ${fmtPct(std, 1)}（自選預算 ${fmtPct(acct.cfg.ratio.own)} 內，波動越大的比重越小）。` : `標準比重是 ${fmtPct(std, 1)}（你填的，或照你現在持有的比重；推薦的是 ${rec === undefined ? '算不出來' : fmtPct(rec, 1)}）。`;
   const total = totalValue(acct, view);
   const sh = sharesOf(it.choices[0].lines, t);
   const rank = ctx.rankOrder.indexOf(t);
@@ -954,7 +964,7 @@ function addOwnExplain(ctx: ExplainContext, it: Item): Explain {
     short: half ? '已比高點低 20% 以上，先買標準比重的一半' : chose ? `你選了先買一半：先買標準比重 ${fmtPct(std, 1)} 的一半` : `買到標準比重 ${fmtPct(std, 1)}`,
     why: adopted
       ? `你認養了動能選出的 ${t}：照常買進，但記在自選桶。之後動能就算把它排除，也不會叫你賣；改由自選的慢規則管。`
-      : `你把 ${t} 加進自選。建議的標準比重是 ${fmtPct(std, 1)}（自選預算 ${fmtPct(acct.cfg.ratio.own)} 內，波動越大的比重越小）。${half ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，已經在慢規則「減半」的範圍內，所以一開始只買標準比重的一半，等它站回 200 日均線連續 10 天再補足。這樣不會一買進就收到減半通知。` : ''}${build ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，有你的論點：先買標準比重的一半，開檔之後的第一份財報的審查過關（3 票一致、沒有前提被判不成立）再補滿，不看 200 日線。` : ''}${chose ? `你在持股頁選了先買一半：先買標準比重的一半，開檔之後的第一份財報的審查過關再補滿（下一份月報列「補滿」，預設照做）。` : ''}錢從核心出。`,
+      : `你把 ${t} 加進自選。${stdLead}${half ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，已經在慢規則「減半」的範圍內，所以一開始只買標準比重的一半，等它站回 200 日均線連續 10 天再補足。這樣不會一買進就收到減半通知。` : ''}${build ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，有你的論點：先買標準比重的一半，開檔之後的第一份財報的審查過關（3 票一致、沒有前提被判不成立）再補滿，不看 200 日線。` : ''}${chose ? `你在持股頁選了先買一半：先買標準比重的一半，開檔之後的第一份財報的審查過關再補滿（下一份月報列「補滿」，預設照做）。` : ''}錢從核心出。`,
     gauge: Number.isFinite(dd) && !adopted ? drawdownGauge(dd) : undefined,
     rule: RULE.addOwn,
     facts,
@@ -1022,7 +1032,7 @@ function aiOnly(ctx: ExplainContext, n: Notif, it: Item): Explain {
     chart: t,
     ai: note,
     aiMissing: !note,
-    choiceNotes: { AI: raise ? '買進後，這檔的標準比重就變成原本的 125%。等於提高自選的預算，由你決定。' : '照 AI 的檔位調整，慢規則的狀態跟著改。', SKIP: SKIP.ai },
+    choiceNotes: { AI: raise ? '買進後，這檔的標準比重就變成原本的 125%。等於提高自選的預算，由你決定。' : '照 AI 的檔位調整，慢規則的狀態跟著改。', SKIP: raise ? SKIP.aiRaise : SKIP.ai },
   };
 }
 

@@ -18,7 +18,7 @@ import { dropFailText, dropRetry } from '../src/app/dropAi';
 import { DROP_LINE, holdNoticeLine, notifText } from '../src/app/line';
 import { dropFollowUpText, dropWaiter, pushWaiting } from '../src/app/pushHold';
 import type { SiteData } from '../src/app/site/backend';
-import { accountView, historyView, holdingDetail, keptAsRule, notifView, watchNote } from '../src/app/site/views';
+import { accountView, historyView, holdingDetail, keptAsRule, notifView, stateView, watchNote } from '../src/app/site/views';
 import { metaFile, ownAttention, ruleResponseLogs } from '../src/app/thesis';
 import {
   AUTO_DEFAULT_NOTE,
@@ -270,6 +270,12 @@ describe('T82：預設不動的通知——不用回覆、不提醒、2 個交�
     expect(it7.aiLine).toBe('論點檢查（3 票）：你的 1 條前提都沒有被判不成立。這次下跌：大盤 -8%、產業比大盤 -9%、個股自身 -5%');
     expect(it7).toMatchObject({ drop: 'CLEAR', choice: 'SKIP', runIds: ['run-drop'] });
     expect(isHoldNotice(n)).toBe(true);
+    // T86 P2：不用回覆的通知不標「等你決定」、不算首頁的件數；另列在 fyi（不用回覆）
+    const st0 = stateView(ready(sim));
+    expect(st0.todo.some((t) => t.id === n.id)).toBe(false);
+    expect(st0.fyi.find((t) => t.id === n.id)).toMatchObject({ type: 'FYI' });
+    expect(notifView(ready(sim), live(sim, n.id)).statusLabel).toBe('不用回覆');
+    expect(st0.recent.some((r) => r.id === n.id)).toBe(false);
     const day0 = sim.d;
     const seen: Notif[] = [];
     sim.day({ afterClose: (c) => seen.push(...c) });
@@ -280,6 +286,7 @@ describe('T82：預設不動的通知——不用回覆、不提醒、2 個交�
     expect(closed).toMatchObject({ status: 'AUTO_DEFAULT', reminded: false });
     expect(closed.respondedAt).toBe(sim.market.days[sim.d - 1]);
     expect(seen.filter((x) => x.kind === 'INFO')).toEqual([]);
+    expect(stateView(ready(sim)).fyi.some((t) => t.id === n.id)).toBe(false); // 結案之後不在「不用回覆」裡
     for (let k = 0; k < 4; k++) sim.day({ afterClose: (c) => seen.push(...c) });
     expect(seen.some((x) => x.kind === 'INFO' && x.ref === n.id)).toBe(false);
     // 影子紀錄：照舊的慢規則會賣 35 股、照 AI 0 股、實際 0 股
@@ -598,7 +605,7 @@ describe('T82：LINE 文字、補推、網站的說明', () => {
   it('持股頁與帳戶頁：審查後持有的說明（哪一天的審查、沒有減半、再跌到哪裡會重新審查、怎樣回到一般狀態）；有論點與只有預設前提的那一塊說明不同', () => {
     const { sim, n, set } = sim0();
     set({ status: 'CLEAR' });
-    const md = n.date.slice(5);
+    const md = `${Number(n.date.slice(5, 7))}/${Number(n.date.slice(8, 10))}`; // T86 P8：和同頁一樣的 1/13 格式
     expect(watchNote(sim.acct, 'NVDA', -0.23)).toBe(`比高點低 23%：${md} 的論點檢查沒有前提被判不成立，沒有減半。再跌到 -30% 會重新審查；站回 200 日線連續 10 天後回到一般狀態。`);
     const h = accountView(ready(sim)).holdings.find((x) => x.ticker === 'NVDA')!;
     expect(h).toMatchObject({ state: '審查後持有', tone: 'warn' });

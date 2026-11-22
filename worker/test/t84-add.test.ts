@@ -23,7 +23,7 @@ import { holdNoticeLine } from '../src/app/line';
 import { notifyOwnCondition } from '../src/app/ownAi';
 import { confirmPlan } from '../src/app/ownCheckAi';
 import { CondError, conditionOp, ownedCount } from '../src/app/ownConds';
-import { draftAdoptPlan } from '../src/app/ownDraft';
+import { adoptOwnedCount, draftAdoptPlan } from '../src/app/ownDraft';
 import { dropFollowUpText } from '../src/app/pushHold';
 import { exitsOf } from '../src/app/site/api';
 import type { SiteData } from '../src/app/site/backend';
@@ -220,12 +220,25 @@ describe('T84：草稿可以附 0～2 條加碼條件（own_draft_v4）；不收
     expect(errs([{ ...raise, kind: 'EVENT', check: { type: 'event' } }]).join('；')).toContain('事件條件');
   });
 
-  it('採用：加碼條件接在出場條件後面一起整組取代（動作照草稿的、狀態照確認方式）；沒有加碼條件的草稿會撤下原本的加碼條件', () => {
+  it('採用：加碼條件接在出場條件後面一起整組取代（動作照草稿的、狀態照確認方式）；草稿有加碼條件才取代原本的，沒有加碼條件的草稿不動原本的加碼條件（T86 P10）', () => {
     const d = checkDraft(sample([raise]), pack, METRICS).draft!;
     const plan = draftAdoptPlan(d, []);
     expect(plan.add.map((a) => [a.k, a.action, a.status])).toEqual([[0, 'HALF', 'ACTIVE'], [1, 'REVIEW', 'ACTIVE'], [2, 'RAISE', 'ACTIVE']]);
     const liveAdd = [{ id: 9, text: '我自己寫的加碼條件', action: 'FILL' as const, status: 'ACTIVE', code: 'ACTIVE' }];
-    expect(draftAdoptPlan(checkDraft(sample(undefined), pack, METRICS).draft!, liveAdd).retire.map((c) => c.id)).toEqual([9]);
+    // T86 P10：草稿沒有加碼條件 → 不動你自己寫的加碼條件（不撤下、不比對；列在 stay，照樣算在 8 條上限裡）
+    const none = draftAdoptPlan(checkDraft(sample(undefined), pack, METRICS).draft!, liveAdd);
+    expect(none.retire).toEqual([]);
+    expect(none.stay.map((c) => c.id)).toEqual([9]);
+    expect(adoptOwnedCount(none, liveAdd)).toBe(adoptOwnedCount({ keep: none.keep, add: none.add }, []) + 1);
+    // 出場條件仍然整組取代：現在監測中的出場條件草稿沒有 → 撤下；加碼條件不受影響
+    const liveBoth = [...liveAdd, { id: 8, text: '我自己寫的出場條件', action: 'EXIT' as const, status: 'ACTIVE', code: 'ACTIVE' }];
+    const mixed = draftAdoptPlan(checkDraft(sample(undefined), pack, METRICS).draft!, liveBoth);
+    expect(mixed.retire.map((c) => c.id)).toEqual([8]);
+    expect(mixed.stay.map((c) => c.id)).toEqual([9]);
+    // 草稿有加碼條件 → 整組取代，你原本的加碼條件撤下（對照照列）
+    const some = draftAdoptPlan(d, liveAdd);
+    expect(some.stay).toEqual([]);
+    expect(some.retire.map((c) => c.id)).toEqual([9]);
   });
 });
 
@@ -522,7 +535,7 @@ describe('T84：下跌加碼出現在跌幅審查的通知上（§4.4）', () =>
     expect(meta.raisedAt).toBe(sim.pre.date);
     expect(meta.dipAdd!.at).toBe(sim.pre.date);
     expect(meta.slow.state).toBe('WATCH');
-    expect(watchNote(sim.acct, 'NVDA', -0.23)).toContain(`；這次下跌選了加碼（${sim.pre.date.slice(5)}）`);
+    expect(watchNote(sim.acct, 'NVDA', -0.23)).toContain(`；這次下跌選了加碼（${Number(sim.pre.date.slice(5, 7))}/${Number(sim.pre.date.slice(8, 10))}）`);
     // 又跌一級：照樣審查，結果一樣是都沒有被判不成立，但同一次下跌不再提加碼
     const n2 = untilReview(sim, 2);
     const it2 = item(live(sim, n2.id), 'F7', 'NVDA');

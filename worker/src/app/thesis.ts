@@ -418,7 +418,7 @@ export async function loadSplits(db: D1Database, ticker: string, fileId: string 
 }
 
 /** 論點檔讀進來的 L2 功能。 */
-export const FILE_FNS: Record<string, string> = { OWN_REVIEW: '定期審查', OWN_DROP: '減半檢視', HARD_EVENT: '硬事件', OWN_CONDITION: '條件確認', OWN_EARNINGS: '財報數字擷取' };
+export const FILE_FNS: Record<string, string> = { OWN_REVIEW: '定期審查', OWN_DROP: '跌幅審查', HARD_EVENT: '硬事件', OWN_CONDITION: '條件確認', OWN_EARNINGS: '財報數字擷取' };
 /** 「有結論」的定期審查：3 票一致（含一致維持現狀）而且資料齊全。 */
 const CONCLUSIVE = new Set(['AGREED', 'INSUFFICIENT']);
 /** 沒有上一次審查時，事件與 8-K 往前看幾天（own_thesis §1.6）。 */
@@ -1344,7 +1344,7 @@ export interface OpenRisk {
   doc: NonNullable<NewRiskItem['doc']>;
 }
 
-const RISK_FN_TEXT: Record<string, string> = { OWN_REVIEW: '審查', OWN_DROP: '減半檢視' };
+const RISK_FN_TEXT: Record<string, string> = { OWN_REVIEW: '審查', OWN_DROP: '跌幅審查' };
 
 /** 兩件是不是同一件事：同一次執行的同一條，或字很像（和草稿「文字很像」同一個比法）。 */
 export const sameRisk = (a: { runId: string; k: number; text: string }, b: { runId: string; k: number; text: string }): boolean => (a.runId === b.runId && a.k === b.k) || likeText(a.text, b.text);

@@ -283,7 +283,8 @@ describe('T85 甲 ③：網站的候補那一塊', () => {
       expect(await e(add('NEWCO'))).toContain('不到 200 個交易日');
       expect(await e(add('VOO'))).toContain('核心的標的');
       expect(await e(add('NVDA'))).toContain('已經在自選裡了');
-      expect(await e(add('AMD', { stdWeight: 0.9 }))).toContain('標準比重要在 0.1% 到 50% 之間');
+      expect(await e(add('AMD', { stdWeight: 0.9 }))).toContain('標準比重最多 15%（單檔上限）');
+      expect(await e(add('AMD', { stdWeight: 0.4 }))).toContain('標準比重最多 15%（單檔上限）');
       for (const t of ['AMD', 'MSFT', 'AAPL', 'META', 'GOOGL']) expect((await add(t)).status).toBe(200);
       expect(await e(add('AMD'))).toContain('已經在候補名單裡了');
       expect(await e(add('AMZN'))).toContain('候補最多 5 檔');
@@ -298,6 +299,7 @@ describe('T85 甲 ③：網站的候補那一塊', () => {
   it('改比重（空的 = 改回留空）、改那一句話；移除：論點檔結案寫 CLOSE；不在候補的 422', async () => {
     await withWorld(async (c) => {
       expect((await c.api('POST', 'ops/watch-add', { ticker: 'AMD' })).status).toBe(200);
+      expect((await c.api('POST', 'ops/watch-update', { ticker: 'AMD', stdWeight: 0.4 })).status).toBe(422);
       expect((await c.api('POST', 'ops/watch-update', { ticker: 'AMD', stdWeight: 0.05 })).status).toBe(200);
       expect((await acctOf(c.db)).watch!.AMD.stdWeight).toBe(0.05);
       expect((await c.api('POST', 'ops/watch-update', { ticker: 'AMD', stdWeight: '' })).status).toBe(200);

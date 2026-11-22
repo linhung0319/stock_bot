@@ -426,7 +426,7 @@ function stdWeightEdit(ctx, d) {
   const saveStd = actionButton(ask ? '存' : '改標準比重', ask ? 'primary' : '', async () => {
     const v = Number(std.value.replace(/[%\s]/g, ''));
     // 填的是百分比：5 代表 5%（填成 0.05 會變成 0.05%，T34 走一遍的缺口）
-    if (!(v >= 0.1 && v <= 50)) return fail(new Error('標準比重填百分比，0.1～50；例如 5 代表 5%'));
+    if (!(v >= 0.1 && v <= 15)) return fail(new Error('標準比重填百分比，0.1～15；例如 5 代表 5%。上限 15% 是單檔上限：一檔自選超過總資產的 15% 月報就會叫你減回 10%'));
     const build = !!askBox?.querySelector('input[value="half"]')?.checked;
     try {
       const r = await api.post('/ops/std-weight', { ticker: d.ticker, stdWeight: v / 100, ...(ask ? { build } : {}) });
