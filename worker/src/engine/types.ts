@@ -23,10 +23,17 @@ export function parseCell(key: CellKey): { bucket: Bucket; ticker: string } {
  * WATCH = 審查後持有（allocation_redesign §3.3，2026-11-22）：有論點的股票比高點低 20% 以上、跌幅審查的結果是不動（或你選了這次不做）。
  * 目標仍是標準比重；進出寫在 dailyCheck 外層，stepSlowRule 不認得它（只會更新兩個計數），只有預設前提的股票與重放走不到。
  */
-export type OwnState = 'STD' | 'HALF' | 'WATCH';
-/** 已反映到帳上的目標：標準比重或一半。WATCH 的目標是標準比重，算 STD。 */
-export type OwnApplied = 'STD' | 'HALF';
-export const appliedOf = (s: OwnState): OwnApplied => (s === 'HALF' ? 'HALF' : 'STD');
+export type OwnState = 'STD' | 'HALF' | 'WATCH' | 'BUILD';
+/**
+ * 已反映到帳上的目標：STD 標準比重、HALF 減半（一半）、BUILD 先買一半（一半，allocation_redesign §4.1，T83）。WATCH 的目標是標準比重，算 STD。
+ * BUILD 和 HALF 的目標一樣是一半，差在「能不能再減半」：BUILD 和標準一樣可以被減半（減半之後變 HALF），HALF 不行。
+ * 重放（replay.ts）只用 STD／HALF，走不到 BUILD，所以 B-8、B-12 的數字不受影響。
+ */
+export type OwnApplied = 'STD' | 'HALF' | 'BUILD';
+/** 慢規則狀態 → 已反映到帳上的目標。build：這檔還在先買一半（OwnMeta.build）——審查後持有（WATCH）期間 build 留著，目標仍是一半。 */
+export const appliedOf = (s: OwnState, build = false): OwnApplied => (s === 'HALF' ? 'HALF' : s === 'BUILD' || build ? 'BUILD' : 'STD');
+/** 目標占標準比重的比例：標準 1、減半與先買一半 0.5。 */
+export const targetFrac = (a: OwnApplied): number => (a === 'STD' ? 1 : 0.5);
 export type OwnAction = 'REDUCE' | 'READD';
 
 /** 每張單的原因（設計 §2.1 第 6 點）。 */
@@ -135,7 +142,7 @@ export function coreCfg(cfg: Partial<Pick<EngineConfig, 'coreBond' | 'coreBand'>
 }
 
 export interface OwnPick {
-  /** 已反映到帳上的慢規則狀態（審查後持有 WATCH 的目標是標準比重，這裡記 STD）。 */
+  /** 已反映到帳上的慢規則狀態（審查後持有 WATCH 的目標是標準比重，這裡記 STD；先買一半記 BUILD，目標是一半）。 */
   applied: OwnApplied;
   /** 標準比重（占總資產）。 */
   stdWeight: number;

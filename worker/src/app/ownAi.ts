@@ -14,10 +14,10 @@
 // 雲端排程（ROUTINE_FIRE_URL／ROUTINE_TOKEN）還沒設定時不開新的執行；EDGAR 的 User-Agent 沒設定時不看申報。
 import { webMetaOf } from '../ai/added';
 import type { CheckedSample, EvidencePack, PackDoc } from '../ai/check';
-import { MEDIA_MIN_DOMAINS, OWN_CONDITION, OWN_REVIEW, citedSources, condCite, confirmMode, conditionDecision, conditionPack, namedWebDomains, ownReviewPack, packSources, reviewDecision, type ConditionDraft, type ProposedDraft } from '../ai/ownReview';
+import { MEDIA_MIN_DOMAINS, OWN_CONDITION, OWN_REVIEW, citedSources, condCite, confirmMode, conditionDecision, conditionPack, earningsConfirmed, namedWebDomains, ownReviewPack, packSources, reviewDecision, type ConditionDraft, type ProposedDraft, type RevenueCheck } from '../ai/ownReview';
 import { STRONG_RATINGS, sameWebDomain } from '../data/webSources';
 import { newRunId } from '../ai/pack';
-import { TIER_NAME, clone, condMetNotice, ownHeld, routeReview, type Account, type CondNotice, type MarketView, type OwnMeta, type ReviewTrigger } from '../engine';
+import { TIER_NAME, buildEarnings, clone, condMetNotice, ownHeld, recordEarnCheck, routeReview, type Account, type CondNotice, type MarketView, type OwnMeta, type ReviewTrigger, type Tier } from '../engine';
 import { ConflictError, loadAccount, saveAccount, thesisLogStmt } from './ledgerStore';
 import { isLastTradingDayOfMonth, nextTradingDay, type CalendarOverrides } from '../data/calendar';
 import { attribution } from '../ai/detect';
@@ -34,7 +34,7 @@ import type { Env, Fetcher } from './env';
 import { accOf, cikFor, fetchFilingChecks, handledStmt, loadEvents, sectorEtfs, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { briefNote } from './marketBrief';
 import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
-import { EARLY_NOTE, EVIDENCE_TEXT, MAX_AI_WATCH, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultFacts, externalNeeds, fileConditions, flaggedAccessions, fmtMetric, isAiWatch, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
+import { EARLY_NOTE, EVIDENCE_TEXT, MAX_AI_WATCH, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultCheck, defaultFacts, externalNeeds, revenueCheck, fileConditions, flaggedAccessions, fmtMetric, isAiWatch, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
 
 export { cikFor } from './filings';
 export { loadConditions } from './thesis';
@@ -251,7 +251,11 @@ export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, 
   // 跑的那一次，取文件的額度替它留 1 份（doc_ctx.fresh）。只有預設前提的不跑
   const canFetch = !!menu && !menu.ctx.off;
   const fresh = tf ? freshPlan(OWN_REVIEW, view.date, { defaultOnly: tf.kind === 'DEFAULT_ONLY', lastFresh: await lastFreshReview(env.DB, ticker, view.date), canFetch }) : undefined;
-  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, webDomains: menu?.sources.domains ?? [], dataQuality: ev.dataQuality, extraFacts: [...extra.facts, ...(early?.facts ?? []), ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: extra.docs, reasons, ...(early ? { early: { reason: early.reason, events: early.events } } : {}), ...(lookFor ? { lookFor } : {}), ...(fresh ? { freshEyes: fresh } : {}), now });
+  // 提高到 125% 的營收核對（allocation_redesign §4.3）、只有預設前提的先買一半的確認（§4.1）：程式由 XBRL 季度表算，記在證據包
+  const rows = ev.dataQuality.xbrl === 'ok' ? ev.rows : null;
+  const revenue: RevenueCheck = revenueCheck(rows);
+  const dflt = tf ? defaultCheck(tf, rows, view.date) : null;
+  const { pack, notes } = ownReviewPack({ acct, view, axis, ticker, runId: newRunId(view.date, OWN_REVIEW, ticker), trigger, revenue, ...(dflt ? { defaultCheck: dflt } : {}), xbrl: ev.xbrl, filings: [...ev.docs, ...extra.filings], news: ev.news, conds, webDomains: menu?.sources.domains ?? [], dataQuality: ev.dataQuality, extraFacts: [...extra.facts, ...(early?.facts ?? []), ...(menu?.facts ?? []), ...(menu?.sources.facts ?? [])], extraDocs: extra.docs, reasons, ...(early ? { early: { reason: early.reason, events: early.events } } : {}), ...(lookFor ? { lookFor } : {}), ...(fresh ? { freshEyes: fresh } : {}), now });
   const docCtx = menu ? (fresh?.run && canFetch ? { ...menu.ctx, fresh: { ...FRESH_RESERVE } } : menu.ctx) : null;
   return startRun(env, fetcher, pack, now, [...ev.notes, ...extra.notes, ...(menu?.notes ?? []), ...notes], docCtx);
 }
@@ -406,6 +410,8 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
   const t = run.ticker ?? '';
   // 連續沒有結論的次數與告警、連續票數不一致的次數（own_thesis §3.6.4）
   await reviewHealthStmts(ctx, run);
+  // 財報後的審查：先買一半的確認（allocation_redesign §4.1）、提高到 125% 的「連兩季證實」（§4.3）。沒有結論的也算一次（沒過關、沒證實）
+  if (ctx.acct.own[t] && (run.pack.rule.detail as { trigger?: string } | undefined)?.trigger === 'EARNINGS') applyEarningsChecks(ctx, run);
   if (!run.outcome || !ctx.acct.own[t]) return void ctx.log.push(`${run.runId}：${ctx.acct.own[t] ? '沒有結論' : '已經不是自選股'}，不套用`);
   const d = reviewDecision(run.outcome, ctx.acct, t, run.asOf, run.pack);
   const detail = (run.pack.rule.detail ?? {}) as { conds?: Record<string, number>; trigger?: string };
@@ -457,6 +463,44 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
     ctx.stmts.push(...proposeStmts(ctx.db, t, ctx.acct.own[t].fileId ?? null, run.runId, d.proposed, at, map));
     ctx.log.push(`${run.runId}：寫入 ${Math.min(d.proposed.length, MAX_AI_WATCH)} 條建議的條件（AI 監測中，成立時重新審查）`);
   }
+}
+
+/**
+ * 財報後的審查（觸發原因 EARNINGS）套用時：
+ *   先買一半的確認（allocation_redesign §4.1，D4）：有論點的看三票（3 票一致、沒有任何前提被判不成立、檔位不是減半或出清）；
+ *     只有預設前提的看程式比對 D1～D3（證據包的 rule.detail.defaultCheck），不看 AI 的票。過關 → 下一份月報列補滿；沒過關 → 等下一份財報。
+ *   提高到 125% 的門檻（§4.3，D6）：這次有沒有證實前提（3 票一致、每一條前提都判成立、引用有申報或財報）記進 earnChecks。
+ */
+/**
+ * 先買一半的確認過關沒有（allocation_redesign §4.1 的表；純函式）。defaultOnly：只有預設前提（看程式比對的 D1～D3，不看票）；
+ * d：這次審查的結論（沒有結論是 null）；dflt：證據包的 rule.detail.defaultCheck。text 是持股頁與補滿項目上的那一句。
+ */
+export function buildPassOf(defaultOnly: boolean, asOf: string, d: { consensus: boolean; brokenPremises: string[]; tier: Tier | null } | null, dflt: { ok: boolean | null; why: string } | null | undefined): { pass: boolean; text: string } {
+  const md = `${asOf.slice(5, 7)}-${asOf.slice(8, 10)}`;
+  if (defaultOnly) {
+    const pass = dflt?.ok === true;
+    return { pass, text: pass ? `${md} 的財報，系統預設前提 D1～D3 都成立` : `${md} 的財報：${dflt ? dflt.why : '沒有程式比對的結果'}` };
+  }
+  if (!d) return { pass: false, text: `${md} 的財報後審查沒有結論` };
+  const down = d.tier === 'HALF' || d.tier === 'EXIT';
+  if (d.consensus && !d.brokenPremises.length && !down) return { pass: true, text: `${md} 的財報後審查，3 票，前提都沒有被判不成立` };
+  if (d.brokenPremises.length) return { pass: false, text: `${md} 的財報後審查判前提 ${d.brokenPremises.join('、')} 不成立` };
+  if (!d.consensus) return { pass: false, text: `${md} 的財報後審查沒有一致結論` };
+  return { pass: false, text: `${md} 的財報後審查選了${d.tier ? TIER_NAME[d.tier] : '往下的檔位'}` };
+}
+
+function applyEarningsChecks(ctx: ApplyCtx, run: AiRun): void {
+  const t = run.ticker ?? '';
+  const meta = ctx.acct.own[t];
+  const dflt = (run.pack.rule.detail as { defaultCheck?: { ok: boolean | null; why: string } } | undefined)?.defaultCheck;
+  if (meta.build && !meta.build.ok) {
+    const defaultOnly = meta.premises.every((p) => p.origin === 'SYSTEM_DEFAULT');
+    const { pass, text } = buildPassOf(defaultOnly, run.asOf, !defaultOnly && run.outcome ? reviewDecision(run.outcome, ctx.acct, t, run.asOf, run.pack) : null, dflt);
+    ctx.acct = buildEarnings(ctx.acct, t, { date: run.asOf, runId: run.runId, pass, text });
+    ctx.log.push(`${run.runId}：先買一半的確認 → ${pass ? '過關，下一份月報列補滿' : `沒過關（${text}），等下一份財報`}`);
+  }
+  const c = run.outcome ? earningsConfirmed(run.outcome, run.pack) : { confirmed: false, why: '沒有結論' };
+  ctx.acct = recordEarnCheck(ctx.acct, t, { date: run.asOf, runId: run.runId, confirmed: c.confirmed, why: c.why });
 }
 
 /** F25 → 你定的條件成立（甲類，當天通知）。 */

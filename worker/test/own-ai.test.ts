@@ -247,25 +247,30 @@ async function postResult(db: D1Database, runId: string, samples: unknown[], at:
 // ---------------------------------------------------------------- F24 的判斷
 
 describe('F24：證據包與結論怎麼變成建議', () => {
-  it('RAISE 只在規則條件成立的月份可以選；減半中、有硬事件標記、12 個月內提高過都不行', async () => {
+  // T83（allocation_redesign §4.3，D6）：門檻改成連兩次財報後的審查都證實＋最近兩季營收年增為正，拿掉「連續站上 200 日均線 126 天」
+  it('RAISE 只在規則條件成立的月份可以選（連兩次財報後的審查都證實、營收兩季都正，不看均線）；減半中、有硬事件標記、12 個月內提高過都不行', async () => {
     await withWorld(async ({ db }) => {
       const { acct } = (await loadAccount(db))!;
       const series = await loadSeries(db, ['VOO', 'SGOV', 'NVDA']);
       const { view, axis } = buildMarketView(series, '2026-11-19', 'VOO');
-      const mk = (a: Account) => ownReviewPack({ acct: a, view, axis, ticker: 'NVDA', runId: 'r', trigger: 'MONTHLY', xbrl: null, filings: [], news: null, dataQuality: {}, now: new Date() }).pack;
+      const REV = { ok: true, why: '2026-09-30 +30.0%、2026-06-30 +25.0%' };
+      const mk = (a: Account, revenue = REV) => ownReviewPack({ acct: a, view, axis, ticker: 'NVDA', runId: 'r', trigger: 'MONTHLY', xbrl: null, filings: [], news: null, dataQuality: {}, revenue, now: new Date() }).pack;
       const ok = structuredClone(acct);
-      ok.own.NVDA.slow.aboveRun = 130;
-      expect(raiseAllowed(ok, 'NVDA', '2026-11-19').ok).toBe(true);
+      ok.own.NVDA.earnChecks = [{ date: '2026-05-20', confirmed: true, why: '' }, { date: '2026-08-20', confirmed: true, why: '' }];
+      ok.own.NVDA.slow.aboveRun = 0; // 站不站在均線上不再有關
+      expect(raiseAllowed(ok, 'NVDA', '2026-11-19', { revenue: REV }).ok).toBe(true);
       expect(mk(ok).policy.verdicts).toContain('RAISE');
+      expect((mk(ok).rule.detail as { revenue: unknown }).revenue).toEqual(REV);
       const recent = structuredClone(ok);
       recent.own.NVDA.raisedAt = '2026-03-01';
-      expect(raiseAllowed(recent, 'NVDA', '2026-11-19').why).toContain('未滿 12 個月');
+      expect(raiseAllowed(recent, 'NVDA', '2026-11-19', { revenue: REV }).why).toContain('未滿 12 個月');
       const flagged = structuredClone(ok);
       flagged.own.NVDA.flags = ['ACCOUNTING'];
       expect(mk(flagged).policy.verdicts).not.toContain('RAISE');
-      const short = structuredClone(acct);
-      short.own.NVDA.slow.aboveRun = 20;
-      expect(mk(short).question).toContain('這個月不能選 RAISE');
+      const once = structuredClone(ok);
+      once.own.NVDA.earnChecks![0].confirmed = false;
+      expect(mk(once).question).toContain('這個月不能選 RAISE（最近兩次財報後的審查沒有都證實前提（2026-05-20 沒有證實、2026-08-20 證實））');
+      expect(mk(ok, { ok: false, why: '資料不足（季度數字不到兩季）' }).question).toContain('這個月不能選 RAISE（最近兩季營收年增不是都為正（資料不足（季度數字不到兩季）））');
     });
   });
 

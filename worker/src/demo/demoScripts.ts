@@ -71,7 +71,7 @@ export const DEMO_SCRIPTS: Record<DemoId, DemoScript> = {
         date: '2026-11-30',
         verdict: '提高到標準的 125%',
         votes: '3 票一致',
-        summary: '你的兩條前提都成立：最新一季 Azure 成長 34%、營業利益率 46%。股價在 200 日均線之上已連續 6 個月以上，符合可以提高比重的規則條件。',
+        summary: '你的兩條前提都成立：最新一季 Azure 成長 34%、營業利益率 46%。上一次財報後的審查也證實了這兩條，最近兩季營收年增都是正的，符合可以提高比重的規則條件。',
         premises: [
           { text: 'Azure 成長維持 30% 以上', origin: 'AI_DRAFT_ACCEPTED', status: 'HOLDS', evidence: '10-Q：Azure 與其他雲端服務營收年增 34%（虛構）' },
           { text: '營業利益率維持在 40% 以上', origin: 'AI_DRAFT_ACCEPTED', status: 'HOLDS', evidence: '財報數字：營業利益率 46%（虛構）' },

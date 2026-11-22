@@ -147,8 +147,9 @@ describe('T61 判「成立」要有正面的引用（composite_layer_design §2.
   });
   afterAll(() => w.dispose());
 
+  // revenue：T83 起提高到 125% 的門檻之一（最近兩季營收年增為正，allocation_redesign §4.3）
   const reviewPack = (acct: Account = w.c.acct, added: AddedDoc[] = [TF_NEW, TF_OLD]): EvidencePack => {
-    const { pack } = ownReviewPack({ acct, view: w.c.view, axis: w.c.axis, ticker: 'NVDA', runId: `rev-${++seq}`, trigger: 'MONTHLY', xbrl: null, filings: [TENQ, OLD_K], news: NEWS, extraDocs: [NOTE], dataQuality: { filings: 'ok' }, now: new Date('2026-11-20T01:00:00Z') });
+    const { pack } = ownReviewPack({ acct, view: w.c.view, axis: w.c.axis, ticker: 'NVDA', runId: `rev-${++seq}`, trigger: 'MONTHLY', xbrl: null, filings: [TENQ, OLD_K], news: NEWS, extraDocs: [NOTE], dataQuality: { filings: 'ok' }, revenue: { ok: true, why: '最近兩季都是正的' }, now: new Date('2026-11-20T01:00:00Z') });
     return withAdded(pack, added);
   };
   /** 一票只判一條前提（另外兩條寫證據不足），回傳程式檢查之後那一條的結果。 */
@@ -161,7 +162,7 @@ describe('T61 判「成立」要有正面的引用（composite_layer_design §2.
   // ------------------------------------------------------------ 1 prompt 升版
 
   it('prompt 升成 own_review_v4、own_drop_v4：§2.1 的表、confirm_ids、逾期、breaksIf 任一句成立就算；v3 開頭標「不再使用（2026-11-21）」；v3 的內容 v4 照樣有', () => {
-    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_review_v5', 'own_drop_v6']);
+    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_review_v6', 'own_drop_v6']);
     for (const [cur, old] of [['own_review_v4.md', 'own_review_v3.md'], ['own_drop_v4.md', 'own_drop_v3.md']]) {
       const v4 = readPrompt(cur);
       // §2.1 的表：四種情況
@@ -197,7 +198,7 @@ describe('T61 判「成立」要有正面的引用（composite_layer_design §2.
 
   it('審查與減半檢視的證據包：prompt_version 是 v4、policy.holds_fresh_days = 100；前提帶 breaksIf、confirmsIf、verify，信念不在裡面', () => {
     const rev = reviewPack(w.c.acct, []);
-    expect(rev.prompt_version).toBe('own_review_v5');
+    expect(rev.prompt_version).toBe('own_review_v6');
     expect(rev.policy.holds_fresh_days).toBe(100);
     expect(VERIFY_EVERY_DEFAULT).toBe(100);
     expect(rev.premises.map((p) => [p.id, p.breaksIf?.length ?? 0, p.confirmsIf ?? null, p.verify?.every ?? null])).toEqual([
@@ -299,8 +300,9 @@ describe('T61 判「成立」要有正面的引用（composite_layer_design §2.
   // ------------------------------------------------------------ 4 證據不足的後果不變
 
   it('往上的檔位更少：提高到 125% 要每條前提都成立，有一條逾期或沒指出正面的引用就不列', () => {
+    // T83（allocation_redesign §4.3）：門檻改成連兩次財報後的審查都證實＋最近兩季營收年增為正（月審要最近兩次都證實）
     const ok = structuredClone(w.c.acct);
-    ok.own.NVDA.slow.aboveRun = 130;
+    ok.own.NVDA.earnChecks = [{ date: '2026-05-20', confirmed: true, why: '' }, { date: '2026-08-20', confirmed: true, why: '' }];
     const pack = reviewPack(ok);
     expect(pack.policy.verdicts).toContain('RAISE');
     const run = (p2: Check) => reviewDecision(judge(pack, three(vote(pack, 'RAISE', [{ premise_id: 'P1', status: 'HOLDS', evidence_ids: ['E1'], confirm_ids: ['E1'] }, p2, { premise_id: 'P3', status: 'HOLDS', evidence_ids: ['E2'], confirm_ids: ['E2'] }], EV)), HOOK), ok, 'NVDA', AS_OF, pack);
@@ -461,7 +463,7 @@ describe('T61 整條流程（假的 AI 回覆）', () => {
       const acct = (await loadAccount(c.db))!.acct;
       const rr = await startOwnReview(c.env, c.fetcher, acct, c.view, c.axis, 'NVDA', 'MANUAL', new Date('2026-11-20T01:00:00Z'));
       const run = (await getRun(c.db, rr.runId))!;
-      expect(run.promptVersion).toBe('own_review_v5');
+      expect(run.promptVersion).toBe('own_review_v6');
       expect(run.pack.policy.holds_fresh_days).toBe(100);
       expect(run.pack.premises.map((p) => p.id)).toEqual(['P1', 'P2', 'P3']);
       const xbrl = run.pack.documents.find((d) => d.kind === 'xbrl')!;

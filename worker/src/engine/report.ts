@@ -33,6 +33,7 @@ import {
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
 import { drawdownFromHigh, excessVol } from './indicators';
 import { composeWithCore, coreBandLines, crashCoreLines, mergeByTicker, planToLines, tenths, type Composed, type CoreBand, type CoreContext, type OrderLine } from './orders';
+import { buyCheck } from './buy';
 import { DROP_LADDER, SLOW, dropLadder, halveShares, slowDayInput, stepSlowRule, stepWatch } from './slowRule';
 import { cellKey, coreCfg, type OwnAction, type OwnState } from './types';
 
@@ -91,6 +92,15 @@ export function afterOpenLists(acct: Account, view: MarketView, opt: { except?: 
         if (e.tier === 'HALF') o.applied = 'HALF';
         else if (e.tier === 'STANDARD') o.applied = 'STD';
         else if (e.tier === 'RAISE') o.stdWeight *= 1.25;
+      } else if (e.type === 'BUILD_END' && rule.own[e.ticker]?.applied === 'BUILD') {
+        // 補滿照做：目標回到標準比重；不做：標準比重改成那時的實際比重（allocation_redesign §4.1）
+        const o = ruleW().own[e.ticker];
+        o.applied = 'STD';
+        if (e.keep) {
+          const total = totalValue({ ...acct, lots, cash }, view);
+          const w = total > 0 ? ((lots.own[e.ticker] ?? 0) * priceOf(view, e.ticker)) / total : 0;
+          if (w > 0) o.stdWeight = Math.min(acct.cfg.ownCapHi, w);
+        }
       }
     }
   }
@@ -206,8 +216,9 @@ export function tierShares(acct: Account, view: MarketView, ticker: string, tier
     case 'EXIT':
       return -cur;
     case 'HALF':
-      // 和規則的減半是同一個動作：正常狀態時賣掉當時股數的一半；已經減半就不動
-      return stateBefore === 'STD' ? -halveShares(cur) : 0;
+      // 和規則的減半是同一個動作：正常狀態時賣掉當時股數的一半；已經減半就不動。
+      // 先買一半（BUILD，allocation_redesign §4.1）也可以被減半：賣掉一半的一半，之後是減半
+      return stateBefore === 'STD' || stateBefore === 'BUILD' ? -halveShares(cur) : 0;
     case 'HOLD':
       return 0;
     case 'STANDARD':
@@ -888,13 +899,19 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
     if (!c) continue;
     const day = slowDayInput(c, view.i);
     const wasWatch = meta.slow.state === 'WATCH';
-    const step = stepSlowRule(meta.slow, day);
+    // 先買一半（BUILD，allocation_redesign §4.1）：賣出的規則和標準狀態相同（-20% 照 §3），所以照標準狀態前進一步；
+    // 沒有切換就留在先買一半。stepSlowRule 本身不改（它不認得 BUILD）
+    const wasBuild = meta.slow.state === 'BUILD';
+    const step = stepSlowRule(wasBuild ? { ...meta.slow, state: 'STD' } : meta.slow, day);
+    if (wasBuild && !step.signal) step.next.state = 'BUILD';
     if (wasWatch) {
       // 審查後持有（allocation_redesign §3.3）：stepSlowRule 只更新了兩個計數；進出在這裡判
       const w = stepWatch(step.next, meta.watchLevel ?? 0, day);
       meta.slow = w.next;
       if (w.event === 'BACK') {
         leaveWatch(meta);
+        // 先買一半期間跌 20%、審查之後沒有減半的：站回均線回到先買一半（還沒補滿，§4.1）
+        if (meta.build) meta.slow = { ...meta.slow, state: 'BUILD' };
         cancelThesisDrop(acct, tk, `${mdOf(view.date)} 已經站回 200 日均線連續 ${SLOW.aboveRun} 天，回到一般狀態，這一項取消`);
         log.push({ ticker: tk, what: '審查後持有 → 站回 200 日均線，回到標準（不下單、不通知）' });
       } else if (w.event === 'DEEPER') {
@@ -928,6 +945,8 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
       if (meta.pending && meta.pending.action !== step.signal) {
         // 還沒下單的切換和這次互相抵銷
         meta.pending = null;
+        // 先買一半時觸發、還沒下單的減半被抵銷：回到先買一半（目標還沒改，§4.1）
+        if (meta.build && acct.rule.own[tk]?.applied === 'BUILD') meta.slow = { ...meta.slow, state: 'BUILD' };
         log.push({ ticker: tk, what: '慢規則切換和尚未下單的上一次互相抵銷，月報不列' });
       } else {
         meta.pending = { action: step.signal, date: view.date };
@@ -963,6 +982,7 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
     const plan = planDay({ cfg: acct.cfg, values, state: acct.rule, ownActions: { [tk]: act } });
     acct.rule = plan.state;
     acct.own[tk].pending = null;
+    syncBuild(acct);
     const items = itemsFromPlan(acct, view, plan, values, { ownNotes: { [tk]: '' } });
     if (!items.length) continue;
     const n = newNotif(acct, view, { kind: 'URGENT', title: `${tk} 慢規則${act === 'REDUCE' ? '減半' : '加回'}`, items });
@@ -1109,6 +1129,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
   });
   acct.rule = plan.state;
   for (const tk of Object.keys(ownActions)) acct.own[tk].pending = null;
+  syncBuild(acct);
   acct.mom.owe = {};
   let items = itemsFromPlan(acct, view, plan, values, { ownNotes, runIds: input.runIds });
   for (const [tk, note] of Object.entries(watchReduce)) {
@@ -1149,10 +1170,23 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     if (!m.aiTier?.suggest) continue;
     const tier = m.aiTier.tier;
     const state = acct.rule.own[tk].applied;
-    if (tier === 'HOLD' || (tier === 'HALF' && state === 'HALF') || (tier === 'STANDARD' && state === 'STD')) continue;
-    const sh = tierShares(acct, view, tk, tier, state);
+    // 先買一半的補滿看財報後的審查（F27，allocation_redesign §4.1），AI 的「回到標準」不另外列
+    if (tier === 'HOLD' || (tier === 'HALF' && state === 'HALF') || (tier === 'STANDARD' && (state === 'STD' || state === 'BUILD'))) continue;
+    let sh = tierShares(acct, view, tk, tier, state);
     m.aiTier.suggest = false;
     if (!sh) continue;
+    // 提高到 125%：買進前的程式檢查（allocation_redesign §4.0、§4.3）——沒過不列（持股頁寫原因），超過上限的部分砍掉
+    let cutNote: string | null = null;
+    if (tier === 'RAISE') {
+      const v = buyCheck(acct, view, tk, view.date, sh);
+      if (!v.ok) {
+        m.buyBlocked = { date: view.date, what: '提高到 125%', text: v.why ?? '' };
+        continue;
+      }
+      if (m.buyBlocked?.what === '提高到 125%') delete m.buyBlocked;
+      sh = v.shares;
+      cutNote = v.cut ? v.why : null;
+    }
     // 乙類（own_thesis §1.10）：月報裡是同一種項目（預設不動）；那條前提在靜默期內就不列
     if ((tier === 'EXIT' || tier === 'HALF') && m.aiTier.premiseId) {
       if (silenced(acct, tk, m.aiTier.premiseId, view.date, tier)) continue;
@@ -1171,9 +1205,15 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
         choices: [{ id: 'AI', label: '照 AI', tier, lines: [{ ticker: tk, bucket: 'own', shares: sh, reason: 'AI 建議' }], effects: [{ type: 'APPLY_TIER', ticker: tk, tier }] }],
         choice: 'SKIP',
         ruleChoice: 'SKIP',
+        ...(cutNote ? { note: cutNote } : {}),
         ...(m.aiTier.runId ? { runIds: [m.aiTier.runId] } : {}),
       }),
     );
+  }
+  // F27：先買一半的補滿（allocation_redesign §4.1）：開檔後第一份財報的審查過關、買進前的程式檢查也過了 → 列一項，預設照做
+  for (const tk of Object.keys(acct.own)) {
+    const it = fillItem(acct, view, tk);
+    if (it) items.push(it);
   }
   // 還沒回覆的「補做差額」清單和本月重列的策略單重疊 → 以月報為準（原型假設 10）
   for (const old of acct.notifs) {
@@ -1228,6 +1268,8 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     // 「要看的事」：「本月不用動」的月報也列（own_thesis §3.6.6）
     ...(input.attention?.length ? { attention: clone(input.attention) } : {}),
   });
+  // 補滿列在哪一則月報（還沒回覆時下一份月報不重列）
+  for (const it of items) if (it.f === 'F27' && it.ticker && acct.own[it.ticker]?.build) acct.own[it.ticker].build!.listed = notif.id;
   // 不屬於任何項目的 AI 執行：被否決的代號（F1）。F20 的說明 T32d 拿掉（momentum_ai §3.6），不再接在狀態文字後面
   syncRunIds(notif, (input.vetoed ?? []).map((t) => input.runIds?.entry?.[t]));
   notif.preview = composeNotif(acct, view, notif);
@@ -1300,6 +1342,8 @@ export function recordExternalFlow(acct: Account, view: MarketView, amount: numb
 export function recordAiTier(acct0: Account, ticker: string, tier: Tier, date: string, suggest: boolean, runId?: string, extra?: { premiseId?: string | null; trigger?: ReviewTrigger; basis?: string | null; basisNote?: string | null; agreed?: boolean }): Account {
   const acct = clone(acct0);
   if (acct.own[ticker]) acct.own[ticker].aiTier = { tier, date, suggest, runId, ...(extra?.premiseId ? { premiseId: extra.premiseId } : {}), ...(extra?.trigger ? { trigger: extra.trigger } : {}), ...(extra?.basis ? { basis: extra.basis } : {}), ...(extra?.basis && extra.basisNote ? { basisNote: extra.basisNote } : {}), ...(extra?.agreed ? { agreed: true } : {}) };
+  // 有前提被 3 票判不成立：記下日期，30 個日曆天內不提買進（buyAllowed，allocation_redesign §4.0）；之後的審查蓋掉 aiTier 也留著
+  if (acct.own[ticker] && extra?.premiseId && !(acct.own[ticker].brokenAt && acct.own[ticker].brokenAt! > date)) acct.own[ticker].brokenAt = date;
   return acct;
 }
 
@@ -1719,4 +1763,119 @@ export function strategyReminder(acct0: Account, view: MarketView, text: string)
   const acct = clone(acct0);
   const notif = newNotif(acct, view, { kind: 'INFO', title: '策略檢討提醒', text: `${text}。系統不會自動停用策略；AI 會逐條列出前提的正反證據（不給停用或繼續的建議），報告在網站。${STRATEGY_COST_NOTE}`, coreAbsorb: false });
   return { acct, notif };
+}
+
+// ---------------------------------------------------------------- 先買一半，確認後補滿（allocation_redesign §4.1，T83）
+
+/** 開檔後幾份財報的審查都沒過關、或滿幾個日曆天還沒過關 → 「要看的事」與持股頁的兩個按鈕（§4.1）。 */
+export const BUILD_MAX_EARNINGS = 2;
+export const BUILD_MAX_DAYS = 200;
+
+/** 先買一半拖太久了嗎（還沒過關，而且兩份財報都沒過、或開檔滿 200 個日曆天）。不是先買一半是 false。 */
+export function buildStale(meta: Pick<OwnMeta, 'build'>, date: string): boolean {
+  const b = meta.build;
+  if (!b || b.ok) return false;
+  return b.misses >= BUILD_MAX_EARNINGS || (!!b.since && calDays(b.since, date) >= BUILD_MAX_DAYS);
+}
+
+/**
+ * 離開先買一半（直接改傳進來的帳戶）：keep = false 目標回到標準比重；keep = true 標準比重改成現在的實際比重（不超過單檔上限 15%）。
+ * 慢規則狀態：先買一半 → 標準；在審查後持有的留著（目標變成標準比重）；已經減半的不動。
+ */
+export function clearBuild(acct: Account, view: MarketView, ticker: string, keep: boolean): void {
+  const meta = acct.own[ticker];
+  const rule = acct.rule.own[ticker];
+  if (!meta || !rule || !meta.build) return;
+  delete meta.build;
+  delete meta.buildAsk;
+  if (meta.slow.state === 'BUILD') meta.slow = { ...meta.slow, state: 'STD' };
+  if (rule.applied === 'BUILD') rule.applied = 'STD';
+  if (keep) {
+    const total = totalValue(acct, view);
+    const w = total > 0 ? ((acct.lots.own[ticker] ?? 0) * priceOf(view, ticker)) / total : 0;
+    if (w > 0) rule.stdWeight = Math.min(acct.cfg.ownCapHi, w);
+  }
+}
+
+/** 規則引擎把先買一半的股票減半了（目標已經是 HALF，§4.1「減半的話賣掉一半的一半，並離開 BUILD」）：先買一半的紀錄拿掉。 */
+function syncBuild(acct: Account): void {
+  for (const [tk, m] of Object.entries(acct.own)) {
+    if (m.build && acct.rule.own[tk]?.applied === 'HALF') {
+      delete m.build;
+      delete m.buildAsk;
+    }
+  }
+}
+
+/**
+ * 月報的補滿（F27，§4.1）：開檔後第一份財報的審查過關（build.ok）→ 補到標準比重，預設照做；照做或不做之後都離開先買一半（BUILD_END）。
+ *   已經列在還沒回覆（或決定了還沒填快照）的月報 → 不重列
+ *   現在已經到標準比重（沒有要買的）→ 直接離開先買一半，不列（目標本來就該是標準比重；不用下單）
+ *   買進前的程式檢查（buyAllowed，§4.0）沒過 → 不列，OwnMeta.buyBlocked 記原因（持股頁那一行），下個月再試；超過上限的部分砍掉
+ * 直接改傳進來的帳戶（blocked、離開先買一半）。
+ */
+export function fillItem(acct: Account, view: MarketView, ticker: string): Item | null {
+  const meta = acct.own[ticker];
+  const rule = acct.rule.own[ticker];
+  const b = meta?.build;
+  if (!meta || !rule || !b?.ok) return null;
+  if (b.listed && acct.notifs.some((n) => n.id === b.listed && (n.status === 'PENDING' || n.status === 'RESPONDED') && n.items.some((i) => i.f === 'F27' && i.ticker === ticker && !i.cancelled))) return null;
+  const px = priceOf(view, ticker);
+  const cur = acct.lots.own[ticker] ?? 0;
+  const want = Math.floor((rule.stdWeight * totalValue(acct, view)) / px + 1e-9) - cur;
+  if (want <= 0) {
+    clearBuild(acct, view, ticker, false);
+    return null;
+  }
+  const v = buyCheck(acct, view, ticker, view.date, want);
+  if (!v.ok) {
+    meta.buyBlocked = { date: view.date, what: '補滿', text: v.why ?? '' };
+    return null;
+  }
+  if (meta.buyBlocked?.what === '補滿') delete meta.buyBlocked;
+  return makeItem({
+    f: 'F27',
+    kind: 'OWN_FILL',
+    ticker,
+    title: `${ticker}：先買的一半已確認（${b.ok.text}）→ 補滿到標準比重，買 ${v.shares} 股`,
+    why: `你開檔時選了先買一半、確認後再補滿；確認的條件是開檔之後的第一份財報過關。這是你事先定的，預設照做；不做的話標準比重改成現在的比重，之後不再提。`,
+    choices: [
+      { id: 'RULE', label: `照做：補滿，買 ${v.shares} 股`, lines: [{ ticker, bucket: 'own', shares: v.shares, reason: '自選訊號' }], effects: [{ type: 'BUILD_END', ticker, keep: false }] },
+      { id: 'SKIP', label: '這次不做（維持現在的大小）', lines: [], effects: [{ type: 'BUILD_END', ticker, keep: true }] },
+    ],
+    choice: 'RULE',
+    ruleChoice: 'RULE',
+    ...(v.cut && v.why ? { note: v.why } : {}),
+    ...(b.ok.runId ? { runIds: [b.ok.runId] } : {}),
+  });
+}
+
+/**
+ * 開檔後一份財報的審查結果（§4.1 的確認條件；app 層判好 pass）：
+ *   過關 → build.ok（下一份月報列補滿）
+ *   沒過關（沒有一致結論、資料缺漏、有前提被判不成立）→ misses + 1，last 記原因；等下一份財報。有前提被判不成立的另外走乙類，先買一半留著
+ * 已經過關、或不是先買一半 → 原樣回傳。
+ */
+export function buildEarnings(acct0: Account, ticker: string, r: { date: string; runId?: string; pass: boolean; text: string }): Account {
+  const b0 = acct0.own[ticker]?.build;
+  if (!b0 || b0.ok) return acct0;
+  const acct = clone(acct0);
+  const b = acct.own[ticker].build!;
+  if (r.pass) {
+    b.ok = { date: r.date, ...(r.runId ? { runId: r.runId } : {}), text: r.text };
+    delete b.last;
+  } else {
+    b.misses = (b.misses ?? 0) + 1;
+    b.last = { date: r.date, text: r.text };
+  }
+  return acct;
+}
+
+/** 記下這次財報後審查有沒有證實前提（提高到 125% 的門檻，§4.3）：只留最近兩筆。 */
+export function recordEarnCheck(acct0: Account, ticker: string, c: { date: string; runId?: string; confirmed: boolean; why: string }): Account {
+  if (!acct0.own[ticker]) return acct0;
+  const acct = clone(acct0);
+  const m = acct.own[ticker];
+  m.earnChecks = [...(m.earnChecks ?? []).filter((x) => x.date !== c.date || x.runId !== c.runId), { date: c.date, ...(c.runId ? { runId: c.runId } : {}), confirmed: c.confirmed, why: c.why }].slice(-2);
+  return acct;
 }

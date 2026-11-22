@@ -60,9 +60,12 @@ export function slowDayInput(close: ArrayLike<number>, i: number): SlowDayInput 
 /**
  * 新增自選的初始狀態（設計 §2.2）：現在距 52 週高點已跌 ≥ 20% → 一開始就是減半，
  * 只買標準比重的一半，避免一買進就收到減半通知。
+ * thesis（allocation_redesign §4.1，T83）：有你的論點的股票改成先買一半（BUILD），看開檔後第一份財報的審查補滿，不等 200 日線；
+ * 只有預設前提的照舊（HALF、等均線）。
  */
-export function initialStateForNewPick(drawdown: number): OwnApplied {
-  return drawdown <= SLOW.drawdown ? 'HALF' : 'STD';
+export function initialStateForNewPick(drawdown: number, thesis = false): OwnApplied {
+  if (!(drawdown <= SLOW.drawdown)) return 'STD';
+  return thesis ? 'BUILD' : 'HALF';
 }
 
 // ---------------------------------------------------------------- 審查後持有（WATCH，allocation_redesign §3.3）

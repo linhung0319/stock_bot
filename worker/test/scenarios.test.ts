@@ -472,12 +472,21 @@ describe('情境 ⑤ 你自己的操作', () => {
     expect(sim.acct.lots.mom).toEqual({});
   });
 
-  it('新增自選 TSLA：距高點已跌 > 20% → 一開始就是減半狀態，只買標準比重的一半；錢從核心出', () => {
+  // T83（allocation_redesign §4.1）：有論點、加入時已跌 20% → 先買一半（BUILD），看開檔後第一份財報的審查補滿，不等 200 日線；只有預設前提的照舊從減半開始
+  it('新增自選 TSLA：距高點已跌 > 20%、有論點 → 先買一半（只買標準比重的一半，財報過關再補滿）；沒寫前提的照舊從減半開始；錢從核心出', () => {
     const sim = start();
+    const acct0 = sim.acct;
     const r = addOwn(sim.acct, sim.pre, 'TSLA', [{ id: 'P1', text: '自駕計程車在 2027 年擴大到 10 個城市', origin: 'AI_DRAFT_ACCEPTED', breaksIf: '主要城市的營運許可被撤回' }]);
     sim.acct = r.acct;
-    expect(r.startsHalved).toBe(true);
-    expect(sim.acct.rule.own.TSLA.applied).toBe('HALF');
+    expect(r.startsHalved).toBe(false);
+    expect(sim.acct.rule.own.TSLA.applied).toBe('BUILD');
+    expect(sim.acct.own.TSLA.slow.state).toBe('BUILD');
+    expect(sim.acct.own.TSLA.build).toEqual({ since: sim.pre.date, confirmBy: 'EARNINGS', misses: 0 });
+    expect(sim.acct.own.TSLA.buildAsk).toBeUndefined();
+    expect(r.notif.items[0].title).toContain('先買標準比重的一半，開檔後第一份財報的審查過關再補滿');
+    const plain = addOwn(acct0, sim.pre, 'TSLA');
+    expect(plain.startsHalved).toBe(true);
+    expect(plain.acct.rule.own.TSLA.applied).toBe('HALF');
     expect(Object.keys(r.recommended).sort()).toEqual(['META', 'MSFT', 'MU', 'NVDA', 'TSLA']);
     expect(Object.values(r.recommended).reduce((a, b) => a + b, 0)).toBeCloseTo(0.2, 12); // 自選預算內依波動度反比
     const std = sim.acct.rule.own.TSLA.stdWeight;

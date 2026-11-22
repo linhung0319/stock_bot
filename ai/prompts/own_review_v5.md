@@ -1,3 +1,5 @@
+> 不再使用（2026-11-23）：T83 起改用 `own_review_v6.md`（提高到 125% 的門檻改看基本面；`allocation_redesign_2026-11-22.md` §4.3）。這份留著對照舊的執行紀錄。
+
 # own_review_v5：自選定期審查（F24）
 
 共用的取證據包、取文件、外殼格式與送回方式見 `run.md`；這份只寫這個功能怎麼判斷。設計依據：`docs/design/own_thesis_design_2026-11-15.md` 的 §1.5、§1.6，`docs/design/web_evidence_design_2026-11-20.md` 的 §1.5、§1.6，`docs/design/composite_layer_design_2026-11-21.md` 的 §2.1～§2.3，以及 `docs/design/confirm_audit_design_2026-11-21.md` 的 §1.2、§1.4、§1.6（和 `ai_layer_design_2026-11-08.md` 的 F24、F23 卡片不同時以前四份為準）。

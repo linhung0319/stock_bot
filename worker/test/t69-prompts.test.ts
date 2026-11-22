@@ -47,7 +47,7 @@ const DOC_PROMPTS: Record<string, string> = { [OWN_REVIEW]: OWN_REVIEW_PROMPT, [
 
 describe('T69 prompt 升版（§1.4）', () => {
   it('四個功能的 prompt_version 是新版、檔案存在且指到 source_rating.md；舊檔留著、開頭寫「不再使用（2026-11-21）」；草稿的證據包帶新版', () => {
-    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT, OWN_DRAFT_PROMPT, MARKET_BRIEF_PROMPT, OWN_CHECK_PROMPT]).toEqual(['own_review_v5', 'own_drop_v6', 'own_draft_v3', 'market_brief_v2', 'own_check_v6']);
+    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT, OWN_DRAFT_PROMPT, MARKET_BRIEF_PROMPT, OWN_CHECK_PROMPT]).toEqual(['own_review_v6', 'own_drop_v6', 'own_draft_v3', 'market_brief_v2', 'own_check_v6']);
     const old: Record<string, string> = { own_review_v5: 'own_review_v4', own_drop_v5: 'own_drop_v4', own_draft_v3: 'own_draft_v2', market_brief_v2: 'market_brief_v1', own_check_v6: 'own_check_v5' };
     for (const [cur, prev] of Object.entries(old)) {
       const t = read(`${cur}.md`);

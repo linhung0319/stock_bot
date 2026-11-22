@@ -11,9 +11,9 @@ import { RISK_SEEN_DAYS, overlapsPremise, parseNewRisks, repeatedRisks, type New
 import { likeText } from '../ai/ownDraft';
 import { ownCheckResult, type ExitLine } from '../ai/ownCheck';
 import { packPremise } from '../ai/pack';
-import { confirmMode, namedWebDomains, webConfirmText, type OwnCondition } from '../ai/ownReview';
+import { confirmMode, namedWebDomains, webConfirmText, type OwnCondition, type RevenueCheck } from '../ai/ownReview';
 import type { WebRatingRow } from '../data/webSources';
-import { DEFAULT_CONFIG, breaksOf, clone, isBelief, premiseKey, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Premise, type PremiseVerify, type RiskSeen, type Thesis, type Tier } from '../engine';
+import { BUILD_MAX_DAYS, BUILD_MAX_EARNINGS, DEFAULT_CONFIG, breaksOf, buildStale, clone, isBelief, premiseKey, type Account, type Attention, type ClosedThesis, type CloseReason, type MarketView, type Notif, type OwnMeta, type Premise, type PremiseVerify, type RiskSeen, type Thesis, type Tier } from '../engine';
 import { concentrationHits, sizeText } from './concentration';
 import { loadRunupHits } from './runup';
 import type { ThesisLogInput } from './ledgerStore';
@@ -843,6 +843,54 @@ export function defaultFacts(tf: ThesisFile, rows: QuarterRow[] | null, asOf: st
   ];
 }
 
+/**
+ * 最近兩季營收年增的程式核對（提高到 125% 的門檻，allocation_redesign §4.3）：兩季相連、都有年增率、都是正的才算過；資料不夠不算過。
+ * rows：XBRL 季度表（新的在前）；null = 抓不到。純函式。
+ */
+export function revenueCheck(rows: QuarterRow[] | null): RevenueCheck {
+  const r = rows ?? [];
+  if (r.length < 2) return { ok: false, why: `資料不足（${rows ? '季度數字不到兩季' : 'XBRL 抓不到'}）` };
+  if (!consecutive(r[0], r[1])) return { ok: false, why: `資料不足（最近兩季 ${r[0].end}、${r[1].end} 不相連）` };
+  if (r[0].revenueYoY === null || r[1].revenueYoY === null) return { ok: false, why: `資料不足（${r[0].end} ${r[0].revenueYoY === null ? '—' : pc(r[0].revenueYoY)}、${r[1].end} ${r[1].revenueYoY === null ? '—' : pc(r[1].revenueYoY)}）` };
+  const txt = `${r[0].end} ${pc(r[0].revenueYoY)}、${r[1].end} ${pc(r[1].revenueYoY)}`;
+  return r[0].revenueYoY > 0 && r[1].revenueYoY > 0 ? { ok: true, why: txt } : { ok: false, why: `${txt}，不是兩季都為正` };
+}
+
+/**
+ * 只有預設前提的股票，先買一半的確認（allocation_redesign §4.1）：程式比對系統預設前提 D1～D3 都沒有不成立（和 defaultFacts 同一套算法）。
+ * ok：true 都成立；false 有一條不成立（why 寫哪一條）；null 沒有不成立、但有一條資料不足（不算過關，等下一份財報）。不是只有預設前提的回傳 null。純函式。
+ */
+export function defaultCheck(tf: ThesisFile, rows: QuarterRow[] | null, asOf: string): { ok: boolean | null; why: string } | null {
+  if (tf.kind !== 'DEFAULT_ONLY') return null;
+  const hard = tf.events.filter((e) => HARD_CODES.includes(e.code) && !e.displayOnly && e.date <= asOf && e.date >= minusDays(asOf, HARD_WINDOW[e.code] ?? 180));
+  if (hard.length || tf.flags.length) return { ok: false, why: `D1 不成立（${[...hard.map((e) => `${e.date} ${HARD_TEXT[e.code]}`), ...tf.flags.map((f) => `硬事件標記：${HARD_TEXT[f] ?? f}`)].join('、')}）` };
+  const r = rows ?? [];
+  if (r.length < 2 || !consecutive(r[0], r[1])) return { ok: null, why: `D2、D3 資料不足（${rows ? '最近兩季的季度數字不齊' : 'XBRL 抓不到'}）` };
+  const missing: string[] = [];
+  if (r[0].revenueYoY === null || r[1].revenueYoY === null) missing.push('D2');
+  else if (r[0].revenueYoY < 0 && r[1].revenueYoY < 0) return { ok: false, why: `D2 不成立（營收年增 ${r[0].end} ${pc(r[0].revenueYoY)}、${r[1].end} ${pc(r[1].revenueYoY)}，連兩季是負的）` };
+  const pair = [r[0], r[1]].map((q) => ({ q, y: yearAgo(r, q.end) }));
+  if (!pair.every(({ q, y }) => q.epsDiluted !== null && y?.epsDiluted != null)) missing.push('D3');
+  else if (pair.every(({ q, y }) => q.epsDiluted! < y!.epsDiluted!)) return { ok: false, why: 'D3 不成立（稀釋每股盈餘連兩季低於去年同季）' };
+  if (missing.length) return { ok: null, why: `${missing.join('、')} 資料不足` };
+  return { ok: true, why: '系統預設前提 D1～D3 都成立' };
+}
+
+/**
+ * 「要看的事」BUILD_STALE 那一行（allocation_redesign §4.1）：
+ * `MU 先買的一半已經 7 個月沒有補滿（兩次財報後的審查都沒有過關）。要補滿、維持一半，或重新寫論點，到持股頁決定。`
+ * 不是先買一半、或還沒到（buildStale）回傳空的。
+ */
+export function buildStaleLine(ticker: string, meta: Pick<OwnMeta, 'build'>, date: string): { key: string; every: null; since: string; text: string }[] {
+  const b = meta.build;
+  if (!b || !buildStale(meta, date)) return [];
+  const days = b.since ? daysBetween(b.since, date) : 0;
+  const age = days >= 60 ? `${Math.floor(days / 30)} 個月` : `${days} 天`;
+  const why = b.misses >= BUILD_MAX_EARNINGS ? `${cnNum(b.misses)}次財報後的審查都沒有過關${b.last ? `，最近一次：${b.last.text}` : ''}` : b.misses ? `開檔之後 ${b.misses} 份財報的審查沒有過關，已經滿 ${BUILD_MAX_DAYS} 天` : `開檔滿 ${BUILD_MAX_DAYS} 天還沒有財報後的審查`;
+  const since = b.misses >= BUILD_MAX_EARNINGS ? (b.last?.date ?? date) : plusDays(b.since, BUILD_MAX_DAYS);
+  return [{ key: `BUILD_STALE@${b.since}`, every: null, since, text: `${ticker} 先買的一半已經 ${age}沒有補滿（${why}）。要補滿、維持一半，或重新寫論點，到持股頁決定。` }];
+}
+
 /** 規則或每日掃描有標記過的申報編號（挑 8-K 的順序用）。 */
 export const flaggedAccessions = (tf: Pick<ThesisFile, 'events'>): Set<string> => new Set(tf.events.map((e) => e.accession).filter((x): x is string => !!x));
 
@@ -1366,6 +1414,14 @@ export const OWN_ATTN: AttnKind[] = [
       const dr = meta.dropReview;
       if (!dr?.thesis || !dr.failed || dr.status !== 'NONE' || meta.slow.state !== 'WATCH') return [];
       return [{ key: `DROP_REVIEW_FAILED@${dr.session}`, every: null, since: dr.lastTry ?? dr.session, text: `${file.ticker} 的跌幅審查（${dr.session.slice(5)} 觸發）沒有跑完，這檔沒有減半；之後財報後的審查與再跌一級時仍會檢查，也可以拿去討論` }];
+    },
+  },
+  {
+    // 先買一半拖太久（allocation_redesign §4.1）：開檔後兩份財報的審查都沒過關、或開檔滿 200 個日曆天 → 列一次（鍵帶開檔日），
+    // 持股頁列到你決定（維持現在的大小、請 stock bot 草擬之後又過關、或補滿）為止。不自動買
+    kind: 'BUILD_STALE',
+    detect({ file, meta, view }) {
+      return buildStaleLine(file.ticker, meta, view.date);
     },
   },
   {

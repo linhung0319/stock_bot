@@ -184,9 +184,11 @@ interface PackOpt {
   conds?: { facts: EvidencePack['facts']; map: Record<string, number>; web?: Record<string, string[]> };
   trigger?: 'EARNINGS' | 'MONTHLY';
   webDomains?: string[];
+  /** 最近兩季營收年增的程式核對（T83：提高到 125% 的門檻之一，allocation_redesign §4.3）。 */
+  revenue?: { ok: boolean; why: string };
 }
 function packOf(c: Pick<Ctx, 'view' | 'axis'>, acct: Account, o: PackOpt = {}): EvidencePack {
-  const { pack } = ownReviewPack({ acct, view: c.view, axis: c.axis, ticker: 'NVDA', runId: `rev-${++seq}`, trigger: o.trigger ?? 'EARNINGS', xbrl: null, filings: [TENQ_DOC], news: NEWS_DOC, conds: o.conds, webDomains: o.webDomains, dataQuality: { filings: 'ok' }, now: new Date('2026-11-20T01:00:00Z') });
+  const { pack } = ownReviewPack({ acct, view: c.view, axis: c.axis, ticker: 'NVDA', runId: `rev-${++seq}`, trigger: o.trigger ?? 'EARNINGS', xbrl: null, filings: [TENQ_DOC], news: NEWS_DOC, conds: o.conds, webDomains: o.webDomains, revenue: o.revenue, dataQuality: { filings: 'ok' }, now: new Date('2026-11-20T01:00:00Z') });
   return withAdded(pack, o.docs ?? []);
 }
 
@@ -342,13 +344,14 @@ describe('T53 §1.6：往上的檔位不能只靠網頁', () => {
   });
   afterAll(() => w.dispose());
   const run = (acct: Account, verdict: string, checks: Check[], evidence: unknown[], docs: AddedDoc[] = [DOC.tf]) => {
-    const pack = packOf(w.c, acct, { docs });
+    const pack = packOf(w.c, acct, { docs, revenue: { ok: true, why: '最近兩季都是正的' } });
     return reviewDecision(judge(pack, three(vote(pack, verdict, checks, evidence)), HOOK), acct, 'NVDA', w.c.view.date, pack);
   };
 
   it('RAISE：每條成立的前提都要有申報或財報的引用；有一條只靠網頁（或新聞標題）就不列', () => {
+    // T83（allocation_redesign §4.3）：門檻改成連兩次財報後的審查都證實＋最近兩季營收年增為正；這是財報後的審查，上一次證實過就好
     const ok = structuredClone(w.c.acct);
-    ok.own.NVDA.slow.aboveRun = 130;
+    ok.own.NVDA.earnChecks = [{ date: '2026-08-20', confirmed: true, why: '3 票都判成立' }];
     const EV = [E_REV, E_GM, E('E1', DOC.tf, QUOTE.tf), E('E2', NEWS_DOC, QUOTE.news)];
     expect(run(ok, 'RAISE', [['P1', 'HOLDS', ['E9']], ['P2', 'HOLDS', ['E8']]], EV)).toMatchObject({ tier: 'RAISE', suggest: true });
     // 網頁加上申報 → 可以（網頁可以當補充）
@@ -727,7 +730,7 @@ describe('T53：分析師找資料的紀錄（§1.5 的 lookups、G22）', () =>
   it('證據包列出種子；取回的文件記下來源；送回的 lookups 存進執行紀錄；審查紀錄頁列「AI 另外找了什麼」與沒取到的', async () => {
     await withWorld(async (c) => {
       const r = await startOwnReview(c.env, c.fetcher, c.acct, c.view, c.axis, 'NVDA', 'MANUAL', T0);
-      expect(r.promptVersion).toBe('own_review_v5');
+      expect(r.promptVersion).toBe('own_review_v6');
       // 種子（S）接在目錄（M）後面；網域清單記在 rule.detail（T68：這檔的 domains 不再列進來）
       expect(r.pack.facts.filter((f) => /^[MS]\d+$/.test(f.id)).map((f) => f.id)).toEqual(['M1', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11']); // T64：共用清單多了 6 個來源
       expect(r.pack.facts.find((f) => f.id === 'S3')).toMatchObject({ label: '已有級別的網頁來源', value: 'trendforce.com｜TrendForce｜產業研究機構｜不收 /research/' });
@@ -898,7 +901,7 @@ describe('T53：prompt', () => {
 
   it('own_review_v3：分析師的找資料步驟、哪些引用算數、lookups；v2 開頭標「不再使用」', () => {
     // T61 升成 v4（判成立要有正面的引用）：T53 的這些內容 v4 要照樣有
-    expect(OWN_REVIEW_PROMPT).toBe('own_review_v5');
+    expect(OWN_REVIEW_PROMPT).toBe('own_review_v6');
     const v3 = read(`${OWN_REVIEW_PROMPT}.md`);
     expect(v3).toContain('**只有分析師可以用 WebSearch、可以取文件。**');
     expect(v3).toContain('最多 6 個');

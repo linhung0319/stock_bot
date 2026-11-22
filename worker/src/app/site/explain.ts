@@ -19,6 +19,7 @@ import {
   priceOf,
   rollingMax,
   sma,
+  targetFrac,
   totalValue,
   trailingReturn,
   type Account,
@@ -185,13 +186,6 @@ export function daysAboveMa(c: ArrayLike<number>, i: number, cap = 400): number 
   return run;
 }
 
-/** AI 想「提高到 125%」的前提：股價站在 200 日均線之上連續 6 個月（約 126 個交易日）以上。 */
-const RAISE_DAYS = 126;
-function aboveMaGauge(c: ArrayLike<number>, i: number): Gauge {
-  const run = daysAboveMa(c, i);
-  const to = Math.max(189, run + 21);
-  return { from: 0, to, fromLabel: '0', toLabel: `${to} 天`, value: run, valueLabel: `${run} 個交易日`, marks: [{ at: RAISE_DAYS, label: '6 個月' }], zones: [{ from: RAISE_DAYS, to }], caption: '連續站在 200 日均線之上' };
-}
 
 /** AI 的建議旁邊：規則（慢規則的減半門檻）現在在哪裡。 */
 function contextDrawdown(c: ArrayLike<number>, i: number): Gauge | undefined {
@@ -713,11 +707,13 @@ export function depositFillText(acct: Account, ticker: string): string {
   const r = acct.rule.own[ticker];
   const fill = ownDepositFill(acct.rule, acct.cfg, ticker);
   if (!r || fill === null) return '';
-  const half = r.applied === 'HALF';
-  const plain = r.stdWeight * (half ? 0.5 : 1);
-  if (Math.abs(fill - plain) < 1e-9) return `補到標準比重 ${fmtPct(r.stdWeight, 1)}${half ? ` 的一半 ${fmtPct(plain, 1)}（減半中）` : ''}`;
+  const half = r.applied !== 'STD';
+  // 先買一半（allocation_redesign §4.1）的目標也是一半：入金只補到一半，另一半等財報過關後的補滿
+  const tag = r.applied === 'BUILD' ? '先買一半' : '減半中';
+  const plain = r.stdWeight * targetFrac(r.applied);
+  if (Math.abs(fill - plain) < 1e-9) return `補到標準比重 ${fmtPct(r.stdWeight, 1)}${half ? ` 的一半 ${fmtPct(plain, 1)}（${tag}）` : ''}`;
   const why = ownDepositScale(acct.rule, acct.cfg.ratio.own) < 1 ? '自選合計超過預算，入金照比例少補' : `入金最多補到 ${fmtPct(acct.cfg.ownCapTo)}`;
-  return `入金補到 ${fmtPct(fill, 1)}（${why}）；${half ? '減半中，' : ''}加回補到標準比重 ${fmtPct(r.stdWeight, 1)}`;
+  return `入金補到 ${fmtPct(fill, 1)}（${why}）；${half ? `${tag}，` : ''}${r.applied === 'BUILD' ? '補滿' : '加回'}補到標準比重 ${fmtPct(r.stdWeight, 1)}`;
 }
 
 /** 自選各檔標準比重合計超過自選比例時，入金清單多的那一句（T43）。 */
@@ -738,7 +734,7 @@ function lineFacts(ctx: ExplainContext, lines: OrderLine[], deposit = false): Fa
     const cur = ((acct.lots[l.bucket][l.ticker] ?? 0) * px) / total;
     let tgt: number | null = null;
     const ownRule = l.bucket === 'own' ? acct.rule.own[l.ticker] : undefined;
-    if (ownRule) tgt = ownRule.stdWeight * (ownRule.applied === 'HALF' ? 0.5 : 1);
+    if (ownRule) tgt = ownRule.stdWeight * targetFrac(ownRule.applied);
     if (l.bucket === 'mom' && acct.rule.heldMom.includes(l.ticker)) tgt = slot / total;
     // 入金補自選（T43）：補的是標準比重（減半中只補到一半）；自選各檔合計超過自選比例時入金照比例少補，寫出實際補到多少
     const ownFill = deposit && ownRule && l.shares > 0 ? `目前 ${fmtPct(cur, 1)}，${depositFillText(acct, l.ticker)}` : null;
@@ -923,13 +919,15 @@ function addOwnExplain(ctx: ExplainContext, it: Item): Explain {
   const vol = c ? annualizedVol(c, view.i, 126) : NaN;
   const std = acct.rule.own[t]?.stdWeight ?? 0;
   const half = acct.rule.own[t]?.applied === 'HALF';
+  // 有論點、已跌 20% 以上：先買一半（allocation_redesign §4.1）
+  const build = acct.rule.own[t]?.applied === 'BUILD';
   const total = totalValue(acct, view);
   const sh = sharesOf(it.choices[0].lines, t);
   const rank = ctx.rankOrder.indexOf(t);
   const momVal = (acct.lots.mom[t] ?? 0) * px;
   const facts: Fact[] = [
     { label: '年化波動度（近半年）', value: fmtPct(vol), note: '波動越大，建議的比重越小' },
-    { label: '距 52 週高點', value: fmtPct(dd, 1), note: dd <= SLOW.drawdown ? '已經超過 −20%，一開始就是減半狀態' : '−20% 會觸發減半' },
+    { label: '距 52 週高點', value: fmtPct(dd, 1), note: build ? '已經超過 −20%、有你的論點：先買一半，第一份財報過關再補滿' : dd <= SLOW.drawdown ? '已經超過 −20%，一開始就是減半狀態' : '−20% 會觸發減半' },
     { label: '相對 200 日均線', value: fmtSigned(px / ma - 1, 1) },
   ];
   if (rank >= 0) facts.push({ label: '動能排名', value: `第 ${rank + 1} 名` });
@@ -939,11 +937,11 @@ function addOwnExplain(ctx: ExplainContext, it: Item): Explain {
     short: half ? '已比高點低 20% 以上，先買標準比重的一半' : `買到標準比重 ${fmtPct(std, 1)}`,
     why: adopted
       ? `你認養了動能選出的 ${t}：照常買進，但記在自選桶。之後動能就算把它排除，也不會叫你賣；改由自選的慢規則管。`
-      : `你把 ${t} 加進自選。建議的標準比重是 ${fmtPct(std, 1)}（自選預算 ${fmtPct(acct.cfg.ratio.own)} 內，波動越大的比重越小）。${half ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，已經在慢規則「減半」的範圍內，所以一開始只買標準比重的一半，等它站回 200 日均線連續 10 天再補足。這樣不會一買進就收到減半通知。` : ''}錢從核心出。`,
+      : `你把 ${t} 加進自選。建議的標準比重是 ${fmtPct(std, 1)}（自選預算 ${fmtPct(acct.cfg.ratio.own)} 內，波動越大的比重越小）。${half ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，已經在慢規則「減半」的範圍內，所以一開始只買標準比重的一半，等它站回 200 日均線連續 10 天再補足。這樣不會一買進就收到減半通知。` : ''}${build ? `${t} 現在比 52 週高點低 ${fmtPct(-dd, 1)}，有你的論點：先買標準比重的一半，開檔之後的第一份財報的審查過關（3 票一致、沒有前提被判不成立）再補滿，不看 200 日線。` : ''}錢從核心出。`,
     gauge: Number.isFinite(dd) && !adopted ? drawdownGauge(dd) : undefined,
     rule: RULE.addOwn,
     facts,
-    math: adopted ? undefined : [`標準比重 ${fmtPct(std, 1)}${half ? ' × 一半' : ''} × 總資產 ${fmtMoney(total)} ÷ 前一日收盤 ${fmtPx(px)} = ${sh} 股`],
+    math: adopted ? undefined : [`標準比重 ${fmtPct(std, 1)}${half || build ? ' × 一半' : ''} × 總資產 ${fmtMoney(total)} ÷ 前一日收盤 ${fmtPx(px)} = ${sh} 股`],
     chart: t,
     choiceNotes: { DO: '系統不替你決定要不要買；這只是照比重算出來的股數。', SKIP: '不買的話，這檔仍然在自選名單上（0 股），可以之後再移除。' },
   };
@@ -996,10 +994,11 @@ function aiOnly(ctx: ExplainContext, n: Notif, it: Item): Explain {
   }
   const raise = tier === 'RAISE';
   return {
-    gauge: c ? (raise ? aboveMaGauge(c, view.i) : contextDrawdown(c, view.i)) : undefined,
-    short: raise ? 'AI 審查：前提都成立，可以提高比重' : `AI 審查的建議：${tier ? TIER_NAME[tier] : ''}`,
+    // 提高到 125% 的門檻改看基本面（allocation_redesign §4.3），不再畫「連續站上 200 日均線」的條
+    gauge: c && !raise ? contextDrawdown(c, view.i) : undefined,
+    short: raise ? 'AI 審查：前提連兩季被證實，可以提高比重' : `AI 審查的建議：${tier ? TIER_NAME[tier] : ''}`,
     why: `規則沒有動作。這是 AI 每月審查 ${t} 之後的建議：${tier ? TIER_NAME[tier] : ''}（${sharesText(sh)}）。${note ? note.summary : ''}`,
-    rule: raise ? `${RULE.ai}「提高到 125%」只有在股價站在 200 日均線之上連續 6 個月以上、不在減半狀態時才能選，同一檔一年最多一次。` : RULE.ai,
+    rule: raise ? `${RULE.ai}「提高到 125%」只有在連續兩次財報後的審查都證實每一條前提（引用有申報或財報）、最近兩季營收年增都是正的、在標準狀態（不是減半、先買一半或審查後持有）時才能選，同一檔一年最多一次。是 AI 發起的，預設不做。` : RULE.ai,
     math: raise
       ? [`標準比重 ${fmtPct(std, 2)} × 1.25 = ${fmtPct(std * 1.25, 2)}`, `${fmtPct(std * 1.25, 2)} × 總資產 ${fmtMoney(total)} ÷ 前一日收盤 ${fmtPx(px)} = ${Math.floor((std * 1.25 * total) / px)} 股，已有 ${cur} 股 → 買 ${sh} 股`]
       : [`目前 ${cur} 股 → ${sharesText(sh)}`],
@@ -1007,6 +1006,33 @@ function aiOnly(ctx: ExplainContext, n: Notif, it: Item): Explain {
     ai: note,
     aiMissing: !note,
     choiceNotes: { AI: raise ? '買進後，這檔的標準比重就變成原本的 125%。等於提高自選的預算，由你決定。' : '照 AI 的檔位調整，慢規則的狀態跟著改。', SKIP: SKIP.ai },
+  };
+}
+
+/** 補滿（F27，allocation_redesign §4.1）：你開檔時選了先買一半，開檔後第一份財報過關 → 補到標準比重，預設照做。 */
+function ownFill(ctx: ExplainContext, n: Notif, it: Item): Explain {
+  const { acct, view } = ctx;
+  const t = it.ticker!;
+  const rule = it.choices.find((c) => c.id === 'RULE');
+  const sh = sharesOf(rule?.lines ?? [], t);
+  const c = closeOf(view, t);
+  const px = c ? c[view.i] : NaN;
+  const total = totalValue(acct, view);
+  const std = acct.rule.own[t]?.stdWeight ?? 0;
+  const cur = acct.lots.own[t] ?? 0;
+  const ok = /已確認（(.+)）→/.exec(it.title)?.[1] ?? '';
+  const note = noteByRun(ctx.aiNotes, 'REVIEW', it.runIds) ?? findNote(ctx.aiNotes, 'REVIEW', t, n.date, it.runIds);
+  return {
+    short: `先買的一半已確認：${ok}`,
+    why: `你開檔時選了「先買一半，確認後再補滿」。確認的條件是開檔之後的第一份財報過關：${ok}。所以把另一半補上，回到標準比重 ${fmtPct(std, 1)}。${it.note ? `${it.note}。` : ''}`,
+    rule: '你事先定的買法，條件到了照做（預設）；不做也不用寫理由。補滿和之後的加碼都先過同一組程式檢查（不在減半、沒有還沒結案的跌幅審查或 AI 判前提不成立、沒有硬事件標記、30 天內沒有前提被判不成立、這檔自選加動能不超過總資產 10%）。',
+    math: Number.isFinite(px) ? [`標準比重 ${fmtPct(std, 1)} × 總資產 ${fmtMoney(total)} ÷ 前一日收盤 ${fmtPx(px)} = ${Math.floor((std * total) / px)} 股`, `已有 ${cur} 股 → 買 ${sh} 股`] : undefined,
+    chart: t,
+    ai: note,
+    choiceNotes: {
+      RULE: '買到標準比重，錢從核心照比例拿；這檔從此是一般的標準狀態。',
+      SKIP: '不買。標準比重改成現在的比重，之後不會再提補滿；想再加碼，改標準比重或定加碼條件。',
+    },
   };
 }
 
@@ -1076,6 +1102,7 @@ function owed(ctx: ExplainContext, _n: Notif, it: Item): Explain {
 export function explainItem(ctx: ExplainContext, n: Notif, it: Item): Explain {
   try {
     if (it.kind === 'OWN_COND') return ownCond(ctx, n, it);
+    if (it.kind === 'OWN_FILL') return ownFill(ctx, n, it);
     if (it.kind === 'AI_ONLY') return aiOnly(ctx, n, it);
     if (it.kind === 'HARD') return hard(ctx, n, it);
     switch (it.f) {

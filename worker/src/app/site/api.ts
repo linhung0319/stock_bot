@@ -12,6 +12,7 @@ import {
   cancelCashflow,
   monthlyWait,
   setStdWeight,
+  endBuild,
   type BucketShares,
   changeRatio,
   classify,
@@ -780,7 +781,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
           const held = (['own', 'mom', 'core'] as const).map((b) => [b, a.lots[b][run.ticker!] ?? 0] as const).filter(([, n]) => n);
           if (held.length && px) background.push(`${run.ticker} 目前持有：${held.map(([b, n]) => `${{ own: '自選', mom: '動能', core: '核心' }[b]} ${n} 股`).join('、')}，占總資產 ${pct((held.reduce((x, [, n]) => x + n, 0) * px) / total)}。`);
           const st = a.rule.own[run.ticker];
-          if (st) background.push(`自選慢規則：${st.applied === 'HALF' ? '減半中' : '標準'}；標準比重 ${pct(st.stdWeight)}。`);
+          if (st) background.push(`自選慢規則：${st.applied === 'HALF' ? '減半中' : st.applied === 'BUILD' ? '先買一半' : '標準'}；標準比重 ${pct(st.stdWeight)}。`);
         }
       }
       return new Response(exportMd(run, { background }), { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': `attachment; filename="${run.runId}.md"` } });
@@ -1202,9 +1203,23 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const b = await body(req);
     const tk = ticker(b.ticker);
     const w = stdWeightOf(b.stdWeight);
-    await mutate(backend, `改標準比重 ${tk} → ${pct(w)}`, [], (d) => {
+    // 開檔後第一次設定標準比重（allocation_redesign §4.1）：build = true「先買一半，確認後再補滿」；沒給或 false「已經買到這個比例」
+    const build = b.build === true;
+    await mutate(backend, `改標準比重 ${tk} → ${pct(w)}${build ? '（先買一半）' : ''}`, [], (d) => {
       if (!d.acct.rule.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
-      return { acct: setStdWeight(d.acct, tk, w) };
+      return { acct: setStdWeight(d.acct, tk, w, { build, date: d.view.date }) };
+    });
+    return json({ ok: true });
+  }
+
+  // ---- 持股頁：先買一半（allocation_redesign §4.1、§4.6）——「維持現在的大小」（標準比重改成實際比重）、「改成已經買到這個比例」（目標回到標準比重）
+  if ((rest === 'ops/build-keep' || rest === 'ops/build-full') && post) {
+    const b = await body(req);
+    const tk = ticker(b.ticker);
+    const keep = rest === 'ops/build-keep';
+    await mutate(backend, keep ? `${tk} 先買一半：維持現在的大小` : `${tk} 先買一半：改成已經買到這個比例`, [], (d) => {
+      if (!d.acct.own[tk]?.build) throw new SiteError(422, `${tk} 不是先買一半的狀態`);
+      return { acct: endBuild(d.acct, d.view, tk, keep) };
     });
     return json({ ok: true });
   }

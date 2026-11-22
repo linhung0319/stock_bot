@@ -1,6 +1,6 @@
 // T10：F24 自選定期審查、F25 自選條件監測（ai_layer_design 的 F24、F25、F23 卡片）。
 // 純函式：證據包、payload 的逐欄檢查、結論怎麼變成引擎的輸入。資料抓取與排程在 src/app/ownAi.ts。
-import { TIER_NAME, VERIFY_EVERY_DEFAULT, type Account, type MarketView, type ReviewTrigger, type Tier } from '../engine';
+import { TIER_NAME, VERIFY_EVERY_DEFAULT, buyCheck, type Account, type MarketView, type ReviewTrigger, type Tier } from '../engine';
 import { GRADED_RATINGS, STRONG_RATINGS, TIER_TEXT, isExcluded, rateDomain, sameWebDomain, webLabel, type WebRatingRow } from '../data/webSources';
 import { webMetaOf, type WebMeta } from './added';
 import { keptByChoice, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
@@ -11,25 +11,67 @@ export const OWN_CONDITION = 'OWN_CONDITION';
 /**
  * T61：v4 判前提成立要有正面的引用（composite_layer_design §2.1）；前提的子句、怎樣算證實、怎麼驗證也在這一版說明。
  * T69：v5 取完文件之後照 ai/prompts/source_rating.md 開來源評級；網頁看網域現在的級別（confirm_audit_design §1.2、§1.4、§1.6）。
+ * T83：v6 提高到 125% 的門檻改看基本面（allocation_redesign §4.3）；慢規則狀態多「先買一半」「審查後持有」。
  */
-export const OWN_REVIEW_PROMPT = 'own_review_v5';
+export const OWN_REVIEW_PROMPT = 'own_review_v6';
 /** F24 獨立跑幾次。 */
 export const OWN_REVIEW_SAMPLES = 3;
 export const OWN_CONDITION_PROMPT = 'own_condition_v1';
 
-/** F23：AI 可以選「提高到標準的 125%」的規則條件。 */
-export const RAISE_RULE = { aboveDays: 126, gapDays: 365 } as const;
+/**
+ * F23：AI 可以選「提高到標準的 125%」的規則條件（allocation_redesign §4.3，T83，使用者 D6）：
+ * 連續兩次財報後的審查都證實前提、最近兩季營收年增都是正的、標準狀態、距上次提高滿 365 天、過買進前的程式檢查。
+ * 2026-11-22 之前是「連續站上 200 日均線 126 個交易日」，拿掉（漲了才加碼和看論點的方向不一致）。
+ */
+export const RAISE_RULE = { gapDays: 365, earnings: 2 } as const;
 
-/** F23 的規則條件：收盤連續站上 200 日均線 ≥ 6 個月、不在減半、沒有硬事件標記、距上次提高 ≥ 12 個月。 */
-export function raiseAllowed(acct: Account, ticker: string, asOf: string): { ok: boolean; why: string } {
+/** 最近兩季營收年增的程式核對（app 層由 XBRL 季度表算好，放進證據包的 rule.detail.revenue）：ok = 兩季都是正的；資料不夠是 false。 */
+export interface RevenueCheck {
+  ok: boolean;
+  why: string;
+}
+
+const RAISE_STATE_TEXT: Record<string, string> = { HALF: '減半中', BUILD: '先買一半、還沒補滿', WATCH: '審查後持有中（比高點低 20% 以上，審查之後沒有減半）' };
+
+/**
+ * F23 的規則條件（§4.3）。opt.trigger 是這次審查的觸發原因：財報後的審查（EARNINGS）本身就是「第二次」，所以只要上一次財報後的審查證實過——
+ * 這一次有沒有證實，由 reviewDecision 看三票（每一條前提都判成立、引用有申報或財報）；其他觸發原因要最近兩次財報後的審查都證實過。
+ * opt.revenue：最近兩季營收年增的核對（沒給 = 資料不夠，不算過）。
+ */
+export function raiseAllowed(acct: Account, ticker: string, asOf: string, opt: { trigger?: ReviewTrigger | string; revenue?: RevenueCheck | null } = {}): { ok: boolean; why: string } {
   const meta = acct.own[ticker];
   const st = acct.rule.own[ticker];
   if (!meta || !st) return { ok: false, why: '不是自選股' };
-  if (st.applied !== 'STD') return { ok: false, why: '減半中' };
-  if (meta.flags.length) return { ok: false, why: `有硬事件標記（${meta.flags.join('、')}）` };
-  if (meta.slow.aboveRun < RAISE_RULE.aboveDays) return { ok: false, why: `連續站上 200 日均線 ${meta.slow.aboveRun} 個交易日（要 ${RAISE_RULE.aboveDays}）` };
+  const state = st.applied === 'STD' ? meta.slow.state : st.applied;
+  if (state !== 'STD') return { ok: false, why: RAISE_STATE_TEXT[state] ?? '不在標準狀態' };
   if (meta.raisedAt && (Date.parse(asOf) - Date.parse(meta.raisedAt)) / 86400_000 < RAISE_RULE.gapDays) return { ok: false, why: `上次提高是 ${meta.raisedAt}，未滿 12 個月` };
+  // 買進前的程式檢查（§4.0）：減半、跌幅審查或乙類還沒結案、硬事件標記、30 天內有前提被判不成立（股數與上限到月報時再算）
+  const buy = buyCheck(acct, null, ticker, asOf);
+  if (!buy.ok) return { ok: false, why: buy.why ?? '買進前的程式檢查沒過' };
+  const need = opt.trigger === 'EARNINGS' ? RAISE_RULE.earnings - 1 : RAISE_RULE.earnings;
+  const last = (meta.earnChecks ?? []).slice(-need);
+  if (last.length < need || !last.every((c) => c.confirmed)) {
+    const had = (meta.earnChecks ?? []).slice(-RAISE_RULE.earnings).map((c) => `${c.date} ${c.confirmed ? '證實' : '沒有證實'}`);
+    return { ok: false, why: `${opt.trigger === 'EARNINGS' ? '上一次' : '最近兩次'}財報後的審查沒有都證實前提（${had.length ? had.join('、') : '還沒有財報後的審查'}）` };
+  }
+  if (!opt.revenue?.ok) return { ok: false, why: `最近兩季營收年增不是都為正（${opt.revenue?.why ?? '沒有資料'}）` };
   return { ok: true, why: '規則條件成立' };
+}
+
+/**
+ * 這次財報後的審查有沒有證實前提（§4.3，記進 OwnMeta.earnChecks）：3 票一致、每一票都判了證據包裡的每一條前提（信念不在證據包裡）、
+ * 每一條都是成立，而且判成立的引用至少一條來自申報或財報（不能只靠網頁）。純函式。
+ */
+export function earningsConfirmed(outcome: Outcome, pack: Pick<EvidencePack, 'documents'> & { premises?: { id: string }[] }): { confirmed: boolean; why: string } {
+  if (outcome.status !== 'AGREED') return { confirmed: false, why: '沒有三票一致的結論' };
+  const samples = outcome.samples.filter((s) => s.valid);
+  if (samples.length < OWN_REVIEW_SAMPLES) return { confirmed: false, why: '有效的票不到三張' };
+  const ids = (pack.premises ?? []).map((p) => p.id);
+  if (!ids.length) return { confirmed: false, why: '沒有可以驗證的前提' };
+  const allHold = samples.every((s) => ids.every((id) => s.premises.some((p) => p.premise_id === id && p.status === 'HOLDS')));
+  if (!allHold) return { confirmed: false, why: '不是每一條前提都三票判成立' };
+  if (!holdsHard(samples, packSources(pack))) return { confirmed: false, why: '判成立的前提有的只靠網頁（沒有申報或財報的引用）' };
+  return { confirmed: true, why: `3 票都判 ${ids.length} 條前提成立（有申報或財報的引用）` };
 }
 
 /**
@@ -86,16 +128,28 @@ export interface OwnReviewInput {
   lookFor?: string;
   /** 新眼光這次跑不跑（T63，composite_layer_design §3；freshEyes.ts 的 freshPlan）。沒給 = 證據包沒有這個欄位（不跑）。 */
   freshEyes?: EvidencePack['fresh_eyes'];
+  /** 最近兩季營收年增的程式核對（提高到 125% 的門檻，allocation_redesign §4.3）；沒給 = 沒有資料（不能提高）。記在 rule.detail.revenue。 */
+  revenue?: RevenueCheck | null;
+  /** 只有預設前提的股票：程式比對系統預設前提 D1～D3 的結果（先買一半的確認，§4.1；ok = null 是資料不夠）。記在 rule.detail.defaultCheck。 */
+  defaultCheck?: { ok: boolean | null; why: string } | null;
   now: Date;
 }
 
-const STATE_TIER: Record<string, Tier> = { STD: 'STANDARD', HALF: 'HALF' };
+/** 目前的狀態等於哪個檔位：先買一半還沒被減半，等於「標準」（補滿看財報後的審查，不看 AI 的檔位；allocation_redesign §4.1）。 */
+const STATE_TIER: Record<string, Tier> = { STD: 'STANDARD', HALF: 'HALF', BUILD: 'STANDARD' };
+/** 證據包題目裡的慢規則狀態。 */
+const STATE_TEXT: Record<string, string> = { STD: '標準', HALF: '減半中', BUILD: '先買一半（還沒補滿；補滿看開檔後第一份財報的審查）' };
+
+/** OwnReviewInput.revenue 的預設：沒給 = 沒有資料。 */
+const NO_REVENUE: RevenueCheck = { ok: false, why: '沒有 XBRL 的季度營收' };
 
 /** F24 的證據包。 */
 export function ownReviewPack(inp: OwnReviewInput) {
   const { acct, view, ticker } = inp;
-  const raise = raiseAllowed(acct, ticker, view.date);
+  const revenue = inp.revenue ?? NO_REVENUE;
+  const raise = raiseAllowed(acct, ticker, view.date, { trigger: inp.trigger, revenue });
   const state = acct.rule.own[ticker]?.applied ?? 'STD';
+  const stateText = STATE_TEXT[state] ?? '標準';
   const verdicts: Tier[] = ['EXIT', 'HALF', 'HOLD', 'STANDARD', ...(raise.ok ? (['RAISE'] as Tier[]) : [])];
   const docs = [priceDoc(view, inp.axis, ticker, 60), inp.xbrl, ...inp.filings, inp.news, ...(inp.extraDocs ?? [])].filter((d): d is PackDoc => !!d);
   const conds = inp.conds ?? { facts: [], map: {} };
@@ -112,7 +166,7 @@ export function ownReviewPack(inp: OwnReviewInput) {
     question:
       (inp.early ? `這次是提前審查，原因：${inp.early.reason}。` : '') +
       (inp.lookFor ?? '') +
-      `${ticker} 是自選股，目前慢規則狀態「${state === 'HALF' ? '減半中' : '標準'}」（等於檔位 ${STATE_TIER[state]}）。` +
+      `${ticker} 是自選股，目前慢規則狀態「${stateText}」（等於檔位 ${STATE_TIER[state]}）。` +
       '請逐條檢查使用者的前提：哪些證據顯示它成立？哪些證據顯示它不成立？把「論點壞了」和「價格跌了」分開。' +
       '假設三個月後回頭看，這次維持現狀是錯的，最可能的原因是什麼、今天有什麼證據？' +
       `最後選一個檔位：${verdicts.map((v) => `${v}（${TIER_NAME[v]}）`).join('、')}；證據不足以改變就選 HOLD。` +
@@ -121,7 +175,7 @@ export function ownReviewPack(inp: OwnReviewInput) {
       '最後可以建議最多 3 條新增的條件（payload.proposed_conditions）：現有的條件已經涵蓋的事不要再提，還適用的 AI 監測中條件原樣再提（算在 3 條內，沒再提的會換掉）；三票一致時寫入就開始監測，成立時只會再開一次審查，不會直接通知使用者賣。',
     // holds_fresh_days（T61）：判成立要指出正面的引用，而且那幾份原文不能比驗證頻率舊（前提沒寫 every 時用 100 天）
     policy: { level: 'A3', verdicts, abstain: 'HOLD', min_evidence: 1, samples: OWN_REVIEW_SAMPLES, holds_fresh_days: VERIFY_EVERY_DEFAULT },
-    rule: { action: `規則這次沒有動作；慢規則狀態：${state === 'HALF' ? '減半中' : '標準'}`, detail: { trigger: inp.trigger, state, raise: raise.why, conds: conds.map, ...condWeb, ...webDomains, thesisVersion: acct.own[ticker]?.thesis?.version ?? 0, ...(inp.reasons ? { reasons: inp.reasons } : {}), ...(inp.early ? { events: inp.early.events } : {}) } },
+    rule: { action: `規則這次沒有動作；慢規則狀態：${stateText}`, detail: { trigger: inp.trigger, state, raise: raise.why, revenue, ...(inp.defaultCheck ? { defaultCheck: inp.defaultCheck } : {}), conds: conds.map, ...condWeb, ...webDomains, thesisVersion: acct.own[ticker]?.thesis?.version ?? 0, ...(inp.reasons ? { reasons: inp.reasons } : {}), ...(inp.early ? { events: inp.early.events } : {}) } },
     facts: [...priceFacts(view, ticker), ...ownRuleFacts(acct, view, ticker), ...conds.facts, ...(inp.extraFacts ?? [])],
     premises: ownPremises(acct, ticker),
     documents: docs,
@@ -434,7 +488,9 @@ export function reviewDecision(outcome: Outcome, acct: Account, ticker: string, 
   if (tier === 'RAISE') {
     const allHold = samples.every((s) => s.premises.length > 0 && s.premises.every((p) => p.status === 'HOLDS'));
     if (allHold && !holdsHard(samples, src)) return { ...base, suggest: false, why: '要提高到 125%，每一條成立的前提都要有申報或財報表的引用（不能只靠網頁、新聞標題或價格）。' };
-    const r = raiseAllowed(acct, ticker, asOf);
+    // 門檻照證據包當時的觸發原因與營收核對（§4.3）；財報後的審查算這一次（上面三票都判成立、有申報或財報引用）
+    const detail = (pack.rule?.detail ?? {}) as { trigger?: string; revenue?: RevenueCheck };
+    const r = raiseAllowed(acct, ticker, asOf, { trigger: detail.trigger, revenue: detail.revenue ?? null });
     return allHold && r.ok ? { ...base, suggest: true, why: '前提全部成立、規則條件成立：月報列提高到 125% 的建議。' } : { ...base, suggest: false, why: allHold ? `不能提高（${r.why}）` : '要提高到 125%，前提要全部成立。' };
   }
   if (tier !== 'EXIT' && tier !== 'HALF') {

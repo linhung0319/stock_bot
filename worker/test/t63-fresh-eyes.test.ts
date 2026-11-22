@@ -67,7 +67,7 @@ const RJ = (await import('../public/js/thesis-risks.js' as string)) as RisksJs;
 
 describe('T63 prompt：新眼光那個角色（沒有升版號）', () => {
   it('沒有升版：審查 v4、減半檢視 v4；檔頭各有一段 T63 的說明', () => {
-    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_review_v5', 'own_drop_v6']);
+    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_review_v6', 'own_drop_v6']);
     for (const f of [REVIEW, DROP]) {
       const head = read(f).split('\n').slice(0, 8).join('\n');
       expect(head, f).toContain('新眼光（2026-11-21，T63，`composite_layer_design` §3；v4 還沒部署，直接改、沒有升版）');

@@ -290,6 +290,8 @@ export function refillText(x) {
   if (!x.scaled && !x.half && Math.abs(x.fill - x.std) < 1e-9) return `之後入金與加回會補到 ${pct(x.std)}`;
   const dep = depositBuys ? `入金會補到 ${pct(x.fill)}` : '入金不會再補';
   const why = x.scaled ? '（自選合計超過預算，入金照比例少補）' : '';
+  // 先買一半（allocation_redesign §4.1）：入金只補到一半，另一半等財報過關後的補滿
+  if (x.build) return `先買一半，${dep}${why}；財報過關後補滿到 ${pct(x.std)}`;
   return `${x.half ? '減半中，' : ''}${dep}${why}；加回會補到 ${pct(x.std)}`;
 }
 

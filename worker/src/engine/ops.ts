@@ -38,9 +38,9 @@ import {
 } from './account';
 import { momSlotTarget, ownDepositFill, ownDepositScale, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
-import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SELF_HALVE_MIN, SKIPPED_REASON, addDispute, endDisputesFor, afterOpenLists, cancelThesisDrop, composeNotif, crashReviewOf, leaveWatch, monthlyReport, monthlyWait, rebuildThesisDrop, recordExternalFlow, refreshCoreBand, refreshOwnAiChoice, restoreSaved, thesisDropShadow, type MonthlyResult } from './report';
+import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SELF_HALVE_MIN, SKIPPED_REASON, addDispute, clearBuild, endDisputesFor, afterOpenLists, cancelThesisDrop, composeNotif, crashReviewOf, leaveWatch, monthlyReport, monthlyWait, rebuildThesisDrop, recordExternalFlow, refreshCoreBand, refreshOwnAiChoice, restoreSaved, thesisDropShadow, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
-import { appliedOf, cellKey, type Bucket } from './types';
+import { appliedOf, cellKey, targetFrac, type Bucket } from './types';
 
 const sumFor = (lines: OrderLine[], ticker: string) => lines.filter((l) => l.ticker === ticker).reduce((a, l) => a + l.shares, 0);
 
@@ -80,7 +80,8 @@ function applyEffects(acct: Account, view: MarketView, effects: Effect[] | undef
     else if (e.type === 'MOM_DROP') acct.rule.heldMom = acct.rule.heldMom.filter((t) => t !== e.ticker);
     else if (e.type === 'CLEAR_FLAG') {
       if (acct.own[e.ticker]) acct.own[e.ticker].flags = [];
-    } else applyTier(acct, view, e.ticker, e.tier, f === 'F19' ? 'HARD_EVENT' : f === 'F25' ? 'EXIT_CONDITION' : 'EXIT_AI');
+    } else if (e.type === 'BUILD_END') endBuildIn(acct, view, e.ticker, e.keep);
+    else applyTier(acct, view, e.ticker, e.tier, f === 'F19' ? 'HARD_EVENT' : f === 'F25' ? 'EXIT_CONDITION' : 'EXIT_AI');
   }
 }
 
@@ -95,6 +96,9 @@ export function applyTier(acct: Account, view: MarketView, ticker: string, tier:
     const st = tier === 'HALF' ? 'HALF' : 'STD';
     // 審查後持有的股票照做了減半（跌幅審查的選項、乙類、你定的條件）或回到標準：離開審查後持有（allocation_redesign §3.3）
     if (meta.slow.state === 'WATCH') leaveWatch(meta);
+    // 先買一半的股票被減半（賣掉一半的一半）或回到標準：離開先買一半（§4.1；減半之後加回時回到標準比重）
+    delete meta.build;
+    delete meta.buildAsk;
     meta.slow = { ...meta.slow, state: st, sinceSwitch: 0 }; // 切換日重新起算
     meta.pending = null;
     rule.applied = st;
@@ -202,7 +206,7 @@ function recomputeLate(acct: Account, view: MarketView, n: Notif): void {
     if (meta.slow.state !== expected) {
       it.cancelled = true;
       it.note = '期間規則狀態已反轉，這一項取消';
-      rule.applied = appliedOf(meta.slow.state);
+      rule.applied = appliedOf(meta.slow.state, !!meta.build);
       meta.pending = null;
       continue;
     }
@@ -293,6 +297,8 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
   const nothingToTrade = n.composed.lines.length === 0;
   if (input.mode === 'SKIP' || n.items.every((i) => i.cancelled || i.choice === 'SKIP')) {
     n.status = 'SKIPPED';
+    // 「這次不做」也有效果的項目（補滿 F27：不做 → 標準比重改成實際的比重，allocation_redesign §4.1）：整則不做時沒有快照可等，回覆當下套用
+    for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === 'SKIP')?.effects, it.f);
   } else if (nothingToTrade && !n.withdraw) {
     // 選的選項不用下單（例如 AI「維持減半」）→ 直接完成（出金除外：快照時才記出金）
     for (const it of n.items) if (!it.cancelled) applyEffects(acct, view, it.choices.find((c) => c.id === it.choice)?.effects, it.f);
@@ -575,6 +581,8 @@ export interface BelowStd {
   weight: number;
   std: number;
   half: boolean;
+  /** 先買一半（allocation_redesign §4.1）：入金只補到一半，另一半等財報過關後的補滿。 */
+  build?: boolean;
   fill: number;
   /** 自選各檔合計超過自選比例，入金照比例少補（fill 是縮過的）。 */
   scaled: boolean;
@@ -593,7 +601,7 @@ function belowStdAfterSelfSell(acct: Account, view: MarketView, tickers: string[
     const r = acct.rule.own[t];
     if (!r || !(r.stdWeight > 0)) continue;
     const weight = ((acct.lots.own[t] ?? 0) * priceOf(view, t)) / total;
-    if (r.stdWeight - weight > acct.cfg.orderMin) out.push({ ticker: t, weight, std: r.stdWeight, half: r.applied === 'HALF', fill: ownDepositFill(acct.rule, acct.cfg, t)!, scaled });
+    if (r.stdWeight - weight > acct.cfg.orderMin) out.push({ ticker: t, weight, std: r.stdWeight, half: r.applied === 'HALF', ...(r.applied === 'BUILD' ? { build: true } : {}), fill: ownDepositFill(acct.rule, acct.cfg, t)!, scaled });
   }
   return out;
 }
@@ -814,6 +822,9 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
       const meta = acct.own[t];
       if (meta.slow.state === 'WATCH' && had > 0 && -q >= SELF_HALVE_MIN * had && acct.rule.own[t]) {
         leaveWatch(meta);
+        // 先買一半期間跌 20%、審查之後沒減半、你自己賣了一半：一樣照減半處理，離開先買一半（§4.1）
+        delete meta.build;
+        delete meta.buildAsk;
         meta.slow = { ...meta.slow, state: 'HALF', sinceSwitch: 0 };
         acct.rule.own[t].applied = 'HALF';
         cancelThesisDrop(acct, t, `${view.date} 的快照顯示你自己賣了 ${-q} 股，這檔之後照減半處理，這一項取消`);
@@ -1003,7 +1014,7 @@ export function changeRatio(acct0: Account, view: MarketView, ratio: { own: numb
       r.stdWeight = kept !== undefined ? (kept * ratio.own) / rec!.from : recommended[tk];
       if (!base.rule.own[tk]) continue; // 還沒填快照的清單要把它移出自選：不買回
       const cur = base.lots.own[tk] ?? 0;
-      const want = Math.floor((r.stdWeight * total * (r.applied === 'HALF' ? 0.5 : 1)) / priceOf(view, tk));
+      const want = Math.floor((r.stdWeight * total * targetFrac(r.applied)) / priceOf(view, tk));
       if (want > cur) lines.push({ ticker: tk, bucket: 'own', shares: want - cur, reason: '改比例' });
     }
     delete acct.ownZero;
@@ -1058,18 +1069,24 @@ export function addOwn(acct0: Account, view: MarketView, ticker: string, premise
   const meta = newOwnMeta(view, ticker, 'NEW', premises?.length ? premises : clone(SYSTEM_DEFAULT_PREMISES), acct.ownClosed?.[ticker]?.fileId);
   const std = stdWeight ?? recommended[ticker];
   const half = meta.slow.state === 'HALF';
+  // 有論點、距高點已跌超過 20%：先買一半，開檔後第一份財報的審查過關再補滿（allocation_redesign §4.1）
+  const build = meta.slow.state === 'BUILD';
   acct.own[ticker] = meta;
-  acct.rule.own[ticker] = { applied: appliedOf(meta.slow.state), stdWeight: std };
+  acct.rule.own[ticker] = { applied: appliedOf(meta.slow.state, !!meta.build), stdWeight: std };
   const total = totalValue(acct, view);
   const px = priceOf(view, ticker);
   const cur = acct.lots.own[ticker] ?? 0;
-  const sh = Math.max(0, Math.floor((std * total * (half ? 0.5 : 1)) / px) - cur);
+  const sh = Math.max(0, Math.floor((std * total * (half || build ? 0.5 : 1)) / px) - cur);
   const crossRoom = (acct.cfg.crossCapBuy ?? Infinity) * total - (acct.lots.mom[ticker] ?? 0) * px;
   const item = makeItem({
     f: 'F14',
     kind: 'CASHFLOW',
     ticker,
-    title: half ? `新增自選 ${ticker}：距高點已跌超過 20% → 一開始就是減半狀態，只買標準比重的一半` : `新增自選 ${ticker}：買到標準比重 ${(std * 100).toFixed(1)}%`,
+    title: half
+      ? `新增自選 ${ticker}：距高點已跌超過 20% → 一開始就是減半狀態，只買標準比重的一半`
+      : build
+        ? `新增自選 ${ticker}：距高點已跌超過 20%、有你的論點 → 先買標準比重的一半，開檔後第一份財報的審查過關再補滿`
+        : `新增自選 ${ticker}：買到標準比重 ${(std * 100).toFixed(1)}%`,
     choices: [{ id: 'DO', label: '照做', lines: sh ? [{ ticker, bucket: 'own', shares: sh, reason: '新增自選' }] : [] }],
     why: '錢從核心照比例拿（帳上現金先用）',
   });
@@ -1320,11 +1337,54 @@ export function reviseBreak(acct0: Account, view: MarketView, id: number, ticker
   return { acct, ok: true, premiseId: pid, kept };
 }
 
-/** 改一檔自選的標準比重（持股頁；設計 §2.2「系統推薦，使用者可改」）。只改之後加回、入金用的目標，不下單。 */
-export function setStdWeight(acct0: Account, ticker: string, stdWeight: number): Account {
+/**
+ * 改一檔自選的標準比重（持股頁；設計 §2.2「系統推薦，使用者可改」）。只改之後加回、入金用的目標，不下單。
+ * opt.build（allocation_redesign §4.1，T83）：開檔後第一次設定標準比重時（OwnMeta.buildAsk）的選擇——true「先買一半，確認後再補滿」→ 先買一半（BUILD），
+ * false 或沒給「已經買到這個比例」→ 照舊（標準）。不論選哪個，存了之後就不再問。只有標準狀態的股票能選先買一半（減半中、審查後持有的不問）。
+ */
+export function setStdWeight(acct0: Account, ticker: string, stdWeight: number, opt: { build?: boolean; date?: string } = {}): Account {
   const acct = clone(acct0);
+  const meta = acct.own[ticker];
   if (!acct.rule.own[ticker] || !(stdWeight > 0)) return acct0;
   acct.rule.own[ticker].stdWeight = stdWeight;
+  if (meta?.buildAsk) {
+    delete meta.buildAsk;
+    if (opt.build && meta.slow.state === 'STD' && acct.rule.own[ticker].applied === 'STD') {
+      meta.slow = { ...meta.slow, state: 'BUILD' };
+      meta.build = { since: openedOn(meta, ticker, opt.date), confirmBy: 'EARNINGS', misses: 0 };
+      acct.rule.own[ticker].applied = 'BUILD';
+    }
+  }
+  return acct;
+}
+
+/** 論點檔開檔的訊號日（fileId 是 `<代號>@<訊號日>`）；舊資料沒有編號時用 fallback。 */
+function openedOn(meta: Pick<OwnMeta, 'fileId'>, ticker: string, fallback?: string): string {
+  const d = meta.fileId?.slice(ticker.length + 1, ticker.length + 11);
+  return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : (fallback ?? '');
+}
+
+/**
+ * 離開先買一半（allocation_redesign §4.1；直接改傳進來的帳戶；本體是 report.ts 的 clearBuild）：
+ *   keep = false：補滿照做、或「選了先買一半但其實買足了」改成已經買到這個比例 → 目標回到標準比重（標準比重不變）
+ *   keep = true：補滿不做、或兩份財報（200 天）沒過關後選「維持現在的大小」→ 標準比重改成現在的實際比重（之後不再提）
+ */
+const endBuildIn = clearBuild;
+
+/** 持股頁的按鈕（allocation_redesign §4.1、§4.6）：「維持現在的大小」（keep）、「改成已經買到這個比例」（不 keep）。不是先買一半就原樣回傳。 */
+export function endBuild(acct0: Account, view: MarketView, ticker: string, keep: boolean): Account {
+  if (!acct0.own[ticker]?.build) return acct0;
+  const acct = clone(acct0);
+  endBuildIn(acct, view, ticker, keep);
+  // 還沒回覆的補滿（F27）跟著取消：已經離開先買一半
+  for (const n of acct.notifs) {
+    if (n.status !== 'PENDING') continue;
+    for (const it of n.items) {
+      if (it.cancelled || it.f !== 'F27' || it.ticker !== ticker) continue;
+      it.cancelled = true;
+      it.note = keep ? '你選了維持現在的大小，這一項取消' : '你改成已經買到這個比例，這一項取消';
+    }
+  }
   return acct;
 }
 
@@ -1343,7 +1403,7 @@ function ensureOwnMeta(acct: Account, view: MarketView, ticker: string, origin: 
   const meta = newOwnMeta(view, ticker, origin, clone(SYSTEM_DEFAULT_PREMISES), acct.ownClosed?.[ticker]?.fileId);
   if (note) meta.buyNote = note;
   acct.own[ticker] = meta;
-  acct.rule.own[ticker] = { applied: appliedOf(meta.slow.state), stdWeight: opt.std ?? defaultStdFor(acct, view, ticker, opt.shares ?? 0) };
+  acct.rule.own[ticker] = { applied: appliedOf(meta.slow.state, !!meta.build), stdWeight: opt.std ?? defaultStdFor(acct, view, ticker, opt.shares ?? 0) };
   return true;
 }
 

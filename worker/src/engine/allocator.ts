@@ -13,6 +13,7 @@ import {
   cellKey,
   coreCfg,
   parseCell,
+  targetFrac,
   type CellKey,
   type CellMap,
   type EngineConfig,
@@ -120,7 +121,7 @@ function sumBucket(m: CellMap, bucket: string): number {
 export function ownStateTarget(state: RuleState, ticker: string, total: number): number {
   const o = state.own[ticker];
   if (!o) return 0;
-  return o.stdWeight * total * (o.applied === 'HALF' ? 0.5 : 1);
+  return o.stdWeight * total * targetFrac(o.applied);
 }
 
 /**
@@ -130,7 +131,7 @@ export function ownStateTarget(state: RuleState, ticker: string, total: number):
  */
 export function ownDepositScale(state: Pick<RuleState, 'own'>, ratioOwn: number): number {
   let s = 0;
-  for (const o of Object.values(state.own)) s += o.stdWeight * (o.applied === 'HALF' ? 0.5 : 1);
+  for (const o of Object.values(state.own)) s += o.stdWeight * targetFrac(o.applied);
   return s > ratioOwn + 1e-9 ? ratioOwn / s : 1;
 }
 
@@ -138,7 +139,7 @@ export function ownDepositScale(state: Pick<RuleState, 'own'>, ratioOwn: number)
 export function ownDepositFill(state: Pick<RuleState, 'own'>, cfg: Pick<EngineConfig, 'ratio' | 'ownCapTo'>, ticker: string): number | null {
   const o = state.own[ticker];
   if (!o) return null;
-  return Math.min(o.stdWeight * (o.applied === 'HALF' ? 0.5 : 1) * ownDepositScale(state, cfg.ratio.own), cfg.ownCapTo);
+  return Math.min(o.stdWeight * targetFrac(o.applied) * ownDepositScale(state, cfg.ratio.own), cfg.ownCapTo);
 }
 
 /** 動能每檔目標（設計 §2.1.1）：總資產 × Strategy 比例 × 有效比例 ÷ 檔數。 */
@@ -288,7 +289,8 @@ export function planDay(inp: PlanInput): PlanResult {
     if (!o) continue;
     const k = cellKey('own', tk);
     const cur = get(tgt, k);
-    if (act === 'REDUCE' && o.applied === 'STD') {
+    // 先買一半（BUILD，allocation_redesign §4.1）和標準一樣可以被減半：賣掉當時持有的一半，之後是減半（重放走不到 BUILD）
+    if (act === 'REDUCE' && o.applied !== 'HALF') {
       tgt[k] = cur * 0.5;
       why[k] = '自選訊號';
       o.applied = 'HALF';
@@ -528,7 +530,7 @@ export function ownSignalChange(state: RuleState, values: CellMap, ticker: strin
   const o = state.own[ticker];
   if (!o) return 0;
   const cur = get(values, cellKey('own', ticker));
-  if (act === 'REDUCE' && o.applied === 'STD') return cur * 0.5;
+  if (act === 'REDUCE' && o.applied !== 'HALF') return cur * 0.5;
   if (act === 'READD' && o.applied === 'HALF') return Math.max(0, o.stdWeight * total - cur);
   return 0;
 }

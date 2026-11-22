@@ -901,3 +901,7 @@ a.rv:hover { background: var(--wash); }
 .reason-picks button:hover { border-color: var(--line-hi); color: var(--ink); }
 .reason-picks button[aria-pressed="true"] { border-color: #6d84ff; background: rgba(90, 110, 255, 0.16); color: var(--ink); }
 .reason-field textarea[hidden] { display: none; }
+
+/* 先買一半（allocation_redesign §4.1，T83）：第一次設定標準比重時的兩個選項 */
+.build-ask .radio-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+.build-ask .radio-line input { accent-color: #6d84ff; width: 16px; height: 16px; margin: 0; }

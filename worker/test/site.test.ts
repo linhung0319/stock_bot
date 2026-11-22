@@ -232,7 +232,8 @@ describe('情境 ① 平常的月報：用網站走完', () => {
     expect(orcl.meter!.say).toBe('已經掉出前 15 名 → 這次月報賣出全部 28 股');
     expect(itemOf(v, '動能比例調回', 'PLTR').meter).toMatchObject({ s: 'hit', zone: '調回' });
     expect(itemOf(v, '動能進場', 'GE').meter).toMatchObject({ s: 'hit', zone: '進場', kind: 'go' });
-    expect(itemOf(v, 'AI 建議提高比重', 'MSFT').meter).toMatchObject({ zone: '可提高', kind: 'go' });
+    // T83（allocation_redesign §4.3）：提高到 125% 的門檻改看基本面，不再畫「連續站上 200 日均線」的條
+    expect(itemOf(v, 'AI 建議提高比重', 'MSFT').meter).toBeNull();
 
     type Pv = NonNullable<NotifView['composed']> & { effect?: import('../src/app/site/bubble').Bubble };
     const before = await web.post<Pv>(`/notif/${n.id}/preview`, { choices: {} });
@@ -548,7 +549,8 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     const w = await web.post<{ notifId: number }>('/ops/add-own', { ticker: 'TSLA', premises });
     await expectSame(sim);
     const st = await web.state();
-    expect(st.account!.holdings.find((h) => h.ticker === 'TSLA')).toMatchObject({ bucket: 'own', shares: 0, state: '減半中' });
+    // T83（allocation_redesign §4.1）：有論點、已跌 20% → 先買一半（以前是減半）
+    expect(st.account!.holdings.find((h) => h.ticker === 'TSLA')).toMatchObject({ bucket: 'own', shares: 0, state: '先買一半' });
     sim.respond(r.notif.id);
     await web.post(`/notif/${w.notifId}/respond`, { mode: 'DO' });
     sim.open();

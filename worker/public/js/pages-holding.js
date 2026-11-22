@@ -56,7 +56,46 @@ function ownBubble(d, main) {
 // ---------------------------------------------------------------- 自選股
 
 function ownPanels(ctx, d, main) {
-  return [adoptedBox(d), openBox(d), thesisPanel(d), attentionPanel(d), condPanel(ctx, d), eventPanel(d), reviewPanel(d), rulePanel(ctx, d, main), d.mom ? momPanel(d.mom) : null, historyBlock(d)];
+  return [adoptedBox(d), openBox(d), buildPanel(ctx, d), thesisPanel(d), attentionPanel(d), condPanel(ctx, d), eventPanel(d), reviewPanel(d), rulePanel(ctx, d, main), d.mom ? momPanel(d.mom) : null, historyBlock(d)];
+}
+
+/**
+ * 先買一半（allocation_redesign §4.1、§4.6）：現在的目標、確認的條件；兩份財報（或 200 天）沒過關時兩個按鈕（維持現在的大小、請 stock bot 草擬）；
+ * 選了先買一半但其實買足了 → 一鍵改成「已經買到這個比例」。不是先買一半就不畫。
+ */
+function buildPanel(ctx, d) {
+  const b = d.own?.build;
+  if (!b) return null;
+  const msg = h('div');
+  const post = (path, done) => async () => {
+    try {
+      await api.post(path, { ticker: d.ticker });
+      toast(done);
+      ctx.refresh();
+    } catch (e) {
+      msg.replaceChildren(errBox(e));
+    }
+  };
+  const keep = actionButton('維持現在的大小', '', post('/ops/build-keep', `${d.ticker}：標準比重改成現在的比重，不再補滿`));
+  return glass(
+    'pad hp build-box',
+    panelTop('先買一半', h('span', { class: 'chip ' + (b.stale ? 'warn' : 'ok') }, b.stale ? '等你決定' : '確認後補滿')),
+    h('p', null, b.text),
+    b.blocked ? h('p', { class: 'small tone-warn', style: 'margin-top:8px' }, b.blocked) : null,
+    b.full
+      ? h('div', { class: 'notice', style: 'margin-top:12px' }, h('p', null, b.full), h('div', { class: 'btn-row', style: 'margin-top:8px' }, actionButton('改成已經買到這個比例', 'primary', post('/ops/build-full', `${d.ticker}：改成已經買到這個比例`))))
+      : null,
+    b.stale
+      ? h(
+          'div',
+          { class: 'notice', style: 'margin-top:12px' },
+          h('p', null, b.stale),
+          h('div', { style: 'margin-top:8px' }, draftAction(d.ticker, d.own.draft, { before: [keep] })),
+          h('p', { class: 'small faint', style: 'margin-top:6px' }, '「維持現在的大小」：標準比重改成現在占總資產的比重，不再補滿。「請 stock bot 草擬」：重新寫一份論點給你對照，採用之後下一份財報再看一次。要補滿：自己買進、填快照之後，這裡會出現「改成已經買到這個比例」。系統不會自動買。'),
+        )
+      : null,
+    msg,
+  );
 }
 
 /** 論點、前提與最近一次檢查、編輯與討論的入口。 */
@@ -311,6 +350,7 @@ function rulePanel(ctx, d, main) {
     // 審查後持有：整句說明另外放，條下面只留狀態（說明太長，塞進條的那一句會擠）
     main?.meter ? meterEl({ ...main.meter, say: o.watch ? `${main.state}。` : `${main.state}。${main.detail}` }, 'big') : null,
     o.watch ? h('p', { class: 'notice watch-note', style: 'margin-top:12px' }, o.watch) : null,
+    o.buyBlocked ? h('p', { class: 'small tone-warn', style: 'margin-top:10px' }, o.buyBlocked) : null,
     dr ? h('p', { class: 'ai-line', style: 'margin-top:12px' }, dr.text, dr.notif ? [' ', h('a', { href: `#/n/${dr.notif}` }, `到 ${d.thesis.dropReviewNotifName ?? '那則通知'} 決定`)] : null) : null,
     h('div', { style: 'margin-top:16px' }, chart(d.chart)),
     h('dl', { class: 'facts', style: 'margin-top:16px' }, d.facts.map((f) => [h('dt', null, f.label), h('dd', null, h('span', { class: 'num' }, f.value), f.note ? h('small', null, f.note) : null)])),
@@ -323,13 +363,26 @@ function stdWeightEdit(ctx, d) {
   const msg = h('div');
   const fail = (e) => msg.replaceChildren(errBox(e));
   const std = h('input', { class: 'num-in', type: 'text', inputmode: 'decimal', value: (d.own.stdWeight * 100).toFixed(1), style: 'width:6em', 'aria-label': '標準比重（%）' });
+  // 開檔後第一次設定標準比重（allocation_redesign §4.1）：「已經買到這個比例」或「先買一半，確認後再補滿」；只問這一次，留空 = 已經買到
+  const ask = d.own.askBuild;
+  const radio = (value, label, checked) => h('label', { class: 'radio-line' }, h('input', { type: 'radio', name: 'build-ask', value, ...(checked ? { checked: true } : {}) }), ' ', label);
+  const askBox = ask
+    ? h(
+        'div',
+        { class: 'build-ask', style: 'margin:6px 0 10px' },
+        radio('full', '已經買到這個比例', true),
+        radio('half', '先買一半，確認後再補滿', false),
+        h('p', { class: 'small faint', style: 'margin-top:4px' }, '只在第一次設定時問。先買一半：目標是這個比例的一半，還沒買的部分留在核心；開檔之後的第一份財報過關，下一份月報列「補滿」（預設照做）。不選就是已經買到，系統不會因為你一次買足而提醒。'),
+      )
+    : null;
   const saveStd = actionButton('改標準比重', '', async () => {
     const v = Number(std.value.replace(/[%\s]/g, ''));
     // 填的是百分比：5 代表 5%（填成 0.05 會變成 0.05%，T34 走一遍的缺口）
     if (!(v >= 0.1 && v <= 50)) return fail(new Error('標準比重填百分比，0.1～50；例如 5 代表 5%'));
+    const build = !!askBox?.querySelector('input[value="half"]')?.checked;
     try {
-      await api.post('/ops/std-weight', { ticker: d.ticker, stdWeight: v / 100 });
-      toast(`${d.ticker} 的標準比重改成 ${v}%`);
+      await api.post('/ops/std-weight', { ticker: d.ticker, stdWeight: v / 100, ...(ask ? { build } : {}) });
+      toast(build ? `${d.ticker}：打算放到 ${v}%，先買一半，確認後再補滿` : `${d.ticker} 的標準比重改成 ${v}%`);
       ctx.refresh();
     } catch (e) {
       fail(e);
@@ -340,8 +393,10 @@ function stdWeightEdit(ctx, d) {
   const low = o.stdWeight - o.weight > 0.0025;
   return [
     h('h5', { style: 'margin-top:20px' }, `標準比重 ${pct(o.stdWeight)}`),
-    h('p', { class: 'small', style: 'margin:2px 0 8px' }, `現在占總資產 ${pct(o.weight)}。`, low ? `比標準比重低：${refillText({ weight: o.weight, std: o.stdWeight, half: o.half, fill: o.fill, scaled: o.scaled })}。` : ''),
+    h('p', { class: 'small', style: 'margin:2px 0 8px' }, `現在占總資產 ${pct(o.weight)}。`, low ? `比標準比重低：${refillText({ weight: o.weight, std: o.stdWeight, half: o.half, build: !!o.build, fill: o.fill, scaled: o.scaled })}。` : ''),
+    ask ? h('p', { style: 'margin:8px 0 2px' }, '這檔打算放到總資產的') : null,
     h('div', { class: 'btn-row', style: 'align-items:center' }, std, h('span', null, '%'), saveStd),
+    askBox,
     h(
       'p',
       { class: 'small faint' },

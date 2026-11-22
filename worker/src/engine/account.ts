@@ -155,8 +155,33 @@ export interface OwnMeta {
   thesis?: Thesis | null;
   /** 下一條前提的編號：前提的 id 發出去就不重用、不重排（修 N7）。 */
   premiseSeq?: number;
-  /** 開檔時的慢規則狀態與距 52 週高點的跌幅（寫 log 的 OPEN 用；own_thesis §3.8）。 */
-  opened?: { startState: 'STD' | 'HALF'; drawdownAtOpen: number | null };
+  /** 開檔時的慢規則狀態與距 52 週高點的跌幅（寫 log 的 OPEN 用；own_thesis §3.8）。BUILD：有論點、加入時已跌 20% → 先買一半（allocation_redesign §4.1）。 */
+  opened?: { startState: 'STD' | 'HALF' | 'BUILD'; drawdownAtOpen: number | null };
+  /**
+   * 先買一半，確認後補滿（allocation_redesign §4.1，T83）：慢規則狀態是 BUILD（或 BUILD 期間跌 20% 進了審查後持有 WATCH）時才有。
+   * 目標是標準比重的一半（rule.own[*].applied 記 BUILD）。補滿（F27）照做或不做、減半、「維持現在的大小」、「改成已經買到這個比例」之後拿掉。
+   */
+  build?: BuildInfo | null;
+  /**
+   * 開檔之後還沒設定過標準比重（allocation_redesign §4.1）：持股頁的標準比重那一欄多「先買一半，確認後再補滿」的選項，只在這第一次出現。
+   * 新的自選開檔時（新增、轉入、認養、自己買進）寫 true，第一次在持股頁存標準比重之後拿掉。上線那天就有的、舊資料沒有這個欄位 = 不問。
+   */
+  buildAsk?: boolean;
+  /**
+   * 最近一次有前提被 3 票判不成立的訊號日（定期審查、跌幅審查；recordAiTier 帶前提時寫）。
+   * 買進前的程式檢查（buyAllowed，allocation_redesign §4.0）看它：30 個日曆天內有就不提買進。舊資料沒有這個欄位 = 看 aiTier 與 dropReview。
+   */
+  brokenAt?: string | null;
+  /**
+   * 最近兩次財報後的審查（觸發原因 EARNINGS）有沒有證實前提（allocation_redesign §4.3，T83）：3 票一致、每一條可驗證的前提都判成立、
+   * 判成立的引用有申報或財報。舊的在前，只留兩筆。提高到 125%（raiseAllowed）要兩筆都證實。
+   */
+  earnChecks?: EarnCheck[];
+  /**
+   * 月報時有一筆買進（補滿 F27、提高到 125% F23…）的條件成立，但買進前的程式檢查（buyAllowed，allocation_redesign §4.0）沒過、這次不提：
+   * 哪一天、哪一種買進、原因。持股頁寫一行（`補滿的條件過關了，但 11/06 有前提被判不成立，這次不提補滿`），不發通知；之後的月報再看一次。
+   */
+  buyBlocked?: { date: string; what: string; text: string } | null;
   /**
    * 「不同意」之後的靜默期（own_thesis §1.10）：乙類選「不同意，不動」、月報裡沒動它（SKIPPED）、修正論點但保留那條前提時寫入。
    * until 先寫 since 加 100 天；滿 45 天之後出現第一份財報類申報時改成那份申報的前一天。過期的留著給網站顯示。
@@ -219,6 +244,31 @@ export interface OwnMeta {
    * 寫入時把超過 180 天的拿掉。沒有這個欄位（舊資料）= 都還沒處理過。
    */
   riskSeen?: RiskSeen[];
+}
+
+/**
+ * 先買一半的進度（OwnMeta.build，allocation_redesign §4.1）。
+ * since：開檔日（「滿 200 個日曆天」從這天算）；confirmBy：確認的方式（目前只有開檔後第一份財報的審查）。
+ * misses：開檔之後已經有幾份財報的審查沒過關（沒有一致結論、資料缺漏、有前提被判不成立）；兩份沒過或滿 200 天 → 「要看的事」。
+ * ok：過關的那一次（下一份月報列補滿 F27）；last：最近一次沒過關的原因（持股頁）。過關了、但月報時買進前的程式檢查沒過的原因記在 OwnMeta.buyBlocked（下個月再試）。
+ * listed：補滿已經列在哪一則月報（還沒回覆時不重列）。
+ */
+export interface BuildInfo {
+  since: string;
+  confirmBy: 'EARNINGS';
+  misses: number;
+  ok?: { date: string; runId?: string; text: string } | null;
+  last?: { date: string; text: string } | null;
+
+  listed?: number | null;
+}
+
+/** 一次財報後審查證實了前提沒有（OwnMeta.earnChecks）。 */
+export interface EarnCheck {
+  date: string;
+  runId?: string;
+  confirmed: boolean;
+  why: string;
 }
 
 /** 處理過的一件「前提以外的風險」（OwnMeta.riskSeen）：那一句、哪一次執行的第幾條、哪天處理、怎麼處理。 */
@@ -347,8 +397,9 @@ export interface CondNotice {
 /**
  * OWN_COND：甲類（你定的條件成立）的項目（own_thesis §1.10）。
  * CORE_BAND：核心比例調回（F26，allocation_redesign §1.3）：預設照做、「這次不做」不用理由也不記欠單，下個月月報重算。
+ * OWN_FILL：先買一半的補滿（F27，allocation_redesign §4.1）：只進月報、預設照做、不做不用理由；照做或不做都離開先買一半。
  */
-export type ItemKind = 'STRATEGY' | 'OWN_RULE' | 'AI_ONLY' | 'HARD' | 'CASHFLOW' | 'FIX' | 'OWN_COND' | 'CORE_BAND';
+export type ItemKind = 'STRATEGY' | 'OWN_RULE' | 'AI_ONLY' | 'HARD' | 'CASHFLOW' | 'FIX' | 'OWN_COND' | 'CORE_BAND' | 'OWN_FILL';
 export type ChoiceId = 'RULE' | 'AI' | 'DO' | 'SKIP';
 
 /** 清單上的選項做完之後，帳戶狀態要跟著改的事（存成資料，不存函式）。 */
@@ -357,7 +408,12 @@ export type Effect =
   | { type: 'REMOVE_OWN'; ticker: string }
   | { type: 'CLEAR_FLAG'; ticker: string }
   /** 動能持股照 AI 的硬事件建議出場：這一檔拿出動能名單，下個月照排名遞補（momentum_ai §3.5）。 */
-  | { type: 'MOM_DROP'; ticker: string };
+  | { type: 'MOM_DROP'; ticker: string }
+  /**
+   * 離開先買一半（allocation_redesign §4.1）：補滿照做（keep = false，目標回到標準比重）或不做（keep = true，標準比重改成那時的實際比重，之後不再提）。
+   * 只掛在補滿（F27）的選項上；「這次不做」的選項也有這個效果（整則不做時在回覆當下套用）。
+   */
+  | { type: 'BUILD_END'; ticker: string; keep: boolean };
 
 export interface Choice {
   id: ChoiceId;
@@ -919,11 +975,15 @@ export function newFileId(ticker: string, date: string, lastClosed?: string): st
  */
 export function newOwnMeta(view: MarketView, ticker: string, origin: OwnMeta['origin'], premises: Premise[], lastClosed?: string): OwnMeta {
   const dd = drawdownFromHigh(view.close[ticker], view.i);
-  const startState = initialStateForNewPick(dd);
+  // 有論點、加入時已跌 20% → 先買一半（allocation_redesign §4.1）；只有預設前提的照舊從減半開始
+  const startState = initialStateForNewPick(dd, premises.some((p) => p.origin !== 'SYSTEM_DEFAULT'));
   const slow = initialSlowState(startState);
   slow.sinceSwitch = 0;
   const ps = premises.map((p) => ({ ...p, addedAt: p.addedAt ?? view.date }));
   return {
+    ...(startState === 'BUILD' ? { build: { since: view.date, confirmBy: 'EARNINGS' as const, misses: 0 } } : {}),
+    // 開檔後第一次設定標準比重時問「先買一半」（§4.1）：上線那天就有的不問；一開始就是減半或先買一半的也不問
+    ...(origin !== 'INITIAL' && startState === 'STD' ? { buildAsk: true } : {}),
     slow,
     pending: null,
     premises: ps,
@@ -986,6 +1046,8 @@ export function createAccount(init: InitialAccount, view: MarketView): Account {
     rule.own[t] = { applied: state, stdWeight: o.stdWeight };
     // 「連續站上 200 日均線幾天」從歷史暖機
     const meta = newOwnMeta(view, t, 'INITIAL', o.premises ?? clone(SYSTEM_DEFAULT_PREMISES));
+    // 上線那天的狀態由呼叫端給（STD／HALF）；先買一半只用在之後新開的自選（allocation_redesign §4.1）
+    delete meta.build;
     meta.slow = warmSlowState(view, t, state);
     meta.opened = { startState: state, drawdownAtOpen: meta.opened?.drawdownAtOpen ?? null };
     const note = o.buyNote?.trim();

@@ -37,6 +37,7 @@ import {
   cashflowKind,
   notifName,
   breaksOf,
+  buildStale,
   isBelief,
   type PremiseVerify,
 } from '../../engine';
@@ -44,7 +45,7 @@ import { CRASH_REVIEW } from '../../ai/crash';
 import { HORIZONS, indexOn, type PriceBook } from '../../ai/shadow';
 import type { AiRun } from '../aiRuns';
 import type { RunRow } from './aiViews';
-import { prevFileOf, type PrevFile } from '../thesis';
+import { buildStaleLine, prevFileOf, type PrevFile } from '../thesis';
 import { draftStateOf, type DraftState } from '../ownDraft';
 import type { SiteData } from './backend';
 import type { HomeBrief } from '../marketBrief';
@@ -87,6 +88,7 @@ const ITEM_LABEL: Record<string, string> = {
   F24: 'AI 審查的建議',
   F25: '你定的條件成立',
   F26: '核心比例調回',
+  F27: '補滿（先買一半）',
   CORE: '閒置現金',
 };
 
@@ -408,14 +410,6 @@ export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: st
       say = hit ? `已經比高點低 ${pctTxt(g.value)}（超過 20%）→ 先買標準比重的一半，${n0} 股` : `比高點低 ${pctTxt(g.value)}，還沒到減半的範圍 → 買到標準比重，${n0} 股`;
       break;
     }
-    case 'F23': {
-      zone = '可提高';
-      kind = 'go';
-      const months = Math.floor(g.value / 21);
-      capText = '連續站在 200 日均線之上的天數（滿 6 個月才可以提高）';
-      say = g.value >= sc.th ? `已連續站上 200 日均線約 ${months} 個月，滿 6 個月了 → AI 建議${total > 0 ? `買 ${n0} 股` : ''}（預設不做）` : `連續站上 200 日均線約 ${months} 個月，還不到 6 個月 → 這次不適合提高`;
-      break;
-    }
     case 'F24':
     case 'F25': {
       zone = '減半';
@@ -526,7 +520,7 @@ export function capNoteOf(c: Composed): string | null {
 
 // 建議單的順序照因果排：先是整個帳戶的規則，再來動能（先出場才有位置進場），然後自選、AI 的建議、現金流
 // 核心比例調回（F26）是其他單合成之後才算的，排最後
-const ITEM_ORDER = ['F5', 'F6', 'F19', 'F2', 'F1', 'F17', 'F3', 'F4', 'F10', 'F7', 'F8', 'F25', 'F24', 'F23', 'F11', 'F12', 'F13', 'F14', 'F15', 'F26', 'CORE'];
+const ITEM_ORDER = ['F5', 'F6', 'F19', 'F2', 'F1', 'F17', 'F3', 'F4', 'F10', 'F7', 'F8', 'F25', 'F24', 'F23', 'F27', 'F11', 'F12', 'F13', 'F14', 'F15', 'F26', 'CORE'];
 const orderOf = (f: string) => {
   const k = ITEM_ORDER.indexOf(f);
   return k < 0 ? ITEM_ORDER.length : k;
@@ -712,6 +706,11 @@ function ownHolding(d: Ready, t: string, total: number): HoldingView {
       const run = meta.slow.aboveRun;
       detail = px > ma ? `站上 200 日均線 ${Math.min(run, SLOW.aboveRun)}/${SLOW.aboveRun} 天，滿了就買回標準比重` : `收盤低於 200 日均線 ${fmtPct(1 - px / ma, 1)}；站回去連續 ${SLOW.aboveRun} 天才買回`;
       tone = 'warn';
+    } else if (meta.build) {
+      // 先買一半（allocation_redesign §4.1）：目標是標準比重的一半，開檔後第一份財報過關再補滿
+      state = '先買一半';
+      detail = meta.build.ok ? `先買的一半已確認，下一份月報補滿到 ${fmtPct(rule.stdWeight, 1)}` : buildStale(meta, view.date) ? `兩份財報（或滿 200 天）都沒過關，等你決定要不要補滿` : `目標是標準比重 ${fmtPct(rule.stdWeight, 1)} 的一半；開檔後第一份財報過關再補滿`;
+      tone = buildStale(meta, view.date) ? 'warn' : 'ok';
     } else {
       state = '正常';
       // 有論點的股票：低 20% 只觸發跌幅審查，不是賣出的理由（allocation_redesign §3.1）
@@ -744,6 +743,49 @@ function ownHolding(d: Ready, t: string, total: number): HoldingView {
     }
   }
   return { bucket: 'own', ticker: t, shares: sh, price: px, value, pct: value / total, state, detail, tone, gauge, meter: met, target: rule ? `標準比重 ${fmtPct(rule.stdWeight, 1)}` : null };
+}
+
+/**
+ * 持股頁「先買一半」那一塊（allocation_redesign §4.1、§4.6）。
+ * text：現在的說明；stale：兩份財報（或 200 天）沒過關 → 兩個按鈕（維持現在的大小、請 stock bot 草擬）；
+ * full：選了先買一半、但現在已經到打算的比例（占總資產 ≥ 標準比重的九成）→ 一鍵改成「已經買到這個比例」。
+ */
+export interface BuildView {
+  text: string;
+  /** 補滿過關了，但買進前的程式檢查沒過的那一行（§4.0）；沒有是 null。 */
+  blocked: string | null;
+  stale: string | null;
+  full: string | null;
+}
+
+/** 現在已經是打算的比例：占總資產 ≥ 標準比重的這個比例（整股配不到剛好；選了先買一半但其實買足了，§4.6）。 */
+export const BUILD_FULL_AT = 0.9;
+
+export function buildViewOf(acct: Account, view: MarketView, ticker: string, weight: number): BuildView | null {
+  const meta = acct.own[ticker];
+  const rule = acct.rule.own[ticker];
+  const b = meta?.build;
+  if (!meta || !rule || !b) return null;
+  const std = fmtPct(rule.stdWeight, 1);
+  const thesis = meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT');
+  const how = thesis ? '那份財報觸發的審查 3 票一致、沒有任何前提被判不成立' : '程式比對系統預設前提 D1～D3 都沒有不成立';
+  const text = b.ok
+    ? `先買的一半已確認（${b.ok.text}）：下一份月報會列「補滿到標準比重 ${std}」，預設照做。`
+    : `你選了先買一半：現在的目標是標準比重 ${std} 的一半（${fmtPct(rule.stdWeight / 2, 1)}），還沒買的部分留在核心。開檔之後的第一份財報過關（${how}）就在下一份月報補滿。${b.last ? `${b.last.text}，等下一份財報。` : ''}`;
+  const blocked = b.ok ? buyBlockedText(meta, '補滿', view.date) : null;
+  const stale = buildStale(meta, view.date) ? (buildStaleLine(ticker, meta, view.date)[0]?.text ?? null) : null;
+  const full = weight >= rule.stdWeight * BUILD_FULL_AT ? '你選了先買一半，但現在已經是打算的比例；要改成「已經買到這個比例」嗎？' : null;
+  return { text, blocked, stale, full };
+}
+
+/**
+ * 買進前的程式檢查沒過、這次不提的那一行（allocation_redesign §4.0）：`補滿的條件過關了，但 11/06 有前提被判不成立，這次不提補滿；下個月月報再看一次。`
+ * what：只看這一種買進（沒給 = 哪一種都看）；超過 35 天（下一份月報已經重新看過）不寫。
+ */
+export function buyBlockedText(meta: Pick<Account['own'][string], 'buyBlocked'>, what: string | null, date: string): string | null {
+  const x = meta.buyBlocked;
+  if (!x || (what && x.what !== what) || Math.round((Date.parse(date) - Date.parse(x.date)) / 86400_000) >= 35) return null;
+  return `${x.what}的條件${x.what === '補滿' ? '過關了' : '成立了'}，但${x.text}，這次不提${x.what}；下個月月報再看一次。`;
 }
 
 /** DROP_LADDER 的下一級（還沒審過的最淺一級）；已經審到最後一級是 null。 */
@@ -1261,6 +1303,12 @@ export interface HoldingDetail {
     state: string;
     thesisKind: boolean;
     watch: string | null;
+    /** 先買一半（allocation_redesign §4.1）；不是是 null。 */
+    build: BuildView | null;
+    /** 開檔後第一次設定標準比重：標準比重那一欄多「先買一半，確認後再補滿」的選項。 */
+    askBuild: boolean;
+    /** 買進的條件成立、但買進前的程式檢查沒過的那一行（allocation_redesign §4.0；補滿的不在這裡）。 */
+    buyBlocked: string | null;
     stdWeight: number;
     /** 自選桶這一檔現在占總資產（T43：標準比重那一行寫「現在占 X%」）。 */
     weight: number;
@@ -1442,7 +1490,13 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
     own:
       meta && rule
         ? {
-            state: meta.slow.state === 'WATCH' ? '審查後持有' : rule.applied === 'HALF' ? '減半中' : '正常',
+            state: meta.slow.state === 'WATCH' ? '審查後持有' : rule.applied === 'HALF' ? '減半中' : meta.build ? '先買一半' : '正常',
+            // 先買一半（allocation_redesign §4.1）：說明、拖太久時的兩個按鈕、選了先買一半但其實買足了的一鍵改；不是先買一半是 null
+            build: buildViewOf(acct, view, ticker, positions.find((p) => p.bucket === 'own')?.pct ?? 0),
+            // 開檔後第一次設定標準比重：多「先買一半，確認後再補滿」的選項（只問這一次；減半中、審查後持有的不問）
+            askBuild: !!meta.buildAsk && meta.slow.state === 'STD' && rule.applied === 'STD',
+            // 提高到 125% 的條件成立、但買進前的程式檢查沒過的那一行（補滿的那一行寫在先買一半那一塊）
+            buyBlocked: meta.buyBlocked?.what === '補滿' ? null : buyBlockedText(meta, null, view.date),
             // 有論點的股票：比高點低 20% 只觸發跌幅審查（allocation_redesign §3.1）；持股頁那一塊的標題與說明跟著變
             thesisKind: meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT'),
             // 審查後持有的說明（§3.3）；不是就是 null
