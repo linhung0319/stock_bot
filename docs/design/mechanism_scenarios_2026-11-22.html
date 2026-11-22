@@ -2,7 +2,8 @@
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap">
 <style>
-/* 版面：一欄長頁。每個情境是一棵由左到右的樹（事件 → 規則 → AI → 結果），窄螢幕改成縮排樹。 */
+/* 版面：一欄長頁。每個情境是一棵由左到右的樹（事件 → 規則 → AI → 結果），窄螢幕改成縮排樹。
+   結果分四種：下單（改快照）、只提醒、背景資料、不動。 */
 :root{
   --bg:#f5f7fa; --surface:#ffffff; --ink:#18212d; --muted:#586475; --line:#aeb9c7; --rule-line:#dde3ea;
   --accent:#2456a6;
@@ -10,8 +11,10 @@
   --ru-f:#e6eefa; --ru-b:#7b9dd4;
   --a1-f:#dff3ef; --a1-b:#4fa797;
   --a2-f:#eee8fa; --a2-b:#9279cf;
-  --out-f:#fdefd0; --out-b:#cf9a34;
-  --no-f:#ebeef2; --no-b:#a3adba;
+  --out-f:#fde9bd; --out-b:#c98a17;
+  --nt-f:#fbe5ea; --nt-b:#cc7388;
+  --bk-f:#e9edf2; --bk-b:#8c97a6;
+  --no-b:#a3adba;
   --font:"Noto Sans TC","Microsoft JhengHei","PingFang TC",system-ui,sans-serif;
   --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
 }
@@ -22,8 +25,10 @@
   --ru-f:#1b2a45; --ru-b:#5079ba;
   --a1-f:#14322e; --a1-b:#3f9486;
   --a2-f:#292145; --a2-b:#8068c2;
-  --out-f:#3a2c0f; --out-b:#b58a2e;
-  --no-f:#212831; --no-b:#5c6777;
+  --out-f:#45330c; --out-b:#d09a2c;
+  --nt-f:#3a1b24; --nt-b:#a8586b;
+  --bk-f:#252d37; --bk-b:#6b7686;
+  --no-b:#5c6777;
   color-scheme:dark } }
 :root[data-theme="dark"]{
   --bg:#11151b; --surface:#1a2029; --ink:#e7ebf1; --muted:#9ba7b6; --line:#566273; --rule-line:#2b3440;
@@ -32,8 +37,10 @@
   --ru-f:#1b2a45; --ru-b:#5079ba;
   --a1-f:#14322e; --a1-b:#3f9486;
   --a2-f:#292145; --a2-b:#8068c2;
-  --out-f:#3a2c0f; --out-b:#b58a2e;
-  --no-f:#212831; --no-b:#5c6777;
+  --out-f:#45330c; --out-b:#d09a2c;
+  --nt-f:#3a1b24; --nt-b:#a8586b;
+  --bk-f:#252d37; --bk-b:#6b7686;
+  --no-b:#5c6777;
   color-scheme:dark }
 
 body{background:var(--bg);color:var(--ink);font-family:var(--font);font-size:15px;line-height:1.75;
@@ -52,6 +59,7 @@ section{display:flex;flex-direction:column;gap:18px}
 .sec-head{display:flex;flex-direction:column;gap:6px;border-top:2px solid var(--ink);padding-top:14px}
 .who{font-family:var(--mono);font-size:13px;color:var(--muted);letter-spacing:.02em}
 .num{font-variant-numeric:tabular-nums}
+.list{display:flex;flex-direction:column;gap:14px}
 
 /* 示範帳戶 */
 .acct{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0;background:var(--surface);border:1px solid var(--rule-line);border-radius:10px;overflow:hidden}
@@ -72,6 +80,7 @@ table{border-collapse:collapse;width:100%;font-size:14px;background:var(--surfac
 th,td{text-align:left;vertical-align:top;padding:8px 12px;border-top:1px solid var(--rule-line);line-height:1.6}
 tr:first-child th{border-top:0;font-size:13px;color:var(--muted);font-weight:500}
 td:first-child,th:first-child{white-space:nowrap}
+td .n{display:inline-block;width:auto;padding:1px 9px}
 
 /* 情境 */
 .sc{display:flex;flex-direction:column;gap:8px;background:var(--surface);border:1px solid var(--rule-line);border-radius:10px;padding:16px 18px 14px;min-width:0}
@@ -82,20 +91,23 @@ td:first-child,th:first-child{white-space:nowrap}
 /* 樹 */
 .t{display:flex;align-items:stretch}
 .n{align-self:center;flex:none;width:214px;box-sizing:border-box;border:1.5px solid var(--b);background:var(--f);color:var(--ink);border-radius:8px;padding:7px 10px 8px;font-size:13px;line-height:1.55}
-.n.leaf{width:262px}
+.n.leaf{width:272px}
 .n .if{display:block;font-size:12px;font-weight:700;color:var(--ink);border-bottom:1px dashed var(--b);padding-bottom:4px;margin-bottom:5px}
 .n .if::before{content:"若 ";font-weight:400;color:var(--muted)}
-.n .tag{display:inline-block;font-size:11px;letter-spacing:.06em;font-weight:700;color:var(--muted);margin-right:6px}
+.n .tag{display:block;font-size:11px;letter-spacing:.06em;font-weight:700;color:var(--muted)}
 .n .tt{font-weight:700}
-.n .dd{display:block;color:var(--ink);opacity:.86;margin-top:2px}
+.n .dd{display:block;color:var(--ink);opacity:.88;margin-top:2px}
 .k-event{--f:var(--ev-f);--b:var(--ev-f);color:var(--ev-t)}
 .k-event .tag{color:var(--ev-t);opacity:.7}
 .k-event .dd{color:var(--ev-t)}
 .k-rule{--f:var(--ru-f);--b:var(--ru-b)}
 .k-l1{--f:var(--a1-f);--b:var(--a1-b)}
 .k-l2{--f:var(--a2-f);--b:var(--a2-b)}
-.k-out{--f:var(--out-f);--b:var(--out-b)}
-.k-none{--f:var(--no-f);--b:var(--no-b);border-style:dashed}
+.k-order,.k-opt{--f:var(--out-f);--b:var(--out-b);border-width:2px}
+.k-opt{border-style:dashed}
+.k-notice{--f:var(--nt-f);--b:var(--nt-b)}
+.k-bg{--f:var(--bk-f);--b:var(--bk-b)}
+.k-none{--f:var(--surface);--b:var(--no-b);border-style:dashed}
 .kids{display:flex;flex-direction:column;justify-content:center;padding-left:32px;position:relative}
 .kids::before{content:"";position:absolute;left:0;top:50%;width:16px;border-top:1.5px solid var(--line)}
 .kids>.t{position:relative;padding-block:5px}
@@ -107,12 +119,9 @@ td:first-child,th:first-child{white-space:nowrap}
 
 .you{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13.5px;border-top:1px solid var(--rule-line);padding-top:10px}
 .you .h{font-weight:700;flex:0 0 100%}
-.you span b{font-weight:700}
 .you span{color:var(--muted)}
-.you span b{color:var(--ink)}
+.you span b{font-weight:700;color:var(--ink)}
 
-.legend{display:flex;flex-wrap:wrap;gap:8px}
-.legend .n{width:auto;align-self:auto;padding:4px 10px}
 footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule-line);padding-top:14px}
 
 @media (max-width:860px){
@@ -136,7 +145,7 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule-line);p
 <div class="wrap">
 <header>
   <h1>stock bot 情境樹</h1>
-  <p class="lede">三個桶各跟一支股票：核心跟 VOO、動能跟 AVGO、自選跟 MU。每個情境是一棵樹，從左邊的事件讀到右邊的結果。規則與門檻對應 0.17.0 版的程式，事件與金額是為了舉例編的。</p>
+  <p class="lede">三個桶各跟一支股票：核心跟 VOO、動能跟 AVGO、自選跟 MU。每個情境是一棵樹，從左邊的事件讀到右邊的結果。結果直接寫快照會變成什麼。規則與門檻對應 0.17.0 版的程式，事件、價格與金額是為了舉例編的。</p>
   <nav aria-label="章節">
     <a href="#read">怎麼讀</a><a href="#core">核心・VOO</a><a href="#mom">動能・AVGO</a><a href="#own">自選・MU</a>
   </nav>
@@ -147,34 +156,41 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule-line);p
 
   <h3>示範帳戶：總資產 $100,000</h3>
   <div class="acct">
-    <div><b>核心 50%</b><span class="amt">$50,000・全是 VOO</span><span>規則決定。崩盤規則啟動時一半換成短債 SGOV。</span></div>
-    <div><b>動能 30%</b><span class="amt">5 檔 × $6,000・其中一檔 AVGO</span><span>規則選股，AI 只能否決新進場。</span></div>
-    <div><b>自選 20%</b><span class="amt">MU 150 股・標準比重 12%・52 週高點 $100</span><span>你決定。規則守價格底線，AI 查論點。</span></div>
+    <div><b>核心 50%</b><span class="amt">VOO 100 股 × $500 = $50,000</span><span>SGOV 0 股（短債，每股 $100）。崩盤規則啟動時才會有。</span></div>
+    <div><b>動能 30%</b><span class="amt">5 檔 × $6,000・AVGO 30 股 × $200</span><span>規則選股，AI 只能否決新進場。</span></div>
+    <div><b>自選 20%</b><span class="amt">MU 150 股・標準比重 12%・52 週高點 $100</span><span>另一檔自選 $8,000。MU 買在 $80。</span></div>
   </div>
-  <p>MU 的論點檔裡有一條前提「HBM 合約價持續上漲」，和一條你定的出場條件「毛利率連兩季低於 55% → 減半」。後面的情境會用到。</p>
+  <p>MU 的論點檔裡有一條前提「HBM 合約價持續上漲」，和一條你定的出場條件「毛利率連兩季低於 55% → 減半」。每個情境都從這個帳戶出發，彼此獨立。股數一律算整股。</p>
 
   <h3>每棵樹都是同一個形狀</h3>
   <div class="shape">
     <div class="n k-event"><span class="tag">事件</span><span class="tt">市場或公司發生了什麼</span></div><span class="arrow">→</span>
     <div class="n k-rule"><span class="tag">規則</span><span class="tt">程式照公式算出答案</span></div><span class="arrow">→</span>
     <div class="n k-l2"><span class="tag">AI</span><span class="tt">需要時才派去查證</span></div><span class="arrow">→</span>
-    <div class="n k-out"><span class="tag">結果</span><span class="tt">通知上的選項，你按了才算</span></div>
-  </div>
-  <div class="legend" aria-label="圖例">
-    <div class="n k-event"><span class="tag">事件</span>樹的起點</div>
-    <div class="n k-rule"><span class="tag">規則</span>程式算，不經 AI</div>
-    <div class="n k-l1"><span class="tag">輕 AI・1 票</span>只貼標籤或寫說明</div>
-    <div class="n k-l2"><span class="tag">重 AI・3 票</span>多角色辯論，獨立判 3 次</div>
-    <div class="n k-out"><span class="tag">結果</span>通知或下單項目</div>
-    <div class="n k-none"><span class="tag">不動</span>沒有通知、不下單</div>
+    <div class="n k-order"><span class="tag">結果</span><span class="tt">四種之一，看下表</span></div>
   </div>
 
-  <h3>看任何一棵樹都成立的四件事</h3>
+  <h3>結果有四種</h3>
+  <div class="tbl"><table>
+    <tr><th>種類</th><th>意思</th><th>快照</th></tr>
+    <tr><td><span class="n k-order">下單・改快照</span></td><td>出現在下單清單上，預設就是做。寫的是照做之後的股數變化</td><td>會變</td></tr>
+    <tr><td><span class="n k-opt">AI 選項・選了才改快照</span></td><td>AI 3 票一致時多出來的選項。預設不是它，你改選它才會進下單清單</td><td>選了才變</td></tr>
+    <tr><td><span class="n k-notice">只提醒</span></td><td>通知或個股頁上多一行字，讓你知道有這件事。沒有下單項目</td><td>不變</td></tr>
+    <tr><td><span class="n k-bg">背景資料</span></td><td>存起來，之後的 AI 審查或規則比對會用到。通常不通知</td><td>不變</td></tr>
+    <tr><td><span class="n k-none">不動</span></td><td>什麼都沒發生</td><td>不變</td></tr>
+  </table></div>
+  <div class="tbl"><table>
+    <tr><th>中間的節點</th><th>意思</th></tr>
+    <tr><td><span class="n k-rule">規則</span></td><td>程式算，不經 AI</td></tr>
+    <tr><td><span class="n k-l1">輕 AI・1 票</span></td><td>只貼標籤或寫說明，改不了任何下單項目</td></tr>
+    <tr><td><span class="n k-l2">重 AI・3 票</span></td><td>多角色辯論後獨立判 3 次。3 票一致才有結論</td></tr>
+  </table></div>
+
+  <h3>看任何一棵樹都成立的三件事</h3>
   <ol class="rules">
-    <li><b>stock bot 不下單。</b>結果永遠是網站和 LINE 上的一則通知，你到券商下單後回網站填快照。</li>
-    <li><b>AI 沒結論就照規則。</b>3 票不一致、證據不足、45 分鐘沒回來，樹都走回「規則的答案」那一支。</li>
-    <li><b>預設選項看是誰提的。</b>規則提出的動作，預設是照做；純 AI 提出的建議（前提不成立、提早出場），預設是不做。</li>
-    <li><b>AI 只有一處能擋下規則：</b>動能新股進場。其他地方 AI 只能多給你一個選項或一行意見。</li>
+    <li><b>AI 沒結論就照規則。</b>3 票不一致、證據不足、45 分鐘沒回來，樹都走回規則的答案。</li>
+    <li><b>預設看是誰提的。</b>規則提出的動作直接進下單清單。純 AI 提出的（前提不成立、提早出場、照 AI 不動）是選項，預設不是它。</li>
+    <li><b>AI 只有一處能直接改下單清單：</b>動能新股進場的否決。</li>
   </ol>
 
   <h3>一天裡的三個時間點（台灣時間，美股收盤後的早上）</h3>
@@ -189,43 +205,47 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule-line);p
   <div class="tbl"><table>
     <tr><th></th><th>核心・VOO</th><th>動能・AVGO</th><th>自選・MU</th></tr>
     <tr><td>多久看一次</td><td>每月底一次</td><td>排名每月底一次；公司申報每天</td><td>價格每天；申報每天；論點在財報後與月底</td></tr>
-    <tr><td>什麼會讓它賣</td><td>月底收在 200 日線下，賣一半</td><td>排名掉出前 15；被收購或延遲申報</td><td>比高點低 20% 減半；你定的條件成立；你同意 AI 的建議</td></tr>
+    <tr><td>什麼會讓它賣</td><td>月底收在 200 日線下，一半換短債</td><td>排名掉出前 15；被收購或延遲申報；整桶減碼</td><td>比高點低 20% 減半；你定的條件成立；你選了 AI 的選項</td></tr>
     <tr><td>股價大跌本身</td><td>月中不看</td><td>不賣，沒有停損</td><td>會觸發減半</td></tr>
-    <tr><td>AI 能做到哪</td><td>附一行意見</td><td>否決新進場；建議提早出場</td><td>多一個選項（不動、出清、減半、加碼）</td></tr>
+    <tr><td>AI 能做到哪</td><td>附一行意見</td><td>否決新進場；多一個提早出場的選項</td><td>多一個選項（不動、出清、減半、加碼）</td></tr>
   </table></div>
 </section>
 
 <section id="core">
   <div class="sec-head"><span class="who">核心・VOO</span><h2>核心只有一條規則，而且一個月只看一次</h2>
-  <p class="lede">核心沒有自己的目標金額，它是「總資產減掉動能和自選」剩下的部分，所以另外兩桶的買賣也會經過它。</p></div>
-  <div id="list-core" style="display:flex;flex-direction:column;gap:14px"></div>
+  <p class="lede">核心沒有自己的目標金額，它是「總資產減掉動能和自選」剩下的部分，所以另外兩桶的買賣都會讓 VOO 的股數跟著變。</p></div>
+  <div id="list-core" class="list"></div>
 </section>
 
 <section id="mom">
   <div class="sec-head"><span class="who">動能・AVGO</span><h2>動能只認排名，AI 只在進場那一刻有否決權</h2>
   <p class="lede">股票池是 S&amp;P 500 裡成交金額前 100、其中市值前 50 的股票，按過去一年報酬排名。前 5 名買進，掉出前 15 名才賣。</p></div>
-  <div id="list-mom" style="display:flex;flex-direction:column;gap:14px"></div>
+  <div id="list-mom" class="list"></div>
 </section>
 
 <section id="own">
   <div class="sec-head"><span class="who">自選・MU</span><h2>自選有兩條線：價格底線由規則守，論點由 AI 定期查</h2>
   <p class="lede">價格那條線每天看，和論點無關。論點那條線只在有新證據時才查：出財報、重大申報、月底。</p></div>
-  <div id="list-own" style="display:flex;flex-direction:column;gap:14px"></div>
+  <div id="list-own" class="list"></div>
 </section>
 
-<footer>依據 docs/design/mechanism_overview_2026-11-21.md（0.17.0）改寫成情境。AVGO 與 MU 的事件、價格、票數結果都是舉例，不是實際發生的事。</footer>
+<footer>依據 docs/design/mechanism_overview_2026-11-21.md（0.17.0）改寫成情境，崩盤規則的金額另外對過 engine/allocator.ts。AVGO 與 MU 的事件、價格、票數結果都是舉例，不是實際發生的事。</footer>
 </div>
 
 <script>
 (function(){
-var TAG={event:'事件',rule:'規則',l1:'輕 AI・1 票',l2:'重 AI・3 票',out:'結果',none:'不動'};
+var TAG={event:'事件',rule:'規則',l1:'輕 AI・1 票',l2:'重 AI・3 票',
+  order:'下單・改快照',opt:'AI 選項・選了才改快照',notice:'只提醒',bg:'背景資料',none:'不動'};
 function N(k,cond,title,desc,kids){return {k:k,i:cond,t:title,d:desc,c:kids||[]};}
 function E(t,d,c){return N('event','',t,d,c);}
 function R(i,t,d,c){return N('rule',i,t,d,c);}
 function A1(i,t,d,c){return N('l1',i,t,d,c);}
 function A2(i,t,d,c){return N('l2',i,t,d,c);}
-function O(i,t,d,c){return N('out',i,t,d,c);}
-function X(i,t,d,c){return N('none',i,t,d,c);}
+function O(i,t,d){return N('order',i,t,d);}   /* 下單，預設 */
+function P(i,t,d){return N('opt',i,t,d);}     /* AI 選項 */
+function T(i,t,d){return N('notice',i,t,d);}  /* 只提醒 */
+function B(i,t,d){return N('bg',i,t,d);}      /* 背景資料 */
+function X(i,t,d){return N('none',i,t,d);}    /* 不動 */
 
 function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e;}
 function draw(o){
@@ -243,7 +263,7 @@ function scenario(s){
   h.appendChild(el('span','id',s.id));h.appendChild(document.createTextNode(s.title));a.appendChild(h);
   if(s.story)a.appendChild(el('p','story',s.story));
   var tr=el('div','tree');tr.appendChild(draw(s.tree));a.appendChild(tr);
-  if(s.you){var y=el('div','you');y.appendChild(el('div','h','輪到你'));
+  if(s.you){var y=el('div','you');y.appendChild(el('div','h','你另外可以做'));
     s.you.forEach(function(p){var sp=el('span');sp.appendChild(el('b','',p[0]));sp.appendChild(document.createTextNode('　'+p[1]));y.appendChild(sp);});
     a.appendChild(y);}
   return a;
@@ -256,165 +276,165 @@ var CORE=[
  story:'崩盤規則不是每天看的，所以月中的穿越完全不算數。唯一會發生的事是：跌得夠兇時，bot 會去查「報導怎麼說」。',
  tree:E('月中，VOO 跌破 200 日均線','',[
    R('','崩盤規則今天不看','只在每月最後一個交易日看收盤',[
-     X('','沒有通知，不下單','月底前站回均線，就像沒發生過')]),
+     X('','沒有通知','月底前站回均線，就像沒發生過')]),
    R('單日跌 2.5% 以上，或 21 個交易日累計跌 10% 以上','觸發市場摘要','平靜的日子不寫',[
      A1('','研究員上網找報導，主筆寫原因','至少取回兩個不同網站的全文，要找相反的說法。最多 6 條原因，「原因不明」也算合格答案',[
-       O('','首頁多一行「報導的說法」','不下單、不預測。之後 30 天，自選的 AI 審查會拿它當背景，不用再查大盤為什麼跌')])])])},
+       B('','存成一份市場摘要','首頁顯示第一個原因一行。之後 30 天，MU 的審查、減半檢視、論點草稿都會附上它，讓 AI 不用再查大盤為什麼跌。AI 不能引用它當證據')])])])},
 {id:'核心 2',title:'月底訊號日：VOO 收盤相對 200 日均線',
- story:'這是核心唯一會產生下單項目的時刻。AI 只在「要切換」的月份才派，而且前一天就先派，好讓結論趕上月報。',
+ story:'核心唯一會自己產生下單項目的時刻。AI 只在要切換的月份才派，結論只是月報上的一行意見，下單清單不會因為它而變。',
  tree:E('月底最後一個交易日收盤','看 VOO 收在 200 日均線的哪一邊',[
-   R('這個月由上往下穿越','崩盤規則啟動','月報列出：賣 $25,000 VOO、買 $25,000 SGOV。動能每檔目標也減半，$6,000 → $3,000',[
+   R('這個月由上往下穿越','崩盤規則啟動','動能每檔目標減半，核心的一半換成短債',[
+     O('','賣 35 股 VOO、買 325 股 SGOV、動能每檔賣一半','動能五檔各賣 $3,000（AVGO 30 → 15 股），共 $15,000 進核心。核心變成 $65,000，一半 $32,500 放 SGOV。快照：VOO 100 → 65 股，SGOV 0 → 325 股'),
      A2('','崩盤規則檢視','給 AI 的資料：這條規則 2000 年以來啟動 17 次，3 次是真空頭、13 次買回時更貴；FRED 10 個總經序列；市場廣度。正反方辯論，法官獨立判 3 次',[
-       O('3 票都判「照做」','月報多一行「AI 檢視：照做」',''),
-       O('3 票都判「延後一個月」','月報多一行「AI 檢視：延後」','只是意見，預設選項仍是照規則切換'),
-       X('票數不一致、證據不足、逾時','月報只有規則的答案','不同的票只放在網站上')])]),
-   R('這個月由下往上穿越','崩盤規則解除','月報列出：SGOV 全部換回 VOO，動能每檔恢復 $6,000',[
+       T('3 票一致：「照做」或「延後一個月」','月報的崩盤項目多一行 AI 意見','下單清單不變'),
+       X('票數不一致、證據不足、逾時','月報沒有 AI 意見','不同的票只放在網站上')])]),
+   R('這個月由下往上穿越','崩盤規則解除','短債全部換回，動能恢復',[
+     O('','賣 325 股 SGOV、買 35 股 VOO、動能每檔買回','動能五檔各買回 $3,000（AVGO 15 → 30 股）。快照：SGOV 325 → 0 股，VOO 65 → 100 股'),
      A2('','崩盤規則檢視','同上，查總經支不支持解除',[
-       O('','月報多一行 AI 意見','預設選項是照規則買回')])]),
-   X('沒有穿越','狀態不變，不派 AI','月報沒有崩盤項目。例外：你上個月選了「這次不做」而規則還在同一狀態，會再列一次')]),
- you:[['照規則（預設）','下單，回網站填快照'],['這次不做','必須寫理由，系統記成欠單，下個月再問'],['不管選哪個','系統記下「規則幾股、AI 幾股、你實際幾股」，1、3、6 個月後比誰對']]},
+       T('3 票一致','月報多一行 AI 意見','下單清單不變')])]),
+   X('沒有穿越','狀態不變，不派 AI','月報沒有崩盤項目。例外：上個月你沒照做而規則還在同一狀態，會再列一次')])},
 {id:'核心 3',title:'別的桶要買賣，或你入金、出金',
- story:'核心是三桶之間的清算中心。這棵樹沒有 AI。',
+ story:'核心是三桶之間的清算中心。這棵樹沒有 AI，結果全部是下單。',
  tree:E('錢要在桶之間移動','',[
    R('動能或自選有買賣','差額由核心吸收','',[
-     O('','平時進出 VOO；崩盤規則啟動中進出 SGOV','例：自選賣 75 股 MU 得 $5,925 → 月報同時列買 $5,925 VOO')]),
-   R('你登記入金','只買不賣','',[
-     O('','先補「低於目標最多」的格子，剩下進核心','缺口小於總資產 0.25%（$250）的格子不算一張單')]),
-   R('你登記出金','只賣不買','',[
-     O('','依序賣：核心現金 → 動能超出目標的部分 → VOO → 動能 → 自選','')])])},
+     O('','同一份清單上，VOO 反向買賣差不多的金額','例：自選賣 75 股 MU 得 $5,925 → 買 11 股 VOO（100 → 111 股）。崩盤規則啟動中改成買 SGOV')]),
+   R('你登記入金 $10,000','只買不賣','從低於目標最多的格子開始補',[
+     O('','各格補到新目標，剩下買 VOO','總資產變 $110,000。動能每檔目標 $6,600：AVGO 買 3 股（30 → 33）。MU 目標 $13,200：買 15 股（150 → 165）。另一檔自選補 $800。剩 $5,000 買 10 股 VOO（100 → 110）')]),
+   R('你登記出金 $5,000','只賣不買','順序：核心現金 → 動能超出目標的部分 → VOO → 動能 → 自選',[
+     O('','賣 10 股 VOO','VOO 100 → 90 股。這個金額在 VOO 就夠了，動不到後面的')])])},
 {id:'核心 4',title:'早上抓不到 VOO 的最新價格',
  story:'資料壞掉時 bot 寧可不說話。',
  tree:E('07:30 抓資料時，必要的價格缺了或不是最新','',[
    R('','資料檢查不通過','',[
      X('','當天不產生任何建議','兩小時後重抓。漏掉的交易日之後照順序補做，最多補 10 天')]),
    R('VOO 與 SPY 的日報酬差超過 1 個百分點','資料可疑','',[
-     O('','推一則告警','只告警，流程照跑')])])}
+     T('','推一則告警','流程照跑')])])}
 ];
 
 /* ───────── 動能・AVGO ───────── */
 var MOM=[
 {id:'動能 1',title:'月底，AVGO 的一年報酬排到第 4 名，即將新進場',
- story:'進場是 AI 唯一能擋下規則的地方，但門檻很高：規則先篩，命中特定跡象才開法庭，3 票同一個理由才算否決。',
+ story:'這個情境裡 AVGO 還沒持有，要換掉名單裡掉出前 15 名的一檔。AI 的否決門檻很高：規則先篩，命中特定跡象才開法庭，3 票同一個理由才算。',
  tree:E('月報前一天：AVGO 排第 4，還沒持有','',[
    R('','進場前規則偵測','程式看申報、EPS、價格。同時派一份輕 AI 回看最近 30 天的 8-K 與新聞標題，標到嚴重的再補送法庭',[
-     O('AVGO 是被收購方，或延遲申報財報','規則直接否決，不用 AI','第 6 名遞補'),
-     X('單日變動超過 25%，前後一天卻沒有申報','資料可疑，這個月不進場',''),
+     O('AVGO 是被收購方，或延遲申報財報','不買 AVGO，改買第 6 名 $6,000','規則直接否決，不用 AI'),
+     X('單日變動超過 25%，前後一天卻沒有申報','這個月不買 AVGO','資料可疑'),
      A2('一次性跳漲、EPS 轉差但股價在漲、財測下修、財報重編、會計師辭任','進場審查法庭','蒐證 → 檢方與辯方 → 法官獨立判 3 次。不上網，只看申報、EPS 表、價格表。預設准許；「太貴」「漲太多」不能當否決理由',[
-       O('3 票一致，而且是同一個理由否決','月報不買 AVGO，第 6 名遞補','遞補者也要過審。遞補者也被否決，那 $6,000 留在核心到下個月'),
-       O('其他任何結果','准許，月報列買進 $6,000',''),
-       O('否決在月報出了之後才回來','降成建議','LINE 補推一則，預設仍是買進。要照否決，到網站按「排除」')]),
-     O('只有新聞標題提到問題，或只有增資','准許，附一行註記','新聞標題不能單獨擋下進場'),
-     O('什麼都沒偵測到','准許，不呼叫 AI','月報列買進 $6,000')])]),
- you:[['排除','這檔我不要，下一名遞補'],['認養','照買，但改記在自選桶，之後由自選的規則管'],['都要寫一句理由','並記進規則／AI／你的對照紀錄']]},
+       O('3 票一致，而且是同一個理由否決','不買 AVGO，改買第 6 名 $6,000','遞補者也要過審。也被否決的話，那 $6,000 留在 VOO（多 12 股）到下個月'),
+       O('其他任何結果','買 30 股 AVGO（$6,000）','快照：動能桶 AVGO 0 → 30 股。錢來自被換掉那檔的賣出'),
+       O('否決在月報出了之後才回來','月報不改，仍是買 30 股 AVGO','LINE 補推一則否決意見。要照否決，到網站按「排除」')]),
+     O('只有新聞標題提到問題，或只有增資','買 30 股 AVGO','月報附一行註記。新聞標題不能單獨擋下進場'),
+     O('什麼都沒偵測到','買 30 股 AVGO','不呼叫 AI')])]),
+ you:[['排除','這檔不買，下一名遞補。一直有效，可取消'],['認養','照買 30 股，但快照記在自選桶，之後由自選的規則管']]},
 {id:'動能 2',title:'持有 AVGO 之後，每個月底重算排名',
  story:'「5 進 15 出」：進場要前 5，但掉到第 6 到第 15 之間都續抱，避免在邊界來回換股。',
  tree:E('月底：重算 AVGO 的排名','',[
-   X('還在前 15 名（例如第 7）','續抱，不下單',''),
+   X('還在前 15 名（例如第 7）','續抱',''),
    R('還在前 15 名，但部位偏離 $6,000 超過一半','調回目標','也就是低於 $3,000 或高於 $9,000',[
-     O('','當月有其他單才順便做','沒有其他單就不單獨為它下單')]),
+     O('','賣 12 股 AVGO（30 → 18 股）','例：AVGO 漲到 $320，30 股值 $9,600。調回 $6,000，得款買 VOO。當月沒有其他單就不單獨做')]),
    R('掉出前 15 名','排名出場','',[
-     O('','月報列賣出 AVGO','新的前 5 名補上，補上的那檔走「動能 1」那棵樹')]),
+     O('','賣 30 股 AVGO（30 → 0 股）','得款買新的前 5 名，新進場那檔走「動能 1」那棵樹')]),
    X('S&P 500 成分股的兩個來源對不上','動能暫停換股','月報照出，但名單不動')]),
- you:[['轉入自選','動能叫你賣但你想留：改記在自選桶，不用下單'],['照做','下單，填快照']]},
+ you:[['轉入自選','動能叫你賣但你想留：不下單，快照裡這 30 股從動能桶改記到自選桶']]},
 {id:'動能 3',title:'AVGO 一個月內跌了 23%',
  story:'動能沒有個股停損。bot 做的只有把跌幅拆開講清楚，讓你知道它為什麼不動。',
  tree:E('AVGO 最近 21 個交易日跌 23.4%','超過 20% 的提醒門檻',[
    R('','程式把跌幅拆成三塊','大盤 −4.1%、產業比大盤 −6.0%、個股自身 −13.3%。不經 AI',[
-     X('','個股頁「要看的事」多一行，不賣','「動能的出場只看排名，目前第 7 名，掉出前 15 名才賣」')])])},
+     T('','個股頁「要看的事」多一行','「動能的出場只看排名，目前第 7 名，掉出前 15 名才賣」。AVGO 維持 30 股')])])},
 {id:'動能 4',title:'AVGO 在 EDGAR 出現一份新申報',
  story:'每個交易日都看。規則先照申報類型分流，分得出輕重的直接處理，分不出的才給 AI 貼標籤。自選股也走同一套。',
  tree:E('EDGAR 上有 AVGO 的新申報','',[
-   O('延遲申報財報，或 AVGO 是被收購方','規則直接發「提早出場」通知','當天，不用 AI。被收購後股價被收購價鎖住，動能沒有意義'),
+   O('延遲申報財報，或 AVGO 是被收購方','賣 30 股 AVGO（30 → 0 股）','規則直接提出「提早出場」，當天通知，不用 AI。$6,000 回核心'),
    A2('財報重編（8-K 4.02）、會計師辭任','硬事件法庭','只審三類：被收購、會計問題、重大監管。蒐證 → 檢方與辯方 → 法官 3 票',[
-     O('3 票一致、理由相同：提早出場','當天通知「AI 建議提早出場」','預設是不做，你選了才出場。同一類事件 180 天內只通知一次'),
+     P('3 票一致、理由相同：提早出場','賣 30 股 AVGO（30 → 0 股）','當天通知「AI 建議提早出場」。同一類事件 180 天內只通知一次'),
      X('其他結果','不通知','照常等月底排名')]),
    A1('規則看不出輕重的 8-K（重大合約、其他事項…）','每日事件掃描','所有持股一天一份，只貼標籤，不判重大性',[
      A2('標到會計、監管、被收購','送硬事件法庭','接上面那一支'),
-     X('其他標籤','只記在個股頁的時間軸','')]),
-   X('13D、增資','只顯示','')])},
+     B('其他標籤','記在個股頁的時間軸','')]),
+   B('13D、增資','只顯示在個股頁','')])},
 {id:'動能 5',title:'月底：整個動能桶的波動度升高',
  story:'這棵樹管的是整桶的大小，不是 AVGO 一檔。動能策略在高波動時容易崩，所以波動大時自動縮小部位。',
  tree:E('月底：算動能名單相對 VOO 的波動度','取 126 個交易日，和歷史中位數 14% 比',[
-   X('這個月 14% 以下','部位比例 1，每檔 $6,000',''),
+   X('這個月 14% 以下','部位比例 1，每檔維持 $6,000',''),
    R('這個月 20%','14 ÷ 20 = 0.70，捨去到 2/3 那一格','只有 1、2/3、1/3、0 四格，換格要多過 0.10 的緩衝',[
-     O('','每檔目標 $6,000 → $4,000','AVGO 月報列賣出約 $2,000，錢留在核心'),
-     O('崩盤規則同時啟動中','再乘 0.5，每檔剩 $2,000','')])])},
+     O('','每檔賣 $2,000：AVGO 賣 10 股（30 → 20 股）','五檔共 $10,000 進核心，買 20 股 VOO（100 → 120 股）'),
+     O('崩盤規則同時啟動中','每檔目標只剩 $2,000：AVGO 30 → 10 股','2/3 再乘 0.5')])])},
 {id:'動能 6',title:'動能名單長期落後大盤',
- story:'bot 會提醒，也會派 AI 整理證據，但要不要停用策略永遠是你的決定。',
+ story:'bot 會提醒，也會派 AI 整理證據。系統永遠不會自動停用策略。',
  tree:E('動能累積表現落後基準首次超過 20%','加深到 30%、40%、50%，以及每滿一年，各再提醒一次',[
    A1('','策略檢討說明','拿 Ken French 動能因子的歷史對照，逐條列正反證據',[
-     O('','提醒一則，附正反證據','AI 被禁止建議停用或繼續，寫了那一票就作廢。系統永遠不會自動停用策略')])])}
+     T('','提醒一則，附正反證據','AI 被禁止建議停用或繼續，寫了那一票就作廢')])])}
 ];
 
 /* ───────── 自選・MU ───────── */
 var OWN=[
 {id:'自選 1',title:'你把 MU 加進自選，寫了一句買進理由',
- story:'你不用自己寫論點。bot 起草，你看完按一個鍵。',
+ story:'回到買進那天：MU 現價 $80，當時的 52 週高點是 $90。你不用自己寫論點，bot 起草，你看完按一個鍵。',
  tree:E('新增 MU 到自選，標準比重 12%','',[
+   R('','決定買多少','看現價離 52 週高點多遠',[
+     O('現價比高點低不到 20%（$80 對 $90，低 11%）','買 150 股 MU、賣 24 股 VOO','12% = $12,000。快照：自選桶 MU 0 → 150 股'),
+     O('現價已比高點低 20% 以上','只買一半：75 股 MU','一開始就是減半狀態，之後站回 200 日均線才補滿')]),
    A1('','論點草稿','研究員蒐證 → 反方先寫「最可能讓持有者後悔的三件事」→ 正方逐一回應 → 主筆定稿。程式檢查不過就整份退回',[
-     O('你按「採用」','整份直接上線監測','論點、3 到 5 條前提、出場條件。不用逐條勾'),
-     X('30 天沒處理','草稿過期','MU 只用三條系統預設前提（財報可信、營收和 EPS 沒有連兩季衰退）')]),
-   R('','決定買多少','',[
-     O('MU 現價距 52 週高點不到 20%','買到標準比重 12%',''),
-     O('MU 現價已比高點低 20% 以上','一開始只買一半','')])])},
+     B('你按「採用」','論點檔上線','論點、3 到 5 條前提、出場條件開始被監測。之後所有審查都以它為準'),
+     B('30 天沒處理','草稿過期，改用三條系統預設前提','財報可信、營收沒有連兩季衰退、EPS 沒有連兩季低於去年同季')])])},
 {id:'自選 2',title:'MU 收 $79，比 52 週高點 $100 低 21%',
  story:'價格底線被踩到。規則說減半，AI 被派去回答一個問題：這 21% 是大盤和產業拖下來的，還是 MU 自己出了問題？',
  tree:E('MU 收盤比 52 週高點低 21%','',[
-   R('','慢規則：減半','賣 75 股，約 $5,925，是總資產的 5.9%。5% 以上當天通知，較小的累積到月報',[
+   R('','慢規則：減半','75 股約 $5,925，是總資產的 5.9%。5% 以上當天通知，較小的累積到月報',[
      A2('','減半檢視','程式先把跌幅拆好。分析師可上網，另有一個看不到你論點的「新眼光」找遺漏的風險。通知等到 09:30 才推',[
-       O('3 票都判「減半」','通知多一行「AI 同意照規則」',''),
-       O('3 票都判「不動」，都歸因於大盤或產業，而且程式核對個股自身跌幅不到一半','多一個選項「照 AI：不動」','例：大盤 −8、產業比大盤 −9、MU 自身 −4，自身 4 不到 21 的一半，通過'),
-       O('3 票都判「出清」，而且都判同一條前提不成立、有原文引用','多一個選項「照 AI：出清」',''),
-       X('票數不一致、逾時','通知只有規則的答案','')]),
+       O('3 票都判「減半」','賣 75 股 MU（150 → 75 股）、買 11 股 VOO','通知多一行「AI 同意照規則」'),
+       P('3 票都判「不動」，都歸因於大盤或產業，而且程式核對個股自身跌幅不到一半','MU 維持 150 股','清單上預設仍是賣 75 股。例：大盤 −8、產業比大盤 −9、MU 自身 −4，自身 4 不到 21 的一半，通過'),
+       P('3 票都判「出清」，而且都判同一條前提不成立、有原文引用','賣 150 股 MU（150 → 0 股），移出自選','清單上預設仍是賣 75 股'),
+       O('票數不一致、逾時','賣 75 股 MU（150 → 75 股）、買 11 股 VOO','通知只有規則的答案')]),
      A1('最近 5 個交易日沒有市場摘要','順便寫一份市場摘要','',[
-       O('','通知附一行「報導的說法」','')])])]),
- you:[['照規則減半（預設）','賣 75 股'],['照 AI','有出現這個選項才能選'],['這次不做','要寫理由']]},
-{id:'自選 3',title:'幾個月後，MU 站回 200 日均線',
- story:'減半之後的回程票，同樣由規則決定。',
- tree:E('MU 連續 10 天收在 200 日均線之上','',[
-   R('距上次減半滿 15 個交易日，且距高點的跌幅已不到 20%','慢規則：加回','',[
-     O('','買回到標準比重 12%','金額達總資產 5% 當天通知，較小的併入月報')]),
+       B('','通知附一行「報導的說法」','同時是減半檢視的背景')])])])},
+{id:'自選 3',title:'減半之後幾個月，MU 站回 200 日均線',
+ story:'接在「自選 2」賣掉 75 股之後。回程票同樣由規則決定，沒有 AI。',
+ tree:E('MU 連續 10 天收在 200 日均線之上','持有 75 股，現價 $96',[
+   R('距上次減半滿 15 個交易日，且距高點的跌幅已不到 20%','慢規則：加回','買回到標準比重 12%',[
+     O('','買 50 股 MU（75 → 125 股）、賣 10 股 VOO','$12,000 ÷ $96 = 125 股。這筆 $4,800 不到總資產 5%，所以併入月報；5% 以上才當天通知')]),
    X('條件還沒滿','繼續等','')])},
 {id:'自選 4',title:'MU 發布財報新聞稿',
  story:'財報一出，兩件事同時開跑：程式比對你定的數字條件，AI 逐條檢查論點的前提。',
  tree:E('EDGAR 出現 MU 的 8-K 財報新聞稿','',[
    A2('','財報數字擷取','AI 只抄數字，不算比率、不做判斷。3 票的數值要一致。這樣不用等正式的 10-Q',[
      R('','程式算毛利率，比對「連兩季低於 55% → 減半」','',[
-       X('毛利率 53%，是連續第 1 季','記進度「已連續 1 季符合」','不通知'),
-       O('下一季又低於 55%，連續第 2 季','當天通知「條件成立：減半」','你定的條件，預設照做。註明「依財報新聞稿，10-Q 出來後再核對」')])]),
+       B('毛利率 53%，是連續第 1 季','記進度「已連續 1 季符合」','不通知。下一季財報接著算'),
+       O('下一季又低於 55%，連續第 2 季','賣 75 股 MU（150 → 75 股）','你定的條件成立，當天通知。註明「依財報新聞稿，10-Q 出來後再核對」')])]),
    A2('','財報後審查','分析師針對每條前提上網查，先找相反方向的文件。多空辯論。經理獨立判 3 次，逐條判成立、不成立、證據不足',[
-     O('3 票都判同一條前提不成立','當天通知「前提不成立，AI 建議減半」','例：TrendForce 報 HBM 合約價季跌。預設是「不同意，不動」'),
-     X('前提都成立','不動，沒有通知','股價下跌不能當成前提不成立的證據'),
-     X('票數不一致、證據不足','不動','連續發生的話，bot 會自動重寫一份論點草稿給你')])]),
- you:[['照 AI','減半'],['不同意，不動（預設）','那條前提靜默最長 100 天，不再為同一件事吵你；滿 45 天後出新財報就提早結束']]},
+     P('3 票都判同一條前提不成立','賣 75 股 MU（150 → 75 股）','當天通知「前提不成立，AI 建議減半」。例：TrendForce 報 HBM 合約價季跌。你不選的話，那條前提靜默最長 100 天'),
+     B('前提都成立','審查結果存進個股頁','不通知。月底沒有新證據時直接沿用這次結論'),
+     B('票數不一致、證據不足','記一次「沒有一致結論」','不通知。連續發生會讓 bot 自動重寫論點草稿')])])},
 {id:'自選 5',title:'財報以外的日子，MU 出了事',
  story:'來源有兩個：EDGAR 的新申報，和股價相對同業的異常下跌。走哪一支看事情的種類。',
  tree:E('MU 有新申報，或股價異常下跌','',[
    A2('8-K 寫到財測下修、執行長或財務長離任、減損、重組；或 21 個交易日跌 10% 以上且比產業 ETF 多跌 10 個百分點','提前審查','內容同財報後審查。每檔 30 天最多一次',[
-     O('3 票都判同一條前提不成立','當天通知，預設不動',''),
-     X('其他','不通知','')]),
+     P('3 票都判同一條前提不成立','賣 75 股 MU（150 → 75 股）','當天通知'),
+     B('其他','審查結果存進個股頁','不通知')]),
    A2('申報類型正好是你某條出場條件指定的確認來源','條件確認','只判一件事：原文有沒有直接證實這條條件。沾到邊不算',[
-     O('你定的條件，3 票都說成立','當天通知，預設照做',''),
-     X('AI 監測中的條件成立','不叫你賣','只開一次重新審查')]),
+     O('你定的條件，3 票都說成立','照那條條件設定的動作','例：你定了「公司在 8-K 下修財測 → 出清」→ 賣 150 股 MU（150 → 0 股）'),
+     B('AI 監測中的條件成立','只開一次重新審查','不會直接產生下單')]),
    A2('財報重編、會計師辭任、MU 被收購','硬事件法庭','和「動能 4」同一個法庭',[
-     O('3 票一致：提早出場','當天通知「AI 建議提早出場」','預設是不做')]),
-   O('延遲申報財報','規則直接發「提早出場」通知','不用 AI'),
+     P('3 票一致：提早出場','賣 150 股 MU（150 → 0 股）','當天通知「AI 建議提早出場」')]),
+   O('延遲申報財報','賣 150 股 MU（150 → 0 股）','規則直接提出「提早出場」，不用 AI'),
    A1('看不出輕重的 8-K、新的新聞標題','每日事件掃描','只貼標籤',[
-     X('','記在個股頁的時間軸','新聞標題只能當線索，不能單獨支持任何會動部位的結論')])])},
+     B('','記在個股頁的時間軸','下次審查的證據包會帶上。新聞標題只能當線索')])])},
 {id:'自選 6',title:'月底：MU 這個月的收尾',
  story:'平日沒達到當天通知門檻的東西，都在月報合成一份下單清單。',
  tree:E('月報前一天與月報日','',[
    A2('這個月有新證據：新申報、新事件、論點改過、同業出財報、距上次審查滿 100 天','月底審查','內容同財報後審查',[
-     O('','建議進隔天的月報','加碼類的建議（回到標準、提高到 125%）只會出現在月報，條件很嚴')]),
+     P('3 票都判同一條前提不成立','月報列：賣 75 股 MU（150 → 75 股）',''),
+     P('每條前提都成立且有申報引用，並通過價格與時間的條件','月報列：提高到 125%，買約 $3,000 的 MU','12% → 15%。要連續站上 200 日均線約 6 個月、距上次提高滿 12 個月'),
+     B('其他','審查結果存進個股頁','')]),
    X('沒有新證據','沿用上次結論，不派 AI',''),
-   O('MU 市值超過總資產 15%','月報列：減回 10%','單檔上限，規則'),
-   O('這個月累積了小額的減半或加回','併進月報的下單清單','累積期間出現反向訊號會互相抵銷'),
-   X('MU 和其他持股高度連動（一年相關係數 0.7 以上），合計占總資產 15% 以上','列一行「要看的事」','例：NVDA、AMD、MU 合計 18%，提醒你這是同一個賭注。不下單')])},
+   O('MU 市值超過總資產 15%','賣 55 股 MU（150 → 95 股）','單檔上限。例：MU 漲到 $110，150 股值 $16,500，占 15.8% → 減回 10%'),
+   O('這個月累積了小額的減半或加回','併進月報的下單清單','例：「自選 3」那筆買 50 股。累積期間出現反向訊號會互相抵銷'),
+   T('MU 和其他持股高度連動（一年相關係數 0.7 以上），合計占總資產 15% 以上','列一行「要看的事」','例：NVDA、AMD、MU 合計 18%，提醒你這是同一個賭注')])},
 {id:'自選 7',title:'MU 的論點放久了',
  story:'論點會老化。bot 發現跡象時自己重寫一份，你只要決定採不採用。',
  tree:E('論點出現老化跡象','例：減半中卻沒有任何出場條件；「新眼光」連續兩次提到同一個風險；某條前提 3 票都證據不足；連續審查沒有一致結論；論點滿一年',[
    A1('','自動重新起草論點草稿','每檔 7 天最多一次，一天最多 2 檔',[
-     O('你按「採用」','新的前提與出場條件上線',''),
+     B('你按「採用」','新的前提與出場條件上線','之後的審查改用新版'),
      X('你不採用','舊論點照舊監測','')])])}
 ];
 
