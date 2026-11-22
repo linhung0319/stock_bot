@@ -17,6 +17,14 @@
 - 實作者的 commit 結尾寫的是它實際的模型（Fable 5.2），照實保留。
 - 留給後面：月報狀態文字還是「崩盤規則：未啟動」、崩盤檢視的排程還會派（T81；**T80、T81 要一起部署**，不然 VOO 跌破均線時會白跑 AI）；`RULE.crash`、`CRASH_BASE_TEXT`、`coreDataCheck` 的字（T81）；沒有 `fromCrashRule` 的全 VOO 帳戶第一次 F26 理由寫「股票漲多了」不完全貼切（T86 看）；運作統計的 F26 次數（設計 §6 最後一列）沒有任務列到，排進 T88。
 
+### T81（崩盤規則與崩盤檢視退場，sonnet，commit `39e1a7e`＋修正 `8c4fc05`）
+- 做了什麼：排程不再派 `CRASH_REVIEW`（`aiStep`、`finalStarts`、`APPLIERS`、`PUSH_WAITERS` 的 `crashWaiter`、`monthEndInputs`）；FRED 的抓取原本寫在 `startCrashRuns` 裡，拆出 `refreshMacro` 讓儀表板照常更新；`coreDataCheck` 只留 `DAY_GAP`、`BOND_JUMP`、`NO_BENCH`；月報狀態文字 `coreStatusText`（LINE 共用）；帳戶頁與首頁的核心比例橫條；`CRASH_BASE_TEXT` 與儀表板「真空頭開始時」那一欄拿掉；舊 F5／F6、舊檢視紀錄標「（已停用）」；首頁一次性說明（`noCrashNote.ts`）；策略檢討提醒多一句。函式本體留給 T88。
+- 實作者定的細節（補進設計 §1.6）：市場摘要實際讀的是各序列的值與變化、市場廣度、核心相對 200 日線，沒讀基準率表；證據包儀表板文字少「at bear starts」一欄（`market_brief_v2` 沒用它）。首頁說明「顯示一次」做成**按「知道了」才算看過**（寫 `flow_state` 的 `note:no-crash:<id>`），因為網站每換一頁重抓狀態、讀的時候寫會一閃就沒；兩個場合：有 `coreBand` 的月報、最近 10 個交易日有 `CUMULATIVE` 觸發。主持者同意這個做法。
+- `run.md`（`ai/prompts/run.md`）本來就沒有崩盤檢視的列，沒改，**T87 不用重貼**（主持者 grep 確認）。
+- 驗收：主持者重跑 `npm test` 1233 通過、1 略過，typecheck、lint 通過，重放 B-8 與 B-12 兩組數字不變；`public/js/*.js` 全部 `node --check` 過；讀排程的 diff，入口都拿掉、`crashAi.ts` 的本體留著。**退回一次**：首頁桌機窄磚的核心橫條沒拉滿、白點畫在 25% 之後、字斷成三行（各段 flex 用小數加總不到 1，舊截圖是改之前截的）。修正抽出 `public/js/corebar-pos.js` 純函式並加測試，`npm test` 1234 通過、1 略過。主持者看過首頁桌機 v2、帳戶頁桌機 v2、帳戶頁手機。
+- 網站沒有淺色主題：`app.css` 寫死 `color-scheme: dark`，網址的 `theme=light` 從來沒作用。之後的截圖任務不用再要求淺色。
+- 留給 T86：帳戶頁核心那一塊「現金：股利與交易剩下的零頭；月報時交給核心」的字跟 T80 之後的行為不太一致（現在是現金算 SGOV 那一邊、月報有其他單時順便買 SGOV）；首頁說明下半句是實作者寫的字。
+
 ## 部署與實測（主持者做，T87）
 
 （還沒做）
@@ -24,6 +32,7 @@
 ## 截圖
 
 - T80：`records/stage12/screens/T80/`：入金、出金清單的「做完之後」、只有 F26 的月報，桌機與手機各一。實作者說網址帶 `theme=light` 但畫面是深色（之後截圖的任務注意）。主持者看過 F26 月報桌機。
+- T81：`records/stage12/screens/T81/`：首頁一次性說明、帳戶頁核心橫條、舊 F5 標「已停用」、月報狀態文字；修正後的 `*-v2.png`（首頁、帳戶頁桌機 1280 與手機 390）。第一版 `01-home-notice-desktop-dark.png` 是壞的版本，以 v2 為準。
 
 ## 卡住的任務
 
