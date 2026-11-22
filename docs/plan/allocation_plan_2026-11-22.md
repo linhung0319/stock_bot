@@ -108,6 +108,8 @@
 
 SGOV 比例與界線、動能出場名次、200 日線在動能上留不留。
 
+補測（2026-11-22，使用者要求）：B-13 核心折衷版——平時 SGOV 20%，連續 3 次換股日跌破 200 日線才加碼到 50%（`backtest_B13_2026-11-22.md`），供第一個決定參考。
+
 ### [ ] T78 設計文件
 
 寫 `docs/design/allocation_redesign_2026-11-22.md`，先讀現有設計（`design_v2_momentum` §2、§4；`own_thesis_design`；`core_ai_design`；`momentum_ai_design`）。要涵蓋：

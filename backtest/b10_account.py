@@ -8,6 +8,8 @@
       ratio   核心固定 VOO：SGOV 比例 sgov；進核心的錢照比例分、出核心的錢照比例拿；
               超出界線 ±band 才調回 sgov（ratio_daily=False：只在每月換股日檢查；True：每天開盤前檢查）
               denom='total' 時 SGOV 目標 = sgov × 總資產（參考用）
+      ratio＋hyb_n>0（B-13 折衷）：換股日 SPY 連續 hyb_n 次 < 200 日均線 → SGOV 目標改成 hyb_sgov；
+              某次換股日回到 200 日均線之上 → 回到 sgov。狀態一變就調到新目標
   動能      mom_200   200 日線減半（舊版跟著 crash_rule；這裡獨立）
             switch    'bear24' / 'bear24hv' / 'bear36' / 'bear36hv' 開關：打開時動能比重 0，錢進核心
   現金      cash_ret  True：現金照 SGOV／國庫券計息（舊版為 0）
@@ -42,6 +44,8 @@ class Acct(ab.Scenario):
     switch: str | None = None
     cash_ret: bool = True
     count_cash: bool = True
+    hyb_n: int = 0
+    hyb_sgov: float = 0.5
 
 
 # B-8 主要方案（緩衝 0.10）＝現在線上的設計
@@ -77,6 +81,7 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
     flows = ab.flow_schedule(sc, days, rdays)
     units, n_dep = 1.0, 0
     n_urgent, n_sw = 0, 0
+    hyb_cnt, hyb_on = 0, False
 
     def own_state_target(tk, tot):
         return std_w * tot * (0.5 if applied[tk] == "RED" else 1.0)
@@ -237,6 +242,11 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
                 held_mom, w_prev, sw_prev = names, eff, sw
             if is_r:
                 crash = new_c200
+            hyb_changed = False
+            if is_r and sc.hyb_n:
+                hyb_cnt = hyb_cnt + 1 if bool(below200.at[d]) else 0
+                new_on = hyb_cnt >= sc.hyb_n
+                hyb_changed, hyb_on = new_on != hyb_on, new_on
 
             if sc.piggyback and lazy_prev and not first:
                 others = crash_changed or any(
@@ -268,7 +278,8 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
                 tgt[("core", "CASH")], tgt[("core", "SPY")] = 0.0, core
             else:
                 den = core if sc.denom == "core" else total
-                target_cash = min(core, sc.sgov * den)
+                p_now = sc.hyb_sgov if hyb_on else sc.sgov
+                target_cash = min(core, p_now * den)
                 if first:
                     cs = target_cash
                 else:
@@ -280,7 +291,9 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
                         cs = 0.0
                     if sp < 0:
                         cs = core
-                    if (is_r or sc.ratio_daily) and den > 0 and abs(cs / den - sc.sgov) > sc.band:
+                    if hyb_changed:
+                        cs = target_cash
+                    elif (is_r or sc.ratio_daily) and den > 0 and abs(cs / den - p_now) > sc.band:
                         cs = target_cash
                         core_rebal = True
                 tgt[("core", "CASH")], tgt[("core", "SPY")] = cs, core - cs
@@ -302,6 +315,8 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
                 reasons.add("崩盤規則")
             if core_rebal:
                 reasons.add("核心比例")
+            if hyb_changed:
+                reasons.add("崩盤加碼")
             reasons.discard("其他")
             if flow:
                 reasons.add(flow[0])
@@ -341,6 +356,7 @@ def simulate(sc: Acct, own: list[str], start: str, end: str, ranks: dict, w: bc.
         含核心比例下單日每年=rs.str.contains("核心比例").sum() / yrs,
         崩盤規則下單日每年=rs.str.contains("崩盤規則").sum() / yrs,
         動能開關下單日每年=rs.str.contains("動能開關").sum() / yrs,
+        崩盤加碼下單日每年=rs.str.contains("崩盤加碼").sum() / yrs,
         純比例下單日每年=od.ratio_only.sum() / yrs,
         入金下單日每年=rs.str.contains("入金").sum() / yrs,
         開關切換次數=n_sw,
