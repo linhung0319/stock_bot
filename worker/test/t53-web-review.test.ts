@@ -376,7 +376,9 @@ describe('T53 §1.6：往上的檔位不能只靠網頁', () => {
     expect(run(half, 'EXIT', [['P1', 'HOLDS', ['E9']], ['P2', 'BROKEN', ['E1']]], EV)).toMatchObject({ tier: 'EXIT', suggest: true, premiseId: 'P2' });
   });
 
-  it('減半檢視的「出清」用同一個定義：三票都判同一條前提不成立、引用是指名的產業來源的網頁 → 出清；單一媒體 → 照規則', () => {
+  // T82（allocation_redesign §3.2）：有論點的股票的結論改成四種——三票判同一條前提不成立（合格引用）是「前提不成立」，三票都選出清時 exit；
+  // 單一媒體的引用不合格 → 不算前提不成立，是「票數不一致」（預設不動，以前是照規則減半）
+  it('減半檢視的「前提不成立」用同一個定義：三票都判同一條前提不成立、引用是指名的產業來源的網頁 → 前提不成立（三票出清）；單一媒體 → 不算', () => {
     const mk = (docs: AddedDoc[]): EvidencePack =>
       withAdded(
         { pack_version: 1, run_id: 'r', function: OWN_DROP, prompt_version: OWN_DROP_PROMPT, as_of: '2026-11-19', created_at: '2026-11-19T23:40:00Z', subject: { ticker: 'NVDA' }, question: 'q', policy: { level: 'A3', verdicts: ['EXIT', 'HALF', 'HOLD'], abstain: 'HALF', min_evidence: 1, samples: 3 }, rule: { action: '減半', detail: {} }, facts: [], premises: [{ id: 'P2', text: 'HBM 供給持續吃緊' }], documents: [TENQ_DOC], data_quality: {}, condition_types: [] },
@@ -384,9 +386,9 @@ describe('T53 §1.6：往上的檔位不能只靠網頁', () => {
       );
     const v = (doc: AddedDoc, q: string) => ({ verdict: 'EXIT', premise_checks: [{ premise_id: 'P2', status: 'BROKEN', evidence_ids: ['E1'] }], evidence: [E('E1', doc, q)], payload: { tier: 'EXIT', cause_class: 'FUNDAMENTAL' }, report: '測試' });
     const named = mk([DOC.tf]);
-    expect(dropDecision(judge(named, three(v(DOC.tf, QUOTE.tf)), PAYLOAD_HOOKS[OWN_DROP]), named)).toMatchObject({ status: 'EXIT', premiseId: 'P2' });
+    expect(dropDecision(judge(named, three(v(DOC.tf, QUOTE.tf)), PAYLOAD_HOOKS[OWN_DROP]), named)).toMatchObject({ status: 'BROKEN', premiseId: 'P2', exit: true });
     const media = mk([DOC.tpu]);
-    expect(dropDecision(judge(media, three(v(DOC.tpu, QUOTE.tpu)), PAYLOAD_HOOKS[OWN_DROP]), media)).toMatchObject({ status: 'NONE', premiseId: null });
+    expect(dropDecision(judge(media, three(v(DOC.tpu, QUOTE.tpu)), PAYLOAD_HOOKS[OWN_DROP]), media)).toMatchObject({ status: 'SPLIT', premiseId: null, splitPremise: 'P2', splitVotes: 3 });
   });
 });
 

@@ -1,3 +1,5 @@
+> 不再使用（2026-11-22）：T82 起改用 `own_drop_v6.md`（有論點的股票比高點低 20% 以上只觸發審查，減半、出清要對應一條判不成立的前提；`allocation_redesign_2026-11-22.md` §3.2）。這份留著對照舊的執行紀錄。
+
 # own_drop_v5：自選慢規則減半的 AI 論點檢查（減半檢視，F7）
 
 共用的取證據包、取文件、外殼格式與送回方式見 `run.md`；這份只寫這個功能怎麼判斷。設計依據：`docs/design/own_thesis_design_2026-11-15.md` 的 §3.2～§3.4，`docs/design/web_evidence_design_2026-11-20.md` 的 §1.5～§1.8，`docs/design/composite_layer_design_2026-11-21.md` 的 §2.1～§2.3，以及 `docs/design/confirm_audit_design_2026-11-21.md` 的 §1.2、§1.4（和 `ai_layer_design_2026-11-08.md` 的 F7 卡片不同時以前四份為準）。

@@ -3,6 +3,7 @@
 // 引擎不知道這個欄位（它只會原樣帶著走）；讀通知時發現沒有，就用當下的資料補算。
 import { ENTRY_CODE_TEXT, replacements } from '../../ai/momEntry';
 import {
+  DROP_LADDER,
   SLOW,
   TIER_NAME,
   afterOpenLists,
@@ -91,6 +92,7 @@ const RULE = {
   vol: '每月比較動能持股最近半年相對大盤的波動（σ）和它的歷史中位數（σ̃）：部位 = σ̃ ÷ σ，最多全額，無條件捨去到 1/3 的倍數。要多跨過 0.10 才換一格，避免來回。減下來的錢交給核心。',
   core: '核心固定放股票 ETF 八成、短債與現金兩成（分母是核心，不是總資產）。錢進出核心都照這個比例分；每月第一個交易日檢查一次，短債與現金那一邊低於 15% 或高於 25% 才調回 20%。',
   crash: '（已停用：2026-11 起沒有這條規則，核心固定留兩成短債，不看 200 日線；這是舊通知上的說明。）每月第一個交易日看核心 ETF 前一日的收盤：低於 200 日均線 → 核心一半換成短債、動能部位減半；回到均線之上 → 換回來。全系統只有這條規則會讓錢變成現金。',
+  thesisDrop: '有論點的自選股沒有價格底線：收盤比 52 週高點低 20% 以上只觸發論點檢查（跌幅審查，3 票）。3 票判同一條前提不成立才減半；其餘不動、進「審查後持有」，之後每多跌 10 個百分點（-30%、-40%、-50%）再審一次，站回 200 日均線連續 10 天回到一般狀態。',
   slow: '自選股的慢規則是保險，不是看壞：收盤比 52 週高點低 20% 以上 → 賣掉當時持有股數的一半；之後收盤站上 200 日均線連續 10 天、距上次切換滿 15 個交易日 → 買回到標準比重。',
   cap: '任何一檔自選股超過總資產 15% → 減回 10%。同一檔在自選和動能都有時，合計超過 15% 也減回 10%，先減動能那部分。',
   deposit: '入金只買不賣：用入金後的總資產算每一格的目標，依序補「低於目標最多」的格子；缺口小於總資產 0.25% 的不補；剩下的交給核心，照核心的比例分（股票 ETF 八成、短債兩成）。',
@@ -544,7 +546,9 @@ function ownAiParts(ctx: ExplainContext, n: Notif, it: Item): Pick<Explain, 'ai'
 }
 
 /** 收合時那一行理由後面接的 AI 狀態（減半項目）。 */
-const DROP_SHORT: Record<string, string> = { PENDING: 'AI 論點檢查進行中', HOLD: 'AI 建議不動', EXIT: 'AI 認為前提不成立，建議出清', AGREE: 'AI 同意減半', NONE: 'AI 沒有一致結論' };
+const DROP_SHORT: Record<string, string> = { PENDING: 'AI 論點檢查進行中', HOLD: 'AI 建議不動', EXIT: 'AI 認為前提不成立，建議出清', AGREE: 'AI 同意減半', NONE: 'AI 沒有一致結論', BROKEN: '3 票判前提不成立', CLEAR: '沒有前提被判不成立，不減半', SPLIT: '3 票沒有一致結論，不減半' };
+/** 有論點的股票的跌幅審查（allocation_redesign §3.2）：還沒有結論時也是不動。 */
+const THESIS_DROP_SHORT: Record<string, string> = { ...DROP_SHORT, PENDING: 'AI 論點檢查進行中，先不動', NONE: 'AI 論點檢查還沒有結論，先不動' };
 /** 靜默期的一句話（選項說明用）。 */
 const SILENCE_NOTE = '到下一季財報出來（最長 100 天）不再為這條前提通知你';
 
@@ -556,11 +560,55 @@ export function liveOwnRule(ctx: ExplainContext, n: Notif, it: ItemX): Explain {
   const fresh = explainItem(ctx, n, it);
   const x = it.x ?? fresh;
   const ai = it.choices.find((c) => c.id === 'AI');
-  const tail = it.f === 'F7' ? (it.drop ? DROP_SHORT[it.drop] : null) : ai ? `AI 建議${ai.tier === 'EXIT' ? '出清' : '維持減半'}` : null;
+  const tail = it.f === 'F7' ? (it.drop ? (it.thesisDrop ? THESIS_DROP_SHORT : DROP_SHORT)[it.drop] : null) : ai ? `AI 建議${ai.tier === 'EXIT' ? '出清' : '維持減半'}` : null;
   return { ...x, short: tail ? `${x.short}；${tail}` : x.short, ai: fresh.ai, aiMissing: fresh.aiMissing, choiceNotes: fresh.choiceNotes ?? x.choiceNotes };
 }
 
+/** 跌幅審查（有論點的股票，allocation_redesign §3.2、§3.3）：跌幅只觸發審查；只有前提不成立會讓它賣。 */
+function thesisDrop(ctx: ExplainContext, n: Notif, it: Item): Explain {
+  const { view, acct } = ctx;
+  const t = it.ticker!;
+  const c = closeOf(view, t);
+  const trig = triggerIndex(ctx, it);
+  const px = c ? c[trig.i] : NaN;
+  const high = c ? rollingMax(c, trig.i, SLOW.highDays) : NaN;
+  const dd = c ? drawdownFromHigh(c, trig.i, SLOW.highDays) : NaN;
+  const half = it.choices.find((x) => x.id === 'RULE');
+  const sh = -sharesOf(half?.lines ?? [], t);
+  const cur = acct.lots.own[t] ?? 0;
+  const late = trig.date !== view.date;
+  const ai = ownAiParts(ctx, n, it);
+  const aiChoice = it.choices.find((x) => x.id === 'AI');
+  const broken = it.drop === 'BROKEN';
+  const total = totalValue(acct, view);
+  const level = it.thesisDrop?.level ?? 0;
+  const next = DROP_LADDER[level + 1];
+  const watch = `這檔留在「審查後持有」：${next === undefined ? '' : `再跌到比高點低 ${fmtPct(-next)} 會重新審查；`}站回 200 日均線連續 10 天後回到一般狀態。`;
+  return {
+    short: `比 52 週高點低 ${fmtPct(-dd, 1)}，觸發跌幅審查`,
+    why: `${t} ${late ? `在 ${md(trig.date)} ` : ''}收盤 ${fmtPx(px)}，比 52 週高點 ${fmtPx(high)} 低 ${fmtPct(-dd, 1)}。這檔有你的論點，所以跌幅只觸發論點檢查，不是賣出的理由：3 票判同一條前提不成立才減半；前提都沒有被判不成立、票數不一致、沒跑完都是不動。${late ? '審查判前提不成立，但這一筆不到總資產 5%，所以沒有當天通知，併到這份月報。' : ''}`,
+    gauge: Number.isFinite(dd) ? drawdownGauge(dd) : undefined,
+    rule: RULE.thesisDrop,
+    facts: sh ? [{ label: '減半的話這一筆占總資產', value: fmtPct((sh * (c ? c[view.i] : 0)) / total, 1), note: '前提不成立時：5% 以上當天通知，不到 5% 併入月報。' }] : undefined,
+    math: sh ? [`目前自選持有 ${cur} 股 → 減半 = 賣 ${sh} 股（四捨五入到整股）`] : undefined,
+    chart: t,
+    ai: ai.ai,
+    aiMissing: ai.aiMissing,
+    choiceNotes: broken
+      ? {
+          RULE: `賣一半，錢照比例交給核心。之後站回 200 日均線連續 10 天，再買回到標準比重。${aiChoice ? `AI 建議的是出清：選這個（沒有照 AI）的話，${SILENCE_NOTE}。` : ''}`,
+          ...(aiChoice ? { AI: '全部賣出、錢回核心，這檔移出自選，論點檔結案。想先改論點可以按「拿去討論」，改完再回來選一項。' } : {}),
+          SKIP: `要寫一句為什麼這次不做。不賣，${watch}那條前提會進靜默期：${SILENCE_NOTE}。`,
+        }
+      : {
+          SKIP: `不賣、不用下單，也不用寫理由。${watch}`,
+          RULE: '你自己想賣時用：賣一半，錢照比例交給核心；之後照減半處理，站回 200 日均線連續 10 天會提醒買回。AI 檢查的是論點有沒有壞，不是會不會繼續跌。',
+        },
+  };
+}
+
 function ownReduce(ctx: ExplainContext, n: Notif, it: Item): Explain {
+  if (it.thesisDrop) return thesisDrop(ctx, n, it);
   const { view, acct } = ctx;
   const t = it.ticker!;
   const c = closeOf(view, t);

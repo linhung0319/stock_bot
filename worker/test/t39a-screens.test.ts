@@ -32,10 +32,13 @@ function december(): { sim: Sim; m: Notif } {
   return { sim, m };
 }
 
-/** 情境 ②：MU 12/24 減半的當天通知，沒有回覆，一直走到提醒出來。 */
+/**
+ * 情境 ②：MU 12/24 的當天通知，沒有回覆，一直走到提醒出來。
+ * T82（allocation_redesign §3.2）：MU 有論點，12/24 是跌幅審查的通知；審查判前提 P1 不成立 → 預設減半（要下單的才會提醒；預設不動的不提醒、自動結案）。
+ */
 function muReminded(): { sim: Sim; urgent: Notif; reminder: Notif } {
   const sc = scenarios.s2();
-  const sim = new Sim(sc.market, sc.init);
+  const sim = new Sim(sc.market, sc.init, { drops: { MU: { status: 'BROKEN', premiseId: 'P1' } } });
   let urgent: Notif | undefined;
   let reminder: Notif | undefined;
   while (!urgent && sim.date < '2027-01-04') sim.day({ afterClose: (c) => (urgent = c.find((n) => n.kind === 'URGENT')) });
@@ -81,14 +84,14 @@ describe('T39a：晚回覆的警告與提醒', () => {
 
   it('提醒的標題寫哪一檔、什麼事（不用內部的通知編號）；提醒在紀錄與通知頁是「未讀」，不是「等你決定」；通知頁連回原來那則的名字是日期與種類', () => {
     const { sim, urgent, reminder } = muReminded();
-    expect(reminder.title).toBe('提醒：「MU 慢規則減半」（12/24）還沒回報');
+    expect(reminder.title).toBe('提醒：「MU 跌幅審查」（12/24）還沒回報');
     expect(reminder.title).not.toMatch(/#\d/);
     expect(reminder.text).not.toContain('忘了');
     const d = ready(sim);
     expect(historyView(d).notifs.find((r) => r.id === reminder.id)!.statusLabel).toBe('未讀');
     const v = notifView(d, sim.acct.notifs.find((n) => n.id === reminder.id)!);
     expect(v.statusLabel).toBe('未讀');
-    expect(v.refName).toBe('12/24 的當天通知「MU 慢規則減半」');
+    expect(v.refName).toBe('12/24 的當天通知「MU 跌幅審查」');
     expect(v.refName).toBe(notifName(urgent));
   });
 

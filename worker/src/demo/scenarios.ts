@@ -42,12 +42,16 @@ export const scenarios = {
     }),
     init: { cash: 1500, own: own4({ MU: 30, NVDA: 30, MSFT: 9, META: 6 }), mom: MOM5_PLTR53, core: core8020(72, 1500) },
   }),
-  /** ② 自選股大跌：MU 財報後減半（≥ 5% 當天）、F25 條件成立、之後加回；META < 5% 併入月報。 */
+  /**
+   * ② 自選股大跌：MU（有論點）跌 20% 觸發跌幅審查、判前提不成立 → 減半（≥ 5% 當天）、F25 條件成立；META（只有預設前提）照慢規則減半、< 5% 併入月報；
+   * MSFT（有論點）1 月中跌 20%：跌幅審查沒有前提被判不成立 → 不減半、審查後持有（T82，allocation_redesign §3.2、§3.3）。
+   */
   s2: (): Scenario => ({
     market: makeMarket('2026-12-07', 66, {
       over: {
         MU: { r252: 0.8, path: [{ n: 8, ret: 0.03 }, { n: 1, ret: -0.11, vol: 0 }, { n: 3, ret: -0.06 }, { n: 1, ret: -0.05, vol: 0 }, { n: 8, ret: -0.04 }, { n: 10, ret: -0.03 }, { n: 25, ret: 0.24 }, { n: 10, ret: 0.03 }] },
         META: { path: [{ n: 8, ret: 0.0 }, { n: 1, ret: -0.08, vol: 0 }, { n: 5, ret: -0.15 }, { n: 52, ret: 0.04 }] },
+        MSFT: { path: [{ n: 23, ret: 0.01 }, { n: 3, ret: -0.225, vol: 0.2 }, { n: 40, ret: 0.04 }] },
       },
     }),
     init: { cash: 900, own: own4({ MU: 58, NVDA: 25, MSFT: 8, META: 6 }, { MU: 0.1 }), mom: MOM5, core: core8020(70, 900) },

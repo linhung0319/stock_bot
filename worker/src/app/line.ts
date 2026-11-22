@@ -4,7 +4,7 @@
 //   LINE_USER_ID        要收訊息的 user ID（LINE Developers 後台 Basic settings 的「Your user ID」）
 // 兩個都放 `wrangler secret`。網站網址（訊息裡的連結）是 wrangler.jsonc 的 vars.SITE_URL。
 import { PRICE_CODES, corePriceLine } from '../data/coreCheck';
-import type { Account, DropStatus, Notif } from '../engine';
+import { isHoldNotice, type Account, type DropStatus, type Item, type Notif } from '../engine';
 import type { Env, Fetcher } from './env';
 
 export const LINE_PUSH_URL = 'https://api.line.me/v2/bot/message/push';
@@ -66,6 +66,14 @@ export function notifText(acct: Account, n: Notif, link: string | null, brief: s
   const tag = n.kind === 'MONTHLY' || n.kind === 'MONTHLY_EMPTY' ? '月報' : n.kind === 'URGENT' ? '當天' : '提醒';
   const out: string[] = [`${acct.paper ? '【紙上】' : ''}【${tag}】${n.title}`];
   if (n.text) out.push(n.text);
+  // 跌幅審查、預設不動的那一種（allocation_redesign §3.2）：一行說完，不用回覆、不用下單
+  if (isHoldNotice(n)) {
+    const lines = n.items.filter((it) => !it.cancelled).map((it) => holdNoticeLine(it));
+    const text = [`${acct.paper ? '【紙上】' : ''}【${tag}】${lines.join('\n')}`];
+    if (brief) text.push(brief);
+    if (link) text.push(link);
+    return text.join('\n');
+  }
   // 乙類的當天通知（own_thesis §1.10）：標題、哪條前提、AI 建議（要不要做由你決定）、連結；預設不動，沒有要下的單
   if (isBreakNotice(n)) {
     if (brief) out.push(brief);
@@ -110,14 +118,34 @@ export const corePriceWarn = (n: Pick<Notif, 'kind' | 'items' | 'monthly'>): boo
 /** 乙類的當天通知：只有 AI 判斷前提不成立的那一項（月報裡的乙類項目照月報的格式；慢規則減半項目上帶「AI 建議出清」的不算）。 */
 export const isBreakNotice = (n: Pick<Notif, 'kind' | 'items'>): boolean => n.kind === 'URGENT' && n.items.length > 0 && n.items.every((it) => it.brk?.type === 'B' && !it.brk.withRule);
 
-/** 慢規則減半通知多的那一行（own_thesis §3.4）。 */
+/** 慢規則減半通知多的那一行（own_thesis §3.4）。BROKEN、CLEAR、SPLIT 是有論點的股票的跌幅審查（allocation_redesign §3.2）；預設不動的那幾種另有自己的一行（holdNoticeLine）。 */
 export const DROP_LINE: Record<DropStatus, string> = {
   HOLD: 'AI 論點檢查：建議不動（預設仍是照規則），到網站決定',
   EXIT: 'AI 論點檢查：前提不成立，建議出清（預設仍是照規則），到網站決定',
   AGREE: 'AI 論點檢查：同意減半',
   PENDING: 'AI 論點檢查還沒有結論',
   NONE: 'AI 論點檢查沒有一致結論，照規則',
+  BROKEN: 'AI 論點檢查（3 票）：前提不成立，預設減半；這次不做要寫理由，到網站決定',
+  CLEAR: 'AI 論點檢查（3 票）：前提都沒有被判不成立，不減半',
+  SPLIT: 'AI 論點檢查：3 票沒有一致結論，不減半',
 };
+
+/** 預設不動的跌幅審查通知，結論的那半句（allocation_redesign §3.2）。 */
+const HOLD_NOTICE_TEXT: Record<string, string> = {
+  CLEAR: '論點檢查（3 票）前提都沒有被判不成立，不減半',
+  SPLIT: '論點檢查 3 票沒有一致結論，不減半',
+  PENDING: 'AI 論點檢查還沒有結論，先不動；會再檢查',
+  NONE: 'AI 論點檢查還沒有結論，先不動；會再檢查',
+  FAILED: 'AI 論點檢查沒有跑完，不動',
+};
+
+/** 預設不動的跌幅審查那一行：`MU 比高點低 21.4%：論點檢查（3 票）前提都沒有被判不成立，不減半。不用下單；細節在網站。` */
+export function holdNoticeLine(it: Pick<Item, 'ticker' | 'title' | 'drop' | 'aiLine'>): string {
+  const dd = /比 52 週高點低 ([\d.]+%)/.exec(it.title)?.[1];
+  const failed = it.drop === 'NONE' && !!it.aiLine?.includes('沒有跑完');
+  const say = HOLD_NOTICE_TEXT[failed ? 'FAILED' : (it.drop ?? 'NONE')] ?? HOLD_NOTICE_TEXT.NONE;
+  return `${it.ticker}${dd ? ` 比高點低 ${dd}` : ' 跌幅審查'}：${say}。不用下單；細節在網站。`;
+}
 
 /** 月報的「要看的事」那一行：`持股有 3 件事要看（不用下單），在持股頁。`；不是月報或沒有就是 null。 */
 export function attentionLine(n: Pick<Notif, 'kind' | 'attention'>): string | null {

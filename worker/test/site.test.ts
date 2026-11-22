@@ -448,7 +448,8 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect(a.buckets.reduce((s, b) => s + b.pct, 0)).toBeCloseTo(1, 9);
     const mu = a.holdings.find((h) => h.ticker === 'MU')!;
     expect(mu).toMatchObject({ bucket: 'own', shares: 56, state: '正常', target: '標準比重 8.0%' });
-    expect(mu.detail).toMatch(/比 52 週高點低 [\d.]+%；低 20% 會減半/);
+    // T82：MU 有論點，低 20% 只觸發跌幅審查（allocation_redesign §3.1）
+    expect(mu.detail).toMatch(/比 52 週高點低 [\d.]+%；低 20% 會觸發跌幅審查/);
     expect(mu.pct).toBeGreaterThan(0.12);
     const pltr = a.holdings.find((h) => h.ticker === 'PLTR')!;
     expect(pltr).toMatchObject({ bucket: 'mom', shares: 33, state: '排名第 1' });
@@ -671,23 +672,29 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
 
 // T31b 改了減半項目上 AI 的那一部分（own_thesis §3.3、§3.4）：「照 AI」只來自看過這次觸發的結論；只有系統預設前提的股票（META）不能選不動。
 // 所以示範腳本改成：MU 由 12/18 的審查（前提不成立、減半）併進來寫「同意減半」；META 的減半檢視同意減半，並寫明只檢查系統預設前提
+// T82 再改（allocation_redesign §3.1、§3.2）：MU 有論點，12/24 是跌幅審查的通知（不是慢規則減半）；示範腳本裡審查的結果是 3 票判前提 P1 不成立
+// → 預設減半、這次不做要寫理由。META 只有預設前提，完全照舊
 describe('示範情境 ② 自選股大跌：規則和 AI 並列', () => {
   const web = new Web('/demo/api');
-  it('整個情境從頭走到尾不出錯；MU 減半寫審查同意減半、META 只檢查預設前提同意減半、這次不做要寫理由、你定的條件成立預設照當時的決定、乙類要寫理由', async () => {
+  it('整個情境從頭走到尾不出錯；MU 的跌幅審查判前提不成立預設減半、META 只檢查預設前提同意減半、這次不做要寫理由、你定的條件成立預設照當時的決定、乙類要寫理由', async () => {
     await web.post('/reset', { scenario: 's2' });
     let st = await web.state();
     expect(st.today).toBe('2026-12-28');
     const urgent = st.todo.find((t) => t.type === 'DECIDE')!;
-    expect(urgent.title).toBe('MU 慢規則減半');
+    expect(urgent.title).toBe('MU 跌幅審查');
     const v = await web.notif(urgent.id);
-    const mu = itemOf(v, '慢規則減半', 'MU');
+    const mu = itemOf(v, '跌幅審查', 'MU');
+    expect(mu.thesisDrop).toBe(true);
+    expect(v.holdNotice).toBeNull(); // 預設要下單的不是「不用回覆」的那一種
     expect(mu.choices.map((c) => c.id)).toEqual(['RULE', 'SKIP']);
     expect(mu.explain.why).toMatch(/比 52 週高點 \$[\d.]+ 低 2\d\.\d%/);
     expect(mu.explain.gauge!.value).toBeLessThanOrEqual(-0.2);
-    // AI 和規則同一個動作：不多一個選項，那一行寫 12/18 的審查認為哪一條前提不成立、同意減半；理由裡看得到那次審查
-    expect(mu.aiLine).toBe('12/18 的審查認為前提「HBM 長約有價格保護，記憶體循環這次不會像以前一樣崩」不成立，同意減半');
-    expect(mu.drop).toBe('AGREE');
-    expect(mu.explain.short).toContain('AI 同意減半');
+    // 三票沒有都選出清：不多一個選項，那一行寫哪一條前提不成立；理由裡看得到 12/18 那次審查
+    expect(mu.aiLine).toBe('論點檢查（3 票）：前提「HBM 長約有價格保護，記憶體循環這次不會像以前一樣崩」不成立');
+    expect(mu.drop).toBe('BROKEN');
+    expect(mu.choice).toBe('RULE');
+    expect(mu.explain.short).toContain('3 票判前提不成立');
+    expect(mu.explain.why).toContain('跌幅只觸發論點檢查，不是賣出的理由');
     expect(mu.explain.ai).toMatchObject({ kind: 'REVIEW', ticker: 'MU', verdict: '減半' });
     // 減半項目選「這次不做」要寫一句理由（整則這次不做也一樣）
     expect(mu.reasonRequired).toBe(true);

@@ -139,7 +139,7 @@ export function ownRuleFacts(acct: Account, view: MarketView, ticker: string): E
   let total = acct.cash;
   for (const lots of [acct.lots.own, acct.lots.mom, acct.lots.core, acct.lots.unc]) for (const [t, n] of Object.entries(lots)) total += n * (view.close[t]?.[view.i] ?? 0);
   return [
-    { id: 'R1', label: '慢規則狀態', value: st.applied === 'HALF' ? '減半中' : '標準' },
+    { id: 'R1', label: '慢規則狀態', value: st.applied === 'HALF' ? '減半中' : meta.slow.state === 'WATCH' ? '標準（審查後持有：比高點低 20% 以上，跌幅審查之後沒有減半）' : '標準' },
     { id: 'R2', label: '標準比重', value: pc(st.stdWeight) },
     { id: 'R3', label: '目前持有', value: `${shares} 股`, note: Number.isFinite(px) && total > 0 ? `占總資產 ${pc((shares * px) / total)}` : undefined },
     ...(meta.aiTier ? [{ id: 'R5', label: '上一次 AI 審查的檔位', value: `${meta.aiTier.tier}（${meta.aiTier.date}）` }] : []),

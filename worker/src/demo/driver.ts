@@ -3,6 +3,7 @@
 // 看到的是前一個交易日的收盤；填快照時以當天開盤價估成交金額。
 // 真正的系統裡這些由 Worker 的排程做（T7）；這裡只給示範模式與驗收測試用。
 import {
+  applyDropResult,
   bookShares,
   breakNotice,
   composeNotif,
@@ -79,14 +80,33 @@ function morning(st: DemoState, m: Market, script: DemoScript, on?: OnNotifs): v
 function evening(st: DemoState, m: Market, script: DemoScript, on?: OnNotifs): void {
   const view = viewAt(m, st.d);
   const date = m.days[st.d];
+  const hadNotif = new Set(st.acct.notifs.map((n) => n.id));
   st.acct = dailyCheck(st.acct, view).acct;
   // 這一天慢規則觸發減半：腳本裡減半檢視（AI 論點檢查）的結果寫進 dropReview，通知上 AI 的那一行跟著重算（own_thesis §3.3、§3.4）
   for (const x of script.drops ?? []) {
     const meta = st.acct.own[x.ticker];
-    if (x.on !== date || !meta || meta.slow.state !== 'HALF') continue;
+    if (x.on !== date || !meta) continue;
+    if (meta.slow.state === 'WATCH') {
+      // 有論點的股票：跌幅審查的結果（allocation_redesign §3.2）；前提不成立才減半（≥ 5% 當天、否則月報）
+      meta.dropReview = { session: date, runId: null, status: x.status, cause: x.cause ?? null, premiseId: x.premiseId ?? null, told: true, thesis: true, level: meta.watchLevel ?? 0, days: 1, lastTry: date, sameDay: 1, ...(x.exit ? { exit: true } : {}), ...(x.status === 'SPLIT' && x.premiseId ? { splitPremise: x.premiseId, splitVotes: x.votes ?? 1 } : {}), ...(x.attr ? { attr: x.attr } : {}), ...(x.status === 'NONE' ? { failed: true } : {}) };
+      if (x.status === 'BROKEN' && x.premiseId) st.acct = recordAiTier(st.acct, x.ticker, x.exit ? 'EXIT' : 'HALF', date, false, undefined, { premiseId: x.premiseId, trigger: 'DROP', agreed: true });
+      st.acct = applyDropResult(st.acct, view, x.ticker).acct;
+      continue;
+    }
+    if (meta.slow.state !== 'HALF') continue;
     meta.dropReview = { session: date, runId: null, status: x.status, cause: x.cause ?? null, premiseId: x.premiseId ?? null, told: true };
     if (x.status === 'EXIT' && x.premiseId) st.acct = recordAiTier(st.acct, x.ticker, 'EXIT', date, false, undefined, { premiseId: x.premiseId, trigger: 'DROP', agreed: true });
     st.acct = refreshOwnAiChoice(st.acct, view, x.ticker).acct;
+  }
+  // 今天新觸發跌幅審查、腳本沒寫結果的：示範模式沒有 AI 層，記成沒跑完（不動；和正式環境 AI 層沒設定時相同）
+  for (const n of st.acct.notifs) {
+    if (hadNotif.has(n.id)) continue;
+    for (const it of n.items) {
+      const meta = it.ticker ? st.acct.own[it.ticker] : undefined;
+      if (!it.thesisDrop || !it.ticker || !meta || meta.dropReview || meta.slow.state !== 'WATCH') continue;
+      meta.dropReview = { session: date, runId: null, status: 'NONE', cause: null, premiseId: null, told: true, thesis: true, level: meta.watchLevel ?? 0, days: 1, lastTry: date, sameDay: 1, failed: true };
+      st.acct = refreshOwnAiChoice(st.acct, view, it.ticker).acct;
+    }
   }
   (script.conditions ?? []).forEach((c, k) => {
     if (c.on === date) st.acct = condMetNotice(st.acct, view, c.ticker, { id: 9000 + k, text: c.text, action: c.action, setAt: c.setAt, aiProposed: true, why: c.why }).acct;

@@ -188,7 +188,7 @@ describe('T65 分給個股（§1.6）', () => {
       expectBriefDoc(docOf(early.pack));
       await startDropRuns(await dropCtx(c));
       const [drop] = await runsOf(c, OWN_DROP);
-      expect(drop.promptVersion).toBe('own_drop_v5');
+      expect(drop.promptVersion).toBe('own_drop_v6');
       expectBriefDoc(docOf(drop.pack));
       expect(drop.packNotes.join('\n')).toContain(`附上 ${B_DAY} 的市場摘要`);
       const draft = await startOwnDraft(c.env, c.fetcher, await acctOf(c.db), c.view, c.axis, 'NVDA', 'MANUAL', new Date('2026-11-20T02:00:00Z'));
@@ -309,7 +309,7 @@ describe('T65 分給個股（§1.6）', () => {
   });
 
   it('prompt：審查、減半檢視、草稿多一句（大盤與族群的原因已經在市場摘要裡，搜尋額度用在這檔自己的前提）；沒有升版號；市場摘要的 prompt 寫明第一條放最重要的', () => {
-    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT, OWN_DRAFT_PROMPT, MARKET_BRIEF_PROMPT]).toEqual(['own_review_v5', 'own_drop_v5', 'own_draft_v3', 'market_brief_v2']);
+    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT, OWN_DRAFT_PROMPT, MARKET_BRIEF_PROMPT]).toEqual(['own_review_v5', 'own_drop_v6', 'own_draft_v3', 'market_brief_v2']);
     for (const f of ['own_review_v4.md', 'own_drop_v4.md', 'own_draft_v2.md']) {
       const t = read(f);
       expect(t, f).toContain('`brief:<訊號日>`');

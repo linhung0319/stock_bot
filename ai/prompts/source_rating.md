@@ -1,6 +1,6 @@
 # source_rating：來源評級（取完文件之後、判斷之前）
 
-會取文件的四個功能（`own_review_v5`、`own_drop_v5`、`own_draft_v3`、`market_brief_v2`）在取完文件之後照這份做。共用的取證據包、取文件、外殼格式與送回方式見 `run.md`。
+會取文件的四個功能（`own_review_v5`、`own_drop_v6`、`own_draft_v3`、`market_brief_v2`）在取完文件之後照這份做。共用的取證據包、取文件、外殼格式與送回方式見 `run.md`。
 設計依據：`docs/design/confirm_audit_design_2026-11-21.md` §1.1、§1.2、§1.4（2026-11-21，T69 第一版）。
 
 ## 為什麼有這一步

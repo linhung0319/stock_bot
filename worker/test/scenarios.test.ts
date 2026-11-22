@@ -16,6 +16,7 @@ import {
   monthlyReport,
   navPerUnit,
   priceOf,
+  AUTO_DEFAULT_NOTE,
   recordAiTier,
   resolveFollowUp,
   stepStrategyReview,
@@ -172,8 +173,11 @@ describe('情境 ② 自選股大跌（MU）', () => {
     return new Sim(sc.market, sc.init);
   };
 
-  it('MU 占約 14%：減半變動 ≥ 5% → 當天通知；AI 檔位也是「減半」→ 只顯示一行', () => {
-    const sim = start();
+  // T82 改了這個行為（allocation_redesign §3.1、§3.2）：MU 有你的論點，比高點低 20% 不再直接減半，只觸發跌幅審查；
+  // 這裡審查的結果是 3 票判前提 P1 不成立 → 預設減半（變動 ≥ 5%，留在當天通知）。規則的狀態照做了才變成減半
+  it('MU 占約 14%（有論點）：比高點低 20% → 當天的跌幅審查通知；3 票判前提不成立 → 預設減半，照做之後才是減半', () => {
+    const sc = scenarios.s2();
+    const sim = new Sim(sc.market, sc.init, { drops: { MU: { status: 'BROKEN', premiseId: 'P1' } } });
     let urgent: Notif | undefined;
     // 12/18 財報後的 F24：前提 P1 不成立，3 票「減半」
     sim.runUntil('2026-12-18');
@@ -181,43 +185,50 @@ describe('情境 ② 自選股大跌（MU）', () => {
     while (!urgent && sim.date < '2027-01-04') sim.day({ afterClose: (c) => (urgent = c.find((n) => n.kind === 'URGENT')) });
     expect(urgent!.date).toBe('2026-12-24');
     const it7 = item(urgent!, 'F7', 'MU');
-    expect(it7.choices.map((c) => c.id)).toEqual(['RULE', 'SKIP']); // AI 和規則是同一個動作，不多一行
+    expect(urgent!.title).toBe('MU 跌幅審查');
+    expect(it7.thesisDrop).toEqual({ level: 0 });
+    expect(it7.choices.map((c) => c.id)).toEqual(['RULE', 'SKIP']); // 三票沒有都選出清，不多「照 AI：出清」
+    expect([it7.choice, it7.drop, it7.reasonRequired]).toEqual(['RULE', 'BROKEN', true]);
     expect(sharesOf(it7)).toBe(-halveShares(58));
     const T = totalValue(sim.acct, sim.pre);
     expect((29 * priceOf(sim.pre, 'MU')) / T).toBeGreaterThanOrEqual(0.05);
-    expect(sim.acct.rule.own.MU.applied).toBe('HALF');
+    // 還沒照做：審查後持有，目標還是標準比重
+    expect([sim.acct.own.MU.slow.state, sim.acct.rule.own.MU.applied]).toEqual(['WATCH', 'STD']);
     // 隔天開盤執行，錢進 VOO
     sim.respond(urgent!.id);
     sim.open();
     expect(sim.acct.lots.own.MU).toBe(29);
+    expect([sim.acct.own.MU.slow.state, sim.acct.rule.own.MU.applied]).toEqual(['HALF', 'HALF']);
     expect(listOf(sim.acct.notifs.find((n) => n.id === urgent!.id)!).find((x) => x.includes('VOO'))).toMatch(/^買 VOO/);
   });
 
-  // T31b 改了這個行為（own_thesis §3.3、§3.4）：「照 AI：不動」只來自這次減半的論點檢查（減半檢視三票不動、過了程式核對），
-  // 不再用最近一次定期審查的檔位；只有系統預設前提的股票不能選不動，所以這裡先替 META 寫一條自己的前提
-  it('META 同一天也跌破 -20%，但變動 < 5% → 不通知，併入 1 月月報；減半檢視說「不動」→ 兩行並列', () => {
-    const sim = start();
+  // T82 改了這個行為（allocation_redesign §3.2，使用者的決定 D2）：寫了論點的股票，-20% 只觸發審查；審查沒有前提被判不成立 → 預設不動。
+  // 以前（T31b）是「併入月報、預設照規則減半，另外並列一個照 AI：不動」。現在：當天給一則通知（不分金額大小）、不用回覆、
+  // 2 個交易日自動以不動結案、不進月報；影子紀錄照樣三條線（照舊的慢規則會減半 3 股、照 AI 0 股、實際 0 股）
+  it('META（寫了論點）同一天也跌破 -20%，變動 < 5%：當天給跌幅審查的通知；沒有前提被判不成立 → 預設不動，自動結案，不進月報', () => {
+    const sc = scenarios.s2();
+    const sim = new Sim(sc.market, sc.init, { drops: { META: { status: 'CLEAR' } } });
     sim.acct.own.META.premises = [{ id: 'P4', text: '廣告營收維持兩位數成長', origin: 'USER' }];
-    sim.runUntil('2026-12-31');
-    expect(sim.acct.own.META.pending).toEqual({ action: 'REDUCE', date: '2026-12-24' });
-    expect(sim.acct.notifs.some((n) => n.kind === 'URGENT' && n.items.some((i) => i.ticker === 'META'))).toBe(false);
-    // 12/24 觸發那天開的減半檢視：三票不動（產業一起跌）
-    sim.acct.own.META.dropReview = { session: '2026-12-24', runId: null, status: 'HOLD', cause: 'SECTOR', premiseId: null, told: false };
+    const seen: Notif[] = [];
+    sim.runUntil('2026-12-31', { afterClose: (c) => seen.push(...c) });
+    const n = sim.acct.notifs.find((x) => x.kind === 'URGENT' && x.items.some((i) => i.ticker === 'META'))!;
+    expect(n.date).toBe('2026-12-24');
+    const it7 = item(n, 'F7', 'META');
+    expect(it7.choices.map((c) => c.id)).toEqual(['SKIP', 'RULE']);
+    expect([it7.choice, it7.ruleChoice, it7.drop, it7.reasonRequired]).toEqual(['SKIP', 'RULE', 'CLEAR', undefined]);
+    expect(it7.aiLine).toBe('論點檢查（3 票）：你的 1 條前提都沒有被判不成立');
+    expect(sharesOf(it7, 'RULE')).toBe(-3);
+    // 不等月報、不減半：審查後持有，目標還是標準比重
+    expect(sim.acct.own.META.pending).toBeNull();
+    expect([sim.acct.own.META.slow.state, sim.acct.rule.own.META.applied, sim.acct.own.META.watchLevel]).toEqual(['WATCH', 'STD', 0]);
+    // 2 個交易日沒有回覆 → 自動以不動結案，沒有提醒
+    expect(n.status).toBe('AUTO_DEFAULT');
+    expect(seen.some((x) => x.kind === 'INFO' && x.ref === n.id)).toBe(false);
+    expect(sim.acct.shadow.find((s) => s.f === 'F7' && s.ticker === 'META')).toMatchObject({ rule: -3, ai: 0, actual: 0, choice: 'SKIP', note: AUTO_DEFAULT_NOTE });
     sim.runUntil('2027-01-04');
     const jan = sim.preOpen()!;
-    const it7 = item(jan, 'F7', 'META');
-    expect(it7.title).toContain('併入月報');
-    expect(sharesOf(it7, 'RULE')).toBe(-3);
-    expect(sharesOf(it7, 'AI')).toBe(0);
-    expect(it7.aiLine).toContain('不動');
-    // 使用者沒選就是照規則
-    expect(it7.choice).toBe('RULE');
-    // 選「照 AI（不動）」：META 不賣；規則狀態照樣前進（記成已減半），不再提醒
-    sim.respond(jan.id, { mode: 'DO', choices: { [it7.key]: 'AI' } });
-    sim.open();
+    expect(has(jan, 'F7', 'META')).toBe(false);
     expect(sim.acct.lots.own.META).toBe(6);
-    expect(sim.acct.rule.own.META.applied).toBe('HALF');
-    expect(sim.acct.shadow.find((s) => s.f === 'F7' && s.ticker === 'META')).toMatchObject({ rule: -3, ai: 0, actual: 0 });
   });
 
   // T29a 改了這個行為（own_thesis §1.9、§1.10）：你定的條件成立是甲類，預設照當時的決定、不設每月上限
@@ -253,7 +264,8 @@ describe('情境 ② 自選股大跌（MU）', () => {
 
   // T31b 改了這個行為（own_thesis §3.4，修 K5）：加回時的「照 AI」只在審查三票判同一條前提不成立（有 premiseId）時才列
   it('F8：2 月反彈後加回（< 5%，併入 3 月月報），審查認為前提 P1 不成立、檔位「減半」→ 並列「維持減半」；照 AI 後狀態回到減半、切換日重算', () => {
-    const sim = new Sim(scenarios.s2().market, scenarios.s2().init, { autoRespond: true });
+    // T82：MU 有論點，12/24 的跌幅審查要判前提不成立才會減半（這裡照預設減半、隔天成交），之後才有加回
+    const sim = new Sim(scenarios.s2().market, scenarios.s2().init, { autoRespond: true, drops: { MU: { status: 'BROKEN', premiseId: 'P1' } } });
     sim.runUntil('2027-02-26');
     expect(sim.acct.own.MU.pending).toEqual({ action: 'READD', date: '2027-02-18' });
     sim.acct = recordAiTier(sim.acct, 'MU', 'HALF', '2027-02-26', false, undefined, { premiseId: 'P1', agreed: true });
@@ -278,7 +290,8 @@ describe('情境 ② 自選股大跌（MU）', () => {
 describe('情境 ③ 大盤急跌再反彈（沒有崩盤規則）', () => {
   it('1 月 VOO 跌破 200 日線：月報沒有崩盤項目，動能不減半、核心比例在界線內不調；出金從核心照比例拿；2 月反彈也沒有要換回的', () => {
     const sc = scenarios.s3();
-    const sim = new Sim(sc.market, sc.init, { crashOpinion: { '2027-01': '延後' } });
+    // T82：MSFT 有論點（採用草稿來的前提），跌 20% 只觸發跌幅審查；這裡審查判前提 P1 不成立、變動不到 5% → 減半併入 1 月月報（allocation_redesign §3.2）
+    const sim = new Sim(sc.market, sc.init, { crashOpinion: { '2027-01': '延後' }, drops: { MSFT: { status: 'BROKEN', premiseId: 'P1' } } });
     sim.runUntil('2027-01-04');
     // VOO 訊號日收盤在 200 日均線之下（以前會啟動崩盤規則）
     const c = sim.market.close.VOO;
@@ -294,8 +307,9 @@ describe('情境 ③ 大盤急跌再反彈（沒有崩盤規則）', () => {
     expect(band.s).toBeGreaterThan(0.2);
     expect(band.s).toBeLessThan(0.25);
     expect(has(jan, 'F26')).toBe(false);
-    // 自選照舊走自己的慢規則（< 5%，併入月報）
+    // 自選照舊走自己的規則，和大盤無關：MSFT 的跌幅審查判前提不成立（< 5%，併入月報，預設減半）
     expect(sharesOf(item(jan, 'F7', 'MSFT'))).toBe(-5);
+    expect(item(jan, 'F7', 'MSFT')).toMatchObject({ thesisDrop: { level: 0 }, drop: 'BROKEN', choice: 'RULE' });
     // 這份清單多出來的錢進核心：VOO 與 SGOV 都買（照比例；帳上原本的現金順便買成 SGOV）
     expect(listOf(jan)).toEqual(['買 APP 10', '賣 ORCL 28', '賣 MSFT 5', '買 VOO 3', '買 SGOV 17']);
     sim.respond(jan.id);
@@ -607,7 +621,8 @@ describe('情境 ⑥ 動能落後＋波動度減碼＋策略檢討', () => {
 describe('情境 ⑦ 沒照做、忘了、做錯', () => {
   const start = () => {
     const sc = scenarios.s7();
-    return new Sim(sc.market, sc.init, { vetoes: { '2026-12': ['APP'] } });
+    // T82：NVDA 有論點，跌 20% 只觸發跌幅審查；這個情境要的是「有一張減半的單」，所以審查的結果是 3 票判前提 P1 不成立（預設減半，≥ 5% 當天通知）
+    return new Sim(sc.market, sc.init, { vetoes: { '2026-12': ['APP'] }, drops: { NVDA: { status: 'BROKEN', premiseId: 'P1' } } });
   };
   /** 走到 NVDA 減半的當天通知出現（收盤後），回傳那則通知。 */
   const untilNvda = (sim: Sim): Notif => {
@@ -679,15 +694,20 @@ describe('情境 ⑦ 沒照做、忘了、做錯', () => {
     expect(sim.acct.lots.own.NVDA).toBe(35);
   });
 
-  it('忘了：期間規則狀態已經反轉（符合加回）→ 補做清單取消，不賣也不買', () => {
+  // T82 改了這個行為（allocation_redesign §3.3）：有論點的股票在照做減半之前是「審查後持有」，不是減半；
+  // 反彈後站回均線 → 回到標準（不下單、不通知），還沒回覆的那一項當場取消（以前是晚回覆時才取消、通知記成這次不做）
+  it('忘了：期間已經站回均線（審查後持有 → 回到標準）→ 那一項取消，不賣也不買', () => {
     const sim = start();
     const urgent = untilNvda(sim);
-    while (sim.acct.own.NVDA.slow.state === 'HALF' && !sim.atEnd()) sim.day({ afterMonthly: (n) => sim.respond(n.id) });
-    expect(sim.acct.own.NVDA.slow.state).toBe('STD'); // 反彈後符合加回條件
+    expect(sim.acct.own.NVDA.slow.state).toBe('WATCH');
+    while (sim.acct.own.NVDA.slow.state === 'WATCH' && !sim.atEnd()) sim.day({ afterMonthly: (n) => sim.respond(n.id) });
+    expect(sim.acct.own.NVDA.slow.state).toBe('STD'); // 反彈後站回 200 日均線連續 10 天
+    expect(sim.acct.own.NVDA.dropReview).toBeUndefined();
     sim.respond(urgent.id);
     const n = sim.acct.notifs.find((x) => x.id === urgent.id)!;
     expect(item(n, 'F7', 'NVDA').cancelled).toBe(true);
-    expect(n.status).toBe('SKIPPED');
+    expect(item(n, 'F7', 'NVDA').note).toContain('回到一般狀態');
+    expect(n.status).toBe('CANCELLED');
     expect(sim.acct.lots.own.NVDA).toBe(70);
     expect(sim.acct.rule.own.NVDA.applied).toBe('STD');
     expect(sim.acct.own.NVDA.pending).toBeNull();
@@ -695,18 +715,21 @@ describe('情境 ⑦ 沒照做、忘了、做錯', () => {
     while (!sim.atEnd()) sim.day({ afterMonthly: (m) => expect(m.items.some((i) => i.ticker === 'NVDA')).toBe(false) });
   });
 
-  it('自選慢規則「這次不做」：規則狀態照樣前進、不再提醒；之後加回時以實際股數為準', () => {
+  // T82 改了這個行為（allocation_redesign §3.3、§3.6）：前提不成立、預設減半的通知選「這次不做」→ 不再記成已減半，
+  // 而是留在審查後持有（目標還是標準比重，之後沒有東西要加回；再跌一級會重新審查）。影子紀錄三條線都記
+  it('跌幅審查（前提不成立）「這次不做」：不減半、留在審查後持有、不再提醒；站回均線後回到標準，沒有東西要加回', () => {
     const sim = start();
     const urgent = untilNvda(sim);
     sim.respond(urgent.id, { mode: 'SKIP' });
     expect(sim.acct.notifs.find((x) => x.id === urgent.id)!.status).toBe('SKIPPED');
-    expect(sim.acct.rule.own.NVDA.applied).toBe('HALF');
-    expect(sim.acct.shadow.at(-1)).toMatchObject({ f: 'F7', ticker: 'NVDA', rule: -35, actual: 0 });
+    expect([sim.acct.own.NVDA.slow.state, sim.acct.rule.own.NVDA.applied]).toEqual(['WATCH', 'STD']);
+    expect(sim.acct.shadow.at(-1)).toMatchObject({ f: 'F7', ticker: 'NVDA', rule: -35, ai: -35, actual: 0 });
     const later: Notif[] = [];
     while (!sim.atEnd()) sim.day({ afterMonthly: (m) => (sim.respond(m.id), later.push(m)), afterClose: (c) => later.push(...c) });
     // 沒有提醒、沒有再叫你減半；加回時目前股數已經高於標準比重 → 不用買
     expect(later.some((n) => n.kind === 'INFO' && n.ref === urgent.id)).toBe(false);
     expect(later.some((n) => n.items.some((i) => i.ticker === 'NVDA' && i.choices[0].lines.length > 0))).toBe(false);
     expect(sim.acct.lots.own.NVDA).toBe(70);
+    expect(sim.acct.own.NVDA.slow.state).toBe('STD');
   });
 });

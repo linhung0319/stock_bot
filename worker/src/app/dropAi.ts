@@ -6,13 +6,15 @@
 // T54：減半檢視的分析師可以另外找資料（web_evidence_design §1.7）：證據包多目錄（M）與清單內的網頁來源（S），ai_runs.doc_ctx 記可以取什麼；
 //       還是在觸發那天跑，減半通知的推播時間不變（own_thesis §3.5）。
 // T65：證據包多一份市場摘要（composite_layer_design §1.6；背景，不能當引用）。
+// T82：有論點的股票改叫「跌幅審查」（allocation_redesign §3.2）：比高點低 20% 以上只觸發審查，結論是四種之一，只有前提不成立會讓它賣；
+//       沒跑完的不動並重派（09:30 一次、隔天再派，最多 3 個交易日，之後 REVIEW_FAILED）。只有預設前提的股票照舊。
 import { verdictText } from '../ai/functions';
 import type { PackDoc } from '../ai/check';
 import { attribution, highIndex, idioDrop, idioDropText } from '../ai/detect';
 import { OWN_DROP, dropDecision, ownDropPack } from '../ai/drops';
 import { FRESH_RESERVE, freshPlan } from '../ai/freshEyes';
 import { newRunId } from '../ai/pack';
-import { clone, newNotif, notifName, recordAiTier, refreshOwnAiChoice, routeReview, type Account, type DropReview, type MarketView, type Notif } from '../engine';
+import { DROP_RETRY_DAYS, DROP_TRIES_PER_DAY, applyDropResult, decidedThesisDrop, clone, newNotif, notifName, recordAiTier, refreshOwnAiChoice, routeReview, type Account, type DropReview, type MarketView, type Notif } from '../engine';
 import { fetchCompanyFacts, fetchFilingDoc, fetchHeadlineFeed, quarterTable, type QuarterRow } from '../data/edgar';
 import type { FilingHit } from '../data/secEvents';
 import { errText } from '../data/util';
@@ -22,6 +24,7 @@ import { insertHitStmts, sectorEtfs } from './filings';
 import { patchAccount } from './ledgerStore';
 import { briefNote } from './marketBrief';
 import { citedBasis, docOf, lastReview, newsDocOf } from './ownAi';
+import { noteReviewHealth } from './reviewHealth';
 import { buildDocMenu } from './webEvidence';
 import { condFacts, defaultFacts, isAiWatch, flaggedAccessions, pickFilings, thesisFacts, thesisFile, thesisNote } from './thesis';
 
@@ -39,7 +42,25 @@ async function recentRun(db: D1Database, fn: string, ticker: string, since: stri
   return !!(await db.prepare('SELECT 1 AS x FROM ai_runs WHERE fn = ? AND ticker = ? AND as_of >= ? LIMIT 1').bind(fn, ticker, since).first());
 }
 
-export async function startDropRuns(sc: StartCtx): Promise<void> {
+/** 有論點的股票（審查後持有）：這一筆是跌幅審查，結果照新的效力表（allocation_redesign §3.2）。 */
+const isThesisDrop = (acct: Account, t: string): boolean => acct.own[t]?.slow.state === 'WATCH';
+
+/**
+ * 沒跑完的跌幅審查現在可不可以重派（allocation_redesign §3.2）：同一個交易日最多 2 次（07:30 一次、09:30 重派一次），最多 3 個交易日。
+ * RETRY 可以重派；WAIT 這一次不派（今天的次數用完了，等下一個交易日）；DONE 不會再派了。
+ */
+export function dropRetry(dr: DropReview, session: string): 'RETRY' | 'WAIT' | 'DONE' {
+  const days = dr.days ?? 1;
+  const last = dr.lastTry ?? dr.session;
+  if (last >= session) return (dr.sameDay ?? 1) < DROP_TRIES_PER_DAY ? 'RETRY' : days >= DROP_RETRY_DAYS ? 'DONE' : 'WAIT';
+  return days < DROP_RETRY_DAYS ? 'RETRY' : 'DONE';
+}
+
+/** 3 個交易日都沒跑完的告警文字（REVIEW_FAILED）。 */
+export const dropFailText = (ticker: string, dr: Pick<DropReview, 'session' | 'days'>): string =>
+  `${ticker} 的跌幅審查（${dr.session.slice(5)} 觸發）連續 ${dr.days ?? DROP_RETRY_DAYS} 個交易日沒有跑完，不再重派。這檔不動；之後財報後的審查與再跌一級時仍會檢查。`;
+
+export async function startDropRuns(sc: StartCtx, opt: { retryOnly?: boolean } = {}): Promise<void> {
   const { env, fetcher, acct, view, axis, session, now, res } = sc;
   const core = acct.cfg.coreTicker;
   const sectors = await sectorEtfs(env.DB, Object.keys(acct.own));
@@ -58,12 +79,19 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
     }
     return out;
   };
-  // F7：這次新觸發減半的自選股（證據包由論點檔組，own_thesis §3.3）。開成 → dropReview 記 PENDING；沒開成 → NONE
+  // F7：這次新觸發的自選股（證據包由論點檔組，own_thesis §3.3）。開成 → dropReview 記 PENDING；沒開成 → NONE
   const marks: Record<string, DropReview> = {};
-  const mark = (t: string, s: string, runId: string | null, pending: boolean) => (marks[t] = { session: s, runId, status: pending ? 'PENDING' : 'NONE', cause: null, premiseId: null, told: false });
-  for (const r of sc.extras.reduced ?? []) {
-    const t = r.ticker;
-    if (!acct.own[t] || (await recentRun(env.DB, OWN_DROP, t, r.session))) continue;
+  const mark = (t: string, s: string, runId: string | null, pending: boolean, prev?: DropReview) => {
+    const base: DropReview = { session: s, runId, status: pending ? 'PENDING' : 'NONE', cause: null, premiseId: null, told: false };
+    if (!isThesisDrop(acct, t)) return (marks[t] = base);
+    // 跌幅審查：記第幾級與重派的次數（同一天的第 2 次、或新的一個交易日）
+    const sameDay = prev && (prev.lastTry ?? prev.session) >= session;
+    marks[t] = { ...base, thesis: true, level: acct.own[t].watchLevel ?? 0, days: prev ? (prev.days ?? 1) + (sameDay ? 0 : 1) : 1, lastTry: session, sameDay: sameDay ? (prev.sameDay ?? 1) + 1 : 1, ...(prev?.attr ? { attr: prev.attr } : {}) };
+    return marks[t];
+  };
+  /** 開一次減半檢視／跌幅審查。trigger：觸發的訊號日；prev：重派時上一次的紀錄。 */
+  const startOne = async (t: string, trigger: string, prev?: DropReview) => {
+    const label = isThesisDrop(acct, t) ? '跌幅審查' : '減半檢視';
     try {
       const c = view.close[t];
       const attr = c ? attribution(axis, view.close, t, core, sectors[t] ?? null, highIndex(c, view.i), view.i) : null;
@@ -87,7 +115,7 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
         }
       }
       const note = tf ? thesisNote(tf, session) : null;
-      // 市場摘要（T65，composite_layer_design §1.6）：和定期審查同一個函式；讓 cause_class 有東西可讀，歸類仍由三票判、程式用跌幅拆解核對
+      // 市場摘要（T65，composite_layer_design §1.6）：和定期審查同一個函式；讓 cause_class 有東西可讀，歸類仍由三票判
       const brief = await briefNote(env.DB, t, session);
       // 你定的條件 C 與 AI 監測中的條件 W 只當背景：F7 不確認條件成不成立（own_thesis §3.3）
       const extraFacts = tf ? [...thesisFacts(tf), ...defaultFacts(tf, rows, session), ...condFacts(tf, rows).facts] : [];
@@ -98,7 +126,7 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
         try {
           menu = await buildDocMenu(env, fetcher, { ticker: t, tf, meta: acct.own[t], asOf: view.date, headlines: feed?.items ?? null });
         } catch (e) {
-          res.log.push(`${t} 的減半檢視：目錄沒有組成（${errText(e)}），這次分析師不能另外找資料`);
+          res.log.push(`${t} 的${label}：目錄沒有組成（${errText(e)}），這次分析師不能另外找資料`);
         }
       }
       // 新眼光（T63，composite_layer_design §3）：減半檢視每次都跑（只有預設前提的不跑）；能取文件時替它留 1 份額度
@@ -110,16 +138,42 @@ export async function startDropRuns(sc: StartCtx): Promise<void> {
       const run = await startRun(env, fetcher, pack, now, [...notes, ...(menu?.notes ?? []), ...(brief.note ? [brief.note] : [])], docCtx);
       res.started.push(run.runId);
       // 雲端排程沒有觸發成功時，這次執行已經用「沒有結果」結束
-      mark(t, r.session, run.runId, run.status === 'PENDING');
+      const m = mark(t, trigger, run.runId, run.status === 'PENDING', prev);
+      if (m.thesis && attr) m.attr = { stock: attr.stock, market: attr.market, sector: attr.sector, idio: attr.idio };
     } catch (e) {
-      res.log.push(`${t} 的減半檢視沒有開成：${errText(e)}`);
-      mark(t, r.session, null, false);
+      res.log.push(`${t} 的${label}沒有開成：${errText(e)}`);
+      mark(t, trigger, null, false, prev);
+    }
+  };
+  if (!opt.retryOnly) {
+    for (const r of sc.extras.reduced ?? []) {
+      const t = r.ticker;
+      if (!acct.own[t] || (await recentRun(env.DB, OWN_DROP, t, r.session))) continue;
+      await startOne(t, r.session);
+    }
+  }
+  // 沒跑完的跌幅審查（有論點的股票）：重派；不會再派了的記成失敗、推告警（allocation_redesign §3.2）
+  for (const [t, meta] of Object.entries(acct.own)) {
+    const dr = meta.dropReview;
+    if (marks[t] || !dr?.thesis || dr.status !== 'NONE' || dr.failed || meta.slow.state !== 'WATCH') continue;
+    const can = dropRetry(dr, session);
+    if (can === 'RETRY') {
+      res.log.push(`${t} 的跌幅審查沒跑完，重派（第 ${(dr.days ?? 1) + ((dr.lastTry ?? dr.session) >= session ? 0 : 1)} 個交易日）`);
+      await startOne(t, dr.session, dr);
+    } else if (can === 'DONE') {
+      marks[t] = { ...dr, failed: true };
+      res.alerts.push({ kind: 'REVIEW_FAILED', message: dropFailText(t, dr), detail: { ticker: t, session: dr.session, days: dr.days ?? DROP_RETRY_DAYS, runId: dr.runId } });
+      res.log.push(`${t} 的跌幅審查 ${dr.days ?? DROP_RETRY_DAYS} 個交易日都沒跑完，不再重派，推告警`);
     }
   }
   await markDropReviews(env.DB, now, view, marks, res.log);
+  if (opt.retryOnly) return;
   // 個股自身大跌（own_thesis §3.6.1，取代自選股的 F20）：寫一筆 PRICE_DROP，由提前審查（startEarlyReviews）決定開不開
   await priceDrops(sc, sectors).catch((e) => void res.log.push(`個股自身大跌沒有算成：${errText(e)}`));
 }
+
+/** 01:30（台灣 09:30）套用結論之後：沒跑完的跌幅審查重派一次（allocation_redesign §3.2）。 */
+export const retryDropRuns = (sc: StartCtx): Promise<void> => startDropRuns(sc, { retryOnly: true });
 
 /** 同一檔最近幾個日曆天內已經有一筆 PRICE_DROP 就不再寫。 */
 export const PRICE_DROP_GAP = 30;
@@ -162,7 +216,9 @@ export async function markDropReviews(db: D1Database, now: Date, view: MarketVie
     (a0) => {
       let a = clone(a0);
       for (const [t, m] of Object.entries(marks)) {
-        if (!a.own[t] || a.own[t].slow.state !== 'HALF') continue;
+        // 已經不是減半中（只有預設前提的）或審查後持有（有論點的）的不寫：期間規則又切換了
+        const st = a.own[t]?.slow.state;
+        if (!a.own[t] || (m.thesis ? st !== 'WATCH' : st !== 'HALF')) continue;
         a.own[t].dropReview = { ...m };
         a = refreshOwnAiChoice(a, view, t).acct;
       }
@@ -175,11 +231,14 @@ export async function markDropReviews(db: D1Database, now: Date, view: MarketVie
 /** AI 層沒有設定（雲端排程還沒接上）：這次新觸發減半的自選股沒有論點檢查，dropReview 記 NONE（own_thesis §3.3），通知照舊當場推。 */
 export async function markDropNone(db: D1Database, now: Date, view: MarketView, acct: Account, reduced: { ticker: string; session: string }[], log: string[]): Promise<void> {
   const marks: Record<string, DropReview> = {};
-  for (const r of reduced) if (acct.own[r.ticker]) marks[r.ticker] = { session: r.session, runId: null, status: 'NONE', cause: null, premiseId: null, told: false };
+  // 有論點的股票（審查後持有）：AI 層沒有設定就不會有審查，記成不會再派（不動；通知 2 個交易日後自動結案）
+  for (const r of reduced) if (acct.own[r.ticker]) marks[r.ticker] = { session: r.session, runId: null, status: 'NONE', cause: null, premiseId: null, told: false, ...(isThesisDrop(acct, r.ticker) ? { thesis: true, level: acct.own[r.ticker].watchLevel ?? 0, days: 1, lastTry: r.session, sameDay: 1, failed: true } : {}) };
   await markDropReviews(db, now, view, marks, log);
 }
 
 const DROP_TEXT: Record<string, string> = { HOLD: '建議不動', EXIT: '前提不成立，建議出清', AGREE: '同意減半', NONE: '沒有可用的結論，照規則' };
+/** 有論點的股票的跌幅審查（allocation_redesign §3.2 的四種）。 */
+const THESIS_DROP_TEXT: Record<string, string> = { BROKEN: '前提不成立 → 預設減半', CLEAR: '前提都沒有被判不成立 → 不動', SPLIT: '票數不一致 → 不動', NONE: '沒跑完 → 不動，會重派' };
 
 /** 這檔還沒回覆的減半項目（當天通知或月報裡的）。 */
 const openReduce = (acct: Account, t: string): Notif | undefined => acct.notifs.find((n) => n.status === 'PENDING' && n.items.some((i) => i.f === 'F7' && i.kind === 'OWN_RULE' && i.ticker === t && !i.cancelled));
@@ -197,12 +256,12 @@ export async function applyOwnDrop(ctx: ApplyCtx, run: AiRun): Promise<void> {
   if (d.escalate) ctx.stmts.push(...insertHitStmts(ctx.db, t, [escalateHit(run, d.escalate)], 'AI', ctx.now.toISOString(), () => 'NEW'));
   // 這次執行對應的是不是目前這一次減半（開執行時記的狀態沒有存成時 dropReview 是空的，照樣認）
   const mine = meta0.dropReview ? meta0.dropReview.runId === run.runId : true;
-  if (meta0.dropReview && !mine) return void ctx.log.push(`${run.runId}：${t} 的論點檢查回來了，但已經不是目前這一次減半（${meta0.dropReview.session} 又觸發過），只放網站`);
-  if (meta0.dropReview && !mine) return void ctx.log.push(`${run.runId}：${t} 的論點檢查回來了，但已經不是目前這一次減半（${meta0.dropReview.session} 又觸發過），只放網站`);
+  if (meta0.dropReview && !mine) return void ctx.log.push(`${run.runId}：${t} 的論點檢查回來了，但已經不是目前這一次（${meta0.dropReview.session} 又觸發過或已經重派），只放網站`);
   // 依據（T53）：不成立的前提和定期審查同一個定義（brokenPremises），依據那一句也用同一個函式（有網頁時括號裡寫明是網頁）
-  const cited = d.status === 'EXIT' && d.premiseId ? citedBasis(run, (s) => s.premises.find((p) => p.premise_id === d.premiseId && p.status === 'BROKEN')?.evidence_ids ?? []) : null;
+  const cited = (d.status === 'EXIT' || d.status === 'BROKEN') && d.premiseId ? citedBasis(run, (s) => s.premises.find((p) => p.premise_id === d.premiseId && p.status === 'BROKEN')?.evidence_ids ?? []) : null;
   const basis = cited?.text ?? null;
   const basisNote = cited?.web ? cited.note : null;
+  if (d.thesis) return applyThesisDrop(ctx, run, d, basis, basisNote);
   const setResult = (told: boolean) => {
     const acct = clone(ctx.acct);
     const dr = acct.own[t].dropReview;
@@ -222,17 +281,78 @@ export async function applyOwnDrop(ctx: ApplyCtx, run: AiRun): Promise<void> {
   if (!answered) return void ctx.log.push(`${run.runId}：${t} 的論點檢查：${DROP_TEXT[d.status]}，但這次減半已經不在（規則又切換了，或通知已經被取代），只放網站`);
   // 還可以改決定的（等你下單）：記下結果，退回「等你決定」時那一行會補上；不再補推
   if (meta0.dropReview?.runId === run.runId) setResult(true);
-  const it = answered.items.find((i) => i.f === 'F7' && i.ticker === t)!;
   if (d.status === 'EXIT' && d.premiseId) {
     const r = routeReview(ctx.acct, ctx.view, t, { tier: 'EXIT', suggest: true, consensus: true, premiseId: d.premiseId, trigger: 'DROP', date: run.asOf, runId: run.runId, basis, basisNote });
     ctx.acct = r.acct;
     return void ctx.log.push(`${run.runId}：${t} 的論點檢查建議出清，通知 #${answered.id} 已經回覆 → ${r.why}`);
   }
-  if (d.status === 'HOLD' && answered.status === 'RESPONDED' && it.choice === 'RULE') {
-    const acct = clone(ctx.acct);
-    const n = newNotif(acct, ctx.view, { kind: 'INFO', title: `${t} 的 AI 論點檢查回來了`, text: `${t} 的 AI 論點檢查回來了：建議不動。你已經選了照規則；還沒下單的話可以回${notifName(answered)}改決定。`, ref: answered.id, coreAbsorb: false });
-    ctx.acct = acct;
-    return void ctx.log.push(`${run.runId}：${t} 的論點檢查建議不動，通知 #${answered.id} 已經選了照規則、還沒填快照 → 提醒 #${n.id}`);
-  }
   ctx.log.push(`${run.runId}：${t} 的論點檢查：${DROP_TEXT[d.status]}；通知 #${answered.id} 已經回覆，只放網站`);
+}
+
+/**
+ * 有論點的股票的跌幅審查（allocation_redesign §3.2）：結果寫進 dropReview，通知照 applyDropResult 的規則跟著變。
+ *   前提不成立 → 預設減半（≥ 5% 當天、否則月報）；另外記 aiTier（之後加回時看得到；3 票都選出清記出清，否則記減半）
+ *   前提都沒有被判不成立／票數不一致 → 不動；票數不一致算進「連續幾次沒有一致結論」（和定期審查同一個計數，連續 3 次列要看的事並重新起草）
+ *   沒跑完 → 不動；之後由 startDropRuns／retryDropRuns 重派
+ * 使用者先回覆了才回來的結果（own_thesis §3.5 的那一段，照新的效力表）：
+ *   先選了減半（還沒填快照，或已經做完）→ 3 票建議出清的照 §1.9 當成一次審查的建議另外給；沒有前提被判不成立、還沒下單 → 推一則提醒（可以回去改決定）；其餘只放網站
+ *   先選了不動 → 前提不成立時照 applyDropResult 另外給減半（≥ 5% 當天、否則月報）；其餘只放網站
+ */
+async function applyThesisDrop(ctx: ApplyCtx, run: AiRun, d: ReturnType<typeof dropDecision>, basis: string | null, basisNote: string | null): Promise<void> {
+  const t = run.ticker ?? '';
+  const meta0 = ctx.acct.own[t];
+  const label = `${run.runId}：${t} 的跌幅審查：${THESIS_DROP_TEXT[d.status] ?? d.status}（${d.why}）`;
+  // 票數的健康紀錄：跑完了才算（票數不一致加 1、有共識歸零）；沒跑完的由重派處理，不算進定期審查的連續失敗
+  if (d.status !== 'NONE') await noteReviewHealth(ctx, run, d.status === 'SPLIT' ? 'SPLIT' : 'CONSENSUS');
+  if (meta0.slow.state !== 'WATCH') {
+    // 已經不在審查後持有：你先選了減半而且做完了、或已經站回均線。出清的建議照 §1.9，另外給；其他只放網站
+    if (d.status === 'BROKEN' && d.exit && d.premiseId && meta0.slow.state === 'HALF') {
+      const r = routeReview(ctx.acct, ctx.view, t, { tier: 'EXIT', suggest: true, consensus: true, premiseId: d.premiseId, trigger: 'DROP', date: run.asOf, runId: run.runId, basis, basisNote });
+      ctx.acct = r.acct;
+      return void ctx.log.push(`${label}；這檔已經減半，3 票建議出清 → ${r.why}`);
+    }
+    return void ctx.log.push(`${label}；這檔已經不在審查後持有，只放網站`);
+  }
+  // 你先選了減半（或出清）、還在等下單：結果照樣記下（退回「等你決定」時那一行會補上），不另外發減半的單
+  const decided = decidedThesisDrop(ctx.acct, t);
+  const acct = clone(ctx.acct);
+  const dr = acct.own[t].dropReview;
+  const attr = (run.pack.rule.detail as { attr?: DropReview['attr'] } | undefined)?.attr ?? dr?.attr ?? null;
+  acct.own[t].dropReview = {
+    session: dr?.session ?? run.asOf,
+    runId: run.runId,
+    status: d.status,
+    cause: d.cause,
+    premiseId: d.premiseId,
+    told: !!decided,
+    thesis: true,
+    level: dr?.level ?? acct.own[t].watchLevel ?? 0,
+    days: dr?.days ?? 1,
+    lastTry: dr?.lastTry ?? run.asOf,
+    sameDay: dr?.sameDay ?? 1,
+    ...(d.exit ? { exit: true } : {}),
+    ...(d.status === 'SPLIT' ? { splitPremise: d.splitPremise, splitVotes: d.splitVotes } : {}),
+    ...(attr ? { attr } : {}),
+  };
+  ctx.acct = acct;
+  if (decided) {
+    const it = decided.items.find((i) => i.ticker === t && !!i.thesisDrop && !i.cancelled)!;
+    if (d.status === 'BROKEN' && d.exit && d.premiseId && it.choice !== 'AI') {
+      const r = routeReview(ctx.acct, ctx.view, t, { tier: 'EXIT', suggest: true, consensus: true, premiseId: d.premiseId, trigger: 'DROP', date: run.asOf, runId: run.runId, basis, basisNote });
+      ctx.acct = r.acct;
+      return void ctx.log.push(`${label}；通知 #${decided.id} 已經選了減半、等下單，3 票建議出清 → ${r.why}`);
+    }
+    if (d.status === 'CLEAR') {
+      const a2 = clone(ctx.acct);
+      const n = newNotif(a2, ctx.view, { kind: 'INFO', title: `${t} 的 AI 論點檢查回來了`, text: `${t} 的 AI 論點檢查回來了：前提都沒有被判不成立（預設是不動）。你已經選了減半；還沒下單的話可以回${notifName(decided)}改決定。`, ref: decided.id, coreAbsorb: false });
+      ctx.acct = a2;
+      return void ctx.log.push(`${label}；通知 #${decided.id} 已經選了減半、還沒填快照 → 提醒 #${n.id}`);
+    }
+    if (d.status === 'BROKEN' && d.premiseId) ctx.acct = recordAiTier(ctx.acct, t, d.exit ? 'EXIT' : 'HALF', run.asOf, false, run.runId, { premiseId: d.premiseId, trigger: 'DROP', basis, basisNote, agreed: true });
+    return void ctx.log.push(`${label}；通知 #${decided.id} 已經選了要賣、等下單，只放網站`);
+  }
+  if (d.status === 'BROKEN' && d.premiseId) ctx.acct = recordAiTier(ctx.acct, t, d.exit ? 'EXIT' : 'HALF', run.asOf, false, run.runId, { premiseId: d.premiseId, trigger: 'DROP', basis, basisNote, agreed: true });
+  const r = applyDropResult(ctx.acct, ctx.view, t);
+  ctx.acct = r.acct;
+  ctx.log.push(`${label} → ${r.why}`);
 }

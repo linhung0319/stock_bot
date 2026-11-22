@@ -2,14 +2,17 @@
 // 時間模型和原型相同：每個交易日分「開盤前」與「收盤後」；月報在每月第一個交易日開盤前，
 // 當天通知在收盤後發出、隔天開盤執行；回覆後的下一個開盤以開盤價成交。
 import {
+  applyDropResult,
   applySnapshot,
   bookShares,
   composeNotif,
   dailyCheck,
   monthlyReport,
+  recordAiTier,
   respond,
   totalValue,
   type Account,
+  type DropReview,
   type InitialAccount,
   type MarketView,
   type Notif,
@@ -27,6 +30,20 @@ export interface SimOptions {
   sigmaMedianFactor?: number;
   /** 自動回覆每一則通知（照預設選項）。 */
   autoRespond?: boolean;
+  /**
+   * 有論點的股票觸發跌幅審查時 AI 論點檢查的結果（代號 → 結果；T82，allocation_redesign §3.2）。測試沒有 AI 層：
+   * 有寫的在觸發那天收盤後照正式流程的方式套用（寫 dropReview、前提不成立時記 aiTier、applyDropResult）；沒寫的沒有結果（預設不動）。
+   */
+  drops?: Record<string, SimDrop>;
+}
+
+export interface SimDrop {
+  status: 'BROKEN' | 'CLEAR' | 'SPLIT' | 'NONE';
+  premiseId?: string;
+  /** BROKEN：3 票都選出清。 */
+  exit?: boolean;
+  runId?: string;
+  extra?: Partial<DropReview>;
 }
 
 export class Sim {
@@ -121,13 +138,21 @@ export class Sim {
     }
     return { shares, cash };
   }
-  /** 收盤後：每日檢查。 */
+  /** 收盤後：每日檢查。今天觸發跌幅審查、opt.drops 有寫結果的，接著套用（回傳的是套用之後的通知）。 */
   close(): Notif[] {
     const r = dailyCheck(this.acct, this.post);
     this.acct = r.acct;
     for (const l of r.log) this.log.push(`${this.date} 收盤後 ${l.ticker}：${l.what}`);
     for (const n of r.created) this.log.push(`${this.date} 收盤後 通知 #${n.id}：${n.title}`);
-    return r.created;
+    for (const n of r.created) for (const it of n.items) if (it.thesisDrop && it.ticker && this.opt.drops?.[it.ticker]) this.setDrop(it.ticker, this.opt.drops[it.ticker]);
+    return r.created.map((n) => this.acct.notifs.find((x) => x.id === n.id) ?? n);
+  }
+  /** 跌幅審查的結果回來了（用今天收盤後的市場）。 */
+  setDrop(ticker: string, x: SimDrop): void {
+    const meta = this.acct.own[ticker];
+    meta.dropReview = { session: this.date, runId: x.runId ?? null, status: x.status, cause: null, premiseId: x.premiseId ?? null, told: false, thesis: true, level: meta.watchLevel ?? 0, days: 1, lastTry: this.date, sameDay: 1, ...(x.exit ? { exit: true } : {}), ...(x.extra ?? {}) };
+    if (x.status === 'BROKEN' && x.premiseId) this.acct = recordAiTier(this.acct, ticker, x.exit ? 'EXIT' : 'HALF', this.date, false, x.runId, { premiseId: x.premiseId, trigger: 'DROP', agreed: true });
+    this.acct = applyDropResult(this.acct, this.post, ticker).acct;
   }
   /** 走完一天。hooks 可以在各時點插入操作。 */
   day(h: { afterMonthly?: (n: Notif) => void; afterClose?: (created: Notif[]) => void; removed?: string[] } = {}): void {

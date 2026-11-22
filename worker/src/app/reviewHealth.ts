@@ -93,6 +93,14 @@ const failAlert = (ticker: string, f: ReviewFails, session: string, runId: strin
  * 已經不是自選股的不算。
  */
 export async function reviewHealthStmts(ctx: ApplyCtx, run: AiRun): Promise<void> {
+  return noteReviewHealth(ctx, run);
+}
+
+/**
+ * 同上，但結果算哪一種可以由呼叫的地方給（T82：有論點的股票的跌幅審查照自己的四種結果——票數不一致算 SPLIT、
+ * 前提不成立與都沒有被判不成立算 CONSENSUS；沒跑完的不呼叫，由重派處理。allocation_redesign §3.2）。沒給就照 reviewHealth 判。
+ */
+export async function noteReviewHealth(ctx: ApplyCtx, run: AiRun, kind?: 'FAILED' | 'SPLIT' | 'CONSENSUS'): Promise<void> {
   const t = run.ticker ?? '';
   const meta = ctx.acct.own[t];
   if (!meta) return;
@@ -101,7 +109,7 @@ export async function reviewHealthStmts(ctx: ApplyCtx, run: AiRun): Promise<void
   seen.set(ctx, cache);
   const cur = cache.get(t) ?? { fails: await loadFails(ctx.db, t, fileId), splits: await loadSplits(ctx.db, t, fileId) };
   const at = ctx.now.toISOString();
-  const h = reviewHealth(run.outcome);
+  const h = kind ? { kind, reason: kind === 'SPLIT' ? '票數不一致' : kind === 'FAILED' ? '沒有結果' : '' } : reviewHealth(run.outcome);
   if (h.kind === 'FAILED') {
     cur.fails = addFail(cur.fails, fileId, run.asOf, h.reason);
     ctx.stmts.push(setStateStmt(ctx.db, reviewFailsKey(t), JSON.stringify(cur.fails), at));

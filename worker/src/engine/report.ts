@@ -18,6 +18,7 @@ import {
   type CoreOwe,
   type CrashReviewInfo,
   type DropStatus,
+  dropReviewOpen,
   type Item,
   type MarketView,
   type MonthlyContext,
@@ -25,13 +26,14 @@ import {
   type OwnMeta,
   type ReviewTrigger,
   type SavedState,
+  type ShadowRecord,
   type Tier,
   usd,
 } from './account';
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
 import { drawdownFromHigh, excessVol } from './indicators';
 import { composeWithCore, coreBandLines, crashCoreLines, mergeByTicker, planToLines, tenths, type Composed, type CoreBand, type CoreContext, type OrderLine } from './orders';
-import { SLOW, halveShares, slowDayInput, stepSlowRule } from './slowRule';
+import { DROP_LADDER, SLOW, dropLadder, halveShares, slowDayInput, stepSlowRule, stepWatch } from './slowRule';
 import { cellKey, coreCfg, type OwnAction, type OwnState } from './types';
 
 // ---------------------------------------------------------------- 共用
@@ -353,7 +355,7 @@ function setOwnAi(acct: Account, it: Item, ai: OwnAi): boolean {
  * 慢規則的通知產生時，同一檔有還沒回覆的乙類通知（§3.4、§1.9）：那一項取消、整則只剩取消的就標 SUPERSEDED，內容併進慢規則項目。
  * 沒有乙類、但月中有記著等月報的建議（往下的檔位、有不成立的前提）→ 一樣併進來，不再另列一項。
  */
-function absorbBreak(acct: Account, view: MarketView, ticker: string): Item['absorbed'] {
+function absorbBreak(acct: Account, view: MarketView, ticker: string, thesis = false): Item['absorbed'] {
   const meta = acct.own[ticker];
   if (!meta) return undefined;
   const pb = pendingBreak(acct, ticker);
@@ -362,7 +364,7 @@ function absorbBreak(acct: Account, view: MarketView, ticker: string): Item['abs
     const premiseId = pb.it.brk.premiseId;
     const date = meta.aiTier?.premiseId === premiseId && meta.aiTier.date <= pb.n.date ? meta.aiTier.date : pb.n.date;
     pb.it.cancelled = true;
-    pb.it.note = `慢規則也觸發減半了，這一項併進 ${ticker} 的慢規則減半通知（在那裡決定）`;
+    pb.it.note = thesis ? `比高點低 20% 以上，觸發跌幅審查了，這一項併進 ${ticker} 的跌幅審查通知（在那裡決定）` : `慢規則也觸發減半了，這一項併進 ${ticker} 的慢規則減半通知（在那裡決定）`;
     if (pb.n.items.every((i) => i.cancelled)) pb.n.status = 'SUPERSEDED';
     else pb.n.preview = composeNotif(acct, view, pb.n);
     return { notif: pb.n.id, tier, premiseId, date, ...(pb.it.runIds?.length ? { runIds: [...pb.it.runIds] } : {}) };
@@ -428,6 +430,14 @@ export function refreshOwnAiChoice(acct0: Account, view: MarketView, ticker: str
     if (n.status !== 'PENDING') continue;
     for (const it of n.items) {
       if (it.kind !== 'OWN_RULE' || it.ticker !== ticker || it.cancelled) continue;
+      if (it.thesisDrop) {
+        // 有論點的股票的跌幅審查：選項與預設跟著結果變（allocation_redesign §3.2），試算的清單也要重算
+        if (!setThesisDrop(acct, view, it, n.date)) continue;
+        syncRunIds(n);
+        n.preview = composeNotif(acct, view, n);
+        changed.push(n.id);
+        continue;
+      }
       const ai = it.f === 'F7' ? reduceAi(acct, view, ticker, it.absorbed, n.date) : readdAi(acct, view, ticker);
       if (!setOwnAi(acct, it, ai)) continue;
       syncRunIds(n);
@@ -435,6 +445,246 @@ export function refreshOwnAiChoice(acct0: Account, view: MarketView, ticker: str
     }
   }
   return { acct, changed: [...new Set(changed)] };
+}
+
+// ---------------------------------------------------------------- 有論點的股票：跌幅審查（allocation_redesign §3.2、§3.3）
+
+/** 跌幅審查項目的理由：跌幅只觸發審查，不是賣出的理由。 */
+export const THESIS_DROP_WHY = '收盤距 52 週高點跌 ≥ 20%。這檔有你的論點：跌幅只觸發論點檢查，不是賣出的理由；3 票判同一條前提不成立才減半。';
+/** 2 個交易日沒有回覆、自動照預設（不動）結案時，影子紀錄的備註。 */
+export const AUTO_DEFAULT_NOTE = '2 個交易日沒有回覆，自動照預設（不動）結案';
+/** 預設不下單的通知幾個交易日沒有回覆就自動結案（§3.2）。 */
+export const AUTO_DEFAULT_DAYS = 2;
+/** 審查後持有時，快照顯示你自己賣掉原本股數的這個比例以上（還沒賣光）→ 照減半處理（§3.6）。 */
+export const SELF_HALVE_MIN = 0.25;
+
+/** DROP_LADDER 第幾級的白話：`20%`、`30%`…（超出範圍取最近的一級）。 */
+export const ladderPct = (level: number): string => `${Math.round(-DROP_LADDER[Math.min(Math.max(level, 0), DROP_LADDER.length - 1)] * 100)}%`;
+const signedPct = (x: number) => {
+  const r = Math.round(x * 100);
+  return `${r > 0 ? '+' : r < 0 ? '-' : ''}${Math.abs(r)}%`;
+};
+
+/** 跌幅拆解的那一句（只是資訊，§3.2）：`這次下跌：大盤 -8%、產業比大盤 -9%、個股自身 -5%`。算不出來是空字串。 */
+export function dropAttrText(a: NonNullable<OwnMeta['dropReview']>['attr']): string {
+  if (!a || !Number.isFinite(a.market) || !Number.isFinite(a.idio)) return '';
+  return `這次下跌：大盤 ${signedPct(a.market)}${a.sector === null || !Number.isFinite(a.sector) ? '' : `、產業比大盤 ${signedPct(a.sector)}`}、個股自身 ${signedPct(a.idio)}`;
+}
+
+/** 預設不下單的跌幅審查項目（有論點、沒有前提被判不成立）。 */
+export const holdsByDefault = (it: Pick<Item, 'thesisDrop' | 'drop' | 'cancelled'>): boolean => !!it.thesisDrop && !it.cancelled && it.drop !== 'BROKEN';
+/** 整則通知都是預設不下單的跌幅審查（不用回覆、不提醒、2 個交易日自動結案；§3.2）。 */
+export const isHoldNotice = (n: Pick<Notif, 'kind' | 'items'>): boolean => n.kind === 'URGENT' && n.items.some((i) => !i.cancelled) && n.items.every((i) => i.cancelled || holdsByDefault(i));
+
+/**
+ * 有論點的股票的跌幅審查項目（F7，§3.2 的表）：照現在的審查結果（dropReview）、觸發之後另外回來的審查或併進來的乙類，重寫那一行、選項與預設。
+ *   前提不成立（審查 3 票判同一條；或另外的審查、併進來的乙類判的）→ 預設減半；3 票都選出清時多「照 AI：出清」；這次不做要寫理由
+ *   前提都沒有被判不成立／票數不一致／沒跑完／還在跑 → 預設不動；另一個選項是減半（你自己想賣時用，不用理由）
+ * 規則的那條線（ruleChoice）一律是減半：影子紀錄記「照舊的慢規則會怎樣」。股數照現在的持股算。直接改 it，回傳有沒有變。
+ */
+function setThesisDrop(acct: Account, view: MarketView, it: Item, since: string): boolean {
+  const ticker = it.ticker;
+  const meta = ticker ? acct.own[ticker] : undefined;
+  if (!ticker || !meta) return false;
+  const sig = () => JSON.stringify([it.choices, it.aiLine, it.runIds, it.drop, it.brk, it.why, it.choice, it.reasonRequired]);
+  const before = sig();
+  const wasBroken = it.drop === 'BROKEN';
+  const dr = meta.dropReview ?? null;
+  const top = reviewOnTop(meta, it.absorbed, since);
+  const drRun = dr?.runId ? [dr.runId] : [];
+  const half = -halveShares(acct.lots.own[ticker] ?? 0);
+  const halfChoice: Choice = { id: 'RULE', label: '減半', tier: 'HALF', lines: half ? [{ ticker, bucket: 'own', shares: half, reason: '自選訊號' }] : [], effects: [{ type: 'APPLY_TIER', ticker, tier: 'HALF' }] };
+  // 哪一條前提不成立：審查自己判的（3 票都選出清的優先）→ 另外的審查判出清的 → 審查判的 → 另外的審查判的
+  const own = dr?.status === 'BROKEN' && dr.premiseId ? { premiseId: dr.premiseId, exit: !!dr.exit, lead: '論點檢查（3 票）：', runIds: drRun } : null;
+  const other = top ? { premiseId: top.premiseId, exit: top.tier === 'EXIT', lead: `${mdOf(top.date)} 的審查（3 票）：`, runIds: top.runIds } : null;
+  const broken = own?.exit ? own : other?.exit ? other : (own ?? other);
+  const set = <K extends 'aiLine' | 'runIds' | 'drop' | 'brk' | 'reasonRequired'>(k: K, v: Item[K] | undefined) => {
+    if (v === undefined) delete it[k];
+    else it[k] = v;
+  };
+  if (broken) {
+    const sh = tierShares(acct, view, ticker, 'EXIT', 'STD');
+    const exitChoice: Choice[] = broken.exit ? [{ id: 'AI', label: `照 AI：出清，${sharesText(sh)}`, tier: 'EXIT', lines: sh ? [{ ticker, bucket: 'own', shares: sh, reason: 'AI 建議' }] : [], effects: [{ type: 'APPLY_TIER', ticker, tier: 'EXIT' }] }] : [];
+    it.choices = [halfChoice, ...exitChoice, { id: 'SKIP', label: '這次不做', lines: [] }];
+    set('aiLine', `${broken.lead}前提「${premiseText(meta, broken.premiseId)}」不成立${broken.exit ? `。AI 建議出清，${sharesText(sh)}` : ''}${disputeNote(meta, broken.premiseId, view.date)}`);
+    set('runIds', broken.runIds.length ? broken.runIds : undefined);
+    set('drop', 'BROKEN');
+    set('brk', { type: 'B', premiseId: broken.premiseId, withRule: true });
+    set('reasonRequired', true);
+    // 預設減半：剛變成前提不成立、或原本選的選項已經不在了，就回到預設
+    if (!wasBroken || !it.choices.some((c) => c.id === it.choice)) it.choice = 'RULE';
+  } else {
+    it.choices = [{ id: 'SKIP', label: '不動', lines: [] }, halfChoice];
+    const attr = dropAttrText(dr?.attr);
+    let line: string | undefined;
+    let drop: DropStatus | undefined;
+    if (dr?.status === 'PENDING') {
+      line = 'AI 論點檢查進行中，台灣 09:30 前更新；結果出來之前先不動';
+      drop = 'PENDING';
+    } else if (dr?.status === 'CLEAR') {
+      line = `論點檢查（3 票）：你的 ${meta.premises.length} 條前提都沒有被判不成立${attr ? `。${attr}` : ''}`;
+      drop = 'CLEAR';
+    } else if (dr?.status === 'SPLIT') {
+      // 3 票都判了同一條、但不是每一票都有合格的引用（只有新聞標題或價格、引用沒過檢查）：不算數，另外寫清楚
+      line = !dr.splitPremise || !dr.splitVotes ? '論點檢查：3 票的結論不一致，沒有前提被 3 票判不成立' : dr.splitVotes >= 3 ? `論點檢查：3 票都認為前提「${premiseText(meta, dr.splitPremise)}」不成立，但不是每一票都有合格的引用，不算數` : `論點檢查：3 票裡有 ${dr.splitVotes} 票認為前提「${premiseText(meta, dr.splitPremise)}」不成立，沒有一致結論`;
+      drop = 'SPLIT';
+    } else if (dr) {
+      // 沒跑完（NONE；其他狀態也當成沒有結論）
+      line = dr.failed ? 'AI 論點檢查沒有跑完，不動；之後財報後的審查與再跌一級時仍會檢查' : 'AI 論點檢查還沒有結論，先不動；會再檢查';
+      drop = 'NONE';
+    }
+    set('aiLine', line);
+    set('runIds', drop && drRun.length ? drRun : undefined);
+    set('drop', drop);
+    set('brk', undefined);
+    set('reasonRequired', undefined);
+    it.choice = 'SKIP';
+  }
+  it.ruleChoice = 'RULE';
+  it.why = THESIS_DROP_WHY;
+  return before !== sig();
+}
+
+/** 跌幅審查的項目（有論點的股票）。dd：觸發那天距 52 週高點的跌幅；note 接在標題後面（併入月報的那一句）。 */
+function thesisDropItem(acct: Account, view: MarketView, ticker: string, note: string, dd?: number | null): Item {
+  const meta = acct.own[ticker];
+  const absorbed = absorbBreak(acct, view, ticker, true);
+  const c = view.close[ticker];
+  const d = dd ?? (c ? drawdownFromHigh(c, view.i, SLOW.highDays) : NaN);
+  const level = meta?.watchLevel ?? 0;
+  const it = makeItem({
+    f: 'F7',
+    kind: 'OWN_RULE',
+    ticker,
+    title: Number.isFinite(d) ? `${ticker}：比 52 週高點低 ${(-d * 100).toFixed(1)}% → 跌幅審查${note}` : `${ticker} 跌幅審查${note}`,
+    choices: [{ id: 'SKIP', label: '不動', lines: [] }],
+    why: THESIS_DROP_WHY,
+    thesisDrop: { level },
+    ...(level > 0 ? { note: `上一次審的是比高點低 ${ladderPct(level - 1)} 那一級；又跌到 ${ladderPct(level)} 以上，重新審查` } : {}),
+    ...(absorbed ? { absorbed } : {}),
+  });
+  setThesisDrop(acct, view, it, view.date);
+  return it;
+}
+
+/** 這檔還沒回覆的跌幅審查項目（有論點的那一種）。 */
+function openThesisDrop(acct: Account, ticker: string): { n: Notif; it: Item } | null {
+  for (const n of acct.notifs) {
+    if (n.status !== 'PENDING') continue;
+    const it = n.items.find((i) => i.ticker === ticker && !i.cancelled && i.f === 'F7' && !!i.thesisDrop);
+    if (it) return { n, it };
+  }
+  return null;
+}
+
+/**
+ * 這檔的跌幅審查你已經選了減半（或照 AI 出清）、還在等下單填快照的那則通知；沒有是 null。
+ * 這時規則的狀態還是審查後持有（照做了才變），但不能再為同一件事另外發一張減半的單。
+ */
+export function decidedThesisDrop(acct: Pick<Account, 'notifs'>, ticker: string): Notif | null {
+  return acct.notifs.find((n) => n.status === 'RESPONDED' && n.items.some((i) => i.ticker === ticker && !i.cancelled && i.f === 'F7' && !!i.thesisDrop && i.choice !== 'SKIP')) ?? null;
+}
+
+/** 還沒回覆的跌幅審查項目取消（回到標準了、又跌一級重新審查、併入月報、你自己賣了一半）。整則都取消（月報以外）→ 通知跟著結束。回傳改了哪幾則。 */
+export function cancelThesisDrop(acct: Account, ticker: string, note: string, status: 'CANCELLED' | 'SUPERSEDED' = 'CANCELLED'): number[] {
+  const out: number[] = [];
+  for (const n of acct.notifs) {
+    if (n.status !== 'PENDING') continue;
+    let hit = false;
+    for (const it of n.items) {
+      if (it.cancelled || it.ticker !== ticker || it.f !== 'F7' || !it.thesisDrop) continue;
+      it.cancelled = true;
+      it.note = note;
+      hit = true;
+    }
+    if (!hit) continue;
+    out.push(n.id);
+    if (n.kind !== 'MONTHLY' && n.items.every((i) => i.cancelled)) {
+      n.status = status;
+      n.coreAbsorb = false;
+      delete n.preview;
+    } else n.preview = undefined;
+  }
+  return out;
+}
+
+/** 這檔離開審查後持有（回到標準、減半、你自己賣了一半）：審到第幾級、這一次的審查結果、等月報的減半都清掉。 */
+export function leaveWatch(meta: OwnMeta): void {
+  delete meta.watchLevel;
+  delete meta.dropReview;
+  if (meta.pending?.action === 'REDUCE') meta.pending = null;
+}
+
+/** 減半這一筆占總資產夠不夠大（≥ urgentFrac，5%）：夠大當天通知，否則併入月報（設計 §2.5，照舊）。 */
+function halveIsUrgent(acct: Account, view: MarketView, ticker: string): boolean {
+  if (acct.cfg.urgentFrac === null) return false;
+  const chg = halveShares(acct.lots.own[ticker] ?? 0) * priceOf(view, ticker);
+  return chg > 0 && chg >= acct.cfg.urgentFrac * totalValue(acct, view);
+}
+
+/** UPDATED 更新還沒回覆的通知；MONTHLY 減半併入下一份月報；SAME_DAY 另發一則當天通知；NONE 只放網站。 */
+export type DropRoute = 'UPDATED' | 'MONTHLY' | 'SAME_DAY' | 'NONE';
+
+/**
+ * 有論點的股票的跌幅審查結果寫進 dropReview 之後（allocation_redesign §3.2）：通知跟著變。
+ *   有還沒回覆的跌幅審查項目 → 就地重算那一行、選項與預設。例外：結果是前提不成立、這一筆不到總資產 5%、而且今天的月報還沒出
+ *     → 那一項取消，記成等月報的減半（下一份月報列，預設減半）；今天的月報已經出了就留在當天那一則，免得多等一個月
+ *   沒有（已經自動結案、你先選了不動）而且結果是前提不成立、這檔還在審查後持有 → ≥ 5%（或今天的月報已經出了）發一則當天通知，否則等月報
+ *   你已經先選了減半、還在等下單（decidedThesisDrop）→ 不另外發
+ *   其他 → 只放網站（持股頁）
+ */
+export function applyDropResult(acct0: Account, view: MarketView, ticker: string): { acct: Account; route: DropRoute; notif: Notif | null; changed: number[]; why: string } {
+  const meta0 = acct0.own[ticker];
+  const dr = meta0?.dropReview;
+  if (!meta0 || !dr?.thesis) return { acct: acct0, route: 'NONE', notif: null, changed: [], why: '不是有論點的股票的跌幅審查' };
+  const broken = dr.status === 'BROKEN' && !!dr.premiseId;
+  const monthlyToday = acct0.notifs.some((n) => !!n.monthly && n.date === view.date);
+  const small = !halveIsUrgent(acct0, view, ticker);
+  const open0 = openThesisDrop(acct0, ticker);
+  if (open0) {
+    if (broken && open0.n.kind === 'URGENT' && small && !monthlyToday && !open0.it.absorbed) {
+      const acct = clone(acct0);
+      const meta = acct.own[ticker];
+      const changed = cancelThesisDrop(acct, ticker, `論點檢查（3 票）：前提「${premiseText(meta, dr.premiseId!)}」不成立 → 減半。這一筆不到總資產的 5%，併入下一份月報`, 'SUPERSEDED');
+      meta.pending = { action: 'REDUCE', date: dr.session };
+      return { acct, route: 'MONTHLY', notif: null, changed, why: `前提不成立、變動不到 5%：通知 #${changed.join('、#')} 的那一項取消，減半併入下一份月報` };
+    }
+    const r = refreshOwnAiChoice(acct0, view, ticker);
+    return { acct: r.acct, route: 'UPDATED', notif: null, changed: r.changed, why: r.changed.length ? `更新通知 #${r.changed.join('、#')}` : '通知不用改' };
+  }
+  if (!broken) return { acct: acct0, route: 'NONE', notif: null, changed: [], why: '沒有還沒回覆的通知，只放網站' };
+  const decided = decidedThesisDrop(acct0, ticker);
+  if (decided) return { acct: acct0, route: 'NONE', notif: null, changed: [], why: `通知 #${decided.id} 已經選了要賣、等下單，不另外發` };
+  if (meta0.slow.state !== 'WATCH') return { acct: acct0, route: 'NONE', notif: null, changed: [], why: '這檔已經不在審查後持有（已經減半或回到標準），只放網站' };
+  if (meta0.pending?.action === 'REDUCE') return { acct: acct0, route: 'NONE', notif: null, changed: [], why: '減半已經在等月報' };
+  const acct = clone(acct0);
+  if (small && !monthlyToday) {
+    acct.own[ticker].pending = { action: 'REDUCE', date: dr.session };
+    return { acct, route: 'MONTHLY', notif: null, changed: [], why: '前提不成立、變動不到 5%：減半併入下一份月報' };
+  }
+  const it = thesisDropItem(acct, view, ticker, '', acct.own[ticker].reduceDd);
+  const notif = newNotif(acct, view, { kind: 'URGENT', title: `${ticker} 跌幅審查：前提不成立`, items: [it] });
+  notif.preview = composeNotif(acct, view, notif);
+  return { acct, route: 'SAME_DAY', notif, changed: [], why: `前提不成立：當天通知 #${notif.id}` };
+}
+
+/**
+ * 跌幅審查項目的影子紀錄（三條線，§3.2）：照舊的慢規則（減半的股數）、照 AI（前提不成立 → 減半，3 票出清時是出清；
+ * 都沒有被判不成立 → 0 股；沒有一致結論、沒跑完 → 沒有）、實際。每一次回覆（含自動結案）都記。
+ */
+export function thesisDropShadow(view: MarketView, n: Notif, it: Item, note?: string): ShadowRecord {
+  const tk = it.ticker!;
+  const sum = (c?: Choice) => (c?.lines ?? []).filter((l) => l.ticker === tk).reduce((a, l) => a + l.shares, 0);
+  const rule = sum(it.choices.find((c) => c.id === 'RULE'));
+  const aiC = it.choices.find((c) => c.id === 'AI');
+  const ai = it.drop === 'BROKEN' ? (aiC ? sum(aiC) : rule) : it.drop === 'CLEAR' ? 0 : null;
+  const reason = note ?? it.reason;
+  return { date: view.date, f: it.f, ticker: tk, title: it.title, rule, ai, actual: sum(it.choices.find((c) => c.id === it.choice)), price: view.close[tk] ? priceOf(view, tk) : 0, choice: it.choice, notif: n.id, ...(it.runIds?.length ? { runIds: [...it.runIds] } : {}), ...(reason ? { note: reason } : {}) };
+}
+
+/** 晚回覆時跌幅審查項目照今天的持股重算股數（ops.ts 的 recomputeLate 用）。直接改 it。 */
+export function rebuildThesisDrop(acct: Account, view: MarketView, n: Notif, it: Item): void {
+  setThesisDrop(acct, view, it, n.date);
 }
 
 /** 把規則的計畫（每一格的目標金額）變成清單項目。 */
@@ -631,10 +881,42 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
   const acct = clone(acct0);
   const created: Notif[] = [];
   const log: DailyResult['log'] = [];
+  /** 今天要開跌幅審查的（有論點的股票：第一次到 -20%，或審查後持有時又跌了一級）。 */
+  const reviews: string[] = [];
   for (const [tk, meta] of Object.entries(acct.own)) {
     const c = view.close[tk];
     if (!c) continue;
-    const step = stepSlowRule(meta.slow, slowDayInput(c, view.i));
+    const day = slowDayInput(c, view.i);
+    const wasWatch = meta.slow.state === 'WATCH';
+    const step = stepSlowRule(meta.slow, day);
+    if (wasWatch) {
+      // 審查後持有（allocation_redesign §3.3）：stepSlowRule 只更新了兩個計數；進出在這裡判
+      const w = stepWatch(step.next, meta.watchLevel ?? 0, day);
+      meta.slow = w.next;
+      if (w.event === 'BACK') {
+        leaveWatch(meta);
+        cancelThesisDrop(acct, tk, `${mdOf(view.date)} 已經站回 200 日均線連續 ${SLOW.aboveRun} 天，回到一般狀態，這一項取消`);
+        log.push({ ticker: tk, what: '審查後持有 → 站回 200 日均線，回到標準（不下單、不通知）' });
+      } else if (w.event === 'DEEPER') {
+        meta.watchLevel = w.level;
+        if (meta.pending?.action === 'REDUCE') log.push({ ticker: tk, what: `比高點低 ${ladderPct(w.level)} 以上；上一次審查已經判前提不成立、減半在等月報，不另外審查` });
+        else {
+          meta.reduceDd = Number.isFinite(day.drawdown) ? day.drawdown : null;
+          reviews.push(tk);
+        }
+      }
+      continue;
+    }
+    // 有論點的股票（種類以觸發當天的為準，§3.1）：比高點低 20% 只觸發審查，不減半，進審查後持有（§3.2、§3.3）。
+    // 還沒下單的加回和這次互相抵銷的照舊（下面：留在減半，月報不列）
+    if (step.signal === 'REDUCE' && !defaultOnly(meta) && meta.pending?.action !== 'READD') {
+      meta.slow = { state: 'WATCH', aboveRun: step.next.aboveRun, sinceSwitch: 0 };
+      meta.watchLevel = Math.max(0, dropLadder(day.drawdown));
+      meta.reduceDd = Number.isFinite(day.drawdown) ? day.drawdown : null;
+      meta.pending = null;
+      reviews.push(tk);
+      continue;
+    }
     meta.slow = step.next;
     if (step.signal) {
       // 慢規則切換（或和尚未下單的那次互相抵銷）：上一次減半的論點檢查不再對應（own_thesis §3.3）
@@ -652,9 +934,22 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
       }
     }
   }
-  // 單筆變動夠大的訊號 → 當天通知
+  // 跌幅審查（有論點的股票）：當天產生一則通知，不分金額大小；預設不動，等審查的結果（§3.2）
+  for (const tk of reviews) {
+    const meta = acct.own[tk];
+    // 上一級的審查不再對應；還沒回覆的那一則以新的為準
+    delete meta.dropReview;
+    const level = meta.watchLevel ?? 0;
+    const it = thesisDropItem(acct, view, tk, '', meta.reduceDd);
+    cancelThesisDrop(acct, tk, `又跌到比高點低 ${ladderPct(level)} 以上，重新審查；這一項以新的跌幅審查通知為準`, 'SUPERSEDED');
+    const n = newNotif(acct, view, { kind: 'URGENT', title: `${tk} 跌幅審查`, items: [it] });
+    n.preview = composeNotif(acct, view, n);
+    created.push(n);
+    log.push({ ticker: tk, what: `比高點低 ${ladderPct(level)} 以上：有論點，只觸發跌幅審查（不減半）` });
+  }
+  // 單筆變動夠大的訊號 → 當天通知（審查後持有、等月報的減半不走這裡：它在月報列成跌幅審查的項目）
   const pending: Record<string, OwnAction> = {};
-  for (const [tk, m] of Object.entries(acct.own)) if (m.pending) pending[tk] = m.pending.action;
+  for (const [tk, m] of Object.entries(acct.own)) if (m.pending && m.slow.state !== 'WATCH') pending[tk] = m.pending.action;
   const values = cellValues(acct, view);
   const due = dueOwnActions({ cfg: acct.cfg, pending, state: acct.rule, values, isMonthly: false });
   const total = totalValue(acct, view);
@@ -674,9 +969,23 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
     n.preview = composeNotif(acct, view, n);
     created.push(n);
   }
-  // 提醒：發出後 2 個交易日沒有回報
+  // 預設不下單的跌幅審查通知（§3.2）：2 個交易日沒有回覆就自動以「不動」結案，不提醒；審查還沒有結果（還在跑、還會重派）時先不結案
   for (const n of acct.notifs) {
-    if (n.status === 'PENDING' && !n.reminded && n.items.length && n.kind !== 'INFO' && view.i - n.seq >= 2) {
+    if (n.status !== 'PENDING' || !isHoldNotice(n) || view.i - n.seq < AUTO_DEFAULT_DAYS) continue;
+    if (n.items.some((it) => !it.cancelled && !!it.ticker && dropReviewOpen(acct.own[it.ticker]?.dropReview))) continue;
+    for (const it of n.items) {
+      if (it.cancelled) continue;
+      it.choice = 'SKIP';
+      acct.shadow.push(thesisDropShadow(view, n, it, AUTO_DEFAULT_NOTE));
+    }
+    n.status = 'AUTO_DEFAULT';
+    n.respondedAt = view.date;
+    n.respondedSeq = view.i;
+    log.push({ ticker: n.items.find((i) => !i.cancelled)?.ticker ?? '', what: `通知 #${n.id}（${n.title}）${AUTO_DEFAULT_DAYS} 個交易日沒有回覆，自動以「不動」結案` });
+  }
+  // 提醒：發出後 2 個交易日沒有回報（預設不下單的跌幅審查通知不提醒）
+  for (const n of acct.notifs) {
+    if (n.status === 'PENDING' && !n.reminded && n.items.length && n.kind !== 'INFO' && !isHoldNotice(n) && view.i - n.seq >= 2) {
       n.reminded = true;
       created.push(newNotif(acct, view, { kind: 'INFO', title: `提醒：「${n.title}」（${mdOf(n.date)}）還沒回報`, text: '照做了嗎？還沒回覆的話，打開原來那則通知選一項；選「整則這次不做」就不再提醒。', ref: n.id, coreAbsorb: false }));
     }
@@ -767,11 +1076,17 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
   }
   const ownActions: Record<string, OwnAction> = {};
   const ownNotes: Record<string, string> = {};
+  /** 審查後持有、審查判前提不成立、變動不到 5% 而等月報的減半（allocation_redesign §3.2）：不走規則引擎（狀態照做了才變），另外列成跌幅審查的項目。 */
+  const watchReduce: Record<string, string> = {};
   for (const [tk, m] of Object.entries(acct.own)) {
-    if (m.pending) {
-      ownActions[tk] = m.pending.action;
-      ownNotes[tk] = `（${m.pending.date} 觸發；這一筆不到總資產的 5%，所以併入月報）`;
+    if (!m.pending) continue;
+    const note = `（${m.pending.date} 觸發；這一筆不到總資產的 5%，所以併入月報）`;
+    if (m.slow.state === 'WATCH') {
+      if (m.pending.action === 'REDUCE') watchReduce[tk] = note;
+      continue;
     }
+    ownActions[tk] = m.pending.action;
+    ownNotes[tk] = note;
   }
   const core = acct.cfg.coreTicker;
   const blocked = [...(input.vetoed ?? []), ...Object.keys(acct.mom.excluded), ...Object.keys(acct.mom.adopted)];
@@ -796,6 +1111,10 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
   for (const tk of Object.keys(ownActions)) acct.own[tk].pending = null;
   acct.mom.owe = {};
   let items = itemsFromPlan(acct, view, plan, values, { ownNotes, runIds: input.runIds });
+  for (const [tk, note] of Object.entries(watchReduce)) {
+    acct.own[tk].pending = null;
+    items.push(thesisDropItem(acct, view, tk, note, acct.own[tk].reduceDd));
+  }
   // 任務 A：進場那一項的說明（准許，附註、法庭的結論、沿用、還在審…；momentum_ai §3.3）。舊月報只有觀察理由
   for (const it of items) {
     if (it.f !== 'F1' || !it.ticker) continue;

@@ -17,8 +17,13 @@ export interface DemoScript {
   vetoes?: Record<string, string[]>;
   /** on 那一天早上（月報之前）記下的 F24 檔位。premiseId：三票都判不成立的那條前提（有的話算三票一致，慢規則通知上才會列「照 AI」；own_thesis §3.4）。 */
   aiTiers?: { on: string; ticker: string; tier: Tier; date: string; suggest: boolean; premiseId?: string }[];
-  /** on 那一天收盤後慢規則觸發減半時，減半檢視（AI 論點檢查）的結果（own_thesis §3.3）：通知上 AI 的那一行照它寫。 */
-  drops?: { on: string; ticker: string; status: 'HOLD' | 'EXIT' | 'AGREE' | 'NONE'; cause?: string; premiseId?: string }[];
+  /**
+   * on 那一天收盤後比高點低 20% 觸發時，AI 論點檢查的結果：通知上 AI 的那一行照它寫。
+   *   只有預設前提的股票（減半檢視，own_thesis §3.3）：EXIT／AGREE／NONE
+   *   有論點的股票（跌幅審查，allocation_redesign §3.2）：BROKEN（前提不成立；exit = 3 票都選出清）／CLEAR／SPLIT／NONE；attr 是跌幅拆解（只顯示）
+   * 有論點的股票腳本沒寫的：示範模式沒有 AI 層，記成沒跑完（不動）。
+   */
+  drops?: { on: string; ticker: string; status: 'EXIT' | 'AGREE' | 'NONE' | 'BROKEN' | 'CLEAR' | 'SPLIT'; cause?: string; premiseId?: string; exit?: boolean; votes?: number; attr?: { stock: number; market: number; sector: number | null; idio: number } }[];
   /** on 那一天收盤後成立的你定的條件（甲類通知，own_thesis §1.10）：setAt 哪天勾選的、why 怎麼確認的。 */
   conditions?: { on: string; ticker: string; action: 'EXIT' | 'HALF'; text: string; setAt: string; why: string }[];
   /** on 那一天收盤後 AI 審查判前提不成立的當天通知（乙類，own_thesis §1.10）。 */
@@ -82,16 +87,18 @@ export const DEMO_SCRIPTS: Record<DemoId, DemoScript> = {
   s2: {
     id: 's2',
     title: '自選股大跌',
-    summary: 'MU 占帳戶約 14%。財報後下跌，12/24 觸發慢規則減半（當天通知）；1 月你定的出場條件成立、照當時的決定出清；META 也跌破 -20% 但部位小，併入 1 月月報；1/21 AI 審查認為 NVDA 的前提不成立。',
-    tips: ['MU 減半：12/18 的審查已經認為一條前提不成立，通知上寫 AI 同意減半；選「這次不做」要寫一句理由', '跳到 1/4 的月報：META 還沒有你的論點，AI 只檢查系統預設前提，同意減半', '跳到 1/7：你定的出場條件成立，預設照當時的決定出清 MU', '跳到 1/21：AI 審查認為 NVDA 的前提不成立，可以照 AI、拿去討論或不同意'],
+    summary: 'MU 占帳戶約 14%。財報後下跌，12/24 比高點低 20%，觸發跌幅審查：3 票判一條前提不成立 → 預設減半（當天通知）；1 月你定的出場條件成立、照當時的決定出清；META 也跌破 -20%，它還沒有你的論點，照慢規則減半，部位小、併入 1 月月報；1/13 MSFT 也跌破 -20%，論點檢查沒有前提被判不成立 → 不減半（不用回覆）；1/21 AI 審查認為 NVDA 的前提不成立。',
+    tips: ['MU 有你的論點：跌 20% 只觸發論點檢查。這次 3 票判前提「HBM 長約有價格保護」不成立，所以預設減半；選「這次不做」要寫一句理由，而且之後再跌到 -30% 會重新審查', '跳到 1/4 的月報：META 還沒有你的論點，AI 只檢查系統預設前提，同意減半',  '跳到 1/7：你定的出場條件成立，預設照當時的決定出清 MU', '跳到 1/14：MSFT 比高點低 21%，但論點檢查沒有前提被判不成立，所以不減半——這一則不用回覆，2 個交易日後自動結案；到 MSFT 的持股頁看「審查後持有」的說明', '跳到 1/21：AI 審查認為 NVDA 的前提不成立，可以照 AI、拿去討論或不同意'],
     startAt: '2026-12-28',
     aiTiers: [
       { on: '2026-12-18', ticker: 'MU', tier: 'HALF', date: '2026-12-18', suggest: true, premiseId: 'P1' },
       { on: '2027-02-26', ticker: 'MU', tier: 'HALF', date: '2027-02-26', suggest: false, premiseId: 'P1' },
     ],
     drops: [
-      { on: '2026-12-24', ticker: 'MU', status: 'AGREE', cause: 'FUNDAMENTAL' },
+      { on: '2026-12-24', ticker: 'MU', status: 'BROKEN', cause: 'FUNDAMENTAL', premiseId: 'P1' },
       { on: '2026-12-24', ticker: 'META', status: 'AGREE', cause: 'SECTOR' },
+      // MSFT 有論點：前提都沒有被判不成立 → 不減半（預設不動、不用回覆），留在審查後持有
+      { on: '2027-01-13', ticker: 'MSFT', status: 'CLEAR', cause: 'SECTOR', attr: { stock: -0.213, market: -0.03, sector: -0.11, idio: -0.073 } },
     ],
     conditions: [{ on: '2027-01-06', ticker: 'MU', action: 'EXIT', text: 'DRAM/HBM 合約價走平或下跌', setAt: '2026-12-20', why: '8-K 2027-01-06 的原文，3 票確認（引用在網站）。這條是 AI 建議，你在 12/20 勾選。' }],
     breaks: [{ on: '2027-01-20', ticker: 'NVDA', tier: 'HALF', premiseId: 'P1', basis: '10-Q 2027-01-20' }],
@@ -138,6 +145,19 @@ export const DEMO_SCRIPTS: Record<DemoId, DemoScript> = {
         summary: '你在 12/20 勾選的條件「DRAM/HBM 合約價走平或下跌」成立：公司在 8-K 寫明第一季 DRAM 合約價季減 8%，HBM3E 報價首度鬆動。',
         quotes: [{ source: '8-K Item 7.01（虛構）', date: '2027-01-06', quote: 'DRAM contract prices declined 8% sequentially; HBM3E pricing softened for the first time' }],
         conditions: MU_CONDITIONS,
+        fake: true,
+      },
+      {
+        kind: 'REVIEW',
+        ticker: 'MSFT',
+        date: '2027-01-13',
+        verdict: '不動',
+        votes: '3 票一致',
+        summary: '跌幅審查：你的兩條前提都沒有被判不成立。這次下跌拆開來看：大盤 -3%、軟體類股比大盤 -11%、個股自身 -7%；最新一季 Azure 成長 33%、營業利益率 45%。跌幅只觸發這次審查，不是賣出的理由，所以不減半。',
+        premises: [
+          { text: 'Azure 成長維持 30% 以上', origin: 'AI_DRAFT_ACCEPTED', status: 'HOLDS', evidence: '10-Q：Azure 與其他雲端服務營收年增 33%（虛構）' },
+          { text: '營業利益率維持在 40% 以上', origin: 'AI_DRAFT_ACCEPTED', status: 'HOLDS', evidence: '財報數字：營業利益率 45%（虛構）' },
+        ],
         fake: true,
       },
       {

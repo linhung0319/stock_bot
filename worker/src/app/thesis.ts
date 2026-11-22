@@ -864,7 +864,7 @@ export function pickFilings<F extends Pick<Filing, 'accession' | 'form' | 'items
 const PACK_SOURCE_TEXT: Record<string, string> = { DISCUSSION: '討論後貼回，', TYPED: '在網站手寫，' };
 const ORIGIN_TEXT: Record<string, string> = { INITIAL: '上線時就持有', NEW: '新增自選', TRANSFER: '從動能轉入', ADOPT: '認養', MANUAL: '自己買進' };
 const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
-const OUTCOME_TEXT: Record<string, string> = { FOLLOW: '照做', REVISE: '修正論點', DISAGREE: '不同意', SKIPPED: '月報裡沒有動它（當成不同意）', NONE: '上次的失效通知沒有回應', RULE: '照規則' };
+const OUTCOME_TEXT: Record<string, string> = { FOLLOW: '照做', REVISE: '修正論點', DISAGREE: '不同意', SKIPPED: '月報裡沒有動它（當成不同意）', NONE: '上次的失效通知沒有回應', RULE: '照規則', KEPT: '不動', HALVED: '減半' };
 /** 回應的白話（甲類、慢規則通知的 SKIPPED 是「這次不做」；慢規則通知的 FOLLOW 是「照 AI」）。 */
 export const outcomeText = (r: { outcome: string; type?: string }): string =>
   r.outcome === 'SKIPPED' && (r.type === 'A' || r.type === 'R') ? '這次不做' : r.outcome === 'FOLLOW' && r.type === 'R' ? '照 AI' : r.outcome === 'RULE' ? '照規則減半' : (OUTCOME_TEXT[r.outcome] ?? r.outcome);
@@ -1360,6 +1360,15 @@ export const OWN_ATTN: AttnKind[] = [
     },
   },
   {
+    // 跌幅審查 3 個交易日都沒跑完（allocation_redesign §3.2）：不動、已經推過告警；列一次，到這檔離開審查後持有或再跌一級重新審查為止
+    kind: 'DROP_REVIEW_FAILED',
+    detect({ file, meta }) {
+      const dr = meta.dropReview;
+      if (!dr?.thesis || !dr.failed || dr.status !== 'NONE' || meta.slow.state !== 'WATCH') return [];
+      return [{ key: `DROP_REVIEW_FAILED@${dr.session}`, every: null, since: dr.lastTry ?? dr.session, text: `${file.ticker} 的跌幅審查（${dr.session.slice(5)} 觸發）沒有跑完，這檔沒有減半；之後財報後的審查與再跌一級時仍會檢查，也可以拿去討論` }];
+    },
+  },
+  {
     // 定期審查連續 3 次票數不一致（§3.6.4）：發生時列一次（鍵帶這一串的第一次；有一次三票一致歸零之後再發生才再列）
     kind: 'NO_CONSENSUS',
     detect({ file, view }) {
@@ -1539,7 +1548,8 @@ export function breakLogs(acct: Pick<Account, 'own'>, notifs: Notif[], only?: Se
           runIds: it.runIds ?? [],
           conditionId: it.brk.type === 'A' ? it.brk.conditionId : null,
           premiseId: it.brk.premiseId,
-          tier: withRule ? 'EXIT' : (it.choices.find((c) => c.id !== 'SKIP')?.tier ?? null),
+          // 慢規則項目上的那一行：只有預設前提的一定是出清；有論點的股票的跌幅審查是減半（3 票都選出清時才有「照 AI：出清」）
+          tier: withRule ? (it.thesisDrop && !it.choices.some((c) => c.id === 'AI') ? 'HALF' : 'EXIT') : (it.choices.find((c) => c.id !== 'SKIP')?.tier ?? null),
           sameDay: n.kind === 'URGENT',
           ...(withRule ? { withRule: true } : {}),
         },
@@ -1574,6 +1584,10 @@ export function ruleResponseLogs(acct: Pick<Account, 'own'>, n: Notif, session: 
     const fileId = acct.own[it.ticker]?.fileId;
     if (!fileId) continue;
     const ai = it.choices.find((c) => c.id === 'AI');
+    // 有論點的股票的跌幅審查（allocation_redesign §3.2）：沒有前提被判不成立時選「不動」是照預設（KEPT），不是這次不做；
+    // 選「減半」記 HALVED。AI 給的：前提不成立 → 減半（3 票出清時是出清）；都沒有被判不成立 → 不動
+    const hold = !!it.thesisDrop && it.drop !== 'BROKEN';
+    const offered = it.thesisDrop ? (it.drop === 'BROKEN' ? (ai ? 'EXIT' : 'HALF') : it.drop === 'CLEAR' ? 'HOLD' : null) : ai?.tier === 'EXIT' ? 'EXIT' : ai?.tier === 'HOLD' ? 'HOLD' : null;
     out.push({
       ticker: it.ticker,
       fileId,
@@ -1583,9 +1597,9 @@ export function ruleResponseLogs(acct: Pick<Account, 'own'>, n: Notif, session: 
       body: {
         notif: n.id,
         type: 'R',
-        outcome: it.choice === 'AI' ? 'FOLLOW' : it.choice === 'SKIP' ? 'SKIPPED' : 'RULE',
+        outcome: it.choice === 'AI' ? 'FOLLOW' : it.choice === 'SKIP' ? (hold ? 'KEPT' : 'SKIPPED') : it.thesisDrop ? 'HALVED' : 'RULE',
         reason: it.choice === 'SKIP' ? (it.reason ?? null) : null,
-        aiOffered: ai?.tier === 'EXIT' ? 'EXIT' : ai?.tier === 'HOLD' ? 'HOLD' : null,
+        aiOffered: offered,
         premiseId: it.brk?.type === 'B' ? it.brk.premiseId : null,
         runIds: it.runIds ?? [],
       },

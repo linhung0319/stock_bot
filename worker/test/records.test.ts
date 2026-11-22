@@ -202,16 +202,19 @@ describe('③ AI 建議產生的通知項目、通知、影子紀錄帶 run_id',
 
   // T31b 改了這個行為（own_thesis §3.4）：減半項目上 AI 的那一行只來自看過這次觸發的結論——減半檢視（dropReview），或觸發之後另外回來的審查；
   // 觸發之前的定期審查檔位不再並列，所以這裡改成：項目帶的是那次減半檢視的執行，之後另外有審查回來（建議出清）時換成那一次
-  it('F7：慢規則減半項目帶那次減半檢視的執行；觸發之後另外有審查回來（建議出清）時跟著換', () => {
+  // T82（allocation_redesign §3.2）：MU 有論點，12/24 是跌幅審查的項目；結果改成「前提都沒有被判不成立」（以前是建議不動）。
+  // 預設不動的通知 2 個交易日後會自動結案，所以停在觸發那天收盤後
+  it('F7：跌幅審查項目帶那次審查的執行；觸發之後另外有審查回來（建議出清）時跟著換', () => {
     const sc = scenarios.s2();
     const sim = new Sim(sc.market, sc.init);
-    sim.runUntil('2026-12-31');
-    // 觸發（12/24）之前的定期審查不會出現在減半項目上
+    let urgent!: Notif;
+    while (!urgent) sim.day({ afterClose: (c) => (urgent = c.find((n) => n.kind === 'URGENT' && n.items.some((i) => i.f === 'F7' && i.ticker === 'MU'))!) });
+    expect(urgent.date).toBe('2026-12-24');
+    // 觸發（12/24）之前的定期審查不會出現在項目上
     sim.acct = recordAiTier(sim.acct, 'MU', 'HOLD', '2026-12-18', false, 'run-f24-old');
-    const urgent = sim.acct.notifs.find((n) => n.kind === 'URGENT' && n.items.some((i) => i.f === 'F7' && i.ticker === 'MU'))!;
     expect(item(urgent, 'F7', 'MU').runIds).toBeUndefined();
-    // 減半檢視開了（等結果）→ 回來建議不動：項目帶那次執行
-    sim.acct.own.MU.dropReview = { session: '2026-12-24', runId: 'run-f7-mu', status: 'HOLD', cause: 'SECTOR', premiseId: null, told: false };
+    // 跌幅審查開了（等結果）→ 回來：前提都沒有被判不成立。項目帶那次執行
+    sim.acct.own.MU.dropReview = { session: '2026-12-24', runId: 'run-f7-mu', status: 'CLEAR', cause: 'SECTOR', premiseId: null, told: false, thesis: true, level: 0 };
     sim.acct = refreshOwnAiChoice(sim.acct, sim.pre, 'MU').acct;
     const it7 = item(sim.acct.notifs.find((n) => n.id === urgent.id)!, 'F7', 'MU');
     expect(it7.runIds).toEqual(['run-f7-mu']);

@@ -265,11 +265,13 @@ describe('F18／F19：payload 檢查與結論', () => {
 describe('F7／F20／F5／F6／F21／F14：檢查與結論', () => {
   // T31b 改了 dropDecision（own_thesis §3.3，修 K4）：結果是五種之一，「不動」多了程式核對（跌幅拆解在證據包的 rule.detail.attr）。
   // 各種結果的條件在 test/t31b-drop.test.ts；這裡留原本的兩個斷言（三票不動、三票減半）與轉交。F20 的一句話 T32d 拿掉（momentum_ai §3.6）
-  it('F7：3 票一致而且和規則（減半）不同才給「照 AI」；轉交 F19 要寫代碼', () => {
+  // T82 再改（allocation_redesign §3.2）：有論點的股票（verdicts 有 HOLD）結論是四種——三票不動、沒有前提被判不成立 → CLEAR（不看歸類、不核對跌幅拆解）；
+  // 三票選減半卻沒有一條前提判不成立 → 不算（SPLIT，預設不動；以前是「同意減半」）。四種結果的條件在 test/t82-watch.test.ts
+  it('F7：有論點的股票，三票不動 → 前提都沒有被判不成立；選減半卻沒有不成立的前提 → 不算；轉交 F19 要寫代碼', () => {
     const pack = { run_id: 'r', function: 'OWN_DROP', as_of: '2026-11-23', policy: { level: 'A3', verdicts: ['EXIT', 'HALF', 'HOLD'], abstain: 'HALF', min_evidence: 1, samples: 3 }, premises: [], condition_types: [], data_quality: {}, facts: [], rule: { action: '', detail: { attr: { stock: -0.25, market: -0.2, sector: null, idio: -0.05 } } }, documents: [{ id: 'P', source_id: 'price:MU', kind: 'price', date: '2026-11-23', title: 'p', text: '2026-11-23 MU close 70.00' }] } as unknown as EvidencePack;
     const v = (verdict: string, extra: Record<string, unknown> = {}) => ({ verdict, evidence: [{ id: 'E1', source_id: 'price:MU', date: '2026-11-23', quote: '2026-11-23 MU close 70.00', claim: 'x' }], payload: { tier: verdict, cause_class: 'MARKET', ...extra } });
-    expect(dropDecision(judge(pack, [v('HOLD'), v('HOLD'), v('HOLD')], PAYLOAD_HOOKS.OWN_DROP), pack)).toMatchObject({ status: 'HOLD', cause: 'MARKET' });
-    expect(dropDecision(judge(pack, [v('HALF'), v('HALF'), v('HALF')], PAYLOAD_HOOKS.OWN_DROP), pack).status).toBe('AGREE');
+    expect(dropDecision(judge(pack, [v('HOLD'), v('HOLD'), v('HOLD')], PAYLOAD_HOOKS.OWN_DROP), pack)).toMatchObject({ status: 'CLEAR', cause: 'MARKET' });
+    expect(dropDecision(judge(pack, [v('HALF'), v('HALF'), v('HALF')], PAYLOAD_HOOKS.OWN_DROP), pack).status).toBe('SPLIT');
     const bad = judge(pack, [v('HOLD', { cause_class: 'VIBES', escalate_to_F19: true })], PAYLOAD_HOOKS.OWN_DROP);
     expect(bad.samples[0].payload).toMatchObject({ cause_class: 'UNKNOWN', escalate_to_F19: false });
   });
@@ -686,7 +688,9 @@ describe('整條流程：F7 減半檢視、動能持股單月大跌', () => {
   // T29b：自選股不再跑 F20（own_thesis §2.8）；T32d：動能的 F20 也拿掉（momentum_ai §3.6），改成「要看的事」的一行（不開 AI、不進月報的狀態文字）
   // T31b 改了這個行為（own_thesis §3.3，修 K4）：這裡三票「不動」的歸類是一次性事件、而且只有 NVDA 自己跌（個股自身的跌幅超過整段的一半），
   // 過不了「不動」的條件 → 沒有可用的結論，通知上不會出現「照 AI：不動」，也不動 aiTier。過得了的情況在 test/t31b-drop.test.ts
-  it('自選暴跌 → 當天減半通知；F7 三票「不動」但只有個股自己跌 → 沒有可用的結論、照規則；動能持股大跌不開 AI、列在月報的「要看的事」', async () => {
+  // T82 改了這個行為（allocation_redesign §3.2，使用者的決定 D2）：NVDA 有論點，暴跌只觸發跌幅審查；三票不動、沒有前提被判不成立
+  // → 「前提都沒有被判不成立」、不減半，不論跌幅是不是這檔自己跌的（程式核對跌幅拆解的那一關拿掉了）
+  it('自選暴跌（有論點）→ 當天的跌幅審查通知；三票「不動」、只有個股自己跌 → 前提都沒有被判不成立、不減半；動能持股大跌不開 AI、列在月報的「要看的事」', async () => {
     await withWorld(async ({ db, w, run }) => {
       await run('2026-11-20');
       w.shock.NVDA = { from: '2026-11-23', factor: 0.7 };
@@ -706,9 +710,11 @@ describe('整條流程：F7 減半檢視、動能持股單月大跌', () => {
       await run('2026-11-23', 'FINAL');
       acct = (await loadAccount(db))!.acct;
       const it = acct.notifs.find((n) => n.id === urgent.id)!.items.find((i) => i.f === 'F7')!;
-      expect(it.choices.map((c) => c.id)).toEqual(['RULE', 'SKIP']);
-      expect(it.aiLine).toBe('AI 論點檢查沒有一致結論，照規則');
-      expect(acct.own.NVDA.dropReview).toMatchObject({ session: '2026-11-23', runId: drop.runId, status: 'NONE' });
+      expect(it.choices.map((c) => c.id)).toEqual(['SKIP', 'RULE']);
+      expect([it.choice, it.drop]).toEqual(['SKIP', 'CLEAR']);
+      expect(it.aiLine).toMatch(/^論點檢查（3 票）：你的 \d+ 條前提都沒有被判不成立。這次下跌：大盤 /);
+      expect(acct.own.NVDA.dropReview).toMatchObject({ session: '2026-11-23', runId: drop.runId, status: 'CLEAR', thesis: true });
+      expect([acct.own.NVDA.slow.state, acct.rule.own.NVDA.applied]).toEqual(['WATCH', 'STD']);
       expect(acct.own.NVDA.aiTier).toBeNull();
       for (const d of ['2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
       const m = await run('2026-11-30');

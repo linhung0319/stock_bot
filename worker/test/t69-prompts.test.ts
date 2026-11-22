@@ -47,11 +47,12 @@ const DOC_PROMPTS: Record<string, string> = { [OWN_REVIEW]: OWN_REVIEW_PROMPT, [
 
 describe('T69 prompt 升版（§1.4）', () => {
   it('四個功能的 prompt_version 是新版、檔案存在且指到 source_rating.md；舊檔留著、開頭寫「不再使用（2026-11-21）」；草稿的證據包帶新版', () => {
-    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT, OWN_DRAFT_PROMPT, MARKET_BRIEF_PROMPT, OWN_CHECK_PROMPT]).toEqual(['own_review_v5', 'own_drop_v5', 'own_draft_v3', 'market_brief_v2', 'own_check_v6']);
+    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT, OWN_DRAFT_PROMPT, MARKET_BRIEF_PROMPT, OWN_CHECK_PROMPT]).toEqual(['own_review_v5', 'own_drop_v6', 'own_draft_v3', 'market_brief_v2', 'own_check_v6']);
     const old: Record<string, string> = { own_review_v5: 'own_review_v4', own_drop_v5: 'own_drop_v4', own_draft_v3: 'own_draft_v2', market_brief_v2: 'market_brief_v1', own_check_v6: 'own_check_v5' };
     for (const [cur, prev] of Object.entries(old)) {
       const t = read(`${cur}.md`);
-      expect(t.startsWith(`# ${cur}：`), cur).toBe(true);
+      // 減半檢視 T82 再升成 v6（allocation_redesign §3.2）：v5 開頭多了一行「不再使用」，所以只看有沒有那個標題
+      expect(t.includes(`# ${cur}：`), cur).toBe(true);
       expect(t, cur).toContain('T69');
       const head = read(`${prev}.md`).split('\n')[0];
       expect(head, prev).toContain(`> 不再使用（2026-11-21）：T69 起改用 \`${cur}.md\``);

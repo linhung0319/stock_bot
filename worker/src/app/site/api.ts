@@ -1178,7 +1178,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
         acct,
         snapshot: snap,
         // newOwnRows：結果頁那張清單的每一行（買進時的一句話；賣光又買回、上次有論點的帶 prev，T44）
-        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, belowStd: out.belowStd, startsHalved, monthlyId, newOwn, newOwnRows: thesisTodoOf(acct, newOwn), newOwnDrafts: newOwnDrafts(d, acct, newOwn) },
+        result: { completed: out.completed, followUps: out.followUps, created: out.created.map((n) => ({ id: n.id, kind: n.kind, title: n.title })), cashOther: out.cashOther, cashWarn: out.cashWarn, removedOwn: out.removedOwn, belowStd: out.belowStd, watchHalved: out.watchHalved ?? [], startsHalved, monthlyId, newOwn, newOwnRows: thesisTodoOf(acct, newOwn), newOwnDrafts: newOwnDrafts(d, acct, newOwn) },
       };
     });
     // 送出前的帳戶留下來，填錯了可以復原（只留最後一份；之後帳戶有變動就不能復原）

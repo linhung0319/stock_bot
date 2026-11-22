@@ -188,8 +188,13 @@ export interface OwnMeta {
    * 這檔的減半項目被回覆之後、慢規則下一次切換或和尚未下單的那次互相抵銷時清掉。沒有這個欄位（舊資料）= 通知上不顯示 AI 那一行。
    */
   dropReview?: DropReview | null;
-  /** 最近一次觸發減半那天距 52 週高點的跌幅（例如 -0.224）：減半項目的標題用（併入月報的項目要寫觸發那天的數字）。舊資料沒有。 */
+  /** 最近一次觸發減半（或跌幅審查）那天距 52 週高點的跌幅（例如 -0.224）：項目的標題用（併入月報的項目要寫觸發那天的數字）。舊資料沒有。 */
   reduceDd?: number | null;
+  /**
+   * 審查後持有（slow.state 是 WATCH，allocation_redesign §3.3）：已經審過 DROP_LADDER 的第幾級（0 = -20%、1 = -30%…）。
+   * 再跌到更深的一級才重新審查；回到標準或減半時清掉。只有預設前提的股票不會有。
+   */
+  watchLevel?: number;
   /**
    * 部位大小旗標（own_thesis §3.6.3，T35）：自選市值占總資產 ≥ 標準比重 2 倍（而且還沒到單檔上限）時設成 true，跌回 1.5 倍以下設回 false。
    * 每個交易日由 `app/concentration.ts` 的 updateSizeFlags 更新；只用來列「要看的事」與討論包的那一句，規則不看它。沒有這個欄位 = false。
@@ -245,8 +250,19 @@ export interface OwnWebSources {
   checked?: { at: string; items: WebSourceCheck[] } | null;
 }
 
-/** 減半檢視的結果（own_thesis §3.3 的五種）：還沒有結果／建議不動／建議出清／同意減半／沒有可用的結論。 */
-export type DropStatus = 'PENDING' | 'HOLD' | 'EXIT' | 'AGREE' | 'NONE';
+/**
+ * 減半檢視／跌幅審查的結果。
+ *   只有預設前提的股票（own_thesis §3.3，照舊）：PENDING 還沒有結果／EXIT 建議出清／AGREE 同意減半／NONE 沒有可用的結論。
+ *   有論點的股票（跌幅審查，allocation_redesign §3.2 的四種）：BROKEN 前提不成立（3 票判同一條、都有合格引用）／
+ *     CLEAR 前提都沒有被判不成立／SPLIT 票數不一致／NONE 沒跑完；PENDING 還沒有結果。
+ *   HOLD（建議不動）是 2026-11-22 之前有論點的股票的結果，現在不再產生；舊通知上的照樣看得到。
+ */
+export type DropStatus = 'PENDING' | 'HOLD' | 'EXIT' | 'AGREE' | 'NONE' | 'BROKEN' | 'CLEAR' | 'SPLIT';
+
+/** 跌幅審查連續幾個交易日沒跑完就不再重派（allocation_redesign §3.2）。 */
+export const DROP_RETRY_DAYS = 3;
+/** 同一個交易日最多派幾次（07:30 一次、09:30 重派一次）。 */
+export const DROP_TRIES_PER_DAY = 2;
 
 export interface DropReview {
   /** 觸發減半的訊號日。 */
@@ -259,7 +275,30 @@ export interface DropReview {
   premiseId: string | null;
   /** 這個結果有沒有跟著通知推過 LINE（§3.5）。 */
   told: boolean;
+  /**
+   * 有論點的股票的跌幅審查（allocation_redesign §3.2；種類以觸發當天的為準）。有這個欄位的結果照新的效力表：
+   * 只有 BROKEN 會讓它賣，其餘都是不動。這一筆留到這檔離開審查後持有（回到標準、減半、移出）或再跌一級重新審查為止，持股頁的說明用。
+   */
+  thesis?: boolean;
+  /** 這次審的是 DROP_LADDER 的第幾級。 */
+  level?: number;
+  /** BROKEN：3 票都選出清（通知多一個「照 AI：出清」）。 */
+  exit?: boolean;
+  /** SPLIT：最多票判不成立的那條前提與票數（沒有任何一票判不成立、只是檔位不一致時沒有）。 */
+  splitPremise?: string | null;
+  splitVotes?: number;
+  /** 程式算的跌幅拆解（從 52 週高點那天到今天；只顯示，不影響結論）。 */
+  attr?: { stock: number; market: number; sector: number | null; idio: number } | null;
+  /** 沒跑完的重派（§3.2）：已經派過幾個交易日、最近一次是哪個交易日、那一天派了幾次。 */
+  days?: number;
+  lastTry?: string;
+  sameDay?: number;
+  /** 沒跑完、而且不會再重派了（3 個交易日都沒跑完，或 AI 層沒有設定）。 */
+  failed?: boolean;
 }
+
+/** 這一筆跌幅審查還會有結果嗎：還在跑，或沒跑完但還會重派。預設不下單的通知在這期間不自動結案。 */
+export const dropReviewOpen = (dr: DropReview | null | undefined): boolean => !!dr && (dr.status === 'PENDING' || (dr.status === 'NONE' && !!dr.thesis && !dr.failed));
 
 /**
  * 「要看的事」的一件（own_thesis §3.6.6；動能的見 momentum_ai §3.6）：不用下單、但值得知道的事。
@@ -366,8 +405,15 @@ export interface Item {
    * 慢規則減半項目（F7）上 AI 那一行現在的狀態（own_thesis §3.4）：PENDING 檢查進行中、HOLD 建議不動（有「照 AI：不動」）、
    * EXIT 建議出清（有「照 AI：出清」，同時帶 withRule 的 brk）、AGREE 同意減半、NONE 沒有一致結論。
    * 沒有 = 不顯示（舊通知、沒有跑減半檢視）。LINE 多的那一行、回應的 aiOffered、補推都看它。
+   * 有論點的股票（thesisDrop）：BROKEN 前提不成立（預設減半）、CLEAR／SPLIT／NONE／PENDING 都是預設不動（allocation_redesign §3.2）。
    */
   drop?: DropStatus;
+  /**
+   * 有論點的股票的跌幅審查項目（allocation_redesign §3.2；種類以觸發當天的為準）：比高點低 20% 以上只觸發審查。
+   * 選項是「不動」與「減半」，預設不動；審查判前提不成立（drop 是 BROKEN）時預設才是減半、「這次不做」要寫理由。
+   * 規則的狀態在你照做減半之後才變成減半（選項的效果），其餘留在審查後持有。level：這次審的是 DROP_LADDER 的第幾級。
+   */
+  thesisDrop?: { level: number };
   /**
    * 併進這個減半項目的乙類通知（own_thesis §3.4：慢規則通知產生時同一檔有還沒回覆的乙類 → 那一則標 SUPERSEDED，內容併進來）。
    * 之後重算「照 AI」時（refreshOwnAiChoice）沿用。
@@ -397,7 +443,8 @@ export interface Item {
 }
 
 export type NotifKind = 'MONTHLY' | 'MONTHLY_EMPTY' | 'URGENT' | 'CASHFLOW' | 'FIX' | 'INFO' | 'CLASSIFY' | 'CASH_DIFF';
-export type NotifStatus = 'PENDING' | 'RESPONDED' | 'DONE' | 'SKIPPED' | 'READ' | 'SUPERSEDED' | 'CANCELLED';
+/** AUTO_DEFAULT：預設不下單的通知（跌幅審查的結果是不動）2 個交易日沒有回覆，自動照預設結案（allocation_redesign §3.2；不提醒）。 */
+export type NotifStatus = 'PENDING' | 'RESPONDED' | 'DONE' | 'SKIPPED' | 'READ' | 'SUPERSEDED' | 'CANCELLED' | 'AUTO_DEFAULT';
 
 export interface FollowUp {
   ticker: string;

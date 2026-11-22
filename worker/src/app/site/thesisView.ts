@@ -1,7 +1,7 @@
 // 持股頁的論點那一塊（T34，own_thesis §1.3）：從論點檔組出畫面要的白話——前提最近一次的檢查、事件時間軸、
 // 歷次審查與你的回應、靜默中的前提、減半檢視的狀態。純函式：論點檔由呼叫的地方組好（真實模式 thesisFile，示範模式 metaFile）。
 import { verdictText } from '../../ai/functions';
-import { DROP_CAUSE_TEXT, isBelief, notifName, verifyEvery, type Account, type Attention, type MarketView, type OwnMeta } from '../../engine';
+import { DROP_CAUSE_TEXT, dropAttrText, isBelief, notifName, verifyEvery, type Account, type Attention, type MarketView, type OwnMeta } from '../../engine';
 import { concentrationHits } from '../concentration';
 import { CODE_TEXT, eventDetail, eventLabel, eventSource, eventStatus, eventVia } from '../eventText';
 import { UNVERIFIED_AFTER, metaFile, openRisks, outcomeText, ownAttention, premiseStanding, toAttention, type OpenRisk, type PremiseStanding, type ThesisFile, type ThesisReview } from '../thesis';
@@ -159,7 +159,25 @@ export function reviewView(r: ThesisReview): ReviewView {
   return { runId: r.runId, date: r.date, label: r.label, trigger: triggerText(r), result, tone, broken: r.brokenPremises, notif: r.notif, response };
 }
 
-function dropText(dr: NonNullable<OwnMeta['dropReview']>): { text: string; tone: 'ok' | 'warn' | 'hot' | 'now' } {
+function dropText(dr: NonNullable<OwnMeta['dropReview']>, meta?: Pick<OwnMeta, 'premises' | 'pending'>): { text: string; tone: 'ok' | 'warn' | 'hot' | 'now' } {
+  if (dr.thesis) {
+    // 有論點的股票的跌幅審查（allocation_redesign §3.2）：只有前提不成立會讓它賣
+    const w = `${md(dr.session)} 觸發的跌幅審查`;
+    const attr = dropAttrText(dr.attr);
+    const p = meta?.premises.find((x) => x.id === dr.premiseId)?.text ?? dr.premiseId ?? '';
+    switch (dr.status) {
+      case 'PENDING':
+        return { text: `${w}還在跑，台灣 09:30 前會更新到通知上；結果出來之前先不動`, tone: 'now' };
+      case 'BROKEN':
+        return { text: `${w}（3 票）：前提「${p}」不成立${dr.exit ? '，3 票都建議出清' : ''}。${meta?.pending?.action === 'REDUCE' ? '這一筆不到總資產 5%，減半併入下一份月報' : '預設減半'}`, tone: 'hot' };
+      case 'CLEAR':
+        return { text: `${w}（3 票）：前提都沒有被判不成立，不減半${attr ? `。${attr}` : ''}`, tone: 'ok' };
+      case 'SPLIT':
+        return { text: `${w}：${dr.splitPremise && dr.splitVotes ? `3 票裡有 ${dr.splitVotes} 票認為前提「${meta?.premises.find((x) => x.id === dr.splitPremise)?.text ?? dr.splitPremise}」不成立，` : '3 票的結論不一致，'}沒有一致結論，不減半`, tone: 'warn' };
+      default:
+        return { text: dr.failed ? `${w}沒有跑完，不動；之後財報後的審查與再跌一級時仍會檢查` : `${w}還沒有結論，先不動；會再檢查`, tone: 'warn' };
+    }
+  }
   const when = `${md(dr.session)} 減半之後的 AI 論點檢查`;
   switch (dr.status) {
     case 'PENDING':
@@ -217,7 +235,7 @@ export function thesisView(file: ThesisFile, meta: OwnMeta, acct: Pick<Account, 
     reviews: reviews.slice(0, VIEW_REVIEWS),
     reviewCount: reviews.length,
     silenced,
-    dropReview: dr ? { ...dropText(dr), notif: pendingRuleNotif(acct, file.ticker) } : null,
+    dropReview: dr ? { ...dropText(dr, meta), notif: pendingRuleNotif(acct, file.ticker) } : null,
     dropReviewNotifName: dr ? nameOf(pendingRuleNotif(acct, file.ticker)) : null,
     partial,
     risks: openRisks(file, meta, date).map(riskView),

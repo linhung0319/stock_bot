@@ -2,9 +2,14 @@
 // 用字原則：不出現功能代號（F1…F25）與權限等級；狀態用一句話寫出「現在怎樣、到哪裡會觸發」。
 import { ENTRY_CODE_TEXT } from '../../ai/momEntry';
 import {
+  AUTO_DEFAULT_DAYS,
   DEFAULT_ONLY_WHY,
+  DROP_LADDER,
   SLOW,
   TIER_NAME,
+  dropReviewOpen,
+  holdsByDefault,
+  isHoldNotice,
   bookShares,
   bucketValue,
   composeNotif,
@@ -104,6 +109,7 @@ const STATUS_LABEL: Record<Notif['status'], string> = {
   CANCELLED: '已取消',
   READ: '已讀',
   SUPERSEDED: '已被新的清單取代',
+  AUTO_DEFAULT: '沒有回覆，自動照預設不動',
 };
 
 /**
@@ -113,7 +119,9 @@ const STATUS_LABEL: Record<Notif['status'], string> = {
 export function keptAsRule(n: Notif): string | null {
   if (n.status !== 'SKIPPED') return null;
   const live = n.items.filter((i) => !i.cancelled);
-  if (!live.length || !live.every((i) => i.choice === 'SKIP' && i.ruleChoice === 'SKIP')) return null;
+  // 跌幅審查、沒有前提被判不成立（allocation_redesign §3.2）：預設就是不動，選「不動」不是沒照規則
+  if (!live.length || !live.every((i) => i.choice === 'SKIP' && (i.ruleChoice === 'SKIP' || holdsByDefault(i)))) return null;
+  if (live.every((i) => holdsByDefault(i))) return '不動';
   return live.some((i) => i.brk?.type === 'B') ? '不同意 AI，不動' : '照規則，不動';
 }
 
@@ -193,6 +201,8 @@ export interface ItemView {
   aiLine: string | null;
   /** 慢規則減半項目上 AI 那一行的狀態（PENDING 檢查進行中、HOLD 建議不動、EXIT 建議出清、AGREE 同意減半、NONE 沒有一致結論）；沒有是 null。 */
   drop: string | null;
+  /** 有論點的股票的跌幅審查（allocation_redesign §3.2）。 */
+  thesisDrop: boolean;
   /** 乙類用「修正論點」結案的訊號日（這一項同時是取消的，own_thesis §1.10）。 */
   revised: string | null;
 }
@@ -255,6 +265,8 @@ export interface NotifView {
   lateReprice: string[];
   /** 回覆後整則沒下單、但每一項本來就是不動（例如乙類你選「不同意，不動」）：那一句狀態；不是是 null（T39a）。 */
   kept: string | null;
+  /** 預設不動的跌幅審查通知（還沒結案）：「不用回覆」的那一句；不是是 null。 */
+  holdNotice: string | null;
 }
 
 const isBalance = (l: OrderLine): boolean => l.bucket === 'core' && /^(錢交給核心|從核心拿錢|帳上的現金買)/.test(String(l.reason));
@@ -364,7 +376,15 @@ export function itemMeter(d: Ready, n: Notif, it: Item, x: Explain, headline: st
     case 'F7': {
       zone = '減半';
       capText = '收盤距 52 週高點（越右邊跌越多、越接近減半）';
-      say = `比高點低 ${pctTxt(g.value)}，超過 20% → 這次賣一半，${n0} 股`;
+      say = it.thesisDrop
+        ? it.drop === 'BROKEN'
+          ? `比高點低 ${pctTxt(g.value)}，觸發跌幅審查；3 票判前提不成立 → 預設賣一半，${n0} 股`
+          : `比高點低 ${pctTxt(g.value)}，超過 20% → 觸發跌幅審查；沒有前提被判不成立，預設不動`
+        : `比高點低 ${pctTxt(g.value)}，超過 20% → 這次賣一半，${n0} 股`;
+      if (it.thesisDrop) {
+        zone = '審查';
+        capText = '收盤距 52 週高點（越右邊跌越多；低 20% 觸發跌幅審查）';
+      }
       break;
     }
     case 'F8': {
@@ -432,6 +452,9 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   if (single && it.ticker && brkB) {
     const exit = total < 0 && -total === (d.acct.lots.own[it.ticker] ?? -1);
     headline = it.cancelled || total === 0 ? `${it.ticker} 不動` : `${it.ticker} 不動（AI 建議${primary.tier ? TIER_NAME[primary.tier] : '調整'}，${total < 0 ? '賣' : '買'} ${Math.abs(total)} 股${exit ? '，全部' : ''}）`;
+  } else if (single && it.ticker && holdsByDefault(it)) {
+    // 跌幅審查、預設不動（allocation_redesign §3.2）：標題不寫成「賣 MSFT 4 股」（那是另一個選項），寫「MSFT 不動」
+    headline = `${it.ticker} 不動`;
   } else if (single && it.ticker) {
     const exit = total < 0 && buckets.length === 1 && -total === (d.acct.lots[buckets[0] as 'own' | 'mom'][it.ticker] ?? -1);
     headline = total === 0 ? `${it.ticker} 不動` : `${total < 0 ? '賣' : '買'} ${it.ticker} ${Math.abs(total)} 股${exit ? '（全部）' : ''}`;
@@ -454,7 +477,7 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   });
   return {
     key: it.key,
-    label: it.relist ? '上次沒做，再列一次' : it.f === 'F25' && it.kind !== 'OWN_COND' ? 'AI 的條件成立' : it.brk?.type === 'B' && !it.brk.withRule ? 'AI 判斷前提不成立' : (ITEM_LABEL[it.f] ?? it.f),
+    label: it.relist ? '上次沒做，再列一次' : it.f === 'F25' && it.kind !== 'OWN_COND' ? 'AI 的條件成立' : it.brk?.type === 'B' && !it.brk.withRule ? 'AI 判斷前提不成立' : it.thesisDrop ? '跌幅審查' : (ITEM_LABEL[it.f] ?? it.f),
     bucket,
     bucketName: bucket === 'mixed' ? '多桶' : BUCKET_NAME[bucket],
     ticker: it.ticker ?? null,
@@ -477,6 +500,8 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
     // 只有預設前提的股票：那一行後面接「這檔還沒有你的論點，AI 只檢查系統預設前提。」（引擎寫在這一項的理由裡）
     aiLine: (it.kind === 'OWN_RULE' || it.lateVeto) && it.aiLine ? `${it.aiLine}${it.why?.includes(DEFAULT_ONLY_WHY) ? `。${DEFAULT_ONLY_WHY}` : ''}` : null,
     drop: it.drop ?? null,
+    // 有論點的股票的跌幅審查（allocation_redesign §3.2）：選項與理由欄的說明不同
+    thesisDrop: !!it.thesisDrop,
     revised: it.revised ?? null,
   };
 }
@@ -567,7 +592,17 @@ export function notifView(d: Ready, n: Notif): NotifView {
     refName: refNameOf(d.acct, n.ref),
     lateReprice: lateRepriceTickers(n),
     kept: keptAsRule(n),
+    // 預設不動的跌幅審查通知（allocation_redesign §3.2）：不用回覆，2 個交易日後自動結案；審查還沒有結果時先不結案
+    holdNotice: n.status === 'PENDING' && isHoldNotice(n) ? holdNoticeText(d.acct, n) : null,
   };
+}
+
+/** 預設不動的跌幅審查通知上「不用回覆」的那一句。 */
+function holdNoticeText(acct: Account, n: Notif): string {
+  const waiting = n.items.some((it) => !it.cancelled && !!it.ticker && dropReviewOpen(acct.own[it.ticker]?.dropReview));
+  return waiting
+    ? '這一則不用回覆、不用下單：AI 論點檢查還沒有結論，先不動。有了結論這裡會更新；判前提不成立時預設才會改成減半。想自己先賣可以選「減半」，系統當場給清單。'
+    : `這一則不用回覆、不用下單：${AUTO_DEFAULT_DAYS} 個交易日沒有回覆就自動以「不動」結案，不會提醒。結案前想賣可以改選「減半」，系統當場給清單。`;
 }
 
 const refNameOf = (acct: Account, id: number | null | undefined): string | null => {
@@ -667,6 +702,11 @@ function ownHolding(d: Ready, t: string, total: number): HoldingView {
       state = meta.pending.action === 'REDUCE' ? '已觸發減半，下次月報會列' : '已符合加回，下次月報會列';
       detail = `${meta.pending.date} 觸發；變動不到總資產 5%，所以等月報`;
       tone = 'alert';
+    } else if (meta.slow.state === 'WATCH') {
+      // 審查後持有（allocation_redesign §3.3）：跌幅審查之後沒有減半，目標還是標準比重
+      state = '審查後持有';
+      detail = watchNote(acct, t, dd);
+      tone = 'warn';
     } else if (rule.applied === 'HALF') {
       state = '減半中';
       const run = meta.slow.aboveRun;
@@ -674,7 +714,8 @@ function ownHolding(d: Ready, t: string, total: number): HoldingView {
       tone = 'warn';
     } else {
       state = '正常';
-      detail = `比 52 週高點低 ${fmtPct(-dd, 1)}；低 20% 會減半`;
+      // 有論點的股票：低 20% 只觸發跌幅審查，不是賣出的理由（allocation_redesign §3.1）
+      detail = meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT') ? `比 52 週高點低 ${fmtPct(-dd, 1)}；低 20% 會觸發跌幅審查（有論點，不直接減半）` : `比 52 週高點低 ${fmtPct(-dd, 1)}；低 20% 會減半`;
       tone = dd <= -0.15 ? 'warn' : 'ok';
     }
     if (meta.flags.length) {
@@ -689,12 +730,48 @@ function ownHolding(d: Ready, t: string, total: number): HoldingView {
       // 減半中：條改成「站上 200 日均線幾天了」，滿 10 天買回
       const run = px > ma ? Math.min(meta.slow.aboveRun, SLOW.aboveRun) : 0;
       met = meter({ start: 0, th: SLOW.aboveRun, end: SLOW.aboveRun * 1.5, value: run }, { zone: '買回', kind: 'go', label: `站上 200 日均線 ${run} 天；連續 ${SLOW.aboveRun} 天會買回標準比重` });
+    } else if (gauge && meta.slow.state === 'WATCH' && !meta.pending) {
+      // 審查後持有：條的門檻改成下一級（再跌到那裡會重新審查）；已經審到最後一級就不畫門檻
+      const next = nextLadder(meta.watchLevel ?? 0);
+      if (next !== null) {
+        const from = Math.min(gauge.from, next - 0.1);
+        met = meter({ start: 0, th: next, end: from, value: dd, hit: false }, { zone: '再審', label: `比 52 週高點低 ${fmtPct(-dd, 1)}；再跌到 ${fmtPct(next)} 會重新審查` });
+      }
     } else if (gauge) {
       const hit = meta.pending ? meta.pending.action === 'REDUCE' : dd <= SLOW.drawdown;
-      met = meter({ ...scaleOf(gauge)!, hit }, { zone: '減半', label: `比 52 週高點低 ${fmtPct(-dd, 1)}；低 20% 會減半` });
+      const thesis = meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT');
+      met = meter({ ...scaleOf(gauge)!, hit }, thesis && !meta.pending ? { zone: '審查', label: `比 52 週高點低 ${fmtPct(-dd, 1)}；低 20% 會觸發跌幅審查` } : { zone: '減半', label: `比 52 週高點低 ${fmtPct(-dd, 1)}；低 20% 會減半` });
     }
   }
   return { bucket: 'own', ticker: t, shares: sh, price: px, value, pct: value / total, state, detail, tone, gauge, meter: met, target: rule ? `標準比重 ${fmtPct(rule.stdWeight, 1)}` : null };
+}
+
+/** DROP_LADDER 的下一級（還沒審過的最淺一級）；已經審到最後一級是 null。 */
+const nextLadder = (level: number): number | null => DROP_LADDER[level + 1] ?? null;
+
+/**
+ * 審查後持有的說明（allocation_redesign §3.3）：
+ * `比高點低 23%：11-20 的論點檢查沒有前提被判不成立，沒有減半。再跌到 -30% 會重新審查；站回 200 日線連續 10 天後回到一般狀態。`
+ * dd：現在距 52 週高點的跌幅。寫的是最近一次跌幅審查留下的結果（dropReview，留到離開審查後持有為止）。
+ */
+export function watchNote(acct: Pick<Account, 'own' | 'notifs'>, ticker: string, dd: number): string {
+  const meta = acct.own[ticker];
+  if (!meta) return '';
+  const dr = meta.dropReview;
+  const when = dr ? `${dr.session.slice(5)} 的論點檢查` : '跌幅審查';
+  const open = acct.notifs.some((n) => n.status === 'PENDING' && n.items.some((i) => i.ticker === ticker && i.f === 'F7' && !!i.thesisDrop && !i.cancelled));
+  let what: string;
+  if (!dr) what = '跌幅審查之後沒有減半';
+  else if (dr.status === 'PENDING') what = `${when}還在跑，先不動`;
+  else if (dr.status === 'CLEAR') what = `${when}沒有前提被判不成立，沒有減半`;
+  else if (dr.status === 'SPLIT') what = `${when} 3 票沒有一致結論，沒有減半`;
+  else if (dr.status === 'BROKEN') {
+    const p = meta.premises.find((x) => x.id === dr.premiseId)?.text ?? dr.premiseId ?? '';
+    what = `${when}判前提「${p}」不成立；${meta.pending?.action === 'REDUCE' ? '這一筆不到總資產 5%，減半併入下一份月報' : open ? '預設減半，等你決定' : '你選了這次不做，沒有減半'}`;
+  } else what = dr.failed ? `${when}沒有跑完，沒有減半` : `${when}還沒有結論，先不動（會再檢查）`;
+  const next = nextLadder(meta.watchLevel ?? dr?.level ?? 0);
+  const head = Number.isFinite(dd) ? `比高點低 ${fmtPct(-dd, 0)}：` : '';
+  return `${head}${what}。${next === null ? '已經審到最後一級，之後不再因為跌幅重新審查' : `再跌到 ${fmtPct(next)} 會重新審查`}；站回 200 日線連續 ${SLOW.aboveRun} 天後回到一般狀態。`;
 }
 
 function momHolding(d: Ready, t: string, total: number): HoldingView {
@@ -911,7 +988,9 @@ function historyRow(n: Notif): HistoryRow {
   const ai = did.filter((i) => i.choice === 'AI').length;
   let summary = '';
   const kept = keptAsRule(n);
-  if (n.status === 'SUPERSEDED') summary = '清單重算過，以新的為準';
+  if (n.status === 'SUPERSEDED') summary = live.length ? '清單重算過，以新的為準' : '併到別的通知或月報，以那一則為準';
+  else if (n.status === 'AUTO_DEFAULT') summary = '預設不動；2 個交易日沒有回覆，自動結案';
+  else if (kept === '不動') summary = '跌幅審查：你選了不動（沒有前提被判不成立，預設就是不動）';
   else if (kept) summary = live.some((i) => i.brk?.type === 'B') ? '你不同意 AI 的建議，部位不動（規則本來就沒有動作）' : '規則本來就沒有動作，不用下單';
   else if (n.status === 'SKIPPED') summary = '整則沒做';
   else if (live.length && n.status !== 'PENDING') summary = `${live.length} 項裡做了 ${did.length} 項${ai ? `（其中 ${ai} 項照 AI）` : ''}`;
@@ -1180,6 +1259,8 @@ export interface HoldingDetail {
   facts: { label: string; value: string; note?: string }[];
   own: {
     state: string;
+    thesisKind: boolean;
+    watch: string | null;
     stdWeight: number;
     /** 自選桶這一檔現在占總資產（T43：標準比重那一行寫「現在占 X%」）。 */
     weight: number;
@@ -1361,7 +1442,11 @@ export function holdingDetail(d: Ready, ticker: string): HoldingDetail {
     own:
       meta && rule
         ? {
-            state: rule.applied === 'HALF' ? '減半中' : '正常',
+            state: meta.slow.state === 'WATCH' ? '審查後持有' : rule.applied === 'HALF' ? '減半中' : '正常',
+            // 有論點的股票：比高點低 20% 只觸發跌幅審查（allocation_redesign §3.1）；持股頁那一塊的標題與說明跟著變
+            thesisKind: meta.premises.some((p) => p.origin !== 'SYSTEM_DEFAULT'),
+            // 審查後持有的說明（§3.3）；不是就是 null
+            watch: meta.slow.state === 'WATCH' ? watchNote(acct, ticker, view.close[ticker] ? drawdownFromHigh(view.close[ticker], view.i, SLOW.highDays) : NaN) : null,
             stdWeight: rule.stdWeight,
             weight: positions.find((p) => p.bucket === 'own')?.pct ?? 0,
             half: rule.applied === 'HALF',

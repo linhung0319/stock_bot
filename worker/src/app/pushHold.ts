@@ -32,14 +32,27 @@ export const PUSH_HELD_KEY = 'push:held';
 
 const reduceItems = (n: Notif) => n.items.filter((it) => it.f === 'F7' && it.kind === 'OWN_RULE' && !it.cancelled && !!it.ticker);
 
-/** 補推的那一行（own_thesis §3.5 的第三次排程）。 */
-export const dropFollowUpText = (ticker: string, state: 'HOLD' | 'EXIT', notif: number): string => `${ticker} 的 AI 論點檢查回來了：${state === 'HOLD' ? '建議不動' : '前提不成立，建議出清'}。通知 #${notif} 已更新，預設仍是照規則。`;
+/** 通知推出去之後才回來、要補推一行的結果。HOLD、EXIT：只有預設前提的股票與舊通知；BROKEN、CLEAR、SPLIT：有論點的股票的跌幅審查。 */
+export type DropFollowState = 'HOLD' | 'EXIT' | 'BROKEN' | 'CLEAR' | 'SPLIT';
+const FOLLOW_STATES: readonly string[] = ['HOLD', 'EXIT', 'BROKEN', 'CLEAR', 'SPLIT'];
+
+/**
+ * 補推的那一行（own_thesis §3.5 的第三次排程）。有論點的股票的跌幅審查（allocation_redesign §3.2）：通知推出去時還沒有結論（先不動），
+ * 結果回來才補一行——前提不成立時預設改成減半，要到網站決定；其餘仍是不動、不用下單。
+ */
+export const dropFollowUpText = (ticker: string, state: DropFollowState, notif: number): string => {
+  if (state === 'BROKEN') return `${ticker} 的 AI 論點檢查回來了：前提不成立，預設改成減半。通知 #${notif} 已更新，到網站決定。`;
+  if (state === 'CLEAR') return `${ticker} 的 AI 論點檢查回來了：前提都沒有被判不成立，不減半。不用下單；細節在通知 #${notif}。`;
+  if (state === 'SPLIT') return `${ticker} 的 AI 論點檢查回來了：3 票沒有一致結論，不減半。不用下單；細節在通知 #${notif}。`;
+  return `${ticker} 的 AI 論點檢查回來了：${state === 'HOLD' ? '建議不動' : '前提不成立，建議出清'}。通知 #${notif} 已更新，預設仍是照規則。`;
+};
 
 /**
  * 慢規則減半通知與減半檢視（own_thesis §3.5）：
  *   等：新通知裡有減半項目，而且那檔的 dropReview 是 PENDING（沒開成或 AI 層沒設定是 NONE，照舊當場推）
  *   講過了：推出去時 dropReview 不是 PENDING 的，told 設成 true
  *   補推：dropReview 是不動或出清、told 是 false、通知還沒回覆（已經推過由 pushPending 判斷）；同意減半、沒有結論不補推
+ *   有論點的股票的跌幅審查（allocation_redesign §3.2）：等與講過了相同；補推的是前提不成立、都沒有被判不成立、票數不一致（沒跑完的不補推，會重派）
  */
 export const dropWaiter: PushWaiter = {
   name: '減半檢視',
@@ -57,10 +70,10 @@ export const dropWaiter: PushWaiter = {
       for (const it of reduceItems(n)) {
         const t = it.ticker!;
         const dr = acct.own[t]?.dropReview;
-        if (!dr || dr.told || (dr.status !== 'HOLD' && dr.status !== 'EXIT') || (it.drop !== 'HOLD' && it.drop !== 'EXIT')) continue;
+        if (!dr || dr.told || !FOLLOW_STATES.includes(dr.status) || !it.drop || !FOLLOW_STATES.includes(it.drop)) continue;
         out.push({
           notif: n.id,
-          text: dropFollowUpText(t, it.drop, n.id),
+          text: dropFollowUpText(t, it.drop as DropFollowState, n.id),
           told: (a) => {
             const d = a.own[t]?.dropReview;
             if (d && d.status !== 'PENDING') d.told = true;

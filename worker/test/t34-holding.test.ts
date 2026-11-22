@@ -570,9 +570,10 @@ describe('T34：只能從畫面驗收的修補（截圖之外，鎖住程式還�
   it('編輯論點頁存檔之後（出場條件沒送出去）頁首小字改成存好的版本', () => {
     expect(js('pages-thesis.js')).toContain("document.querySelector('.banner .kicker')");
   });
-  it('持股頁以論點為主：論點、要看的事、出場條件、事件、AI 審查與你的回應、慢規則（底線）', () => {
+  // T82（allocation_redesign §3.1）：最後一塊的標題分兩種——有論點的股票是「跌幅審查與價格」，只有預設前提的照舊是「慢規則（底線）」
+  it('持股頁以論點為主：論點、要看的事、出場條件、事件、AI 審查與你的回應、慢規則（底線）／跌幅審查', () => {
     const s = js('pages-holding.js');
-    for (const t of ["panelTop('論點'", "panelTop('要看的事'", "panelTop('出場條件'", "panelTop('事件'", "panelTop('AI 審查與你的回應'", "panelTop('慢規則（底線）'"]) expect(s).toContain(t);
+    for (const t of ["panelTop('論點'", "panelTop('要看的事'", "panelTop('出場條件'", "panelTop('事件'", "panelTop('AI 審查與你的回應'", "panelTop(o.thesisKind ? '跌幅審查與價格' : '慢規則（底線）'"]) expect(s).toContain(t);
     expect(s.indexOf('thesisPanel(d), attentionPanel(d), condPanel(ctx, d), eventPanel(d), reviewPanel(d), rulePanel(ctx, d, main)')).toBeGreaterThan(0);
   });
   it('「要看的事」不再整行是連結；崩盤檢視紀錄表的表頭不換行、表在自己的框裡左右捲', () => {

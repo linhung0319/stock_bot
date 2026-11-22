@@ -18,8 +18,15 @@ export function parseCell(key: CellKey): { bucket: Bucket; ticker: string } {
   return { bucket: key.slice(0, i) as Bucket, ticker: key.slice(i + 1) };
 }
 
-/** 自選慢規則狀態：STD = 標準、HALF = 減半（設計 §2.2）。 */
-export type OwnState = 'STD' | 'HALF';
+/**
+ * 自選慢規則狀態：STD = 標準、HALF = 減半（設計 §2.2）。
+ * WATCH = 審查後持有（allocation_redesign §3.3，2026-11-22）：有論點的股票比高點低 20% 以上、跌幅審查的結果是不動（或你選了這次不做）。
+ * 目標仍是標準比重；進出寫在 dailyCheck 外層，stepSlowRule 不認得它（只會更新兩個計數），只有預設前提的股票與重放走不到。
+ */
+export type OwnState = 'STD' | 'HALF' | 'WATCH';
+/** 已反映到帳上的目標：標準比重或一半。WATCH 的目標是標準比重，算 STD。 */
+export type OwnApplied = 'STD' | 'HALF';
+export const appliedOf = (s: OwnState): OwnApplied => (s === 'HALF' ? 'HALF' : 'STD');
 export type OwnAction = 'REDUCE' | 'READD';
 
 /** 每張單的原因（設計 §2.1 第 6 點）。 */
@@ -128,8 +135,8 @@ export function coreCfg(cfg: Partial<Pick<EngineConfig, 'coreBond' | 'coreBand'>
 }
 
 export interface OwnPick {
-  /** 已反映到帳上的慢規則狀態。 */
-  applied: OwnState;
+  /** 已反映到帳上的慢規則狀態（審查後持有 WATCH 的目標是標準比重，這裡記 STD）。 */
+  applied: OwnApplied;
   /** 標準比重（占總資產）。 */
   stdWeight: number;
 }

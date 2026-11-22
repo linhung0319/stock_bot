@@ -67,7 +67,7 @@ const RJ = (await import('../public/js/thesis-risks.js' as string)) as RisksJs;
 
 describe('T63 prompt：新眼光那個角色（沒有升版號）', () => {
   it('沒有升版：審查 v4、減半檢視 v4；檔頭各有一段 T63 的說明', () => {
-    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_review_v5', 'own_drop_v5']);
+    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_review_v5', 'own_drop_v6']);
     for (const f of [REVIEW, DROP]) {
       const head = read(f).split('\n').slice(0, 8).join('\n');
       expect(head, f).toContain('新眼光（2026-11-21，T63，`composite_layer_design` §3；v4 還沒部署，直接改、沒有升版）');
@@ -422,7 +422,7 @@ describe('T63：新眼光拿不到前提、論點本文與歷次審查（給它�
     await withWorld(async (c) => {
       await startDropRuns(await startCtx(c, AS_OF));
       const [d1] = await drops(c);
-      expect(d1.promptVersion).toBe('own_drop_v5');
+      expect(d1.promptVersion).toBe('own_drop_v6');
       expect(d1.pack.fresh_eyes).toEqual({ run: true, why: '減半檢視每次都跑新眼光', max_risks: 3, docs: 1 });
       expect(d1.docCtx?.fresh).toEqual({ docs: 1, chars: 6000, calls: 1 });
       // 原本的證據包有最近一次審查的摘要（review:）與論點那一份

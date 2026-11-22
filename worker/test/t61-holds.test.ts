@@ -161,7 +161,7 @@ describe('T61 判「成立」要有正面的引用（composite_layer_design §2.
   // ------------------------------------------------------------ 1 prompt 升版
 
   it('prompt 升成 own_review_v4、own_drop_v4：§2.1 的表、confirm_ids、逾期、breaksIf 任一句成立就算；v3 開頭標「不再使用（2026-11-21）」；v3 的內容 v4 照樣有', () => {
-    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_review_v5', 'own_drop_v5']);
+    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_review_v5', 'own_drop_v6']);
     for (const [cur, old] of [['own_review_v4.md', 'own_review_v3.md'], ['own_drop_v4.md', 'own_drop_v3.md']]) {
       const v4 = readPrompt(cur);
       // §2.1 的表：四種情況
@@ -206,7 +206,7 @@ describe('T61 判「成立」要有正面的引用（composite_layer_design §2.
       ['P3', 0, null, null],
     ]);
     const drop = ownDropPack({ acct: w.c.acct, view: w.c.view, axis: w.c.axis, ticker: 'NVDA', runId: 'drop-1', attr: null, base: null, baseRunId: null, docs: [TENQ], urgent: false, dataQuality: { filings: 'ok' }, now: new Date('2026-11-20T01:00:00Z') }).pack;
-    expect(drop.prompt_version).toBe('own_drop_v5');
+    expect(drop.prompt_version).toBe('own_drop_v6');
     expect(drop.policy.holds_fresh_days).toBe(100);
     expect(drop.premises.map((p) => p.id)).toEqual(['P1', 'P2', 'P3']);
   });
@@ -320,16 +320,18 @@ describe('T61 判「成立」要有正面的引用（composite_layer_design §2.
     expect(reviewDecision(outcome, w.c.acct, 'NVDA', AS_OF, pack)).toMatchObject({ tier: 'HOLD', suggest: false, consensus: true, brokenPremises: [], premiseId: null });
   });
 
-  it('減半檢視：成立被降成證據不足不影響「不動」（只要求沒有前提被判不成立）；出清照舊要三票判同一條不成立', () => {
+  // T82（allocation_redesign §3.2）：有論點的股票，三票不動、沒有前提被判不成立 → 「前提都沒有被判不成立」（CLEAR，以前叫 HOLD）；
+  // 三票判同一條不成立 → 「前提不成立」（BROKEN；三票都選出清時 exit）
+  it('跌幅審查：成立被降成證據不足不影響「不動」（只要求沒有前提被判不成立）；前提不成立照舊要三票判同一條', () => {
     const attr: Attribution = { from: '2026-09-01', to: AS_OF, stock: -0.25, market: -0.2, sector: -0.02, idio: -0.03, sectorTicker: 'SMH' };
     const { pack: base } = ownDropPack({ acct: w.c.acct, view: w.c.view, axis: w.c.axis, ticker: 'NVDA', runId: 'drop-2', attr, base: null, baseRunId: null, docs: [TENQ, OLD_K], urgent: false, dataQuality: { filings: 'ok' }, extraDocs: [NOTE], now: new Date('2026-11-20T01:00:00Z') });
     const pack = withAdded(base, [TF_OLD]);
     const hold = { verdict: 'HOLD', premise_checks: [{ premise_id: 'P2', status: 'HOLDS', evidence_ids: ['E5'], confirm_ids: ['E5'] }, { premise_id: 'P1', status: 'HOLDS', evidence_ids: ['E8'], confirm_ids: ['E8'] }], evidence: EV, payload: { tier: 'HOLD', cause_class: 'MARKET' }, report: '大盤一起跌。' };
     const outcome = judge(pack, three(hold), PAYLOAD_HOOKS[OWN_DROP]);
     expect(outcome.samples[0].premises.map((p) => [p.premise_id, p.status, p.holdsIssue?.why])).toEqual([['P2', 'INSUFFICIENT', 'STALE'], ['P1', 'INSUFFICIENT', 'NO_CONFIRM']]);
-    expect(dropDecision(outcome, pack)).toMatchObject({ status: 'HOLD', cause: 'MARKET' });
+    expect(dropDecision(outcome, pack)).toMatchObject({ status: 'CLEAR', cause: 'MARKET' });
     const exit = { verdict: 'EXIT', premise_checks: [{ premise_id: 'P2', status: 'BROKEN', evidence_ids: ['E5'] }], evidence: EV, payload: { tier: 'EXIT', cause_class: 'FUNDAMENTAL' }, report: '測試' };
-    expect(dropDecision(judge(pack, three(exit), PAYLOAD_HOOKS[OWN_DROP]), pack)).toMatchObject({ status: 'EXIT', premiseId: 'P2' });
+    expect(dropDecision(judge(pack, three(exit), PAYLOAD_HOOKS[OWN_DROP]), pack)).toMatchObject({ status: 'BROKEN', premiseId: 'P2', exit: true });
   });
 
   // ------------------------------------------------------------ 6 審查紀錄頁

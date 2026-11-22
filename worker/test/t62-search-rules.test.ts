@@ -32,7 +32,7 @@ const ALL = ['run.md', DRAFT, REVIEW, DROP];
 
 describe('T62 prompt：沒有升版號，三個檔與 run.md 都照 §2.4 寫', () => {
   it('沒有升版：草稿 v2、審查 v4、減半檢視 v4（T60、T61 剛升、還沒部署）', () => {
-    expect([OWN_DRAFT_PROMPT, OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_draft_v3', 'own_review_v5', 'own_drop_v5']);
+    expect([OWN_DRAFT_PROMPT, OWN_REVIEW_PROMPT, OWN_DROP_PROMPT]).toEqual(['own_draft_v3', 'own_review_v5', 'own_drop_v6']);
   });
 
   it('① 同一個網站一次執行最多 4 篇：每個檔都寫、數字等於 WEB_DOC_PER_SITE；沒有別的數字', () => {

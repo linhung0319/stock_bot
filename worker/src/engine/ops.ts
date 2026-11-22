@@ -38,9 +38,9 @@ import {
 } from './account';
 import { momSlotTarget, ownDepositFill, ownDepositScale, planDay } from './allocator';
 import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
-import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, endDisputesFor, afterOpenLists, composeNotif, crashReviewOf, monthlyReport, monthlyWait, recordExternalFlow, refreshCoreBand, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
+import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SELF_HALVE_MIN, SKIPPED_REASON, addDispute, endDisputesFor, afterOpenLists, cancelThesisDrop, composeNotif, crashReviewOf, leaveWatch, monthlyReport, monthlyWait, rebuildThesisDrop, recordExternalFlow, refreshCoreBand, refreshOwnAiChoice, restoreSaved, thesisDropShadow, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
-import { cellKey, type Bucket } from './types';
+import { appliedOf, cellKey, type Bucket } from './types';
 
 const sumFor = (lines: OrderLine[], ticker: string) => lines.filter((l) => l.ticker === ticker).reduce((a, l) => a + l.shares, 0);
 
@@ -93,6 +93,8 @@ export function applyTier(acct: Account, view: MarketView, ticker: string, tier:
     removeOwnPick(acct, ticker, exitReason, view.date); // 照 AI 出清 = 移出自選（同 F15）
   } else if (tier === 'HALF' || tier === 'STANDARD') {
     const st = tier === 'HALF' ? 'HALF' : 'STD';
+    // 審查後持有的股票照做了減半（跌幅審查的選項、乙類、你定的條件）或回到標準：離開審查後持有（allocation_redesign §3.3）
+    if (meta.slow.state === 'WATCH') leaveWatch(meta);
     meta.slow = { ...meta.slow, state: st, sinceSwitch: 0 }; // 切換日重新起算
     meta.pending = null;
     rule.applied = st;
@@ -185,11 +187,22 @@ function recomputeLate(acct: Account, view: MarketView, n: Notif): void {
       it.cancelled = true;
       continue;
     }
+    if (it.thesisDrop) {
+      // 有論點的股票的跌幅審查（allocation_redesign §3.2）：狀態照做了才變；已經不在審查後持有（回到標準、另外減半了）就取消，否則照今天的持股重算股數
+      if (meta.slow.state !== 'WATCH') {
+        it.cancelled = true;
+        it.note = '這檔已經不在審查後持有（回到標準或已經減半），這一項取消';
+        continue;
+      }
+      rebuildThesisDrop(acct, view, n, it);
+      it.note = `晚回覆：用 ${view.date} 收盤價重算`;
+      continue;
+    }
     const expected = it.f === 'F7' ? 'HALF' : 'STD';
     if (meta.slow.state !== expected) {
       it.cancelled = true;
       it.note = '期間規則狀態已反轉，這一項取消';
-      rule.applied = meta.slow.state;
+      rule.applied = appliedOf(meta.slow.state);
       meta.pending = null;
       continue;
     }
@@ -233,6 +246,11 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
       }
       continue;
     }
+    // 跌幅審查（有論點的股票）：三條線每一次都記——照舊的慢規則（減半）、照 AI、實際（allocation_redesign §3.2）
+    if (it.thesisDrop && it.ticker) {
+      acct.shadow.push(thesisDropShadow(view, n, it));
+      continue;
+    }
     const rule = it.choices.find((c) => c.id === it.ruleChoice);
     const ai = it.choices.find((c) => c.id === 'AI');
     const act = it.choices.find((c) => c.id === it.choice);
@@ -269,7 +287,7 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
   for (const it of n.items) {
     if (it.cancelled || it.brk?.type !== 'B' || !it.ticker || !acct.own[it.ticker]) continue;
     if (it.brk.withRule) {
-      if (it.choice !== 'AI') addDispute(acct.own[it.ticker], it.brk.premiseId, view.date, it.reason ?? RULE_OVER_EXIT_REASON, n.id);
+      if (disputesRule(it)) addDispute(acct.own[it.ticker], it.brk.premiseId, view.date, it.reason ?? RULE_OVER_EXIT_REASON, n.id);
     } else if (it.choice === 'SKIP') addDispute(acct.own[it.ticker], it.brk.premiseId, view.date, it.reason ?? SKIPPED_REASON, n.id);
   }
   const nothingToTrade = n.composed.lines.length === 0;
@@ -287,9 +305,27 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
   return acct;
 }
 
-/** 這則通知的減半項目有了最後的結果 → 那幾檔這一次減半的論點檢查清掉（own_thesis §3.3）。 */
+/**
+ * 這則通知的減半項目有了最後的結果 → 那幾檔這一次減半的論點檢查清掉（own_thesis §3.3）。
+ * 有論點的股票還留在審查後持有的（選了不動、這次不做）不清：持股頁要寫上一次審查的結果，留到它回到標準、減半或再跌一級（allocation_redesign §3.3）。
+ */
 function clearDropReviews(acct: Account, n: Notif): void {
-  for (const it of n.items) if (it.f === 'F7' && it.kind === 'OWN_RULE' && !it.cancelled && it.ticker && acct.own[it.ticker]) delete acct.own[it.ticker].dropReview;
+  for (const it of n.items) {
+    if (it.f !== 'F7' || it.kind !== 'OWN_RULE' || it.cancelled || !it.ticker) continue;
+    const meta = acct.own[it.ticker];
+    if (!meta || (meta.dropReview?.thesis && meta.slow.state === 'WATCH')) continue;
+    delete meta.dropReview;
+  }
+}
+
+/**
+ * 慢規則項目上帶著「前提不成立」的那一行（brk.withRule），這個選擇算不算沒有照 AI → 那條前提進靜默期（own_thesis §3.4）。
+ *   只有預設前提的股票（照舊）：AI 建議出清，你選了照規則或這次不做
+ *   有論點的股票的跌幅審查（allocation_redesign §3.6）：這次不做；或 3 票建議出清、你選了減半
+ */
+function disputesRule(it: Item): boolean {
+  if (!it.thesisDrop) return it.choice !== 'AI';
+  return it.choice === 'SKIP' || (it.choice === 'RULE' && it.choices.some((c) => c.id === 'AI'));
 }
 
 /**
@@ -311,7 +347,7 @@ export function reopen(acct0: Account, view: MarketView, id: number): { acct: Ac
   // 回覆時乙類「不同意」寫的靜默期一起收回（修正論點寫的那一項已經取消，不在這裡）
   for (const it of n.items) {
     if (it.cancelled || it.brk?.type !== 'B' || !it.ticker) continue;
-    if (it.brk.withRule ? it.choice === 'AI' : it.choice !== 'SKIP') continue;
+    if (it.brk.withRule ? !disputesRule(it) : it.choice !== 'SKIP') continue;
     const meta = acct.own[it.ticker];
     const pid = it.brk.premiseId;
     if (meta?.disputes) meta.disputes = meta.disputes.filter((d) => !(d.notif === id && d.premiseId === pid));
@@ -381,6 +417,11 @@ export interface SnapshotResult {
   removedOwn: string[];
   /** 自己減碼（清單外）之後低於標準比重、之後入金與加回會補回來的自選（T43）。 */
   belowStd: BelowStd[];
+  /**
+   * 審查後持有的自選股，你自己賣了一半左右（清單外、賣掉原本股數的四分之一以上、還沒賣光）→ 之後照減半處理（allocation_redesign §3.6）：
+   * 狀態改成減半，站回 200 日均線會提醒加回。沒有就不留這個欄位。
+   */
+  watchHalved?: string[];
   /** 分桶快照不允許時的原因（帳戶不變）。 */
   error?: string;
 }
@@ -753,9 +794,12 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
   const fresh: string[] = [];
   /** 自己賣（清單外）、還沒賣光的自選（T43：低於標準比重的要提醒，之後入金與加回會補回來）。 */
   const selfSold: string[] = [];
+  /** 審查後持有、自己賣了一半左右的（allocation_redesign §3.6）：之後照減半處理。 */
+  const watchHalved: string[] = [];
   for (const [t, q] of Object.entries(d.own)) {
     const why = snap.why?.[t]?.trim();
     const std = snap.std?.[t];
+    const had = acct.lots.own[t] ?? 0;
     if (q > 0 && ensureOwnMeta(acct, view, t, 'MANUAL', why || undefined, std ? { std } : {}) && !std) fresh.push(t);
     // 自己賣到 0 股：自動移出自選（之後不再追蹤，也不會被加回或入金買回）
     const soldOut = q < 0 && (acct.lots.own[t] ?? 0) + q === 0 && !!acct.own[t];
@@ -764,7 +808,18 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
     if (soldOut) {
       removeOwnPick(acct, t, 'SOLD_OUT', view.date);
       removedOwn.push(t);
-    } else if (q < 0 && acct.own[t]) selfSold.push(t);
+    } else if (q < 0 && acct.own[t]) {
+      selfSold.push(t);
+      // 審查後持有（通知說不減半），你自己還是賣了一半左右：系統照實際股數記，狀態改成減半，之後站回 200 日均線會有加回通知（§3.6）
+      const meta = acct.own[t];
+      if (meta.slow.state === 'WATCH' && had > 0 && -q >= SELF_HALVE_MIN * had && acct.rule.own[t]) {
+        leaveWatch(meta);
+        meta.slow = { ...meta.slow, state: 'HALF', sinceSwitch: 0 };
+        acct.rule.own[t].applied = 'HALF';
+        cancelThesisDrop(acct, t, `${view.date} 的快照顯示你自己賣了 ${-q} 股，這檔之後照減半處理，這一項取消`);
+        watchHalved.push(t);
+      }
+    }
     acct.shadow.push({ date: view.date, f: 'F17', ticker: t, title: soldOut ? '手動交易：賣光並移出自選（如果繼續持有）' : '手動交易（自選）', rule: 0, ai: null, actual: q, price: px(t), choice: 'MANUAL', ...(note ? { note } : {}) });
   }
   // 已回覆的清單要買（或賣）這檔自選，你卻在同一份快照把它賣光、移出自選（T38 走一遍的缺口）：
@@ -794,7 +849,7 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
   const belowStd = belowStdAfterSelfSell(acct, view, selfSold);
   acct.snapshotDate = view.date;
   acct.splitAsOf = splitAsOfAfter(acct0, view, snap);
-  return { acct, completed, followUps, created: [], ...cashRes, removedOwn, belowStd };
+  return { acct, completed, followUps, created: [], ...cashRes, removedOwn, belowStd, ...(watchHalved.length ? { watchHalved } : {}) };
 }
 
 /** 回答現金差額是什麼：入金／出金會調整單位數（不算報酬）；股利與其他算報酬。 */
@@ -1004,7 +1059,7 @@ export function addOwn(acct0: Account, view: MarketView, ticker: string, premise
   const std = stdWeight ?? recommended[ticker];
   const half = meta.slow.state === 'HALF';
   acct.own[ticker] = meta;
-  acct.rule.own[ticker] = { applied: meta.slow.state, stdWeight: std };
+  acct.rule.own[ticker] = { applied: appliedOf(meta.slow.state), stdWeight: std };
   const total = totalValue(acct, view);
   const px = priceOf(view, ticker);
   const cur = acct.lots.own[ticker] ?? 0;
@@ -1288,7 +1343,7 @@ function ensureOwnMeta(acct: Account, view: MarketView, ticker: string, origin: 
   const meta = newOwnMeta(view, ticker, origin, clone(SYSTEM_DEFAULT_PREMISES), acct.ownClosed?.[ticker]?.fileId);
   if (note) meta.buyNote = note;
   acct.own[ticker] = meta;
-  acct.rule.own[ticker] = { applied: meta.slow.state, stdWeight: opt.std ?? defaultStdFor(acct, view, ticker, opt.shares ?? 0) };
+  acct.rule.own[ticker] = { applied: appliedOf(meta.slow.state), stdWeight: opt.std ?? defaultStdFor(acct, view, ticker, opt.shares ?? 0) };
   return true;
 }
 

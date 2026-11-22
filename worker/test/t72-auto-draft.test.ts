@@ -573,7 +573,8 @@ describe('T72 理由一鍵選（§6）', () => {
   // AI 說延後時先選好、選項的字存進 coreOwe）拿掉了；慢規則減半的照舊
   it('慢規則減半的「這次不做」：這次不做的三個選項；選項的字存成那一項的理由', () => {
     const sc = scenarios.s3();
-    const sim = new Sim(sc.market, sc.init);
+    // T82（allocation_redesign §3.2）：MSFT 有論點，要跌幅審查判前提不成立才會有預設減半、「這次不做」要寫理由的項目（< 5%，併入 1 月月報）
+    const sim = new Sim(sc.market, sc.init, { drops: { MSFT: { status: 'BROKEN', premiseId: 'P1' } } });
     sim.runUntil('2027-01-04');
     const jan = sim.preOpen()!;
     const f7 = jan.items.find((i) => i.f === 'F7' && i.kind === 'OWN_RULE')!;

@@ -41,7 +41,8 @@ function ruleBubble(main) {
 function ownBubble(d, main) {
   const o = d.own;
   const checks = premiseChecks(d);
-  const rule = main ? `慢規則：${main.state}。` : '';
+  // 審查後持有不是慢規則的狀態（有論點的股票沒有價格底線），直接寫狀態
+  const rule = main ? (o.watch ? `${main.state}：跌幅審查之後沒有減半。` : `慢規則：${main.state}。`) : '';
   const mood = main?.tone === 'alert' ? 'alert' : main?.tone === 'warn' ? 'worry' : 'watch';
   if (o.pendingBreak) return { k: '這一檔現在', say: [`${o.pendingBreakName ?? '一則通知'}等你決定：`, em(`AI 審查認為前提${o.pendingBreak.premiseId ? ` ${o.pendingBreak.premiseId} ` : ''}不成立`), `。${rule}`], mood: 'alert' };
   if (o.kind === 'DEFAULT_ONLY') return { k: '這一檔現在', say: [em('還沒有你的論點'), `，AI 用系統預設前提做一般健康檢查。${rule}`], mood };
@@ -298,9 +299,18 @@ function rulePanel(ctx, d, main) {
   const dr = d.thesis?.dropReview;
   return glass(
     'pad hp',
-    panelTop('慢規則（底線）', h('span', { class: 'chip ' + (o.state === '減半中' ? 'warn' : '') }, o.state)),
-    h('p', { class: 'small dim' }, '比 52 週高點低 20% 減半，站回 200 日均線連續 10 天再買回。它是底線：不管論點，到了就照做；論點由上面的 AI 審查與你的出場條件管。'),
-    main?.meter ? meterEl({ ...main.meter, say: `${main.state}。${main.detail}` }, 'big') : null,
+    // 有論點的股票（allocation_redesign §3.1）：比高點低 20% 只觸發跌幅審查，不是賣出的理由；只有預設前提的照舊是底線
+    panelTop(o.thesisKind ? '跌幅審查與價格' : '慢規則（底線）', h('span', { class: 'chip ' + (o.state === '正常' ? '' : 'warn') }, o.state)),
+    h(
+      'p',
+      { class: 'small dim' },
+      o.thesisKind
+        ? '這檔有你的論點，沒有價格底線：比 52 週高點低 20% 以上只觸發論點檢查（跌幅審查，3 票），3 票判同一條前提不成立才減半；其餘不動，之後每多跌 10 個百分點再審一次。已經減半的，站回 200 日均線連續 10 天再買回。'
+        : '比 52 週高點低 20% 減半，站回 200 日均線連續 10 天再買回。它是底線：不管論點，到了就照做；論點由上面的 AI 審查與你的出場條件管。這檔還沒有你的論點；寫了論點之後，跌 20% 會改成只觸發論點檢查。',
+    ),
+    // 審查後持有：整句說明另外放，條下面只留狀態（說明太長，塞進條的那一句會擠）
+    main?.meter ? meterEl({ ...main.meter, say: o.watch ? `${main.state}。` : `${main.state}。${main.detail}` }, 'big') : null,
+    o.watch ? h('p', { class: 'notice watch-note', style: 'margin-top:12px' }, o.watch) : null,
     dr ? h('p', { class: 'ai-line', style: 'margin-top:12px' }, dr.text, dr.notif ? [' ', h('a', { href: `#/n/${dr.notif}` }, `到 ${d.thesis.dropReviewNotifName ?? '那則通知'} 決定`)] : null) : null,
     h('div', { style: 'margin-top:16px' }, chart(d.chart)),
     h('dl', { class: 'facts', style: 'margin-top:16px' }, d.facts.map((f) => [h('dt', null, f.label), h('dd', null, h('span', { class: 'num' }, f.value), f.note ? h('small', null, f.note) : null)])),

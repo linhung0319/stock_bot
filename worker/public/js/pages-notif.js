@@ -395,7 +395,7 @@ function slip(it, v, ui) {
     if (it.reasonRequired || optional) {
       const skipIt = it.choices.find((c) => c.id === 'SKIP')?.label === '這次不做';
       const rt = it.reasonText;
-      const ta = h('textarea', { rows: 2, maxlength: 200, 'aria-label': '一句理由', placeholder: rt ? rt.placeholder : rule ? '為什麼這次不照規則減半（1～200 字）' : skipIt ? '為什麼這次不照當時的決定做（1～200 字）' : '為什麼不同意（1～200 字）' });
+      const ta = h('textarea', { rows: 2, maxlength: 200, 'aria-label': '一句理由', placeholder: rt ? rt.placeholder : rule ? (it.thesisDrop ? '為什麼這次不減半（1～200 字）' : '為什麼這次不照規則減半（1～200 字）') : skipIt ? '為什麼這次不照當時的決定做（1～200 字）' : '為什麼不同意（1～200 字）' });
       // 一鍵選（confirm_audit_design §6，T72）：點一個就是理由；選「其他」才出現打字欄。
       // 崩盤項目：AI 檢視三票一致說延後時，「照 AI 檢視：延後」排第一個、先選好（core_ai §3.6）
       const opts = reasonOptions(it.reasonPicks, rt?.prefill ?? '');
@@ -425,6 +425,9 @@ function slip(it, v, ui) {
       ta.addEventListener('input', put1);
       const hint = rt
         ? rt.hint
+        : rule && it.thesisDrop
+        ? // 有論點的股票的跌幅審查（前提不成立、預設減半）：這次不做 → 不減半，進審查後持有；那條前提進靜默期
+          '下一次審查會看到這句話。這檔不減半，留在「審查後持有」：再跌一級會重新審查。那條前提會進靜默期，到下一季財報出來（最長 100 天）不再為它通知你。'
         : rule
         ? it.drop === 'EXIT'
           ? '下一次審查會看到這句話。規則的狀態照樣記成已經減半。沒有照 AI 出清：那條前提會進靜默期，到下一季財報出來（最長 100 天）不再為它通知你。'
@@ -638,7 +641,7 @@ export async function notifPage(ctx, id) {
       }
       try {
         const r = await api.post(`/notif/${v.id}/respond`, { mode, choices, reasons });
-        toast(r.status === 'RESPONDED' ? '已記下你的決定' : r.status === 'SKIPPED' ? '這次不做，已記下' : '完成');
+        toast(r.status === 'RESPONDED' ? '已記下你的決定' : r.status === 'SKIPPED' ? (v.holdNotice ? '不動，已記下' : '這次不做，已記下') : '完成');
         // 決定了、有單要下 → 直接到填快照照著下單
         if (r.status === 'RESPONDED') ctx.go('#/snapshot');
         else await ctx.refresh();
@@ -650,7 +653,9 @@ export async function notifPage(ctx, id) {
     const live = v.items.filter((i) => !i.cancelled);
     const skippable = live.some((i) => i.choices.some((c) => c.id === 'SKIP'));
     const drawTray = (prev) => {
-      const foot = [actionButton('決定好了，去下單、填快照', 'primary block', () => submit('DO')), skippable ? h('div', { class: 'linkrow' }, linkButton('整則這次不做', () => submit('SKIP'))) : null, v.cancel ? h('div', { class: 'linkrow' }, cancelButton(ctx, v)) : null, h('p', { class: 'small faint', style: 'text-align:center' }, '按下去只是記下你的決定，系統不會替你下單。')];
+      // 預設不動的跌幅審查：沒有單要下時按鈕寫「不動，結案」，也不放「整則這次不做」（預設就是不動）
+      const holdOnly = !!v.holdNotice && orderN(composed) === 0;
+      const foot = [actionButton(holdOnly ? '不動，結案' : '決定好了，去下單、填快照', 'primary block', () => submit('DO')), skippable && !v.holdNotice ? h('div', { class: 'linkrow' }, linkButton('整則這次不做', () => submit('SKIP'))) : null, v.cancel ? h('div', { class: 'linkrow' }, cancelButton(ctx, v)) : null, h('p', { class: 'small faint', style: 'text-align:center' }, '按下去只是記下你的決定，系統不會替你下單。')];
       trayBox.replaceChildren(consoleBox(trayTitle(composed), trayBody(composed, { prev }), foot));
       sumBox.textContent = `${orderN(composed)} 張單，做完現金約 ${money(composed.cashAfter)}`;
     };
@@ -684,9 +689,9 @@ export async function notifPage(ctx, id) {
         steps: stepBar(1),
         bubble: { k: '改決定的時候', say: ['點任何一個選項，我會馬上告訴你', em('那樣做的結果'), '。按下去只是記下決定，我不會替你下單。'], mood: 'watch' },
       }),
-      pane: [takeFlash(), reminded, v.text ? h('p', { class: 'dim', style: 'margin-bottom:12px;white-space:pre-line' }, v.text) : null, slips(v, ui, `${live.length} 項建議，點開看完整的理由、改決定。沒改的就照每一張右上角寫的做。`), msg, attentionBox(v)],
+      pane: [takeFlash(), reminded, v.holdNotice ? h('p', { class: 'notice', style: 'margin:0 0 16px' }, v.holdNotice) : null, v.text ? h('p', { class: 'dim', style: 'margin-bottom:12px;white-space:pre-line' }, v.text) : null, slips(v, ui, `${live.length} 項建議，點開看完整的理由、改決定。沒改的就照每一張右上角寫的做。`), msg, attentionBox(v)],
       rail: trayBox,
-      cta: h('div', { class: 'sticky-cta' }, sumBox, actionButton('決定好了', 'primary', () => submit('DO'))),
+      cta: h('div', { class: 'sticky-cta' }, sumBox, actionButton(v.holdNotice ? '照目前選的' : '決定好了', 'primary', () => submit('DO'))),
     });
   }
 
@@ -716,6 +721,10 @@ export async function notifPage(ctx, id) {
   // 每一項本來就是不動（乙類你選「不同意，不動」）：不是「沒照規則」（T39a）
   if (v.kept) bubble = { k: '當時', say: ['你選了', em(v.kept), '。規則本來就沒有動作，所以不用下單，這不算沒照規則；AI 的建議和你的選擇會留在紀錄裡，之後可以對照。'], mood: 'watch' };
   if (v.status === 'SUPERSEDED') bubble = { k: '當時', say: ['這份清單被', em('重算過的新清單'), '取代了，以新的為準。'], mood: 'watch' };
+  // 跌幅審查的那一項併到別處（又跌一級重新審查、前提不成立但不到 5% 併入月報）：原因寫在那一項上
+  if (v.status === 'SUPERSEDED' && v.items.some((i) => i.thesisDrop)) bubble = { k: '當時', say: ['這一則的跌幅審查', em('併到別的通知或月報'), '了，原因寫在下面那一項。'], mood: 'watch' };
+  // 預設不動的跌幅審查通知（allocation_redesign §3.2）：2 個交易日沒有回覆，自動照預設結案
+  if (v.status === 'AUTO_DEFAULT') bubble = { k: '當時', say: ['這一則預設', em('不動'), '，2 個交易日沒有回覆，已經自動結案。這檔留在「審查後持有」，沒有減半。'], mood: 'watch' };
   if (v.status === 'CANCELLED') bubble = { k: '當時', say: ['這份清單', em('取消了'), v.withdraw ? '，出金沒有記帳。' : '。'], mood: 'watch' };
   if (v.followUp) {
     bubble = { k: '要你回答', say: ['快照和清單', neg('對不上'), `（${v.followUp.length} 檔）。要補做差額，還是就這樣？`], mood: 'worry' };
@@ -743,7 +752,7 @@ export async function notifPage(ctx, id) {
       ),
     );
   }
-  if (v.status === 'SUPERSEDED') body.push(h('p', { class: 'notice', style: 'margin:0 0 14px' }, '這份清單已經被重算過的新清單取代（排除某一檔，或月報日登記了入金）。以新的那一份為準。'));
+  if (v.status === 'SUPERSEDED' && !v.items.some((i) => i.thesisDrop)) body.push(h('p', { class: 'notice', style: 'margin:0 0 14px' }, '這份清單已經被重算過的新清單取代（排除某一檔，或月報日登記了入金）。以新的那一份為準。'));
   if (v.filled.length) {
     body.push(
       h('h2', { class: 'sec' }, '實際成交（照快照記進帳本）'),
@@ -1091,6 +1100,8 @@ export async function snapshotPage(ctx) {
           r.completed.length ? h('p', null, `完成了 ${r.completed.length} 份清單，成交照你填的桶記帳。`) : h('p', null, '沒有等成交的清單；這份快照成為新的起點。'),
           r.followUps.length ? h('p', null, `有 ${r.followUps.length} 份清單和快照差超過 1 股，要你選補做還是就這樣。`) : null,
           r.removedOwn.length ? h('p', null, `${r.removedOwn.join('、')} 賣光了，已移出自選（之後不再追蹤，也不會被買回）。`) : null,
+          // 審查後持有、你自己賣了一半（allocation_redesign §3.6）：之後照減半處理
+          (r.watchHalved ?? []).map((t) => h('p', { class: 'below-std' }, `${t} 在審查後持有中；你賣了一半，之後照減半處理（站回 200 日線會提醒加回）。`)),
           // 自己減碼之後低於標準比重（T43）：之後入金與加回會補回來，不想補回到持股頁改標準比重
           (r.belowStd ?? []).map((x) =>
             h(
