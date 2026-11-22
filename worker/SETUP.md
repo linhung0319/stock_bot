@@ -261,3 +261,15 @@ npx wrangler deploy
 6. 實測 M7（市場摘要一次多久）：`curl -X POST -H "Authorization: Bearer <ADMIN_TOKEN>" https://<網址>/admin/ai/brief`，再看 `/admin/ai/task/<taskId>` 的時間與 AI 紀錄頁的市場摘要那一塊（手動開的不上首頁、不分給個股）。
 7. 實測 M8（MU 那次審查用新 prompt 重跑）：`POST /admin/ai/review?ticker=MU`。看審查紀錄頁：每一票有沒有寫 `confirm_ids`（被降成證據不足的原因「沒有指出正面的引用」多不多）、分析師有沒有逐句列問題、「新眼光」那一塊有沒有東西；跑 `uv run python scripts/export_records.py` 看運作統計 `premise_prompt` 的 `no_confirm`、`web_runs` 的 `clause_slots` 與 `clause_asked`。
 8. 運作統計的 `db_size` 和 `npx wrangler d1 info stock-bot` 對一次。
+
+## 階段十二（2026-11-23）：配置與買賣規則重新設計的部署（計畫 T87）
+
+階段十二（`docs/plan/allocation_plan_2026-11-22.md`、設計 `docs/design/allocation_redesign_2026-11-22.md`）：核心固定 VOO 80：SGOV 20（F26）、崩盤規則與崩盤檢視退場、有論點的自選股 -20% 只觸發跌幅審查（`WATCH`）、先買一半（`BUILD`、F27）、加碼條件（F28）、下跌加碼、125% 新門檻、候補名單（F29）。**沒有新的 migration**（候補放在帳戶狀態的 JSON 裡，`own_conditions.action` 沒有約束）；舊帳戶在載入時由 `migrateAccount` 轉（拿掉 `rule.crash`、`coreOwe`）。
+
+1. 部署前確認正式環境沒有還沒回覆、帶 F5／F6 的月報（`notifications` 表 `status` 不是結案的、`body` 含 `"F5"`／`"F6"`）。有的話先回覆或作廢。
+2. `git push`：雲端排程從 repo 讀 prompt（新的 `own_drop_v6`、`own_review_v6`、`own_check_v7`、`own_draft_v4`、`own_condition_v2`；舊版留著、檔頭標不再使用）。
+3. `npx wrangler deploy`，之後 `GET /health` 應該是 `0.18.0`。
+4. `ai/prompts/run.md` **沒有改**（各任務照 `prompt_version` 找檔），不用重貼到 claude.ai。
+5. F29 候補進場要讀 EDGAR 的申報清單做硬傷檢查：`EDGAR_USER_AGENT` 沒設時 F29 一律不提（當成申報清單抓不到）。
+6. 要等日子或事件才看得到的（照機制驗，程式與測試已證明）：部署後第一份月報的 F26 與核心比例、首頁「沒有崩盤規則」的一次性說明；有論點的自選股真的跌 20% 時的跌幅審查；候補的草稿與月底的 `own_condition_v2` 條件確認（第一次真的跑時看研究員取文件、來源評級與 `WEB_VOTE`）。
+7. 真實帳戶的持股怎麼調到新的配置不在這裡做：那是正式上線的起步清單（設計 D1）。
