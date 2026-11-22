@@ -21,7 +21,6 @@ import { loadAccount, saveAccount } from '../src/app/ledgerStore';
 import { loadReviews } from '../src/app/momAi';
 import { applyOwnReview, loadConditions } from '../src/app/ownAi';
 import { acceptOwnConditions, ownCheckView, startOwnCheck } from '../src/app/ownCheckAi';
-import { loadSnapshot } from '../src/app/crashAi';
 import { parseFredCsv } from '../src/data/fred';
 import { buildMarketView } from '../src/data/marketView';
 import { activeHits, classify401, classify424, classifyProxy, coverHits, quickHits, tenderSubject } from '../src/data/secEvents';
@@ -416,7 +415,7 @@ interface Ctx {
   run: (date: string, attempt?: Attempt) => ReturnType<typeof runFlow>;
 }
 
-async function withWorld(fn: (c: Ctx) => Promise<void>, opt: { mom?: string[]; crash?: boolean; acct?: (a: Account) => Account; before?: (c: Omit<Ctx, 'run'>) => Promise<void> } = {}) {
+async function withWorld(fn: (c: Ctx) => Promise<void>, opt: { mom?: string[]; acct?: (a: Account) => Account; before?: (c: Omit<Ctx, 'run'>) => Promise<void> } = {}) {
   const d = await freshDb();
   try {
     const db = d.db;
@@ -438,7 +437,6 @@ async function withWorld(fn: (c: Ctx) => Promise<void>, opt: { mom?: string[]; c
       {
         paper: true,
         cash: 5000,
-        crash: opt.crash ?? false,
         core: { VOO: Math.floor(140_000 / view.close.VOO[view.i]) },
         mom: Object.fromEntries((opt.mom ?? []).map((t) => [t, Math.floor(8000 / view.close[t][view.i])])),
         own: { NVDA: { shares: Math.floor(40_000 / view.close.NVDA[view.i]), stdWeight: 0.15, premises: [{ id: 'P1', text: '資料中心需求延續到 2027', origin: 'USER' }] } },
@@ -680,110 +678,6 @@ describe('T32a：硬事件的待處理事件 10 天過期（§3.5）', () => {
         expect((courts[0].pack.rule.detail as { events: { date: string }[] }).events.map((e) => e.date)).toEqual(['2026-11-18']);
       },
       { mom: ['AAPL'] },
-    );
-  });
-});
-
-describe('整條流程：F5／F6 崩盤規則檢視', () => {
-  it('月報前一天預估會切換 → 3 票檢視＋儀表板 → 月報那一項與 LINE 附「AI 檢視：照做」', async () => {
-    const up = fakeParams('VOO').g > 0;
-    await withWorld(
-      async ({ db, sec, run }) => {
-        for (const d of ['2026-11-20', '2026-11-23', '2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
-        const [cr] = await runsOf(db, 'CRASH_REVIEW');
-        expect(cr.pack.rule.detail).toMatchObject({ direction: up ? 'OFF' : 'ON', month: '2026-12' });
-        expect(cr.pack.policy).toMatchObject({ level: 'A2', samples: 3 });
-        expect(cr.pack.documents.map((x) => x.source_id)).toEqual(['base-rate:crash', 'macro:2026-11-27']);
-        const snap = (await loadSnapshot(db, '2026-12'))!;
-        expect(snap.rows.find((r) => r.id === 'T10Y3M')).toMatchObject({ value: 1.5, date: '2026-11-27', stale: false });
-        const v = { run_id: cr.pack.run_id, verdict: 'FOLLOW', evidence: [], payload: { direction: up ? 'OFF' : 'ON', opinion: 'FOLLOW', bear_prob: 0.2 }, report: '過去 17 次中 3 次是真空頭。' };
-        await postResult(db, cr.runId, [v, v, v], new Date('2026-11-28T00:10:00Z'));
-        await run('2026-11-27', 'FINAL');
-        const m = await run('2026-11-30');
-        const acct = (await loadAccount(db))!.acct;
-        const it = acct.notifs.find((n) => n.id === m.monthly)!.items.find((i) => i.f === (up ? 'F6' : 'F5'))!;
-        expect(it.aiLine).toBe('AI 檢視：照做');
-        expect(sec.line.find((t) => t.includes('月報'))).toContain('AI 檢視：照做');
-      },
-      { crash: up },
-    );
-  });
-});
-
-describe('T33a：崩盤規則檢視什麼時候開（core_ai §3.1 的 crashNeeds）', () => {
-  const crashRuns = async (db: D1Database) => (await runsOf(db, 'CRASH_REVIEW')).filter((r) => (r.pack.rule.detail as { direction?: string }).direction !== 'NONE');
-
-  it('前一天預估的檢視票數不一致（跑完了、沒有意見）→ 月報當天不再開', async () => {
-    const up = fakeParams('VOO').g > 0;
-    await withWorld(
-      async ({ db, run }) => {
-        for (const d of ['2026-11-20', '2026-11-23', '2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
-        const [cr] = await crashRuns(db);
-        expect(cr.pack.rule.detail).toMatchObject({ direction: up ? 'OFF' : 'ON', month: '2026-12', kind: 'PREVIEW', basis: '2026-11-27', try: 1 });
-        expect(cr.pack.question.startsWith('這是依 2026-11-27 的收盤預估的：訊號日（2026-11-30）收盤如果仍在均線的同一側，規則會切換。')).toBe(true);
-        const dir = up ? 'OFF' : 'ON';
-        const vote = (v: string) => ({ run_id: cr.pack.run_id, verdict: v, evidence: [], payload: { direction: dir, opinion: v }, report: '過去 17 次中 3 次是真空頭。' });
-        await postResult(db, cr.runId, [vote('FOLLOW'), vote('DELAY'), vote('FOLLOW')], new Date('2026-11-28T00:10:00Z'));
-        expect((await getRun(db, cr.runId))!.outcome!.status).toBe('SPLIT');
-        await run('2026-11-27', 'FINAL');
-        const m = await run('2026-11-30');
-        const acct = (await loadAccount(db))!.acct;
-        const it = acct.notifs.find((n) => n.id === m.monthly)!.items.find((i) => i.f === (up ? 'F6' : 'F5'))!;
-        expect(it.aiLine).toBeUndefined(); // 沒有意見 → 沒有那一行
-        // 舊的寫法這裡會因為沒有 aiLine 而補開第二次
-        expect(await crashRuns(db)).toHaveLength(1);
-        await run('2026-12-01');
-        expect(await crashRuns(db)).toHaveLength(1);
-      },
-      { crash: up },
-    );
-  });
-
-  it('訊號日的流程沒有跑成、隔天補做才出月報 → 補開（MAKEUP，不看今天是不是月底）；沒有結論的每天重開，同一個月份＋方向最多 3 次', async () => {
-    const up = fakeParams('VOO').g > 0;
-    await withWorld(
-      async ({ db, run }) => {
-        await run('2026-11-20');
-        // 11-23～11-30 的流程都沒有跑；12-01 一次補做（含 11-30 的月報）
-        const r = await run('2026-12-01');
-        expect(r.processed).toContain('2026-11-30');
-        const acct = (await loadAccount(db))!.acct;
-        const monthly = acct.notifs.find((n) => n.id === r.monthly)!;
-        expect(monthly.date).toBe('2026-11-30');
-        expect(monthly.items.some((i) => i.f === (up ? 'F6' : 'F5'))).toBe(true);
-        const runs = await crashRuns(db);
-        expect(runs).toHaveLength(1);
-        expect(runs[0].pack.rule.detail).toMatchObject({ direction: up ? 'OFF' : 'ON', month: '2026-12', kind: 'MAKEUP', basis: '2026-11-30', try: 1 });
-        expect(runs[0].asOf).toBe('2026-12-01');
-        // 一直沒有送回：逾時（沒有結論）→ 月報還沒回覆，隔天再開；第 3 次之後不再開
-        for (const d of ['2026-12-02', '2026-12-03', '2026-12-04']) await run(d);
-        const all = (await crashRuns(db)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-        expect(all.map((x) => (x.pack.rule.detail as { try: number }).try)).toEqual([1, 2, 3]);
-        expect(all.map((x) => x.asOf)).toEqual(['2026-12-01', '2026-12-02', '2026-12-03']);
-        expect((await getRun(db, all[0].runId))!.outcome!.status).toBe('TIMEOUT');
-      },
-      { crash: up },
-    );
-  });
-
-  it('核心 ETF 不滿 200 根日線 → 崩盤規則維持原狀態（不切換）並告警', async () => {
-    const up = fakeParams('VOO').g > 0;
-    await withWorld(
-      async ({ db, w, run }) => {
-        w.bars.VOO = 150;
-        for (const d of ['2026-11-20', '2026-11-23', '2026-11-24', '2026-11-25', '2026-11-27']) await run(d);
-        const m = await run('2026-11-30');
-        const acct = (await loadAccount(db))!.acct;
-        const monthly = acct.notifs.find((n) => n.id === m.monthly)!;
-        expect(monthly.items.some((i) => i.f === 'F5' || i.f === 'F6')).toBe(false);
-        expect(acct.rule.crash).toBe(up);
-        expect(monthly.monthly!.input.crash).toMatchObject({ below: up, ma: null, bars: 150, date: '2026-11-30' });
-        const alerts = (await db.prepare("SELECT message FROM alerts WHERE kind = 'CORE_MA_MISSING'").all<{ message: string }>()).results;
-        expect(alerts.map((a) => a.message)).toEqual([`VOO 的 200 日均線算不出來（只有 150 根日線）。崩盤規則這個月維持原狀態（${up ? '啟動中' : '未啟動'}）。`]);
-        expect(await crashRuns(db)).toHaveLength(0); // 預估也不會切換
-      },
-      // 均線算得出來時會切換的方向：VOO 在漲 → 帳戶設成啟動中（會解除）；在跌 → 未啟動（會啟動）
-      { crash: up },
     );
   });
 });

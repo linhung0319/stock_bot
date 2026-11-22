@@ -131,7 +131,9 @@ describe('T32a：月報暫停後重算時，依波動度減碼用訊號日的值
     expect(live.plan!.vol!.w).toBe(0);
     // 重算：和訊號日相同
     const resumed = resumeMonthly(classified, later);
-    expect(resumed.notif!.kind).toBe('MONTHLY');
+    // T80（allocation_redesign §1.2）：這個月沒有規則單；以前帳上的閒置現金會單獨成一項（MONTHLY），現在現金算 SGOV 那一邊、不為它發單 → 本月不用動
+    expect(resumed.notif!.kind).toBe('MONTHLY_EMPTY');
+    expect(resumed.notif!.title).not.toContain('月報暫停');
     expect(resumed.acct.rule.volW).toBe(direct.acct.rule.volW);
     expect(resumed.acct.rule.volHist.at(-1)).toBeCloseTo(sigma, 12);
     expect(resumed.notif!.monthly!.input.excessVol).toBeCloseTo(sigma, 12);

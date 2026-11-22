@@ -493,13 +493,12 @@ describe('T31b：這次不做的理由、回應與靜默期、紀錄（own_thesi
     const key = skip.set({ status: 'HOLD', cause: 'SECTOR' }).key;
     skip.sim.respond(skip.id, { mode: 'DO', choices: { [key]: 'SKIP' }, reasons: { [key]: '先不賣' } });
     expect(skip.sim.acct.own.MU.dropReview).toBeUndefined();
-    // 照 AI 不動：MU 不賣（帳上的閒置現金照舊交給核心，所以還要填快照）；填完清掉
+    // 照 AI 不動：MU 不賣。T80（allocation_redesign §1.2）：帳上的閒置現金算 SGOV 那一邊、當天通知不為它下單，
+    // 所以整則沒有要下的單 → 回覆當下就完成、清掉（以前閒置現金會交給核心，要等填快照）
     const hold = muReduce();
     const k2 = hold.set({ status: 'HOLD', cause: 'SECTOR' }).key;
     hold.sim.respond(hold.id, { mode: 'DO', choices: { [k2]: 'AI' } });
-    expect(hold.notif().composed!.merged.some((m) => m.ticker === 'MU')).toBe(false);
-    expect(hold.sim.acct.own.MU.dropReview).toMatchObject({ status: 'HOLD' });
-    hold.sim.open();
+    expect(hold.notif().composed!.lines).toEqual([]);
     expect(hold.notif().status).toBe('DONE');
     expect(hold.sim.acct.own.MU.dropReview).toBeUndefined();
     expect(hold.sim.acct.lots.own.MU).toBe(58);

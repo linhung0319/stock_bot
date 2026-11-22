@@ -4,7 +4,7 @@
 //   ledger_events、shadow_records  只增加：引擎只會往這兩個陣列加東西，載入時給空陣列，存檔時把新增的寫進去
 //   snapshots        使用者填的快照原文
 //   own_thesis_log   論點檔的開檔與結案：存檔時比較存檔前後的自選（fileId），和帳戶同一筆交易寫（own_thesis §1.2）
-import type { Account, LedgerEvent, Notif, ShadowRecord } from '../engine/account';
+import { migrateAccount, type Account, type LedgerEvent, type Notif, type ShadowRecord } from '../engine/account';
 import type { Snapshot } from '../engine/ops';
 import { applySplits, splitBase } from '../engine/split';
 import { CASH } from '../engine/types';
@@ -28,7 +28,8 @@ export async function loadAccount(db: D1Database): Promise<LoadedAccount | null>
   if (!row) return null;
   const notifRows = (await db.prepare('SELECT id, body FROM notifications ORDER BY id').all<{ id: number; body: string }>()).results;
   const state = JSON.parse(row.state) as StateOnly;
-  let acct: Account = { ...state, notifs: notifRows.map((r) => JSON.parse(r.body) as Notif), events: [], shadow: [] };
+  // 舊版存的狀態（崩盤規則的欄位、沒有核心比例的設定）轉成現在的（allocation_redesign §1.5）；和這次操作一起存，只讀的請求下次載入再轉一次（結果相同）
+  let acct: Account = migrateAccount({ ...state, notifs: notifRows.map((r) => JSON.parse(r.body) as Notif), events: [], shadow: [] });
   acct = await withSplits(db, acct);
   return { acct, rev: row.rev, notifJson: new Map(notifRows.map((r) => [r.id, r.body])), ownFiles: ownFilesOf(acct) };
 }

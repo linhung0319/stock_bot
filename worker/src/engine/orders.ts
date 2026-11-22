@@ -1,7 +1,7 @@
 // 清單：把每一格的目標金額換成股數，核心吸收差額，再按代號合併。
 // 設計：§2.1.1（清單以股數為單位、買單上限 98%）、§2.3（合併下單）、§2.5（通知分級）。
 import { halveShares } from './slowRule';
-import { CASH, cellKey, parseCell, type Bucket, type CellMap, type EngineConfig, type Reason } from './types';
+import { CASH, cellKey, coreCfg, parseCell, type Bucket, type CellMap, type EngineConfig, type Reason } from './types';
 import type { PlanResult } from './allocator';
 
 /** 一行清單：某一桶的某一檔買（正）或賣（負）幾股。 */
@@ -73,19 +73,19 @@ export interface CoreContext {
   /** 核心桶持有的核心 ETF 與短債 ETF 股數。 */
   coreShares: number;
   bondShares: number;
-  /** 短債 ETF 的代號（現金的去處，設計 §4.4）。 */
+  /** 短債 ETF 的代號（核心裡不放股票的那一邊，allocation_redesign §1.1）。 */
   bondTicker: string;
-  /** 崩盤規則是否啟動中（決定錢進出短債還是核心 ETF）。 */
-  crash: boolean;
   /** 總資產（判斷「差額太小不動」用）。 */
   total: number;
   /** 要留下不投入的現金（例如等著轉出的出金）。 */
   reserveCash?: number;
   /**
-   * 崩盤規則啟動中、清單做完有多的錢時，最多多少照「一半核心 ETF、一半短債」分；超過的部分全部放短債（core_ai §3.8）。
-   * 切換那一份（有 F5）給 Infinity；入金給入金金額；其他（沒給也是）0。
+   * 這份清單帶進來、已經算在 cash 裡的新錢（入金）：和其他桶賣出的錢一樣照比例進核心（allocation_redesign §1.4）。
+   * 其餘的帳上現金本來就算在短債那一邊，不照比例分。
    */
-  halfUpTo?: number;
+  fresh?: number;
+  /** 月報：帳上原本的現金順便買成短債（allocation_redesign §1.2 的搭便車行）。其他清單不動它。 */
+  sweepCash?: boolean;
 }
 
 export interface Composed {
@@ -121,17 +121,144 @@ function capLines(lines: OrderLine[], budget: number, price: (t: string) => numb
   return out;
 }
 
+// ---------------------------------------------------------------- 核心的固定比例（allocation_redesign §1.1～§1.3）
+
+export interface CoreSplitInput {
+  /** 正：進核心的金額。負：要從核心拿的金額（含帳上現金先出的部分）。 */
+  amount: number;
+  /** 短債那一邊的目標比例（0.20）。 */
+  bond: number;
+  priceCore: number;
+  priceBond: number;
+  /** 從核心拿時可以賣的股數。 */
+  coreShares?: number;
+  bondShares?: number;
+  /** 從核心拿時可以先用的帳上現金（它本來就算在短債那一邊）。 */
+  cash?: number;
+}
+
+export interface CoreSplit {
+  /** 核心 ETF、短債 ETF 的股數變動（買是正、賣是負）。 */
+  core: number;
+  bond: number;
+  /** 從核心拿時先用了多少帳上現金。 */
+  cashUsed: number;
+  /** 兩邊都賣光了還不夠的金額（0 = 夠）。 */
+  short: number;
+}
+
 /**
- * 核心吸收差額（設計 §2.1 資金流規則 1、2）：
- *   清單做完有多的錢 → 交給核心（平時買核心 ETF；崩盤規則啟動時：切換那一份與入金金額以內一半買核心 ETF、一半放短債，
- *                     其餘全部放短債，core_ai §3.8）
- *   錢不夠 → 從核心拿（平時賣核心 ETF；崩盤規則啟動時先用短債）；核心也不夠付 → 買單從最後一行往回減（C14）
+ * 錢進出核心怎麼分（allocation_redesign §1.2，純函式）：
+ *   進核心：核心 ETF 買 floor(金額 × 八成 ÷ 價格) 股、短債買 floor(金額 × 兩成 ÷ 價格) 股；配不到整股的零頭留在帳上（算短債那一邊）。
+ *   從核心拿：先用帳上現金；短債那一邊該出「總額 × 兩成」，現金已經出的先抵掉，剩下的賣短債（四捨五入到整股，不到半股就不賣）；
+ *     其餘賣核心 ETF（無條件進位到夠用，多的零頭留現金）。一邊不夠賣，不夠的那一份由另一邊補。
+ */
+export function coreSplit(inp: CoreSplitInput): CoreSplit {
+  const { amount, bond, priceCore: pv, priceBond: pb } = inp;
+  if (amount >= 0) {
+    return { core: Math.floor((amount * (1 - bond)) / pv + 1e-9), bond: Math.floor((amount * bond) / pb + 1e-9), cashUsed: 0, short: 0 };
+  }
+  const want = -amount;
+  const cashUsed = Math.min(Math.max(0, inp.cash ?? 0), want);
+  let need = want - cashUsed;
+  if (need <= 1e-9) return { core: 0, bond: 0, cashUsed, short: 0 };
+  const haveCore = Math.max(0, inp.coreShares ?? 0);
+  const haveBond = Math.max(0, inp.bondShares ?? 0);
+  const bondPart = Math.min(need, Math.max(0, want * bond - cashUsed));
+  let nb = Math.min(haveBond, Math.round(bondPart / pb));
+  need -= nb * pb;
+  let nc = 0;
+  if (need > 1e-9) {
+    nc = Math.min(haveCore, Math.ceil(need / pv - 1e-9));
+    need -= nc * pv;
+  }
+  if (need > 1e-9 && nb < haveBond) {
+    // 核心 ETF 不夠賣：不夠的那一份由短債補
+    const extra = Math.min(haveBond - nb, Math.ceil(need / pb - 1e-9));
+    nb += extra;
+    need -= extra * pb;
+  }
+  return { core: nc ? -nc : 0, bond: nb ? -nb : 0, cashUsed, short: Math.max(0, need) };
+}
+
+export interface CoreBand {
+  /** 短債那一邊（短債 ETF＋帳上現金）占核心的比例；核心是 0 時是 0。 */
+  s: number;
+  /** 核心的市值。 */
+  core: number;
+  /** 目標比例與界線。 */
+  bond: number;
+  band: number;
+  /** 超出界線（s < bond − band 或 s > bond + band）。 */
+  out: boolean;
+  /** 超出界線時，短債那一邊要增加（正）或減少（負）多少金額才回到目標；界線內是 0。 */
+  move: number;
+}
+
+/** 核心比例的界線檢查（allocation_redesign §1.3，純函式）：bondSide = 短債 ETF 市值＋帳上現金，core = 核心的市值。 */
+export function coreBandCheck(bondSide: number, core: number, cfg: Partial<Pick<EngineConfig, 'coreBond' | 'coreBand'>>): CoreBand {
+  const { bond, band } = coreCfg(cfg);
+  const s = core > 0 ? bondSide / core : 0;
+  const out = core > 0 && Math.abs(s - bond) > band;
+  return { s, core, bond, band, out, move: out ? core * bond - bondSide : 0 };
+}
+
+/** 幾成：0.8 → 八成、0.2 → 兩成；不是整數成的寫百分比。 */
+export function tenths(x: number): string {
+  const n = Math.round(x * 10);
+  return Math.abs(x * 10 - n) < 1e-9 && n >= 1 && n <= 9 ? `${'一兩三四五六七八九'[n - 1]}成` : `${Math.round(x * 1000) / 10}%`;
+}
+
+/** 核心那幾行的原因文字（allocation_redesign §1.2）。 */
+export function coreReasons(cfg: EngineConfig, bondTicker: string): { give: string; take: string; sweep: string } {
+  const { bond } = coreCfg(cfg);
+  const mix = `（${cfg.coreTicker} ${tenths(1 - bond)}、${bondTicker} ${tenths(bond)}）`;
+  return { give: `錢交給核心${mix}`, take: `從核心拿錢${mix}`, sweep: `帳上的現金買 ${bondTicker}` };
+}
+
+/**
+ * 核心比例調回（F26）的行（allocation_redesign §1.3）：ctx 是「這份清單其他單做完之後」的核心（股數與現金）。
+ *   短債那一邊太少 → 賣核心 ETF、買短債（買的時候帳上現金一起用）；太多 → 先用帳上現金、不夠再賣短債，買核心 ETF。
+ * 買單照 98% 的規矩留緩衝。界線內、或換算出來沒有整股可以動 → 空陣列。
+ */
+export function coreBandLines(ctx: Pick<CoreContext, 'cfg' | 'price' | 'cash' | 'coreShares' | 'bondShares' | 'bondTicker'>): { check: CoreBand; lines: OrderLine[] } {
+  const pv = ctx.price(ctx.cfg.coreTicker);
+  const pb = ctx.price(ctx.bondTicker);
+  const cash = Math.max(0, ctx.cash);
+  const check = coreBandCheck(ctx.bondShares * pb + ctx.cash, ctx.coreShares * pv + ctx.bondShares * pb + ctx.cash, ctx.cfg);
+  if (!check.out) return { check, lines: [] };
+  const lines: OrderLine[] = [];
+  if (check.move > 0) {
+    const sell = Math.min(ctx.coreShares, Math.round(check.move / pv));
+    const buy = Math.floor((BUY_CASH_FRACTION * (sell * pv + cash)) / pb + 1e-9);
+    if (sell) lines.push({ ticker: ctx.cfg.coreTicker, bucket: 'core', shares: -sell, reason: '核心比例' });
+    if (buy) lines.push({ ticker: ctx.bondTicker, bucket: 'core', shares: buy, reason: '核心比例' });
+  } else {
+    const buy = Math.floor(-check.move / pv + 1e-9);
+    const sell = Math.min(ctx.bondShares, Math.ceil(Math.max(0, (buy * pv) / BUY_CASH_FRACTION - cash) / pb - 1e-9));
+    // 短債不夠賣（那一邊大多是現金）→ 買得起多少買多少
+    const afford = Math.min(buy, Math.floor((BUY_CASH_FRACTION * (sell * pb + cash)) / pv + 1e-9));
+    if (sell) lines.push({ ticker: ctx.bondTicker, bucket: 'core', shares: -sell, reason: '核心比例' });
+    if (afford) lines.push({ ticker: ctx.cfg.coreTicker, bucket: 'core', shares: afford, reason: '核心比例' });
+  }
+  return { check, lines };
+}
+
+/**
+ * 核心吸收差額（allocation_redesign §1.2；取代設計 §2.1 資金流規則 1、2）：
+ *   清單做完有多的錢（其他桶賣出的、入金補完各格剩下的）→ 交給核心，照比例買核心 ETF 與短債（coreSplit）；
+ *     金額不到總資產 orderMin 的那一行不列，錢留在帳上（算短債那一邊）。
+ *   月報（sweepCash）：帳上原本的現金順便買成短債。
+ *   錢不夠 → 從核心照比例拿，帳上現金先用（coreSplit）；核心也不夠付 → 買單從最後一行往回減（C14）。
  * 買單合計不超過「現金＋賣單」的 98%，留緩衝給價格差。
  */
 export function composeWithCore(lines0: OrderLine[], ctx: CoreContext): Composed {
   const { cfg } = ctx;
   const reserve = ctx.reserveCash ?? 0;
   const vooT = cfg.coreTicker;
+  const bondT = ctx.bondTicker;
+  const { bond } = coreCfg(cfg);
+  const why = coreReasons(cfg, bondT);
   let lines = lines0;
   let capped: Composed['capped'];
   let sells = 0;
@@ -144,46 +271,42 @@ export function composeWithCore(lines0: OrderLine[], ctx: CoreContext): Composed
   const cashAvail = ctx.cash + sells;
   const net = cashAvail - buys - reserve;
   const buffer = (1 - BUY_CASH_FRACTION) * Math.max(0, cashAvail);
+  const min = cfg.orderMin * ctx.total;
   const coreLines: OrderLine[] = [];
   const pending = (ticker: string) => lines.filter((l) => l.ticker === ticker && l.bucket === 'core').reduce((a, l) => a + l.shares, 0);
-  if (lines.length || Math.abs(ctx.cash) > cfg.orderMin * ctx.total) {
-    if (net - buffer > cfg.orderMin * ctx.total) {
+  if (lines.length || (ctx.fresh ?? 0) > 0 || reserve > 0) {
+    if (net - buffer > 0) {
+      // 能投入的錢：其中「這份清單新進核心的」照比例分；其餘是帳上原本的現金，月報才順便買成短債
       const inv = net - buffer;
-      if (ctx.crash) {
-        // 一半一半只用在切換那一份與入金金額以內；其餘全部放短債（core_ai §3.8）
-        const half = Math.min(inv, Math.max(0, ctx.halfUpTo ?? 0));
-        const a = Math.floor((half * cfg.crashCut) / ctx.price(vooT));
-        const b = Math.floor((half * (1 - cfg.crashCut) + inv - half) / ctx.price(ctx.bondTicker));
-        if (a) coreLines.push({ ticker: vooT, bucket: 'core', shares: a, reason: '錢交給核心（崩盤規則啟動中：一半買核心 ETF）' });
-        if (b) coreLines.push({ ticker: ctx.bondTicker, bucket: 'core', shares: b, reason: half > 0 ? '錢交給核心（崩盤規則啟動中：一半放短債）' : '錢交給核心（崩盤規則啟動中：放短債）' });
-      } else {
-        const a = Math.floor(inv / ctx.price(vooT));
-        if (a) coreLines.push({ ticker: vooT, bucket: 'core', shares: a, reason: '錢交給核心（買核心 ETF）' });
+      const fresh = Math.max(0, Math.min(ctx.fresh ?? 0, ctx.cash));
+      const split = Math.min(inv, Math.max(0, sells + fresh - buys - reserve));
+      const idle = ctx.sweepCash ? inv - split : 0;
+      const pv = ctx.price(vooT);
+      const pb = ctx.price(bondT);
+      const sp = coreSplit({ amount: split, bond, priceCore: pv, priceBond: pb });
+      const b = Math.floor((split * bond + idle) / pb + 1e-9);
+      if (sp.core && sp.core * pv >= min) coreLines.push({ ticker: vooT, bucket: 'core', shares: sp.core, reason: why.give });
+      if (b && b * pb >= min) {
+        if (sp.bond) coreLines.push({ ticker: bondT, bucket: 'core', shares: sp.bond, reason: why.give });
+        if (b - sp.bond) coreLines.push({ ticker: bondT, bucket: 'core', shares: b - sp.bond, reason: why.sweep });
       }
     } else if (net < 0) {
-      let need = -net / BUY_CASH_FRACTION;
-      let coreSold = 0;
-      const order: [string, number][] = ctx.crash
-        ? [
-            [ctx.bondTicker, ctx.bondShares],
-            [vooT, ctx.coreShares],
-          ]
-        : [
-            [vooT, ctx.coreShares],
-            [ctx.bondTicker, ctx.bondShares],
-          ];
-      for (const [tk, have] of order) {
-        if (need <= 0) break;
-        const avail = have + pending(tk);
-        const n = Math.min(avail, Math.ceil(need / ctx.price(tk)));
-        if (n > 0) {
-          coreLines.push({ ticker: tk, bucket: 'core', shares: -n, reason: tk === ctx.bondTicker ? '從核心拿錢（先用短債）' : '從核心拿錢（賣核心 ETF）' });
-          need -= n * ctx.price(tk);
-          coreSold += n * ctx.price(tk);
-        }
-      }
-      if (need > 1e-6) {
+      // 要從核心拿的總額 = 帳上現金先出的＋還缺的；還缺的部分多賣一點，留 98% 的緩衝
+      const cash = Math.max(0, ctx.cash);
+      const sp = coreSplit({
+        amount: -(cash - net / BUY_CASH_FRACTION),
+        bond,
+        priceCore: ctx.price(vooT),
+        priceBond: ctx.price(bondT),
+        coreShares: ctx.coreShares + pending(vooT),
+        bondShares: ctx.bondShares + pending(bondT),
+        cash,
+      });
+      if (sp.bond) coreLines.push({ ticker: bondT, bucket: 'core', shares: sp.bond, reason: why.take });
+      if (sp.core) coreLines.push({ ticker: vooT, bucket: 'core', shares: sp.core, reason: why.take });
+      if (sp.short > 1e-6) {
         // C14：核心賣光了還不夠 → 買單合計壓在「現金＋賣單＋核心賣得」的 98% 以內，從最後一行往回減
+        const coreSold = -(sp.bond * ctx.price(bondT) + sp.core * ctx.price(vooT));
         const budget = BUY_CASH_FRACTION * Math.max(0, cashAvail + coreSold - reserve);
         const kept = capLines(lines, budget, ctx.price);
         const out = lines.flatMap((l, k) => (kept[k].shares < l.shares ? [{ ticker: l.ticker, cut: l.shares - kept[k].shares }] : []));

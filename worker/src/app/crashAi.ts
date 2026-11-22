@@ -36,7 +36,7 @@ export function crashDirection(acct: Account, view: MarketView): CrashDirection 
   const c = view.close[acct.cfg.coreTicker];
   if (!c) return 'NONE';
   // 均線算不出來時維持原狀態（core_ai §3.10），所以不會切換
-  const { below } = crashDecision(c, view.i, acct.rule.crash);
+  const { below } = crashDecision(c, view.i, !!acct.rule.crash);
   return below && !acct.rule.crash ? 'ON' : !below && acct.rule.crash ? 'OFF' : 'NONE';
 }
 

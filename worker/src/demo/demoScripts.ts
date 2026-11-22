@@ -37,7 +37,7 @@ export const DEMO_SCRIPTS: Record<DemoId, DemoScript> = {
     id: 's1',
     title: '平常的月報',
     summary: '12/1 的月報：ORCL 掉出前 15 名要賣、APP 被 AI 否決改買 GE、PLTR 漲太多順便調回、AI 建議提高 MSFT 的比重。',
-    tips: ['把 MSFT 那一項改成「照 AI」，看核心（VOO）那一行怎麼跟著變', '在 GE 按「排除」，看系統改買哪一檔', '在 ORCL 按「我想留著」，把它轉入自選', '其中一項選「這次不做」，再跳到 1 月的月報看它有沒有再列一次'],
+    tips: ['把 MSFT 那一項改成「照 AI」，看核心（VOO、SGOV）那幾行怎麼跟著變', '在 GE 按「排除」，看系統改買哪一檔', '在 ORCL 按「我想留著」，把它轉入自選', '其中一項選「這次不做」，再跳到 1 月的月報看它有沒有再列一次'],
     startAt: '2026-12-01',
     vetoes: { '2026-12': ['APP'] },
     aiTiers: [{ on: '2026-12-01', ticker: 'MSFT', tier: 'RAISE', date: '2026-11-30', suggest: true }],

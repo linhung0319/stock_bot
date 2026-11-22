@@ -7,6 +7,9 @@ import {
   TIER_NAME,
   afterOpenLists,
   annualizedVol,
+  coreAfterList,
+  coreBandCheck,
+  coreCfg,
   drawdownFromHigh,
   hardToldDays,
   momSlotTarget,
@@ -86,11 +89,12 @@ const RULE = {
   momentum: '每月第一個交易日看排名：S&P 500 裡市值前 50 大的股票，照過去 252 個交易日（約一年）的報酬由高到低排。買前 5 名；已經持有的要掉出前 15 名才賣。',
   lazy: '動能 5 檔各占一格。留任的股票只有在偏離目標超過 ±50% 時才調回，而且只在那個月本來就有其他單的時候順便做，不會只為了比例叫你下單。',
   vol: '每月比較動能持股最近半年相對大盤的波動（σ）和它的歷史中位數（σ̃）：部位 = σ̃ ÷ σ，最多全額，無條件捨去到 1/3 的倍數。要多跨過 0.10 才換一格，避免來回。減下來的錢交給核心。',
+  core: '核心固定放股票 ETF 八成、短債與現金兩成（分母是核心，不是總資產）。錢進出核心都照這個比例分；每月第一個交易日檢查一次，短債與現金那一邊低於 15% 或高於 25% 才調回 20%。',
   crash: '每月第一個交易日看核心 ETF 前一日的收盤：低於 200 日均線 → 核心一半換成短債、動能部位減半；回到均線之上 → 換回來。全系統只有這條規則會讓錢變成現金。',
   slow: '自選股的慢規則是保險，不是看壞：收盤比 52 週高點低 20% 以上 → 賣掉當時持有股數的一半；之後收盤站上 200 日均線連續 10 天、距上次切換滿 15 個交易日 → 買回到標準比重。',
   cap: '任何一檔自選股超過總資產 15% → 減回 10%。同一檔在自選和動能都有時，合計超過 15% 也減回 10%，先減動能那部分。',
-  deposit: '入金只買不賣：用入金後的總資產算每一格的目標，依序補「低於目標最多」的格子；缺口小於總資產 0.25% 的不補；剩下的交給核心。',
-  withdraw: '出金只賣不買。先檢查單檔上限（出金後會超過 15% 的自選股先減回 10%，賣得的錢抵出金），不夠的再依序從：核心的現金 → 動能高於目標的部分 → 核心 ETF → 動能 → 最後才是自選。',
+  deposit: '入金只買不賣：用入金後的總資產算每一格的目標，依序補「低於目標最多」的格子；缺口小於總資產 0.25% 的不補；剩下的交給核心，照核心的比例分（股票 ETF 八成、短債兩成）。',
+  withdraw: '出金只賣不買。先檢查單檔上限（出金後會超過 15% 的自選股先減回 10%，賣得的錢抵出金），不夠的再依序從：動能高於目標的部分 → 核心（照比例：股票 ETF 八成、短債兩成，帳上現金先用）→ 動能 → 最後才是自選。',
   ratio: '三桶的比例是風險預算，不是要維持的目標。平常不會為了拉回比例下單；只有你改比例的時候，當天給一份清單。',
   addOwn: '自選股由你決定買不買。系統只建議比重（自選預算內，波動越大的比重越小），錢從核心出。如果這檔現在已經比 52 週高點低 20% 以上，一開始只買一半。',
   ai: 'AI 只能從固定的檔位選一個（出清／減半／不動／回到標準／提高到 125%），股數由程式換算。AI 的建議永遠和規則並列，你沒選就照規則。',
@@ -718,12 +722,56 @@ export function bucketSharesAfter(acct0: Account, view: MarketView, composed: Pi
   }
 }
 
-/** 「做完之後」那一列（入金、出金、改比例的清單；core_ai §3.11）：自選 23.1%（預算 20%）、動能 28.4%（30%）、核心 48.5%（50%）。 */
+/** 清單做完之後核心裡短債與現金那一邊占核心的比例（allocation_redesign §1.4）；算不出來（缺價格、核心是 0）回 null。 */
+export function coreBondAfter(acct: Account, view: MarketView, composed: Pick<Composed, 'lines' | 'cashAfter'>, except?: number): number | null {
+  try {
+    const c = coreAfterList(acct, view, composed, except);
+    const pb = c.price(c.bondTicker);
+    const chk = coreBandCheck(c.bondShares * pb + c.cash, c.coreShares * c.price(c.cfg.coreTicker) + c.bondShares * pb + c.cash, c.cfg);
+    return chk.core > 0 ? chk.s : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 「做完之後」那一列（入金、出金、改比例的清單；core_ai §3.11）：自選 23.1%（預算 20%）、動能 28.4%（30%）、核心 48.5%（50%）；
+ * 後面多一項核心的比例（allocation_redesign §1.4）：核心裡 SGOV 與現金 19.2%（目標 20%）。
+ */
 export function afterFact(acct: Account, view: MarketView, composed: Pick<Composed, 'lines' | 'cashAfter'> | undefined, except?: number): Fact | null {
   const b = composed ? bucketSharesAfter(acct, view, composed, except) : null;
-  if (!b) return null;
+  if (!b || !composed) return null;
   const r = acct.cfg.ratio;
-  return { label: '做完之後', value: `自選 ${fmtPct(b.own, 1)}（預算 ${fmtPct(r.own)}）、動能 ${fmtPct(b.mom, 1)}（${fmtPct(r.strat)}）、核心 ${fmtPct(b.core, 1)}（${fmtPct(r.core)}）`, note: '照前一日收盤估的三桶占總資產；比例是風險預算，平常不會為了拉回比例下單。' };
+  const s = coreBondAfter(acct, view, composed, except);
+  const { bond, band } = coreCfg(acct.cfg);
+  const core = s === null ? '' : `；核心裡 ${acct.bondTicker} 與現金 ${fmtPct(s, 1)}（目標 ${fmtPct(bond)}）`;
+  return {
+    label: '做完之後',
+    value: `自選 ${fmtPct(b.own, 1)}（預算 ${fmtPct(r.own)}）、動能 ${fmtPct(b.mom, 1)}（${fmtPct(r.strat)}）、核心 ${fmtPct(b.core, 1)}（${fmtPct(r.core)}）${core}`,
+    note: `照前一日收盤估的三桶占總資產；比例是風險預算，平常不會為了拉回比例下單。核心裡的比例在 ${fmtPct(bond - band)}～${fmtPct(bond + band)} 之內不調，超出的話下一份月報調回。`,
+  };
+}
+
+/** 核心比例調回（F26，allocation_redesign §1.3）。 */
+function coreBandExplain(ctx: ExplainContext, n: Notif, it: Item): Explain {
+  const { acct } = ctx;
+  const { bond, band } = coreCfg(acct.cfg);
+  const cb = n.monthly?.input.coreBand;
+  const lines = it.choices[0]?.lines ?? [];
+  const range = `${fmtPct(bond - band)}～${fmtPct(bond + band)}`;
+  return {
+    short: it.title.replace(/^核心比例調回：/, ''),
+    why: `${it.why ?? ''}${it.note?.includes('一次性') ? it.note : ''}`,
+    rule: RULE.core,
+    facts: cb
+      ? [
+          { label: `${acct.bondTicker} 與現金占核心`, value: fmtPct(cb.s, 1), note: `這份月報其他單做完之後的比例。目標 ${fmtPct(bond)}，${range} 之內不調。` },
+          { label: '核心的市值', value: fmtMoney(cb.core), note: `調回後 ${acct.bondTicker} 與現金約 ${fmtMoney(cb.core * bond)}。` },
+        ]
+      : [],
+    math: lines.map((l) => `${BUCKET_NAME[l.bucket]} ${l.ticker}：${sharesText(l.shares)}`),
+    choiceNotes: { DO: '核心裡兩檔互換，三桶的比例不變。', SKIP: `不用寫理由。下個月月報會重算：還在 ${range} 之外就再列一次，回到界線內就不列。` },
+  };
 }
 
 /** 改比例那一列「動能相對大盤」（設計 §2.1 第 7 點，core_ai §3.11）：落後事件中寫從哪天開始，不在就寫不在。沒有策略檢討的狀態（示範）是 null。 */
@@ -771,7 +819,7 @@ function cashflow(ctx: ExplainContext, n: Notif, it: Item): Explain {
     const amt = n.deposit ?? 0;
     return {
       short: `入金 ${fmtMoney(amt)}：補低於目標最多的格子，其餘進核心`,
-      why: `你入金 ${fmtMoney(amt)}。入金只買不賣：先補「離目標最遠」的格子${lines.length ? `（${lines.map((l) => l.ticker).join('、')}）` : ''}，剩下的交給核心買 ${core}。已經高於目標的股票不會再買。${ownScaleNote(ctx.acct)}`,
+      why: `你入金 ${fmtMoney(amt)}。入金只買不賣：先補「離目標最遠」的格子${lines.length ? `（${lines.map((l) => l.ticker).join('、')}）` : ''}，剩下的交給核心，照比例買 ${core} 與 ${acct.bondTicker}。已經高於目標的股票不會再買。${ownScaleNote(ctx.acct)}`,
       rule: RULE.deposit,
       facts: [...head, ...lineFacts(ctx, lines, true)],
     };
@@ -781,7 +829,7 @@ function cashflow(ctx: ExplainContext, n: Notif, it: Item): Explain {
     const cap = lines.filter((l) => l.reason === '單檔上限').map((l) => l.ticker);
     return {
       short: `出金 ${fmtMoney(amt)}：只賣不買${cap.length ? `，${cap.join('、')} 先減回 10%` : ''}`,
-      why: `你要出金 ${fmtMoney(amt)}。出金只賣不買${cap.length ? `：${cap.join('、')} 在出金後會超過總資產 15%，所以先在這份清單減回 10%，賣得的錢抵出金` : ''}；其餘依序從：帳上現金 → 動能高於每檔目標的部分（賣回目標）→ 核心 ${core} → 動能其餘的部分 → 最後才是自選。清單做完後，從券商轉出 ${fmtMoney(amt)}，再回來填快照。`,
+      why: `你要出金 ${fmtMoney(amt)}。出金只賣不買${cap.length ? `：${cap.join('、')} 在出金後會超過總資產 15%，所以先在這份清單減回 10%，賣得的錢抵出金` : ''}；其餘依序從：動能高於每檔目標的部分（賣回目標）→ 核心（照比例賣 ${core} 與 ${acct.bondTicker}，帳上現金先用）→ 動能其餘的部分 → 最後才是自選。清單做完後，從券商轉出 ${fmtMoney(amt)}，再回來填快照。`,
       rule: RULE.withdraw,
       facts: [...head, ...lineFacts(ctx, lines)],
     };
@@ -1003,6 +1051,8 @@ export function explainItem(ctx: ExplainContext, n: Notif, it: Item): Explain {
         return capTrim(ctx, n, it);
       case 'F17':
         return owed(ctx, n, it);
+      case 'F26':
+        return coreBandExplain(ctx, n, it);
       case 'CORE':
         return { short: '帳上的閒置現金交給核心', why: `帳上有閒置的現金（股利或上次交易剩下的零頭）。這個月沒有其他單，就把它交給核心買 ${ctx.acct.cfg.coreTicker}。`, choiceNotes: { DO: '買核心 ETF。', SKIP: '現金留在帳上，下個月月報會再列一次。' } };
       default:
@@ -1030,6 +1080,12 @@ export function annotate(ctx: ExplainContext, only?: (n: Notif) => boolean): boo
 
 /** 核心那一行是算出來的：把引擎寫的原因翻成一句話。 */
 export function coreLineWhy(reason: string, acct: Account): string {
+  // 2026-11-22 起（allocation_redesign §1.2）：「錢交給核心（VOO 八成、SGOV 兩成）」「從核心拿錢（…）」「帳上的現金買 SGOV」「核心比例」
+  const mix = /^(?:錢交給核心|從核心拿錢)（(.+成.*|.+%.*)）$/.exec(reason)?.[1];
+  if (mix && !reason.includes('崩盤')) return reason.startsWith('錢交給核心') ? `清單做完會多出現金，交給核心，照比例買（${mix}）` : `不夠的錢從核心照比例拿（${mix}；帳上現金先用）`;
+  if (reason.startsWith('帳上的現金買')) return `帳上原本的現金順便買成 ${acct.bondTicker}（現金本來就算在 ${acct.bondTicker} 那一邊，核心的比例不變）`;
+  if (reason === '核心比例') return `核心比例調回 ${fmtPct(coreCfg(acct.cfg).bond)}`;
+  // 舊通知的寫法（崩盤規則退場之前）
   if (reason.startsWith('錢交給核心')) return reason.includes('崩盤') ? `清單做完會多出現金，交給核心（崩盤規則啟動中：一半買 ${acct.cfg.coreTicker}、一半放短債）` : `清單做完會多出現金，交給核心買 ${acct.cfg.coreTicker}`;
   if (reason.startsWith('從核心拿錢')) return reason.includes('短債') ? '不夠的錢先從核心的短債拿' : `不夠的錢從核心拿（賣 ${acct.cfg.coreTicker}）`;
   return reason;

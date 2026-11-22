@@ -6,7 +6,7 @@ import { dismissDraft, draftForSave, draftStates, markDraftUsed, readyDraft, req
 import { routineReady } from '../ownAi';
 import { homeBrief, type HomeBrief } from '../marketBrief';
 import type { DraftBroken } from '../../ai/ownDraft';
-import { bookShares, pendingSplits, type Account, type Attention, type LedgerEvent, type MarketView, type OwnWebSources, type ShadowRecord, type Snapshot, type StrategyReviewState, type WebSourceCheck } from '../../engine';
+import { bookShares, migrateAccount, pendingSplits, type Account, type Attention, type LedgerEvent, type MarketView, type OwnWebSources, type ShadowRecord, type Snapshot, type StrategyReviewState, type WebSourceCheck } from '../../engine';
 import { probeWebSources } from '../webEvidence';
 import { easternTime, lastCompletedSession } from '../../data/calendar';
 import { BENCHMARK } from '../../data/ingest';
@@ -358,7 +358,7 @@ export function demoBackend(env: Env, now: Date): DemoBackend {
       rev = 0;
       return;
     }
-    st = { scenario: row.scenario as DemoId, d: row.d, acct: JSON.parse(row.body) as Account };
+    st = { scenario: row.scenario as DemoId, d: row.d, acct: migrateAccount(JSON.parse(row.body) as Account) };
     rev = row.rev;
   };
   const write = async (next: DemoState) => {

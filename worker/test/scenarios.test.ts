@@ -273,50 +273,63 @@ describe('情境 ② 自選股大跌（MU）', () => {
   });
 });
 
-describe('情境 ③ 崩盤規則', () => {
-  it('1 月啟動：核心一半換短債、動能減半併在同一項，AI 意見只附一行；2 月解除，買回比賣出貴', () => {
+// T80（階段十二，allocation_redesign §1.1～§1.4、§1.6、§2.1）：原本是「情境 ③ 崩盤規則」（1 月啟動：核心一半換短債、動能減半；2 月解除）。
+// 崩盤規則退場之後，同一個市場（大盤急跌 11% 再 V 型反彈）變成：月報沒有崩盤項目，核心固定比例、在界線內不調，動能不因大盤減半。
+describe('情境 ③ 大盤急跌再反彈（沒有崩盤規則）', () => {
+  it('1 月 VOO 跌破 200 日線：月報沒有崩盤項目，動能不減半、核心比例在界線內不調；出金從核心照比例拿；2 月反彈也沒有要換回的', () => {
     const sc = scenarios.s3();
-    const sim = new Sim(sc.market, sc.init, { crashOpinion: { '2027-01': '延後', '2027-02': '照做' } });
+    const sim = new Sim(sc.market, sc.init, { crashOpinion: { '2027-01': '延後' } });
     sim.runUntil('2027-01-04');
+    // VOO 訊號日收盤在 200 日均線之下（以前會啟動崩盤規則）
+    const c = sim.market.close.VOO;
+    const ma200 = c.slice(sim.d - 200, sim.d).reduce((a, b) => a + b, 0) / 200;
+    expect(c[sim.d - 1]).toBeLessThan(ma200);
     const jan = sim.preOpen()!;
-    const f5 = item(jan, 'F5');
-    expect(f5.aiLine).toBe('AI 檢視：延後'); // 只說明，不能否決或延後
-    expect(f5.choices.map((c) => c.id)).toEqual(['DO', 'SKIP']);
-    const lines = f5.choices[0].lines;
-    expect(lines.find((l) => l.ticker === 'VOO')!.shares).toBeLessThan(0);
-    expect(lines.find((l) => l.ticker === 'SGOV')!.shares).toBeGreaterThan(0);
-    // 動能留任股各減半，和崩盤規則同一項
-    for (const t of ['PLTR', 'AVGO', 'NFLX', 'AMD']) expect(lines.find((l) => l.ticker === t && l.bucket === 'mom')!.shares).toBeLessThan(0);
-    expect(sim.acct.rule.crash).toBe(true);
-    // 自選不受崩盤規則影響：MSFT 走自己的慢規則（< 5%，併入月報）
+    expect(jan.items.some((i) => i.f === 'F5' || i.f === 'F6')).toBe(false);
+    expect(jan.items.map((i) => `${i.f}:${i.ticker}`)).toEqual(['F1:APP', 'F2:ORCL', 'F7:MSFT']);
+    expect('crash' in sim.acct.rule).toBe(false);
+    expect(sim.acct.rule.effPrev).toBe(1); // 動能的比例只看波動度
+    // 核心：SGOV 與現金那一邊因為股票跌變高（21.9%），還在 15%～25% 之內 → 沒有核心比例調回
+    const band = jan.monthly!.input.coreBand!;
+    expect(band.s).toBeGreaterThan(0.2);
+    expect(band.s).toBeLessThan(0.25);
+    expect(has(jan, 'F26')).toBe(false);
+    // 自選照舊走自己的慢規則（< 5%，併入月報）
     expect(sharesOf(item(jan, 'F7', 'MSFT'))).toBe(-5);
-    const sellPx = sim.market.open.VOO[sim.d];
+    // 這份清單多出來的錢進核心：VOO 與 SGOV 都買（照比例；帳上原本的現金順便買成 SGOV）
+    expect(listOf(jan)).toEqual(['買 APP 10', '賣 ORCL 28', '賣 MSFT 5', '買 VOO 3', '買 SGOV 17']);
     sim.respond(jan.id);
     sim.open();
     const T = totalValue(sim.acct, sim.pre);
-    const voo = sim.acct.lots.core.VOO * priceOf(sim.pre, 'VOO');
     const bond = sim.acct.lots.core.SGOV * priceOf(sim.pre, 'SGOV') + sim.acct.cash;
-    expect(Math.abs(voo - bond) / T).toBeLessThan(0.02); // 核心一半一半
-    expect(bucketValue(sim.acct, sim.pre, 'mom') / T).toBeLessThan(0.17); // 動能約 15%
+    const s = bond / bucketValue(sim.acct, sim.pre, 'core');
+    expect(s).toBeGreaterThan(0.15);
+    expect(s).toBeLessThan(0.25);
+    expect(bucketValue(sim.acct, sim.pre, 'mom') / T).toBeGreaterThan(0.25); // 動能沒有減半（以前約 15%）
 
-    // 啟動期間出金：順序 ① 先用短債
+    // 出金（§1.4）：動能高於目標的部分 → 核心照比例（帳上現金先用）；SGOV 與 VOO 都賣
     const w = withdraw(sim.acct, sim.pre, 10000);
-    expect(listOf(w.notif)).toEqual([`賣 SGOV ${Math.ceil((10000 - sim.acct.cash) / 0.98 / priceOf(sim.pre, 'SGOV'))}`]);
+    const coreLines = w.notif.preview!.lines.filter((l) => l.bucket === 'core');
+    expect(coreLines.map((l) => [l.ticker, l.reason])).toEqual([
+      ['SGOV', '從核心拿錢（VOO 八成、SGOV 兩成）'],
+      ['VOO', '從核心拿錢（VOO 八成、SGOV 兩成）'],
+    ]);
+    expect(coreLines.every((l) => l.shares < 0)).toBe(true);
+    const sold = (t: string) => -coreLines.find((l) => l.ticker === t)!.shares * priceOf(sim.pre, t);
+    // 短債那一邊（SGOV 賣的＋先用掉的現金）約占從核心拿的兩成
+    const fromCore = sold('SGOV') + sold('VOO') + sim.acct.cash;
+    expect((sold('SGOV') + sim.acct.cash) / fromCore).toBeGreaterThan(0.15);
+    expect((sold('SGOV') + sim.acct.cash) / fromCore).toBeLessThan(0.25);
 
     sim.close();
     sim.d++;
     sim.runUntil('2027-02-01');
     const feb = sim.preOpen()!;
-    const f6 = item(feb, 'F6');
-    expect(f6.aiLine).toBe('AI 檢視：照做');
-    expect(f6.choices[0].lines.find((l) => l.ticker === 'SGOV')!.shares).toBe(-sim.acct.lots.core.SGOV);
-    expect(sim.acct.rule.crash).toBe(false);
-    const buyPx = sim.market.open.VOO[sim.d];
-    expect(buyPx).toBeGreaterThan(sellPx); // 保險費：買回通常比賣出貴
-    sim.respond(feb.id);
-    sim.open();
-    expect(sim.acct.lots.core.SGOV).toBeUndefined();
-    expect(bucketValue(sim.acct, sim.pre, 'mom') / totalValue(sim.acct, sim.pre)).toBeGreaterThan(0.25);
+    // 2 月 VOO 回到均線之上：沒有「解除」，也沒有短債要換回；核心還在界線內 → 本月不用動
+    expect(feb.kind).toBe('MONTHLY_EMPTY');
+    expect(feb.items).toEqual([]);
+    expect(feb.monthly!.input.coreBand!.s).toBeGreaterThan(0.15);
+    expect(feb.monthly!.input.coreBand!.s).toBeLessThan(0.25);
   });
 });
 
@@ -370,7 +383,7 @@ describe('情境 ⑤ 你自己的操作', () => {
     return sim;
   };
 
-  it('入金 10,000：只買不賣，補低於目標最多的格子，剩下的進核心；買單不超過現金的 98%', () => {
+  it('入金 10,000：只買不賣，補低於目標最多的格子，剩下的照比例進核心（VOO、SGOV）；買單不超過現金的 98%', () => {
     const sim = start();
     const cash0 = sim.acct.cash;
     const nav0 = navPerUnit(sim.acct, sim.pre).total;
@@ -381,7 +394,14 @@ describe('情境 ⑤ 你自己的操作', () => {
     expect(merged.every((m) => m.shares > 0)).toBe(true);
     const spent = merged.reduce((a, m) => a + m.shares * priceOf(sim.pre, m.ticker), 0);
     expect(spent).toBeLessThanOrEqual(0.98 * (cash0 + 10000) + 1e-6);
-    expect(spent).toBeGreaterThan(0.9 * (cash0 + 10000));
+    // T80（allocation_redesign §1.2）：入金的錢幾乎都投入；帳上原本的現金（算 SGOV 那一邊）這份清單不動，月報有其他單時才順便買成 SGOV
+    expect(spent).toBeGreaterThan(0.9 * 10000);
+    expect(spent).toBeLessThanOrEqual(0.98 * 10000 + 1e-6);
+    const core = r.notif.preview!.lines.filter((l) => l.bucket === 'core');
+    expect(core.map((l) => [l.ticker, l.reason])).toEqual([
+      ['VOO', '錢交給核心（VOO 八成、SGOV 兩成）'],
+      ['SGOV', '錢交給核心（VOO 八成、SGOV 兩成）'],
+    ]);
     // MU 已經超過目標（占 13% vs 標準 8%）→ 不補
     expect(merged.some((m) => m.ticker === 'MU')).toBe(false);
     // 單位淨值不受入金影響
@@ -392,7 +412,7 @@ describe('情境 ⑤ 你自己的操作', () => {
     expect(sim.acct.cash).toBeGreaterThanOrEqual(0);
   });
 
-  it('出金 30,000：先做單檔上限檢查（MU 出金後會超過 15% → 減回 10%），其餘賣 VOO；做完現金剛好夠轉出', () => {
+  it('出金 30,000：先做單檔上限檢查（MU 出金後會超過 15% → 減回 10%），其餘照順序（動能高於目標 → 核心照比例）；做完現金剛好夠轉出', () => {
     const sim = start();
     const T = sim.total();
     const muVal = 56 * priceOf(sim.pre, 'MU');
@@ -407,6 +427,7 @@ describe('情境 ⑤ 你自己的操作', () => {
     const merged = r.notif.preview!.merged;
     expect(merged.every((m) => m.shares < 0)).toBe(true);
     expect(merged.find((m) => m.ticker === 'VOO')!.shares).toBeLessThan(0);
+    expect(merged.find((m) => m.ticker === 'SGOV')!.shares).toBeLessThan(0); // 核心照比例拿：SGOV 也賣（帳上現金先用）
     expect(merged.some((m) => ['NVDA', 'MSFT', 'META'].includes(m.ticker))).toBe(false); // 其他自選最後才動
     const nav0 = navPerUnit(sim.acct, sim.pre).total;
     sim.respond(r.notif.id);

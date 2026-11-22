@@ -15,6 +15,8 @@ export interface ReplayData {
   open: Record<string, Float64Array>;
   /** 每個換股日的股票池排名（代號由高到低）。 */
   ranks: Record<string, string[]>;
+  /** 現金（短債 ETF）的累積報酬指數，對齊 days（新規則的基準用；回測的 b10_common.cash_index）。沒有 = 現金不計息。 */
+  cash?: Float64Array;
 }
 
 export interface ReplayOptions {
@@ -26,6 +28,12 @@ export interface ReplayOptions {
   fee: number;
   volWindow?: number;
   crashRule?: boolean;
+  /**
+   * 核心的規則（allocation_redesign §1.6）：
+   *   'crash'（預設）舊路徑：崩盤規則、現金不計息、短債的買賣不算一張單——對照 B-8，證明舊路徑沒被改壞。
+   *   'ratio' 正式流程的規則：核心固定比例、動能只依波動度減碼、現金照 data.cash 計息、短債的買賣算一張單——對照 B-12「M2＋SGOV 20%」。
+   */
+  core?: 'crash' | 'ratio';
 }
 
 export interface ReplayOrder {
@@ -81,6 +89,8 @@ function lowerBound(xs: string[], x: string): number {
 export function replay(data: ReplayData, opt: ReplayOptions): ReplayResult {
   const { cfg } = opt;
   const core = cfg.coreTicker;
+  const ratio = opt.core === 'ratio';
+  const cashIdx = ratio ? data.cash : undefined;
   const volWindow = opt.volWindow ?? 126;
   const allDays = data.days;
   const lo = lowerBound(allDays, opt.start);
@@ -96,8 +106,10 @@ export function replay(data: ReplayData, opt: ReplayOptions): ReplayResult {
   const rets: Record<string, Float64Array> = {};
   const lc = (t: string) => (lastClose[t] ??= ffill(data.close[t]));
   const retOf = (t: string) => (data.close[t] ? (rets[t] ??= dailyReturns(data.close[t])) : undefined);
-  const openPx = (t: string, g: number) => (t === CASH ? 1 : data.open[t][g]);
-  const closePx = (t: string, g: number) => (t === CASH ? 1 : lc(t)[g]);
+  // 現金格：計息時開盤與收盤都用當天的指數（和回測相同：利息在隔天開盤前入帳）
+  const cashPx = (g: number) => (cashIdx ? cashIdx[g] : 1);
+  const openPx = (t: string, g: number) => (t === CASH ? cashPx(g) : data.open[t][g]);
+  const closePx = (t: string, g: number) => (t === CASH ? cashPx(g) : lc(t)[g]);
 
   // 自選慢規則的訊號：在這檔有資料的交易日上跑狀態機（和回測相同）
   const sigs: Record<string, Map<number, OwnAction>> = {};
@@ -143,11 +155,12 @@ export function replay(data: ReplayData, opt: ReplayOptions): ReplayResult {
         state,
         first,
         ownActions: due.todo,
+        legacyCrash: !ratio,
         monthly: isR
           ? {
               order: data.ranks[date],
               excessVol: (names) => excessVol(retOf, names, core, g - volWindow, g),
-              coreBelow200: (opt.crashRule ?? true) && lc(core)[g - 1] < sma(data.close[core], g - 1, 200),
+              ...(ratio ? {} : { coreBelow200: (opt.crashRule ?? true) && lc(core)[g - 1] < sma(data.close[core], g - 1, 200) }),
             }
           : undefined,
       });
@@ -155,7 +168,7 @@ export function replay(data: ReplayData, opt: ReplayOptions): ReplayResult {
       if (isR && plan.vol && plan.vol.nextW !== null) out.volPath.push(plan.vol.w);
       if (isR && cfg.volScale && plan.state.volHist.length) out.volHist.push({ date, sigma: plan.state.volHist[plan.state.volHist.length - 1] });
       for (const e of plan.events) out.events.push({ date, ...e });
-      const s = summarizeOrders(cfg, values, plan);
+      const s = summarizeOrders(cfg, values, plan, undefined, ratio ? { cashLabel: 'SGOV' } : {});
       if (s.orders.length && !first) {
         out.orders.push({
           date,

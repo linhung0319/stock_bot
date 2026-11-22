@@ -244,13 +244,14 @@ describe('③ AI 建議產生的通知項目、通知、影子紀錄帶 run_id',
     expect(new Set(r.notif.runIds)).toEqual(new Set(['run-f24-msft', 'run-f1-ge', 'run-f1-app']));
   });
 
-  it('F5／F6：崩盤規則項目帶檢視的 run_id', () => {
+  // T80（階段十二，allocation_redesign §1.6）：原本這裡是「F5／F6：崩盤規則項目帶檢視的 run_id」。月報不再產生崩盤項目
+  it('2026-11-22 起月報沒有崩盤項目：VOO 在 200 日線之下、給了檢視的 run_id 也沒有 F5／F6，通知不帶它', () => {
     const sc = scenarios.s3();
     const sim = new Sim(sc.market, sc.init);
     sim.runUntil('2027-01-04');
     const r = monthlyReport(sim.acct, sim.pre, { order: ranksAt(sim.market, sim.d - 1), month: '2027-01', crashOpinion: '延後', runIds: { crash: 'run-crash' } });
-    expect(item(r.notif, 'F5').runIds).toEqual(['run-crash']);
-    expect(r.notif.runIds).toEqual(['run-crash']);
+    expect(r.notif.items.some((i) => i.f === 'F5' || i.f === 'F6')).toBe(false);
+    expect(r.notif.runIds ?? []).not.toContain('run-crash');
   });
 
   it('舊紀錄沒有 run_id：網站照舊用代號＋日期找 AI 說明；有 run_id 就找那一次', () => {

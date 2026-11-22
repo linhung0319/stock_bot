@@ -569,22 +569,18 @@ describe('T72 理由一鍵選（§6）', () => {
     });
   });
 
-  it('慢規則減半與崩盤項目的「這次不做」：這次不做的三個選項；崩盤 AI 說延後時「照 AI 檢視：延後」排第一個、先選好', () => {
+  // T80（階段十二，allocation_redesign §1.6）：月報不再產生崩盤項目（F5／F6），原本這裡崩盤項目的那一半（理由選項、
+  // AI 說延後時先選好、選項的字存進 coreOwe）拿掉了；慢規則減半的照舊
+  it('慢規則減半的「這次不做」：這次不做的三個選項；選項的字存成那一項的理由', () => {
     const sc = scenarios.s3();
-    const sim = new Sim(sc.market, sc.init, { crashOpinion: { '2027-01': '延後' } });
+    const sim = new Sim(sc.market, sc.init);
     sim.runUntil('2027-01-04');
     const jan = sim.preOpen()!;
     const f7 = jan.items.find((i) => i.f === 'F7' && i.kind === 'OWN_RULE')!;
-    const f5 = jan.items.find((i) => i.f === 'F5' && !i.relist)!;
+    expect(jan.items.some((i) => i.f === 'F5' || i.f === 'F6')).toBe(false);
     checkReasons(jan, f7, REASON_PICKS_SKIP);
-    checkReasons(jan, f5, REASON_PICKS_SKIP);
-    const v5 = notifView(ready(sim.acct, sim.pre), jan).items.find((x) => x.key === f5.key)!;
-    const opts = RJ.reasonOptions(v5.reasonPicks, v5.reasonText?.prefill);
-    expect(opts).toEqual(['照 AI 檢視：延後', ...REASON_PICKS_SKIP, '其他']);
-    expect(RJ.reasonValue(RJ.initialReason(opts, '', v5.reasonText?.prefill).pick)).toBe('照 AI 檢視：延後');
-    // 選項的字照舊存進 coreOwe 的理由（core_ai §3.6）
-    sim.respond(jan.id, { mode: 'DO', choices: { [f5.key]: 'SKIP', [f7.key]: 'SKIP' }, reasons: { [f5.key]: pickReason(v5, '想再觀察一陣子'), [f7.key]: '價格已經反映' } });
-    expect(sim.acct.coreOwe?.reason).toBe('想再觀察一陣子');
+    const v7 = notifView(ready(sim.acct, sim.pre), jan).items.find((x) => x.key === f7.key)!;
+    sim.respond(jan.id, { mode: 'DO', choices: { [f7.key]: 'SKIP' }, reasons: { [f7.key]: pickReason(v7, '價格已經反映') } });
     const after = sim.acct.notifs.find((x) => x.id === jan.id)!;
     expect(after.items.find((x) => x.key === f7.key)!.reason).toBe('價格已經反映');
     // 不用寫理由的項目沒有選項

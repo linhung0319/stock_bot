@@ -309,8 +309,9 @@ describe('月報與網站', () => {
   it('「本月不用動」的月報也列；LINE 有與沒有那一行', async () => {
     await withWorld(async ({ db }) => {
       const { view } = buildMarketView(await loadSeries(db, ['VOO', 'SGOV', 'NVDA', 'MSFT']), '2026-11-19', 'VOO');
-      // 沒有自選、動能、閒置現金的帳戶：月報沒有任何一項
-      const acct = createAccount({ paper: false, cash: 0, core: { VOO: 100 } }, view);
+      // 沒有自選、動能、閒置現金的帳戶：月報沒有任何一項。
+      // T80（allocation_redesign §1.3）：核心要在固定比例的界線內（VOO 八成、SGOV 兩成），不然月報會多一項核心比例調回
+      const acct = createAccount({ paper: false, cash: 0, core: { VOO: 80, SGOV: Math.round((20 * view.close.VOO[view.i]) / view.close.SGOV[view.i]) } }, view);
       const att: Attention[] = [{ ticker: 'MU', kind: 'NO_THESIS', text: 'MU 還沒有你的論點，目前用系統預設前提檢查', since: '2026-01-02', src: 'own' }];
       const withAtt = monthlyReport(acct, view, { order: [], month: '2026-12', attention: att }).notif;
       expect(withAtt.kind).toBe('MONTHLY_EMPTY');

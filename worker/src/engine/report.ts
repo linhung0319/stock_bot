@@ -1,13 +1,13 @@
 // 每日檢查與月報：把規則的結果變成「通知＋清單」，每一項附選項（照規則／照 AI／這次不做）。
 // 設計：§2.0 觸發總表、§2.2 自選、§2.3 操作方式、§2.5 觸發與通知。
 import {
-  CORE_OWE_UNANSWERED_REASON,
   TIER_NAME,
   bucketValue,
   cellValues,
   clone,
   makeItem,
   newNotif,
+  normRule,
   priceOf,
   shareCells,
   syncRunIds,
@@ -30,14 +30,14 @@ import {
 } from './account';
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
 import { drawdownFromHigh, excessVol } from './indicators';
-import { composeWithCore, crashCoreLines, mergeByTicker, planToLines, type Composed, type CoreContext, type OrderLine } from './orders';
-import { crashDecision, validBars } from './risk';
+import { composeWithCore, coreBandLines, crashCoreLines, mergeByTicker, planToLines, tenths, type Composed, type CoreBand, type CoreContext, type OrderLine } from './orders';
 import { SLOW, halveShares, slowDayInput, stepSlowRule } from './slowRule';
-import { cellKey, type OwnAction, type OwnState } from './types';
+import { cellKey, coreCfg, type OwnAction, type OwnState } from './types';
 
 // ---------------------------------------------------------------- 共用
 
-export function coreContext(acct: Account, view: MarketView, reserveCash = 0, halfUpTo = 0): CoreContext {
+/** fresh：這份清單帶進來的新錢（入金）；sweepCash：月報順便把帳上原本的現金買成短債（allocation_redesign §1.2）。 */
+export function coreContext(acct: Account, view: MarketView, reserveCash = 0, opt: { fresh?: number; sweepCash?: boolean } = {}): CoreContext {
   return {
     cfg: acct.cfg,
     price: (t) => priceOf(view, t),
@@ -45,10 +45,10 @@ export function coreContext(acct: Account, view: MarketView, reserveCash = 0, ha
     coreShares: acct.lots.core[acct.cfg.coreTicker] ?? 0,
     bondShares: acct.lots.core[acct.bondTicker] ?? 0,
     bondTicker: acct.bondTicker,
-    crash: acct.rule.crash,
     total: totalValue(acct, view),
     reserveCash,
-    halfUpTo,
+    ...(opt.fresh ? { fresh: opt.fresh } : {}),
+    ...(opt.sweepCash ? { sweepCash: true } : {}),
   };
 }
 
@@ -109,9 +109,75 @@ export function composeNotif(acct0: Account, view: MarketView, n: Notif): Compos
     for (const l of lines) cashAfter -= l.shares * priceOf(view, l.ticker);
     return { lines, merged: mergeByTicker(lines), cashAfter };
   }
-  // 崩盤規則啟動中多的錢（core_ai §3.8）：切換那一份（有 F5）照舊一半一半；入金在入金金額以內一半一半；其他全部放短債
-  const halfUpTo = n.items.some((i) => i.f === 'F5' && !i.cancelled) ? Infinity : (n.deposit ?? 0);
-  return composeWithCore(lines, coreContext(acct, view, n.withdraw ?? 0, halfUpTo));
+  // 錢進出核心一律照比例（allocation_redesign §1.2）：入金的錢算新進核心的；帳上原本的現金只有月報順便買成短債
+  return composeWithCore(lines, coreContext(acct, view, n.withdraw ?? 0, { fresh: n.deposit ?? 0, sweepCash: n.kind === 'MONTHLY' }));
+}
+
+// ---------------------------------------------------------------- 核心比例調回（F26，allocation_redesign §1.3）
+
+/** 這份清單（合成之後，含核心吸收的行）做完時核心的樣子：核心 ETF、短債的股數與帳上現金。其他已回覆、還沒填快照的清單先當成做完了。 */
+export function coreAfterList(acct0: Account, view: MarketView, composed: Pick<Composed, 'lines' | 'cashAfter'>, except?: number): Pick<CoreContext, 'cfg' | 'price' | 'cash' | 'coreShares' | 'bondShares' | 'bondTicker'> {
+  const acct = afterOpenLists(acct0, view, { except });
+  let coreShares = acct.lots.core[acct.cfg.coreTicker] ?? 0;
+  let bondShares = acct.lots.core[acct.bondTicker] ?? 0;
+  for (const l of composed.lines) {
+    if (l.bucket !== 'core') continue;
+    if (l.ticker === acct.cfg.coreTicker) coreShares += l.shares;
+    else if (l.ticker === acct.bondTicker) bondShares += l.shares;
+  }
+  return { cfg: acct.cfg, price: (t) => priceOf(view, t), cash: composed.cashAfter, coreShares, bondShares, bondTicker: acct.bondTicker };
+}
+
+const pct1 = (x: number) => `${(x * 100).toFixed(1)}%`;
+const pct0 = (x: number) => `${Math.round(x * 1000) / 10}%`;
+
+/** 第一次的 F26 多的那一句（allocation_redesign §1.5）。 */
+export const CORE_SWITCH_NOTE = '這是從崩盤規則換到固定比例的一次性調整。';
+/** 晚回覆重算時已經回到界線內。 */
+export const CORE_BAND_BACK_NOTE = '重算後已經回到界線內，這一項不用做';
+
+/** 從崩盤規則換過來、還沒有照做過核心比例調回（§1.5 的「第一次」；選了這次不做的不算做過）。 */
+function coreSwitchPending(acct: Pick<Account, 'fromCrashRule' | 'notifs'>): boolean {
+  if (!acct.fromCrashRule) return false;
+  return !acct.notifs.some((n) => (n.status === 'DONE' || n.status === 'RESPONDED') && n.items.some((i) => i.f === 'F26' && !i.cancelled && i.choice === 'DO'));
+}
+
+/** F26 的標題與理由（allocation_redesign §1.3 的項目文字）。 */
+function coreBandText(acct: Account, check: CoreBand, first: boolean): { title: string; why: string } {
+  const { bond, band } = coreCfg(acct.cfg);
+  const b = acct.bondTicker;
+  const v = acct.cfg.coreTicker;
+  const high = check.s > bond;
+  const title = `核心比例調回：${b} 那一邊占核心 ${pct1(check.s)}，${high ? `超過 ${pct0(bond + band)}` : `低於 ${pct0(bond - band)}`} → 調回 ${pct0(bond)}`;
+  const base = `核心固定放 ${v} ${tenths(1 - bond)}、${b} 與現金${tenths(bond)}。平常不調，超出 ${pct0(bond - band)}～${pct0(bond + band)} 才調回。`;
+  const dir = high ? `這次是股票跌多了，調回等於跌深買 ${v}。` : `這次是股票漲多了，調回等於漲多買 ${b}。`;
+  return { title, why: base + (first ? '' : dir) };
+}
+
+/**
+ * 核心比例的界線檢查（allocation_redesign §1.3）：用這份清單其他單合成之後的預期持股與訊號日收盤價算 s；
+ * 超出界線、而且換算得出整股 → 一項 F26（預設照做、這次不做不用理由、不記欠單）。check 一律回傳（月報記下來顯示用）。
+ */
+export function coreBandItem(acct: Account, view: MarketView, composed: Pick<Composed, 'lines' | 'cashAfter'>, except?: number): { check: CoreBand; item: Item | null } {
+  const { check, lines } = coreBandLines(coreAfterList(acct, view, composed, except));
+  if (!lines.length) return { check, item: null };
+  const first = coreSwitchPending(acct);
+  const item = makeItem({ f: 'F26', kind: 'CORE_BAND', ...coreBandText(acct, check, first), choices: [{ id: 'DO', label: '照做', lines }], ...(first ? { note: CORE_SWITCH_NOTE } : {}) });
+  return { check, item };
+}
+
+/**
+ * 晚回覆（提醒過才回）時 F26 的行照回覆當天的價格與持股重算（設計 §2.3.1「忘了」）：其他項目照目前選的選項合成之後再檢查一次；
+ * 已經回到界線內 → 行清空（不用做）。直接改傳進來的通知。
+ */
+export function refreshCoreBand(acct: Account, view: MarketView, n: Notif): void {
+  const it = n.items.find((i) => i.f === 'F26' && i.kind === 'CORE_BAND' && !i.cancelled);
+  if (!it) return;
+  const rest: Notif = { ...n, items: n.items.filter((i) => i !== it) };
+  const { lines } = coreBandLines(coreAfterList(acct, view, composeNotif(acct, view, rest), n.id));
+  it.choices[0].lines = lines;
+  const note = lines.length ? `晚回覆：用 ${view.date} 收盤價重算` : CORE_BAND_BACK_NOTE;
+  it.note = it.note && !it.note.includes('晚回覆') && !it.note.includes(CORE_BAND_BACK_NOTE) ? `${it.note}；${note}` : note;
 }
 
 /** AI 檔位換成股數（設計 §0：AI 選檔位，程式算股數）。stateBefore 是這次規則動作之前的慢規則狀態。 */
@@ -358,19 +424,15 @@ export function refreshOwnAiChoice(acct0: Account, view: MarketView, ticker: str
 }
 
 /** 把規則的計畫（每一格的目標金額）變成清單項目。 */
-function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values: Record<string, number>, ctx: { crashReview?: CrashReviewInfo; ownNotes?: Record<string, string>; coreBefore: CoreContext; runIds?: MonthlyContext['runIds'] }): Item[] {
+function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values: Record<string, number>, ctx: { ownNotes?: Record<string, string>; runIds?: MonthlyContext['runIds'] }): Item[] {
   const lines = planToLines(plan, values, { price: (t) => priceOf(view, t), shares: shareCells(acct) });
   const items: Item[] = [];
-  const crashLines: OrderLine[] = [];
   const volLines: OrderLine[] = [];
   const reduced = new Set(plan.events.filter((e) => e.kind === 'REDUCE').map((e) => e.ticker));
   const added = new Set(plan.selection?.added ?? []);
   for (const l of lines) {
     const t = l.ticker;
     switch (l.reason) {
-      case '崩盤規則':
-        crashLines.push(l);
-        break;
       case '波動度減碼':
         volLines.push(l);
         break;
@@ -416,26 +478,7 @@ function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values
         items.push(makeItem({ f: 'SYS', kind: 'STRATEGY', ticker: t, title: `${t} ${l.reason}`, choices: [{ id: 'DO', label: '照做', lines: [l] }] }));
     }
   }
-  if (plan.crashChanged) {
-    const on = acct.rule.crash;
-    const core = crashCoreLines(ctx.coreBefore, on);
-    items.unshift(
-      makeItem({
-        f: on ? 'F5' : 'F6',
-        kind: 'STRATEGY',
-        ticker: acct.cfg.coreTicker,
-        title: on ? '崩盤規則啟動：核心一半換短債、動能部位減半' : '崩盤規則解除：短債換回核心 ETF、動能部位恢復',
-        choices: [{ id: 'DO', label: '照做', lines: [...core, ...crashLines] }],
-        // 檢視的狀態（core_ai §3.2）：aiLine 只在三票一致時寫（LINE 讀它）；runIds 只要有執行就帶
-        ...crashReviewFields(ctx.crashReview, ctx.runIds?.crash),
-        why: on ? '核心 ETF 前一日收盤低於 200 日均線' : '核心 ETF 前一日收盤回到 200 日均線之上',
-        // 「這次不做」要寫一句理由（core_ai §3.6；整則月報選這次不做時也要）
-        reasonRequired: true,
-      }),
-    );
-  } else if (crashLines.length) {
-    volLines.push(...crashLines);
-  }
+  // 崩盤規則的項目（F5／F6）2026-11-22 起不再產生（allocation_redesign §1.6）；動能整體的增減只剩依波動度減碼
   if (volLines.length) {
     items.push(makeItem({ f: 'F4', kind: 'STRATEGY', title: '動能部位調整（依波動度減碼）', choices: [{ id: 'DO', label: '照做', lines: volLines }], why: plan.vol?.ratio != null ? `σ̃/σ = ${plan.vol.ratio.toFixed(2)}` : undefined }));
   }
@@ -510,50 +553,6 @@ export function coreOweMonth(acct: Pick<Account, 'notifs'>, owe: CoreOwe): strin
 export const RELIST_OFF_NOTE = '上次啟動你沒有做，這次沒有短債要換回';
 export const RELIST_OFF_NOTE_PART = '上次啟動你沒有做；這次只換回後來放進短債的部分';
 
-/** 重列的 F5／F6（relist）：預設照做、不開檢視（§3.1 的 MAKEUP 排除它）、「這次不做」仍要寫理由。沒有要動的行 → null。 */
-function relistItem(acct: Account, owe: CoreOwe, ctx: CoreContext): Item | null {
-  const lines = owedCoreLines(ctx, owe.direction);
-  if (!lines.length) return null;
-  const on = owe.direction === 'ON';
-  const month = coreOweMonth(acct, owe);
-  return makeItem({
-    f: on ? 'F5' : 'F6',
-    kind: 'STRATEGY',
-    ticker: acct.cfg.coreTicker,
-    title: on ? `崩盤規則啟動中：上次（${month}）沒做，核心的一半換短債再列一次` : `崩盤規則已解除：上次（${month}）沒做，短債換回核心 ETF 再列一次`,
-    choices: [{ id: 'DO', label: '照做', lines }],
-    why: owe.reason === CORE_OWE_UNANSWERED_REASON ? `${month} 月報一直沒有回覆，以這份為準` : `上次的理由：${owe.reason || '（沒有寫）'}`,
-    relist: true,
-    reasonRequired: true,
-  });
-}
-
-/**
- * 月報產生時讀 coreOwe（§3.6 的表），讀完清掉（使用者再選「這次不做」會再寫一次）：
- *   ON、仍在啟動中 → 加一項重列的 F5；ON、這個月解除 → 不加，F6 加備註；
- *   OFF、仍是未啟動 → 加一項重列的 F6；OFF、這個月啟動 → 不加（F5 照常，會扣掉已經有的短債）。
- * 回傳有沒有重列。
- */
-function applyCoreOwe(acct: Account, items: Item[], crashChanged: boolean, ctx: CoreContext): boolean {
-  const owe = acct.coreOwe;
-  if (!owe) return false;
-  delete acct.coreOwe;
-  const on = owe.direction === 'ON';
-  if (!crashChanged) {
-    if (acct.rule.crash !== on) return false;
-    const it = relistItem(acct, owe, ctx);
-    if (!it) return false;
-    items.unshift(it);
-    return true;
-  }
-  const f6 = on && !acct.rule.crash ? items.find((i) => i.f === 'F6' && !i.relist) : undefined;
-  if (f6) {
-    const note = f6.choices[0].lines.some((l) => l.bucket === 'core') ? RELIST_OFF_NOTE_PART : RELIST_OFF_NOTE;
-    f6.note = f6.note ? `${f6.note}；${note}` : note;
-  }
-  return false;
-}
-
 function excessVolOf(view: MarketView, benchmark: string) {
   const cache: Record<string, Float64Array> = {};
   const retOf = (t: string) => {
@@ -595,21 +594,9 @@ function withSignalVol(acct: Account, view: MarketView, input: MonthlyContext): 
     cfg: acct.cfg,
     values: cellValues(acct, view),
     state: acct.rule,
-    monthly: { order: input.order, excessVol: vol.fn, coreBelow200: acct.rule.crash, blocked, owed: Object.keys(acct.mom.owe), emptySlots: input.emptySlots, companyOf: companyOfInput(input) },
+    monthly: { order: input.order, excessVol: vol.fn, blocked, owed: Object.keys(acct.mom.owe), emptySlots: input.emptySlots, companyOf: companyOfInput(input) },
   });
   return vol.record(input);
-}
-
-/**
- * 崩盤規則用訊號日的判斷（core_ai §3.7）：input 已經有 crash（重算）→ 照用；沒有（第一次產生、舊月報）→ 用現在的 view 算好寫進去。
- * 均線算不出來時維持原狀態（§3.10 的 crashDecision）。
- */
-function withSignalCrash(acct: Account, view: MarketView, input: MonthlyContext): MonthlyContext {
-  if (input.crash) return input;
-  const c = view.close[acct.cfg.coreTicker];
-  const d = crashDecision(c, view.i, acct.rule.crash);
-  const close = c && Number.isFinite(c[view.i]) ? c[view.i] : null;
-  return { ...input, crash: { below: d.below, date: view.date, close, ma: d.ok ? d.ma : null, ...(d.ok ? {} : { bars: validBars(c, view.i) }) } };
 }
 
 // ---------------------------------------------------------------- 每日檢查（收盤後）
@@ -664,11 +651,10 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
     }
   }
   for (const [tk, act] of Object.entries(due.todo)) {
-    const coreBefore = coreContext(acct, view);
     const plan = planDay({ cfg: acct.cfg, values, state: acct.rule, ownActions: { [tk]: act } });
     acct.rule = plan.state;
     acct.own[tk].pending = null;
-    const items = itemsFromPlan(acct, view, plan, values, { coreBefore, ownNotes: { [tk]: '' } });
+    const items = itemsFromPlan(acct, view, plan, values, { ownNotes: { [tk]: '' } });
     if (!items.length) continue;
     const n = newNotif(acct, view, { kind: 'URGENT', title: `${tk} 慢規則${act === 'REDUCE' ? '減半' : '加回'}`, items });
     n.preview = composeNotif(acct, view, n);
@@ -707,7 +693,7 @@ export function monthlyCandidates(acct: Account, view: MarketView, input: Monthl
     cfg: acct.cfg,
     values,
     state: acct.rule,
-    monthly: { order: input.order, excessVol: () => NaN, coreBelow200: acct.rule.crash, blocked, emptySlots: input.emptySlots, companyOf: companyOfInput(input) },
+    monthly: { order: input.order, excessVol: () => NaN, blocked, emptySlots: input.emptySlots, companyOf: companyOfInput(input) },
   });
   return plan.selection?.added ?? [];
 }
@@ -723,21 +709,26 @@ export function monthlyWait(acct: Account): { kind: 'UNC' } | { kind: 'FILL'; no
 
 /** 月報前的狀態（暫停後、入金合併、排除重算時還原；restoreSaved）。 */
 function savedState(acct: Account): SavedState {
-  return { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), ...(acct.coreOwe ? { coreOwe: clone(acct.coreOwe) } : {}), cash: acct.cash };
+  return { rule: clone(acct.rule), own: clone(acct.own), owe: clone(acct.mom.owe), cash: acct.cash };
 }
 
-/** 還原月報前的狀態（規則、自選、策略單與核心的欠單）；舊的 SavedState 沒有 coreOwe = 那時沒有欠的。 */
+/**
+ * 還原月報前的狀態（規則、自選、策略單的欠單）。2026-11-22 之前存的狀態：規則照 normRule 轉成現在的（拿掉崩盤、effPrev 只含波動度比例），
+ * 核心的欠單（coreOwe）不還原（allocation_redesign §1.3、§1.5）。
+ */
 export function restoreSaved(acct: Account, before: SavedState): void {
-  acct.rule = clone(before.rule);
+  acct.rule = normRule(clone(before.rule));
   acct.own = clone(before.own);
   acct.mom.owe = clone(before.owe);
-  if (before.coreOwe) acct.coreOwe = clone(before.coreOwe);
-  else delete acct.coreOwe;
+  delete acct.coreOwe;
 }
 
-export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyContext, flow?: FlowInput, flowCashAlreadyIn = false): MonthlyResult {
+/**
+ * lazyFree：動能的比例回調這一次不受「搭便車」限制。只給這個函式自己用：第一次算出來有核心比例調回（F26）、而且有回調因為沒有其他單被撤回時，
+ * 用它重算一次（F26 本身就是單，allocation_redesign §1.5）。
+ */
+export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyContext, flow?: FlowInput, flowCashAlreadyIn = false, lazyFree = false): MonthlyResult {
   const acct = clone(acct0);
-  const input = withSignalCrash(acct, view, input0);
   const wait = monthlyWait(acct);
   if (wait) {
     // 先等：未分類的變動、或決定了還沒填快照的清單 → 月報暫停，等完用今天的輸入重算
@@ -760,7 +751,6 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
     acct.cash += flow.amount;
     if (!flowCashAlreadyIn) recordExternalFlow(acct, view, flow.amount);
   }
-  const coreBefore = coreContext(acct, view);
   const ownActions: Record<string, OwnAction> = {};
   const ownNotes: Record<string, string> = {};
   for (const [tk, m] of Object.entries(acct.own)) {
@@ -774,7 +764,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   // 依波動度減碼用訊號日的值（momentum_ai §3.11）：重算時用 input.excessVol；第一次產生時當場算、記下來
   const vol = volSource(view, input, core);
   const plan = planDay({
-    cfg: acct.cfg,
+    cfg: lazyFree ? { ...acct.cfg, piggyback: false } : acct.cfg,
     values,
     state: acct.rule,
     ownActions,
@@ -782,7 +772,6 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
     monthly: {
       order: input.order,
       excessVol: vol.fn,
-      coreBelow200: input.crash!.below,
       blocked,
       owed: Object.keys(acct.mom.owe),
       emptySlots: input.emptySlots,
@@ -792,14 +781,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   acct.rule = plan.state;
   for (const tk of Object.keys(ownActions)) acct.own[tk].pending = null;
   acct.mom.owe = {};
-  let items = itemsFromPlan(acct, view, plan, values, { coreBefore, ownNotes, crashReview: monthlyCrashReview(input), runIds: input.runIds });
-  // 崩盤項目上次選了「這次不做」（core_ai §3.6）：規則還在同一個狀態就再列一次核心的單
-  const relisted = applyCoreOwe(acct, items, plan.crashChanged, coreBefore);
-  // 核心 ETF 的價格和基準對不上（core_ai §3.10）：切換的那一項寫明要核對；月報照規則出、不改判斷
-  if (plan.crashChanged && input.coreNote && input.coreCheck?.some((c) => c === 'DAY_GAP' || c === 'MA_GAP')) {
-    const sw = items.find((i) => (i.f === 'F5' || i.f === 'F6') && !i.relist);
-    if (sw) sw.note = sw.note ? `${sw.note}；${input.coreNote}` : input.coreNote;
-  }
+  let items = itemsFromPlan(acct, view, plan, values, { ownNotes, runIds: input.runIds });
   // 任務 A：進場那一項的說明（准許，附註、法庭的結論、沿用、還在審…；momentum_ai §3.3）。舊月報只有觀察理由
   for (const it of items) {
     if (it.f !== 'F1' || !it.ticker) continue;
@@ -875,11 +857,12 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
   // 兩份都照做就重複下單。策略類「下一份月報把差額再列一次」（§2.3.1）→ 舊月報的策略項目以這份為準、取消；
   // 併在舊月報裡的入金（F11）也一樣：入金的錢已經在帳上，這份月報會用它。
   // 自選的項目（慢規則、AI 建議、條件成立）是一次性的、這份不會再列，照舊留著。
-  // 崩盤切換的項目也取消（T39b）；策略項目與切換在產生這份之前已經照「這次不做」記成欠單（owePendingMonthly），這份照實際持股重列。
+  // 崩盤切換的項目也取消（T39b）；策略項目在產生這份之前已經照「這次不做」記成欠單（owePendingMonthly），這份照實際持股重列。
+  // 核心比例調回（F26）也取消：這份月報照現在的持股重算（allocation_redesign §1.3）。
   for (const old of acct.notifs) {
     if (old.status !== 'PENDING' || old.kind !== 'MONTHLY') continue;
     for (const it of old.items) {
-      if (it.cancelled || (it.kind !== 'STRATEGY' && it.f !== 'F11')) continue;
+      if (it.cancelled || (it.kind !== 'STRATEGY' && it.kind !== 'CORE_BAND' && it.f !== 'F11')) continue;
       it.cancelled = true;
       it.note = `上一份月報沒有回覆，這一項以 ${input.month} 月報為準`;
     }
@@ -888,20 +871,26 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
       old.coreAbsorb = false;
     }
   }
-  const status = `崩盤規則：${acct.rule.crash ? '啟動中' : '未啟動'}${relisted ? '（上次沒做，這份再列）' : ''}；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '');
-  const probe: Notif = { id: 0, kind: 'MONTHLY', date: view.date, seq: view.i, title: '', items, status: 'PENDING', coreAbsorb: true, reminded: false };
-  const preview = composeNotif(acct, view, probe);
-  if (!items.length && preview.lines.length) {
-    // 沒有規則單，但帳上有閒置現金（例如股利）→ 月報一起交給核心（設計 §2.1 第 3 點）
-    items.push(makeItem({ f: 'CORE', kind: 'STRATEGY', title: '帳上的現金交給核心', choices: [{ id: 'DO', label: '照做', lines: [] }], why: '股利與零頭現金在月報一起處理' }));
+  // 崩盤規則已經退場（allocation_redesign §1.6），這一行的字在 T81 換成核心比例；這裡先固定寫未啟動
+  const status = `崩盤規則：未啟動；動能比例 ${thirdLabel(acct.rule.volW ?? 1)}` + (input.paused ? `；本月暫停換股（${input.paused}），動能名單不變` : '');
+  // 核心比例的界線檢查（allocation_redesign §1.3）：其他單照預設選項合成之後算；超出界線加一項 F26（可以是這份月報唯一的一項）。
+  // 帳上的閒置現金不再單獨成一項（§1.2：現金算短債那一邊；有其他單時合成的清單順便加一行買短債）
+  const probe: Notif = { id: 0, kind: 'MONTHLY', date: view.date, seq: view.i, title: '', items, status: 'PENDING', coreAbsorb: true, reminded: false, ...(flow?.kind === '入金' ? { deposit: flow.amount } : {}) };
+  const band = coreBandItem(acct, view, composeNotif(acct, view, probe));
+  if (band.item && !lazyFree && plan.events.some((e) => e.kind === 'LAZY_SKIPPED')) {
+    // 有回調因為「沒有其他單」被撤回，但 F26 本身就是單（§1.5）：這一次不受搭便車限制，重算；重算後還要調回才採用
+    const alt = monthlyReport(acct0, view, input, flow, flowCashAlreadyIn, true);
+    if (alt.notif.items.some((i) => i.f === 'F26')) return alt;
   }
+  if (band.item) items.push(band.item);
+  const coreBand = { s: band.check.s, bond: band.check.bond, core: band.check.core };
   const notif = newNotif(acct, view, {
     kind: items.length ? 'MONTHLY' : 'MONTHLY_EMPTY',
     title: items.length ? `${input.month} 月報` : `${input.month} 月報：本月不用動`,
     text: status,
     items,
     coreAbsorb: items.length > 0,
-    monthly: { input: vol.record(input), before },
+    monthly: { input: { ...vol.record(input), coreBand }, before },
     deposit: flow?.kind === '入金' ? flow.amount : undefined,
     // 「要看的事」：「本月不用動」的月報也列（own_thesis §3.6.6）
     ...(input.attention?.length ? { attention: clone(input.attention) } : {}),
@@ -916,18 +905,18 @@ export function monthlyReport(acct0: Account, view: MarketView, input0: MonthlyC
  * 上一份月報一直沒回覆（T39b 第 4 項）：新的月報只從實際持股算動能每一格與核心吸收的差額，但只在「這個月有理由」時才把一格拉回目標——
  * 新進場、比例格子變了、欠單；其他只靠 ±50% 的回調（而且要搭便車，當天沒有別的單就撤回）。舊月報的進場（F1）、依波動度減碼（F4）、
  * 崩盤切換（F5／F6，含重列的）在下個月都不是「這個月的理由」，所以新月報不會自己涵蓋（探測測試：T39b ④ 延伸）。
- * 做法和那一項選「這次不做」相同（§2.3.1、core_ai §3.6）：策略項目動能那幾檔記進 mom.owe；崩盤切換核心的單記成 coreOwe（理由 CORE_OWE_UNANSWERED_REASON）。
- * 接下來的規則照實際持股重列（策略單補做 F17、重列的 F5／F6）；舊的那幾項在 monthlyReport 後面以新月報為準取消。
+ * 做法和那一項選「這次不做」相同（§2.3.1）：策略項目動能那幾檔記進 mom.owe。
+ * 接下來的規則照實際持股重列（策略單補做 F17）；舊的那幾項在 monthlyReport 後面以新月報為準取消。
  * 在 savedState 之前做：入金併進月報、排除重算時還原的狀態裡有這些欠單，重算時照樣重列。
+ * 2026-11-22 起（allocation_redesign §1.3、§1.5）：舊月報的崩盤項目（F5／F6）不記欠單（規則已經退場）；核心比例調回（F26）也不記，新月報重算。
  */
 function owePendingMonthly(acct: Account): void {
   for (const old of acct.notifs) {
     if (old.status !== 'PENDING' || old.kind !== 'MONTHLY') continue;
     for (const it of old.items) {
-      if (it.cancelled || it.kind !== 'STRATEGY') continue;
+      if (it.cancelled || it.kind !== 'STRATEGY' || it.f === 'F5' || it.f === 'F6') continue;
       const lines = it.choices.find((c) => c.id === it.ruleChoice)?.lines ?? [];
       for (const l of lines) if (l.bucket === 'mom' && l.shares) acct.mom.owe[l.ticker] = { since: old.date, notif: old.id };
-      if ((it.f === 'F5' || it.f === 'F6') && lines.some((l) => l.bucket === 'core' && l.shares)) acct.coreOwe = { direction: it.f === 'F5' ? 'ON' : 'OFF', since: old.date, notif: old.id, reason: CORE_OWE_UNANSWERED_REASON };
     }
   }
 }

@@ -133,7 +133,8 @@ describe('T39a：乙類回「不同意，不動」', () => {
 });
 
 describe('T39a：出金的說明', () => {
-  it('說明的順序和引擎一樣：帳上現金 → 動能高於每檔目標的部分（賣回目標）→ 核心 → 動能其餘 → 最後才是自選；清單裡動能只賣回目標、其餘賣核心', () => {
+  // T80（allocation_redesign §1.4）：順序改成 動能高於目標 → 核心（照比例，帳上現金先用）→ 動能其餘 → 自選
+  it('說明的順序和引擎一樣：動能高於每檔目標的部分（賣回目標）→ 核心（照比例，帳上現金先用）→ 動能其餘 → 最後才是自選；清單裡動能只賣回目標、其餘從核心拿', () => {
     const sc = scenarios.s1();
     const sim = new Sim(sc.market, sc.init);
     sim.runUntil('2026-12-01');
@@ -145,13 +146,14 @@ describe('T39a：出金的說明', () => {
     const mom = lines.filter((l) => l.bucket === 'mom');
     expect(mom.length).toBeGreaterThan(0);
     expect(w.notif.preview!.lines.some((l) => l.bucket === 'core' && l.ticker === 'VOO' && l.shares < 0)).toBe(true);
+    expect(w.notif.preview!.lines.some((l) => l.bucket === 'core' && l.ticker === 'SGOV' && l.shares < 0)).toBe(true);
     // 動能只賣到每檔目標（核心還有 VOO 可以賣，所以沒動到目標以下）
     const slot = momSlotTarget(sim.acct.cfg, total - amt, sim.acct.rule.effPrev ?? 1);
     for (const l of mom) expect(((sim.acct.lots.mom[l.ticker] ?? 0) + l.shares) * priceOf(view, l.ticker)).toBeGreaterThanOrEqual(slot - priceOf(view, l.ticker));
     expect(lines.some((l) => l.bucket === 'own' && l.shares < 0 && !/上限/.test(String(l.reason)))).toBe(false);
     const ctx: ExplainContext = { acct: w.acct, view, axis: [], rankOrder: [], aiNotes: [] };
     const why = explainItem(ctx, w.notif, w.notif.items[0]).why;
-    expect(why).toContain('其餘依序從：帳上現金 → 動能高於每檔目標的部分（賣回目標）→ 核心 VOO → 動能其餘的部分 → 最後才是自選');
+    expect(why).toContain('其餘依序從：動能高於每檔目標的部分（賣回目標）→ 核心（照比例賣 VOO 與 SGOV，帳上現金先用）→ 動能其餘的部分 → 最後才是自選');
     expect(why).not.toContain('照順序從核心、動能');
     expect(w.notif.title).toBe('出金 $30,000 的清單');
   });

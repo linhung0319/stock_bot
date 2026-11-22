@@ -5,9 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { rankUniverse } from '../src/engine/momentum';
 import { replay, replayStats } from '../src/engine/replay';
 import { DEFAULT_CONFIG } from '../src/engine/types';
-import { BACKTEST_CONFIG, fixturesAvailable, loadB8Orders, loadB8Stats, loadExpected, loadReplay, loadUniverse } from '../scripts/replayData';
+import { BACKTEST_CONFIG, b12Available, expectedOrders, fixturesAvailable, loadB12Stats, loadB8Orders, loadB8Stats, loadExpected, loadExpectedB12, loadReplay, loadUniverse } from '../scripts/replayData';
 
 const have = fixturesAvailable();
+const haveB12 = b12Available();
 
 describe.skipIf(!have)('重放驗收（需要 fixtures/replay）', () => {
   const loaded = have ? loadReplay() : null;
@@ -68,6 +69,60 @@ describe.skipIf(!have)('重放驗收（需要 fixtures/replay）', () => {
       expect(Math.abs(s.cagr - b8.cagr)).toBeLessThan(0.003);
       expect(Math.abs(s.maxDrawdown - b8.maxDrawdown)).toBeLessThan(0.01);
       expect(Math.abs(s.sharpe - b8.sharpe)).toBeLessThan(0.03);
+    }
+  });
+});
+
+// T80（階段十二）：正式流程的規則（核心固定 SGOV 20%、±5 pp、月報日檢查；動能只依波動度減碼）另外一組基準，
+// 對照 backtest/results/B12_account.csv 的「M2 只有波動度＋SGOV 20%、有慢規則、出場名次 15、偏移 0」。
+// 誤差範圍和 B-8 那一組相同：每日淨值相對誤差 < 1e-9、下單日與每筆單完全相同、三個統計數字到小數第 9 位。
+// 上面 B-8 的那一組走 planDay 的舊路徑（legacyCrash），留著證明舊路徑沒被改壞。
+// 需要 cash.f64、expected_b12_<年>.json：uv run python worker/scripts/export_replay_data.py --b12
+describe.skipIf(!haveB12)('重放驗收：新規則（核心固定比例，對照 B-12）', () => {
+  const loaded = haveB12 ? loadReplay() : null;
+
+  for (const tag of ['2000', '2013']) {
+    it(`${tag} 起：每日淨值、下單日、每筆方向與比例、原因都和回測相同`, () => {
+      const { data, runs, fee, volWindow } = loaded!;
+      const run = runs.find((r) => r.tag === tag)!;
+      const r = replay(data, { cfg: BACKTEST_CONFIG, own: run.own, start: run.start, end: run.end, fee, volWindow, core: 'ratio' });
+      const exp = loadExpectedB12(tag);
+
+      expect(r.dates).toEqual(exp.dates);
+      let maxRel = 0;
+      r.nav.forEach((v, i) => {
+        maxRel = Math.max(maxRel, Math.abs(v / exp.nav[i] - 1));
+      });
+      expect(maxRel).toBeLessThan(1e-9);
+
+      // 下單日與每筆單（短債的買賣也算一張單，原因多一種「核心比例」）
+      expect(r.orders).toEqual(expectedOrders(exp));
+
+      // 年化、Sharpe、最大回撤：對照 B12_account.csv 那一列
+      const s = replayStats(r);
+      const b12 = loadB12Stats(tag);
+      expect(s.cagr).toBeCloseTo(b12.cagr, 9);
+      expect(s.sharpe).toBeCloseTo(b12.sharpe, 9);
+      expect(s.maxDrawdown).toBeCloseTo(b12.maxDrawdown, 9);
+
+      // 新規則沒有崩盤規則的事件；核心比例調回的次數和回測的「含核心比例」下單日一致
+      expect(r.events.filter((e) => e.kind === 'CRASH_ON' || e.kind === 'CRASH_OFF')).toEqual([]);
+      const band = r.events.filter((e) => e.kind === 'CORE_BAND').map((e) => e.date);
+      expect(band).toEqual(exp.orders.filter((o) => o.reasons.includes('核心比例')).map((o) => o.date));
+      expect(band.length).toBeGreaterThan(0);
+    });
+  }
+
+  it('上線設定（照設計文字的三項差異）＋新規則：數字和 B-12 那一列相差在 0.3 個百分點以內', () => {
+    const { data, runs, fee, volWindow } = loaded!;
+    const cfg = { ...DEFAULT_CONFIG, coreTicker: 'SPY' };
+    for (const run of runs) {
+      const r = replay(data, { cfg, own: run.own, start: run.start, end: run.end, fee, volWindow, core: 'ratio' });
+      const s = replayStats(r);
+      const b12 = loadB12Stats(run.tag);
+      expect(Math.abs(s.cagr - b12.cagr)).toBeLessThan(0.003);
+      expect(Math.abs(s.maxDrawdown - b12.maxDrawdown)).toBeLessThan(0.01);
+      expect(Math.abs(s.sharpe - b12.sharpe)).toBeLessThan(0.03);
     }
   });
 });

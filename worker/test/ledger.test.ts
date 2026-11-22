@@ -80,16 +80,17 @@ describe('快照 → 事件', () => {
     const sim = calm();
     const r = removeOwn(sim.acct, sim.pre, 'META');
     // 使用者只是自己多買了 1 股 VOO（清單上的核心行也是買 VOO）
+    const voo0 = r.acct.lots.core.VOO; // T80：示範帳戶的核心是固定比例，VOO 的股數不再寫死
     const s = applySnapshot(r.acct, sim.pre, snapOf(r.acct, { VOO: 1 }, r.acct.cash - priceOf(sim.pre, 'VOO')));
     expect(s.completed).toEqual([]);
     expect(s.acct.notifs.find((n) => n.id === r.notif.id)!.status).toBe('PENDING');
-    expect(s.acct.lots.core.VOO).toBe(65);
+    expect(s.acct.lots.core.VOO).toBe(voo0 + 1);
   });
 
   it('核心 ETF 的清單外變動直接歸核心；其他代號要問', () => {
     const sim = calm();
     const s = applySnapshot(sim.acct, sim.pre, snapOf(sim.acct, { VOO: 2, KO: 10 }, sim.acct.cash - 2 * priceOf(sim.pre, 'VOO') - 10 * priceOf(sim.pre, 'KO')));
-    expect(s.acct.lots.core.VOO).toBe(66);
+    expect(s.acct.lots.core.VOO).toBe(sim.acct.lots.core.VOO + 2);
     expect(s.acct.lots.unc).toEqual({ KO: 10 });
     expect(s.created.map((n) => n.kind)).toEqual(['CLASSIFY']);
   });

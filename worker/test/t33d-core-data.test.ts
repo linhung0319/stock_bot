@@ -10,13 +10,13 @@ import { runFlow, type Attempt } from '../src/app/flow';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
 import { LINE_PUSH_URL, corePriceWarn, notifText } from '../src/app/line';
 import { CRASH_MONTHLY_LABEL, runRow } from '../src/app/site/aiViews';
-import { afterFact, bucketSharesAfter, explainItem, liveCashflow, liveCrash, momRelFact, type ExplainContext } from '../src/app/site/explain';
-import { CORE_CHECK, coreAlertText, coreDataCheck, corePriceLine, corePriceNote } from '../src/data/coreCheck';
+import { afterFact, bucketSharesAfter, coreBondAfter, explainItem, liveCashflow, momRelFact, type ExplainContext } from '../src/app/site/explain';
+import { CORE_CHECK, coreAlertText, coreDataCheck, corePriceNote } from '../src/data/coreCheck';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
 import { RATIO_SHADOW_TITLE, cancelCashflow, changeRatio, clone, createAccount, deposit, liveShadow, respond, totalValue, withdraw, type Account, type MarketView, type Notif, type StrategyReviewState } from '../src/engine';
 import { freshDb } from './helpers/d1';
-import { cronTime, fakeFetcher, fakeParams, newWorld, type World } from './helpers/fakeSources';
+import { cronTime, fakeFetcher, newWorld, type World } from './helpers/fakeSources';
 import { scenarios } from './helpers/scenarios';
 import { Sim } from './helpers/sim';
 
@@ -55,12 +55,10 @@ interface Ctx {
 }
 
 const HOURS: Record<Attempt, number> = { FIRST: 0, FINAL: 2, APPLY: 4, MANUAL: 0 };
-/** 假價格的 VOO 在漲。 */
-const UP = fakeParams('VOO').g > 0;
 const MOM = 'AAPL';
 
-/** switching：這份月報崩盤規則會不會切換（VOO 在漲：啟動中 → 解除）。routine：雲端排程設定好了沒。 */
-async function withWorld(opt: { switching: boolean; routine: boolean }, fn: (c: Ctx) => Promise<void>) {
+/** routine：雲端排程設定好了沒。帳戶的核心照固定比例（VOO 八成、SGOV 與現金兩成），月報不會多一項核心比例調回。 */
+async function withWorld(opt: { routine: boolean }, fn: (c: Ctx) => Promise<void>) {
   const d = await freshDb();
   try {
     const db = d.db;
@@ -74,13 +72,11 @@ async function withWorld(opt: { switching: boolean; routine: boolean }, fn: (c: 
     };
     await run('2026-11-19');
     const { view } = buildMarketView(await loadSeries(db, ['VOO', 'SGOV', MOM]), '2026-11-19', 'VOO');
-    const crash = opt.switching ? UP : !UP;
     const acct = createAccount(
       {
         paper: true,
         cash: 5000,
-        crash,
-        core: { VOO: Math.floor((crash ? 70_000 : 140_000) / view.close.VOO[view.i]), ...(crash ? { SGOV: Math.floor(70_000 / view.close.SGOV[view.i]) } : {}) },
+        core: { VOO: Math.floor(112_000 / view.close.VOO[view.i]), SGOV: Math.floor(23_000 / view.close.SGOV[view.i]) },
         mom: { [MOM]: Math.floor(10_000 / view.close[MOM][view.i]) },
       },
       view,
@@ -99,7 +95,7 @@ const crashRunCount = async (db: D1Database) => (await db.prepare("SELECT COUNT(
 
 describe('T33d：拿掉每月評語；crash_review_v2（core_ai §3.9）', () => {
   it('不會切換的月份：月報前一天與 01:30 都不開 CRASH_REVIEW，儀表板照樣算、存', async () => {
-    await withWorld({ switching: false, routine: true }, async ({ db, run }) => {
+    await withWorld({ routine: true }, async ({ db, run }) => {
       await run('2026-11-27');
       await run('2026-11-27', 'FINAL');
       const snap = await loadSnapshot(db, '2026-12');
@@ -110,12 +106,9 @@ describe('T33d：拿掉每月評語；crash_review_v2（core_ai §3.9）', () =>
       expect(m.monthly).not.toBeNull();
       await run('2026-11-30', 'FINAL');
       expect(await crashRunCount(db)).toBe(0);
-      // 對照：會切換的月份照樣開（預估）
     });
-    await withWorld({ switching: true, routine: true }, async ({ db, run }) => {
-      await run('2026-11-27');
-      expect(await crashRunCount(db)).toBe(1);
-    });
+    // T80：原本這裡對照「會切換的月份照樣開（預估）」。崩盤規則的狀態不再讀寫（allocation_redesign §1.5），
+    // 帳戶不會再從啟動中解除，這個對照拿掉；檢視的排程在 T81 退場。
   });
 
   it('證據包用 crash_review_v2、不給條件種類；bear_prob 送來就忽略', () => {
@@ -188,36 +181,8 @@ describe('T33d：核心 ETF 的資料檢查 coreDataCheck（core_ai §3.10）', 
 });
 
 describe('T33d：資料檢查在每日流程與月報（core_ai §3.10）', () => {
-  it('VOO 訊號日比 SPY 多跌 3%、崩盤規則切換 → 告警；月報照出，項目有核對的那一句，LINE 有那一行', async () => {
-    await withWorld({ switching: true, routine: false }, async ({ db, w, sec, run, acct }) => {
-      w.shock.VOO = { from: '2026-11-30', factor: 0.97 };
-      const m = await run('2026-11-30');
-      expect(m.processed.at(-1)).toBe('2026-11-30');
-      expect(m.monthly).not.toBeNull();
-      const alerts = await alertsOf(db, 'CORE_PRICE_SUSPECT');
-      expect(alerts.map((a) => a.message)).toEqual([
-        'VOO 的價格和 SPY 對不上：11-30 日報酬 VOO -2.93%、SPY +0.08%（平常差不到 0.1 個百分點），可能是資料錯誤。崩盤規則照這個價格判斷；月報日之前請到券商核對 VOO 的收盤價。',
-        expect.stringMatching(/^VOO 的價格和 SPY 對不上：相對 200 日均線 VOO/),
-      ]);
-      const a = await acct();
-      const n = a.notifs.find((x) => x.id === m.monthly)!;
-      expect(n.monthly!.input.coreCheck).toEqual(['DAY_GAP', 'MA_GAP']);
-      const it = n.items.find((i) => i.f === (UP ? 'F6' : 'F5'))!;
-      expect(it).toBeTruthy();
-      expect(it.note).toBe('VOO 的價格和 SPY 對不上（日報酬 VOO -2.93%、SPY +0.08%），下單前請核對券商顯示的 VOO 收盤價；對不上就選「這次不做」並寫理由。');
-      const text = sec.line.find((t) => t.includes('【月報】'))!;
-      expect(text).toContain(corePriceLine('VOO'));
-      // 那一行在下單清單之後
-      expect(text.indexOf(corePriceLine('VOO'))).toBeGreaterThan(text.indexOf('做完現金約'));
-      // 網站：收合時那一行理由後面也接「VOO 價格待核對」
-      const { view } = buildMarketView(await loadSeries(db, ['VOO', 'SGOV', MOM]), '2026-11-30', 'VOO');
-      const short = liveCrash({ acct: a, view, axis: [], rankOrder: [], aiNotes: [] }, n, it).short;
-      expect(short.endsWith('；VOO 價格待核對')).toBe(true);
-    });
-  });
-
   it('沒有切換的月報：有對不上的告警，但項目與 LINE 沒有那一行；平常的日子不告警', async () => {
-    await withWorld({ switching: false, routine: false }, async ({ db, w, sec, run, acct }) => {
+    await withWorld({ routine: false }, async ({ db, w, sec, run, acct }) => {
       await run('2026-11-27');
       expect(await alertsOf(db, 'CORE_PRICE_SUSPECT')).toEqual([]);
       w.shock.VOO = { from: '2026-11-30', factor: 0.97 };
@@ -232,7 +197,7 @@ describe('T33d：資料檢查在每日流程與月報（core_ai §3.10）', () =
   });
 
   it('短債一天變動 2% → 那一天告警（只有那一天），每日流程照常', async () => {
-    await withWorld({ switching: false, routine: false }, async ({ db, w, run }) => {
+    await withWorld({ routine: false }, async ({ db, w, run }) => {
       w.shock.SGOV = { from: '2026-11-24', factor: 1.02 };
       const r = await run('2026-11-24');
       expect(r.status).toBe('DONE');
@@ -282,7 +247,11 @@ describe('T33d：入金、出金、改比例的說明與改比例的影子紀錄
     const f = x.facts![0];
     expect(f.label).toBe('做完之後');
     const ratio = r.acct.cfg.ratio;
-    expect(f.value).toBe(`自選 ${(b.own * 100).toFixed(1)}%（預算 ${Math.round(ratio.own * 100)}%）、動能 ${(b.mom * 100).toFixed(1)}%（${Math.round(ratio.strat * 100)}%）、核心 ${(b.core * 100).toFixed(1)}%（${Math.round(ratio.core * 100)}%）`);
+    // T80（allocation_redesign §1.4）：後面多一項核心的比例
+    const s = coreBondAfter(r.acct, sim.pre, r.notif.preview!)!;
+    expect(s).toBeGreaterThan(0.15);
+    expect(s).toBeLessThan(0.25);
+    expect(f.value).toBe(`自選 ${(b.own * 100).toFixed(1)}%（預算 ${Math.round(ratio.own * 100)}%）、動能 ${(b.mom * 100).toFixed(1)}%（${Math.round(ratio.strat * 100)}%）、核心 ${(b.core * 100).toFixed(1)}%（${Math.round(ratio.core * 100)}%）；核心裡 SGOV 與現金 ${(s * 100).toFixed(1)}%（目標 20%）`);
   });
 
   it('出金清單的「做完之後」先扣掉要轉出的金額：占比的分母是做之前的總資產減掉出金', () => {

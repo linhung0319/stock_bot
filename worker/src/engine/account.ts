@@ -305,8 +305,11 @@ export interface CondNotice {
   runIds?: string[];
 }
 
-/** OWN_COND：甲類（你定的條件成立）的項目（own_thesis §1.10）。 */
-export type ItemKind = 'STRATEGY' | 'OWN_RULE' | 'AI_ONLY' | 'HARD' | 'CASHFLOW' | 'FIX' | 'OWN_COND';
+/**
+ * OWN_COND：甲類（你定的條件成立）的項目（own_thesis §1.10）。
+ * CORE_BAND：核心比例調回（F26，allocation_redesign §1.3）：預設照做、「這次不做」不用理由也不記欠單，下個月月報重算。
+ */
+export type ItemKind = 'STRATEGY' | 'OWN_RULE' | 'AI_ONLY' | 'HARD' | 'CASHFLOW' | 'FIX' | 'OWN_COND' | 'CORE_BAND';
 export type ChoiceId = 'RULE' | 'AI' | 'DO' | 'SKIP';
 
 /** 清單上的選項做完之後，帳戶狀態要跟著改的事（存成資料，不存函式）。 */
@@ -483,8 +486,14 @@ export interface MonthlyContext {
    * 訊號日崩盤規則的判斷（core_ai §3.7）：第一次產生月報時用當時的 view 算好寫進來；之後的重算用 below，不重算。
    * ma 是 null = 均線算不出來（不滿 200 根有效收盤，§3.10），below 維持原狀態；bars 是那時有幾根有效收盤。
    * 沒有這個欄位（舊月報）= 當場算。
+   * 2026-11-22 起不再寫（allocation_redesign §1.3）；舊月報的留著給網站顯示。
    */
   crash?: { below: boolean; date: string; close: number | null; ma: number | null; bars?: number };
+  /**
+   * 核心比例（allocation_redesign §1.3；顯示用）：這份月報其他單照預設做完之後、調回之前，短債那一邊占核心的比例 s、
+   * 目標 bond、核心的市值 core。每次產生或重算月報時照當時的持股重算，不凍結。舊月報沒有這個欄位。
+   */
+  coreBand?: { s: number; bond: number; core: number };
   /**
    * 這個月該列的「要看的事」（own_thesis §3.6.6、momentum_ai §3.6）：每日流程在產生月報前算好（頻率已經過濾）。
    * 月報照抄到通知的 attention；重算（暫停後、入金合併、排除）沿用這一份。
@@ -503,7 +512,7 @@ export interface SavedState {
   rule: RuleState;
   own: Record<string, OwnMeta>;
   owe: Account['mom']['owe'];
-  /** 月報產生前的 coreOwe（core_ai §3.6）：暫停後、入金合併、排除重算時還原。沒有這個欄位 = 那時沒有欠的。 */
+  /** 2026-11-22 之前的月報才有（core_ai §3.6 的欠單）；還原時不讀（allocation_redesign §1.3）。 */
   coreOwe?: CoreOwe;
   cash: number;
 }
@@ -580,7 +589,7 @@ export interface LedgerEvent {
 
 export interface Account {
   cfg: EngineConfig;
-  /** 短期美債 ETF（崩盤規則啟動時核心的現金去處）。 */
+  /** 短期美債 ETF（核心裡不放股票的那一邊，allocation_redesign §1.1）。 */
   bondTicker: string;
   /** 紙上交易（流程全跑，帳本標記為紙上）。 */
   paper: boolean;
@@ -606,8 +615,16 @@ export interface Account {
      */
     attnShown?: Record<string, Record<string, string>>;
   };
-  /** 崩盤項目選了「這次不做」之後欠的核心的單（core_ai §3.6）；沒有這個欄位的舊帳戶當成沒有。 */
+  /**
+   * 崩盤項目選了「這次不做」之後欠的核心的單（core_ai §3.6）。2026-11-22 起不讀不寫（allocation_redesign §1.3：核心比例每月重算，不記欠單）；
+   * 舊帳戶讀進來時由 migrateAccount 清掉。型別留著給還沒退場的顯示程式，T88 清。
+   */
   coreOwe?: CoreOwe;
+  /**
+   * 這個帳戶是從崩盤規則換到固定比例的（migrateAccount 讀到舊的規則狀態時設成 true）：
+   * 之後第一次照做之前的核心比例調回（F26）多一句「一次性調整」的備註（allocation_redesign §1.5）。
+   */
+  fromCrashRule?: boolean;
   notifs: Notif[];
   nextId: number;
   shadow: ShadowRecord[];
@@ -888,6 +905,7 @@ export interface InitialAccount {
   momModel?: string[];
   volW?: number | null;
   volHist?: number[];
+  /** 2026-11-22 起不用（allocation_redesign §1.6）：崩盤規則退場，給了也不讀。 */
   crash?: boolean;
   /** 送出建立帳戶那一刻的美東日期（拆股用，design_v2 §10 第 48 點）；沒給 = 訊號日。 */
   asOf?: string;
@@ -928,16 +946,58 @@ export function createAccount(init: InitialAccount, view: MarketView): Account {
     acct.own[t] = meta;
   }
   rule.heldMom = init.momModel ?? Object.keys(init.mom ?? {});
-  rule.crash = init.crash ?? false;
   rule.volW = init.volW ?? null;
   rule.volHist = init.volHist ?? [];
-  rule.effPrev = rule.heldMom.length ? (rule.volW ?? 1) * (rule.crash ? cfg.crashCut : 1) : null;
+  // 動能的有效比例只剩波動度比例（allocation_redesign §1.5）
+  rule.effPrev = rule.heldMom.length ? (rule.volW ?? 1) : null;
   acct.units = {
     total: totalValue(acct, view),
     own: bucketValue(acct, view, 'own'),
     mom: bucketValue(acct, view, 'mom'),
     core: bucketValue(acct, view, 'core'),
   };
+  return acct;
+}
+
+// ---------------------------------------------------------------- 舊帳戶資料（allocation_redesign §1.5）
+
+/**
+ * 0.17.0 以前的規則狀態（有 crash 這個欄位）→ 現在的：crash 拿掉；effPrev 重算成波動度比例（還沒跑過的維持 null）。
+ * 已經是新的就原樣回傳。月報存的「月報前的狀態」（SavedState.rule）還原時也經過這裡。
+ */
+export function normRule(rule: RuleState): RuleState {
+  if (!('crash' in rule)) return rule;
+  const { crash: _crash, ...rest } = rule;
+  return { ...rest, effPrev: rest.effPrev === null || rest.effPrev === undefined ? null : (rest.volW ?? 1) };
+}
+
+/** 這一筆策略欠單（mom.owe）是不是只來自崩盤項目（F5／F6）：那則通知上只有崩盤項目有這一檔動能的單。找不到通知 = 不是。 */
+function crashOwe(acct: Pick<Account, 'notifs'>, ticker: string, notif: number): boolean {
+  const n = acct.notifs.find((x) => x.id === notif);
+  if (!n) return false;
+  const has = (it: Item) => it.choices.some((c) => c.lines.some((l) => l.bucket === 'mom' && l.ticker === ticker && l.shares));
+  const isCrash = (it: Item) => it.f === 'F5' || it.f === 'F6';
+  return n.items.some((it) => isCrash(it) && has(it)) && !n.items.some((it) => !isCrash(it) && it.kind === 'STRATEGY' && has(it));
+}
+
+/**
+ * 讀進來的帳戶狀態轉成現在的樣子（allocation_redesign §1.5「資料的處理」；載入時呼叫，重複呼叫結果相同）：
+ *   設定補上 coreBond、coreBand；
+ *   規則狀態有 crash（0.17.0 以前）→ 拿掉、effPrev 重算成波動度比例、記下 fromCrashRule、mom.owe 裡原因是崩盤規則的清掉（其他原因的留著）；
+ *   coreOwe 清掉。
+ * 持股不動：轉換靠第一次界線檢查（§1.5），不寫專用的轉換程式。直接改傳進來的物件並回傳它。
+ */
+export function migrateAccount(acct: Account): Account {
+  if (!acct || !acct.cfg || !acct.rule) return acct;
+  if (acct.cfg.coreBond === undefined || acct.cfg.coreBand === undefined) {
+    acct.cfg = { ...acct.cfg, coreBond: acct.cfg.coreBond ?? DEFAULT_CONFIG.coreBond, coreBand: acct.cfg.coreBand ?? DEFAULT_CONFIG.coreBand };
+  }
+  if ('crash' in acct.rule) {
+    acct.rule = normRule(acct.rule);
+    acct.fromCrashRule = true;
+    if (acct.mom?.owe) for (const [tk, o] of Object.entries(acct.mom.owe)) if (crashOwe(acct, tk, o.notif)) delete acct.mom.owe[tk];
+  }
+  if (acct.coreOwe) delete acct.coreOwe;
   return acct;
 }
 

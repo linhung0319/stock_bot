@@ -28,6 +28,7 @@ export type Reason =
   | '自選訊號'
   | '波動度減碼'
   | '崩盤規則'
+  | '核心比例'
   | '動能比例回調'
   | '單檔上限'
   | '跨桶上限'
@@ -41,7 +42,7 @@ export type Reason =
   | '起步';
 
 /** 只因為比例漂移的原因；其餘是訊號（設計 §2.1 第 5 點）。 */
-export const RATIO_REASONS: ReadonlySet<string> = new Set(['動能比例回調', '單檔上限', '跨桶上限']);
+export const RATIO_REASONS: ReadonlySet<string> = new Set(['動能比例回調', '單檔上限', '跨桶上限', '核心比例']);
 
 export interface EngineConfig {
   /** 三桶風險預算（設計 §2.1，預設 20 / 30 / 50）。 */
@@ -63,8 +64,17 @@ export interface EngineConfig {
    * 'system'：（總資產 − 自選桶實際市值）× strat ÷ (1 − own)（Python 回測的算法，重放驗收用）。
    */
   momBase: 'total' | 'system';
-  /** 崩盤規則啟動時，核心與動能各留下的比例（0.5 = 減一半）。 */
+  /**
+   * 崩盤規則啟動時，核心與動能各留下的比例（0.5 = 減一半）。
+   * 2026-11-22 起正式流程不用（allocation_redesign §1.6）；只留給重放 B-8 基準的舊路徑（planDay 的 legacyCrash）。
+   */
   crashCut: number;
+  /**
+   * 核心的固定比例（allocation_redesign §1.1）：SGOV 那一邊（短債 ETF＋帳上現金）占核心的目標 coreBond（20%），
+   * 月報日超出 coreBond ± coreBand（15%～25%）才調回。2026-11-22 之前存的帳戶設定沒有這兩個欄位，讀的時候用 coreCfg()。
+   */
+  coreBond: number;
+  coreBand: number;
   /** 自選訊號單筆變動 ≥ 總資產這個比例 → 當天通知（設計 §2.5，B-7）。null = 全部等月報。 */
   urgentFrac: number | null;
   /** 小於總資產這個比例的缺口不補、不算一張單（0.25%）。 */
@@ -100,6 +110,8 @@ export const DEFAULT_CONFIG: EngineConfig = {
   piggyback: true,
   momBase: 'total',
   crashCut: 0.5,
+  coreBond: 0.2,
+  coreBand: 0.05,
   urgentFrac: 0.05,
   orderMin: 0.0025,
   volScale: true,
@@ -109,6 +121,11 @@ export const DEFAULT_CONFIG: EngineConfig = {
   crossTrimAlways: true,
   coreTicker: 'VOO',
 };
+
+/** 核心的目標比例與界線；舊帳戶的設定沒有這兩個欄位時用預設（20%、±5 pp）。 */
+export function coreCfg(cfg: Partial<Pick<EngineConfig, 'coreBond' | 'coreBand'>>): { bond: number; band: number } {
+  return { bond: cfg.coreBond ?? DEFAULT_CONFIG.coreBond, band: cfg.coreBand ?? DEFAULT_CONFIG.coreBand };
+}
 
 export interface OwnPick {
   /** 已反映到帳上的慢規則狀態。 */
@@ -122,9 +139,10 @@ export interface RuleState {
   own: Record<string, OwnPick>;
   /** 動能模型名單（照動能清單應該持有的代號）。 */
   heldMom: string[];
-  /** 上一次月報的動能有效比例（波動度比例 × 崩盤規則）；null = 還沒跑過。 */
+  /** 上一次月報的動能有效比例；null = 還沒跑過。2026-11-22 起只含波動度比例（allocation_redesign §1.5；重放的舊路徑還會乘上崩盤規則）。 */
   effPrev: number | null;
-  crash: boolean;
+  /** 崩盤規則的狀態。2026-11-22 起正式流程不讀不寫（allocation_redesign §1.5）；只有重放的舊路徑（planDay 的 legacyCrash）用。 */
+  crash?: boolean;
   /** 每個月報日的 σ（只用當時以前的資料算中位數）。 */
   volHist: number[];
   /** 目前的波動度比例；null = 歷史不足 24 個月，還沒開始減碼。 */
@@ -132,5 +150,5 @@ export interface RuleState {
 }
 
 export function emptyRuleState(): RuleState {
-  return { own: {}, heldMom: [], effPrev: null, crash: false, volHist: [], volW: null };
+  return { own: {}, heldMom: [], effPrev: null, volHist: [], volW: null };
 }

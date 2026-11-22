@@ -138,7 +138,7 @@ describe('T38：已回覆、還沒填快照時，入金、出金、改比例又�
 });
 
 describe('T38：兩份已回覆的清單都把同一筆閒置現金交給核心', () => {
-  it('月報已經把現金交給核心買 VOO；之後的入金清單只交入金和自己剩下的錢，兩份都做完現金不會是負的', () => {
+  it('月報已經把現金交給核心（VOO 與 SGOV）；之後的入金清單只交入金和自己剩下的錢，兩份都做完現金不會是負的', () => {
     const { sim, m } = december(true);
     expect(linesOf(m).some((l) => l.ticker === 'VOO' && l.shares > 0)).toBe(true);
     const dep = deposit(sim.acct, sim.pre, 10000);
@@ -165,11 +165,13 @@ describe('T38：同時有兩份還沒填快照的清單列了同一桶同一檔'
     expect(both.completed.sort()).toEqual([m.id, dep.notif.id].sort());
     expect(both.followUps).toEqual([]);
     expect(both.cashOther).toBe(0);
-    // 每一份清單的成交照它自己列的股數記
+    // 每一份清單的成交照它自己列的股數記。
+    // T80（allocation_redesign §1.2）：月報裡 SGOV 可以有兩行（照比例進核心的、帳上原本的現金順便買的），同一桶同一檔的行先加起來再比
     for (const n of lists) {
       for (const l of linesOf(n)) {
+        const listed = linesOf(n).filter((x) => x.ticker === l.ticker && x.bucket === l.bucket).reduce((s, x) => s + x.shares, 0);
         const got = both.acct.events.filter((e) => e.kind === 'TRADE' && e.notif === n.id && e.ticker === l.ticker && e.bucket === l.bucket).reduce((s, e) => s + (e.shares ?? 0), 0);
-        expect(got, `#${n.id} ${l.ticker}`).toBe(l.shares);
+        expect(got, `#${n.id} ${l.ticker}`).toBe(listed);
       }
     }
     // 只做了月報：月報完成、沒有差額；入金那一份列出沒做的那幾檔

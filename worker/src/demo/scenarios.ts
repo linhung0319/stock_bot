@@ -16,6 +16,16 @@ function own4(shares: Record<string, number>, std: Record<string, number> = {}):
 const MOM5 = { PLTR: 33, AVGO: 18, NFLX: 52, AMD: 25, ORCL: 28 };
 const MOM5_PLTR53 = { ...MOM5, PLTR: 53 };
 
+/**
+ * 起始帳戶的核心（allocation_redesign §1.1、第 7 章）：原本全部是 VOO（voo 股）加帳上現金，改成固定比例——
+ * VOO 八成、SGOV 與現金兩成（分母是核心），四捨五入到整股。價格用情境開始前一天的（market.ts 的 BASE：VOO 610、SGOV 100.4）。
+ * 這樣每個情境一開始就在界線內，第一份月報不會先列一張核心比例調回。
+ */
+function core8020(voo: number, cash: number): Record<string, number> {
+  const core = voo * 610 + cash;
+  return { VOO: Math.round((core * 0.8) / 610), SGOV: Math.max(0, Math.round((core * 0.2 - cash) / 100.4)) };
+}
+
 export interface Scenario {
   market: Market;
   init: InitialAccount;
@@ -30,7 +40,7 @@ export const scenarios = {
         APP: { hist: [{ n: 78, ret: 0.05 }, { n: 150, ret: 0.4 }, { n: 1, ret: 0.45, vol: 0 }, { n: 101, ret: 0.05 }] },
       },
     }),
-    init: { cash: 1500, own: own4({ MU: 30, NVDA: 30, MSFT: 9, META: 6 }), mom: MOM5_PLTR53, core: { VOO: 72 } },
+    init: { cash: 1500, own: own4({ MU: 30, NVDA: 30, MSFT: 9, META: 6 }), mom: MOM5_PLTR53, core: core8020(72, 1500) },
   }),
   /** ② 自選股大跌：MU 財報後減半（≥ 5% 當天）、F25 條件成立、之後加回；META < 5% 併入月報。 */
   s2: (): Scenario => ({
@@ -40,15 +50,15 @@ export const scenarios = {
         META: { path: [{ n: 8, ret: 0.0 }, { n: 1, ret: -0.08, vol: 0 }, { n: 5, ret: -0.15 }, { n: 52, ret: 0.04 }] },
       },
     }),
-    init: { cash: 900, own: own4({ MU: 58, NVDA: 25, MSFT: 8, META: 6 }, { MU: 0.1 }), mom: MOM5, core: { VOO: 70 } },
+    init: { cash: 900, own: own4({ MU: 58, NVDA: 25, MSFT: 8, META: 6 }, { MU: 0.1 }), mom: MOM5, core: core8020(70, 900) },
   }),
-  /** ③ 崩盤規則：啟動、V 型反彈、解除時買回更貴；MSFT 走自己的慢規則。 */
+  /** ③ 大盤急跌再 V 型反彈（原本是崩盤規則的情境；2026-11-22 起沒有崩盤規則，核心固定比例、動能不因大盤減半）；MSFT 走自己的慢規則。 */
   s3: (): Scenario => ({
     market: makeMarket('2026-12-07', 66, {
       market: [{ n: 18, ret: -0.11, vol: 0.3 }, { n: 20, ret: 0.14, vol: 0.25 }, { n: 28, ret: 0.03 }],
       over: { MSFT: { path: [{ n: 18, ret: -0.2 }, { n: 20, ret: 0.1 }, { n: 28, ret: 0.03 }] } },
     }),
-    init: { cash: 1500, own: own4({ MU: 30, NVDA: 30, MSFT: 9, META: 6 }), mom: MOM5, core: { VOO: 78 } },
+    init: { cash: 1500, own: own4({ MU: 30, NVDA: 30, MSFT: 9, META: 6 }), mom: MOM5, core: core8020(78, 1500) },
   }),
   /** ④ 硬事件：動能持股 ORCL 被收購、自選 META 財報重編。 */
   s4: (): Scenario => ({
@@ -60,12 +70,12 @@ export const scenarios = {
         APP: { r252: 0.3 },
       },
     }),
-    init: { cash: 1500, own: own4({ MU: 30, NVDA: 30, MSFT: 9, META: 6 }), mom: MOM5, core: { VOO: 78 } },
+    init: { cash: 1500, own: own4({ MU: 30, NVDA: 30, MSFT: 9, META: 6 }), mom: MOM5, core: core8020(78, 1500) },
   }),
   /** ⑤ 你自己的操作：入金、出金、改比例、新增自選、手動交易。MU 占約 13.5%。 */
   s5: (): Scenario => ({
     market: makeMarket('2026-12-07', 50, { over: { TSLA: { hist: [{ n: 78, ret: 0.05 }, { n: 200, ret: 0.65 }, { n: 52, ret: -0.25 }] } } }),
-    init: { cash: 2000, own: own4({ MU: 56, NVDA: 25, MSFT: 8, META: 5 }, { MU: 0.08 }), mom: MOM5, core: { VOO: 64 } },
+    init: { cash: 2000, own: own4({ MU: 56, NVDA: 25, MSFT: 8, META: 5 }, { MU: 0.08 }), mom: MOM5, core: core8020(64, 2000) },
   }),
   /** ⑥ 動能落後＋波動度減碼（含遲滯）＋策略檢討。 */
   s6: (): Scenario => ({
@@ -78,7 +88,7 @@ export const scenarios = {
         ORCL: { path: [{ n: 18, ret: -0.12, vol: 1.0 }, { n: 20, ret: 0.0, vol: 0.4 }, { n: 22, ret: 0.02, vol: 0.35 }] },
       },
     }),
-    init: { cash: 1500, own: own4({ MU: 30, NVDA: 30, MSFT: 9, META: 6 }), mom: MOM5, core: { VOO: 78 } },
+    init: { cash: 1500, own: own4({ MU: 30, NVDA: 30, MSFT: 9, META: 6 }), mom: MOM5, core: core8020(78, 1500) },
   }),
   /** ⑦ 沒照做、忘了、做錯：NVDA 占約 13%，12/10 減半當天通知，之後很快反彈。 */
   s7: (): Scenario => ({
@@ -89,6 +99,6 @@ export const scenarios = {
         NVDA: { r252: 0.55, path: [{ n: 8, ret: 0.02 }, { n: 4, ret: -0.235 }, { n: 10, ret: 0.14 }, { n: 28, ret: 0.04 }] },
       },
     }),
-    init: { cash: 1500, own: own4({ MU: 30, NVDA: 70, MSFT: 9, META: 6 }, { NVDA: 0.1 }), mom: MOM5_PLTR53, core: { VOO: 60 } },
+    init: { cash: 1500, own: own4({ MU: 30, NVDA: 70, MSFT: 9, META: 6 }, { NVDA: 0.1 }), mom: MOM5_PLTR53, core: core8020(60, 1500) },
   }),
 };

@@ -1,7 +1,6 @@
 // 使用者的操作：回覆清單、填快照、入金、出金、改比例、新增／移除自選、轉入自選、認養、排除、分類。
 // 設計：§2.1.1（快照式帳本、入金出金）、§2.3（操作方式）、§2.3.1（操作和清單不同時）。
 import {
-  CORE_OWE_SNAPSHOT_REASON,
   SYSTEM_DEFAULT_PREMISES,
   addLot,
   bookShares,
@@ -38,8 +37,8 @@ import {
   notifDay,
 } from './account';
 import { momSlotTarget, ownDepositFill, ownDepositScale, planDay } from './allocator';
-import { BUY_CASH_FRACTION, capBuys, crashCoreLines, planToLines, type OrderLine } from './orders';
-import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, endDisputesFor, afterOpenLists, composeNotif, coreContext, crashReviewOf, monthlyReport, monthlyWait, owedCoreLines, recordExternalFlow, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
+import { BUY_CASH_FRACTION, capBuys, planToLines, type OrderLine } from './orders';
+import { EDITED_REASON, KEPT_REASON, RULE_OVER_EXIT_REASON, SKIPPED_REASON, addDispute, endDisputesFor, afterOpenLists, composeNotif, crashReviewOf, monthlyReport, monthlyWait, recordExternalFlow, refreshCoreBand, refreshOwnAiChoice, restoreSaved, type MonthlyResult } from './report';
 import { halveShares } from './slowRule';
 import { cellKey, type Bucket } from './types';
 
@@ -71,19 +70,8 @@ export function missingReasons(n: Notif, input: ResponseInput): Item[] {
   return n.items.filter((it) => !it.cancelled && it.reasonRequired && finalChoice(it, input) === 'SKIP' && !(input.reasons?.[it.key] ?? '').trim());
 }
 
-/** 崩盤規則的項目（F5 啟動／F6 解除，含重列的）。 */
+/** 崩盤規則的項目（F5 啟動／F6 解除，含重列的）。2026-11-22 起不再產生（allocation_redesign §1.6）；這裡只處理還留著的舊通知。 */
 const isCrashItem = (it: Item) => it.f === 'F5' || it.f === 'F6';
-
-/**
- * 填快照時，已回覆清單上的這一檔和清單差超過 1 股：如果是崩盤項目（照做的）核心那兩檔的單 → 記成 coreOwe（core_ai §3.6）。
- * 已經有同一則通知的 coreOwe 就不重寫。
- */
-function crashCoreNotDone(acct: Account, n: Notif, ticker: string): void {
-  if (ticker !== acct.cfg.coreTicker && ticker !== acct.bondTicker) return;
-  const it = n.items.find((i) => isCrashItem(i) && !i.cancelled && i.choice !== 'SKIP' && (i.choices.find((c) => c.id === i.choice)?.lines ?? []).some((l) => l.ticker === ticker && l.bucket === 'core' && l.shares));
-  if (!it || acct.coreOwe?.notif === n.id) return;
-  acct.coreOwe = { direction: it.f === 'F5' ? 'ON' : 'OFF', since: n.date, notif: n.id, reason: CORE_OWE_SNAPSHOT_REASON };
-}
 
 /** f：產生這個選項的項目（F19 硬事件、F25 條件成立…），出清時記論點檔結案的原因用。 */
 function applyEffects(acct: Account, view: MarketView, effects: Effect[] | undefined, f?: string): void {
@@ -167,22 +155,20 @@ function lateLine(acct: Account, view: MarketView, l: OrderLine, w: number, tota
 
 /**
  * 晚回覆的策略項目（動能、回調、上限、閒置現金、併進月報的入金；T39b 第 3 項）：照 §2.3.1「忘了」用回覆當天的價格重算股數，
- * 和自選慢規則項目同一套。有目標比例（targetW）的行照 lateLine；崩盤切換核心那兩檔照現在的持股重算（切換：crashCoreLines；重列：owedCoreLines）；
- * 閒置現金（核心吸收）本來就在回覆時用當天的現金與價格合成，不用另外算。沒有 targetW 的舊通知照原本的股數。
+ * 和自選慢規則項目同一套。有目標比例（targetW）的行照 lateLine；核心吸收的那幾行本來就在回覆時用當天的現金與價格合成，不用另外算；
+ * 核心比例調回（F26）另外重算（refreshCoreBand）。沒有 targetW 的舊通知、舊的崩盤項目（F5／F6，規則已經退場）照原本的股數。
  */
 function recomputeLateStrategy(acct: Account, view: MarketView, it: Item): void {
   const c = it.choices[0];
   if (!c || (it.kind !== 'STRATEGY' && it.f !== 'F11')) return;
-  const crash = isCrashItem(it);
-  if (!it.targetW && !crash) return;
+  if (!it.targetW || isCrashItem(it)) return;
   const total = totalValue(acct, view);
-  const core = crash ? (it.relist ? owedCoreLines(coreContext(acct, view), it.f === 'F5' ? 'ON' : 'OFF') : crashCoreLines(coreContext(acct, view), it.f === 'F5')) : [];
   const lines = c.lines.flatMap((l) => {
-    if (l.bucket === 'core') return crash ? [] : [l];
+    if (l.bucket === 'core') return [l];
     const w = it.targetW?.[cellKey(l.bucket, l.ticker)];
     return w === undefined ? [l] : [lateLine(acct, view, l, w, total)];
   });
-  c.lines = [...core.filter((l) => l.shares !== 0), ...lines.filter((l) => l.shares !== 0)];
+  c.lines = lines.filter((l) => l.shares !== 0);
   const note = `晚回覆：用 ${view.date} 收盤價重算`;
   it.note = it.note && !it.note.includes('晚回覆') ? `${it.note}；${note}` : note;
 }
@@ -212,6 +198,8 @@ function recomputeLate(acct: Account, view: MarketView, n: Notif): void {
     it.choices[0].lines = sh ? [{ ticker: tk, bucket: 'own', shares: sh, reason: '自選訊號' }] : [];
     it.note = `晚回覆：用 ${view.date} 收盤價重算`;
   }
+  // 核心比例調回（F26）：其他項目重算完之後，照今天的持股與價格再檢查一次（allocation_redesign §1.3）
+  refreshCoreBand(acct, view, n);
 }
 
 export function respond(acct0: Account, view: MarketView, id: number, input: ResponseInput): Account {
@@ -271,15 +259,9 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
       // 慢規則項目上 AI 的那一行可能只是「同意減半」「沒有一致結論」（沒有另一個選項）：照規則做了就不用記
       // 崩盤項目一律記（每一次切換都有紀錄，§3.4）
       if (crash || rec.ai !== null || rec.actual !== rec.rule || (it.aiLine && it.kind !== 'OWN_RULE')) acct.shadow.push(rec);
-      // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒（崩盤項目在下面另外記）
+      // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒。
+      // 舊的崩盤項目（規則已經退場）與核心比例調回（F26，kind 是 CORE_BAND）不記欠單：下個月月報照持股重算（allocation_redesign §1.3）
       if (it.kind === 'STRATEGY' && it.choice === 'SKIP' && rec.rule !== 0 && !isCrashItem(it)) acct.mom.owe[tk] = { since: view.date, notif: n.id };
-    }
-    // 崩盤項目（F5／F6，含重列的）這次不做（core_ai §3.6）：動能那幾檔照舊寫進 mom.owe（下個月「策略單補做」）；
-    // 核心的代號不進 mom.owe，記成 coreOwe（下個月規則還在同一個狀態就重列）
-    if (isCrashItem(it) && it.choice === 'SKIP') {
-      const lines = rule?.lines ?? [];
-      for (const l of lines) if (l.bucket === 'mom' && l.shares) acct.mom.owe[l.ticker] = { since: view.date, notif: n.id };
-      if (lines.some((l) => l.bucket === 'core' && l.shares)) acct.coreOwe = { direction: it.f === 'F5' ? 'ON' : 'OFF', since: n.date, notif: n.id, reason: it.reason ?? '' };
     }
   }
   // 乙類沒有照 AI（不同意並寫了理由，或月報裡沒動它）→ 那條前提進靜默期（own_thesis §1.10）
@@ -326,8 +308,6 @@ export function reopen(acct0: Account, view: MarketView, id: number): { acct: Ac
   delete n.respondedSeq;
   delete n.fillReminded;
   for (const [tk, o] of Object.entries(acct.mom.owe)) if (o.notif === id) delete acct.mom.owe[tk];
-  // 崩盤項目這次不做寫的核心欠單一起收回（core_ai §3.6）
-  if (acct.coreOwe?.notif === id) delete acct.coreOwe;
   // 回覆時乙類「不同意」寫的靜默期一起收回（修正論點寫的那一項已經取消，不在這裡）
   for (const it of n.items) {
     if (it.cancelled || it.brk?.type !== 'B' || !it.ticker) continue;
@@ -483,8 +463,6 @@ export function applySnapshot(acct0: Account, view: MarketView, snap: Snapshot, 
           if (n.items.some((i) => i.kind === 'STRATEGY' && !i.cancelled && i.choice !== 'SKIP' && (i.choices.find((c) => c.id === i.choice)?.lines ?? []).some((l) => l.ticker === m.ticker && l.bucket === 'mom'))) {
             acct.mom.owe[m.ticker] = { since: view.date, notif: n.id };
           }
-          // 崩盤項目核心那兩檔沒做 → 下個月規則還在同一個狀態就重列（core_ai §3.6）
-          crashCoreNotDone(acct, n, m.ticker);
         }
       }
       if (n.withdraw) {
@@ -719,8 +697,6 @@ function applyBucketSnapshot(acct0: Account, view: MarketView, snap: Snapshot, f
           if (n.items.some((i) => i.kind === 'STRATEGY' && !i.cancelled && i.choice !== 'SKIP' && (i.choices.find((c) => c.id === i.choice)?.lines ?? []).some((l) => l.ticker === m.ticker && l.bucket === 'mom'))) {
             acct.mom.owe[m.ticker] = { since: view.date, notif: n.id };
           }
-          // 崩盤項目核心那兩檔沒做 → 下個月規則還在同一個狀態就重列（core_ai §3.6）
-          crashCoreNotDone(acct, n, m.ticker);
         }
       }
       if (n.withdraw) {
@@ -883,15 +859,15 @@ export function deposit(acct0: Account, view: MarketView, amount: number): { acc
   // 補「低於目標最多」的格子：照缺口由大到小排，買單合計不超過現金的 98%
   const lines = planToLines(plan, values, { price, shares: shareCells(base) }).sort((a, b) => b.shares * price(b.ticker) - a.shares * price(a.ticker));
   const capped = capBuys(lines, BUY_CASH_FRACTION * Math.max(0, base.cash + amount), price);
-  const item = makeItem({ f: 'F11', kind: 'CASHFLOW', title: `入金 ${usd(amount)}：只買不賣`, choices: [{ id: 'DO', label: '照做', lines: capped }], noSkip: true, why: '依序補低於目標最多的格子；缺口小於總資產 0.25% 的不補；剩下的進核心' });
+  const item = makeItem({ f: 'F11', kind: 'CASHFLOW', title: `入金 ${usd(amount)}：只買不賣`, choices: [{ id: 'DO', label: '照做', lines: capped }], noSkip: true, why: '依序補低於目標最多的格子；缺口小於總資產 0.25% 的不補；剩下的照比例進核心' });
   const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: `入金 ${usd(amount)} 的清單`, items: [item], deposit: amount });
   notif.preview = composeNotif(acct, view, notif);
   return { acct, notif, mergedIntoMonthly: false };
 }
 
 /**
- * 出金（設計 §2.1.1）：只賣不買，當天給清單。先做單檔上限檢查，再照
- * ① 核心的現金 → ② 動能高於目標的部分 → ③ 核心 ETF → ④ 動能按比例 → ⑤ 自選按比例。
+ * 出金（allocation_redesign §1.4）：只賣不買，當天給清單。先做單檔上限檢查，再照
+ * ① 動能高於目標的部分 → ② 核心（照比例，帳上現金先用）→ ③ 動能按比例 → ④ 自選按比例。
  */
 export function withdraw(acct0: Account, view: MarketView, amount: number): { acct: Account; notif: Notif } {
   const acct = clone(acct0);
@@ -899,7 +875,7 @@ export function withdraw(acct0: Account, view: MarketView, amount: number): { ac
   const values = cellValues(base, view);
   const plan = planDay({ cfg: acct.cfg, values, state: base.rule, flow: { kind: '出金', amount } });
   const lines = planToLines(plan, values, { price: (t) => priceOf(view, t), shares: shareCells(base) });
-  const item = makeItem({ f: 'F12', kind: 'CASHFLOW', title: `出金 ${usd(amount)}：只賣不買`, choices: [{ id: 'DO', label: '照做', lines }], noSkip: true, why: '先做單檔上限檢查；再照 核心現金 → 動能高於目標 → 核心 ETF → 動能 → 自選' });
+  const item = makeItem({ f: 'F12', kind: 'CASHFLOW', title: `出金 ${usd(amount)}：只賣不買`, choices: [{ id: 'DO', label: '照做', lines }], noSkip: true, why: '先做單檔上限檢查；再照 動能高於目標 → 核心（照比例，帳上現金先用）→ 動能 → 自選' });
   const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: `出金 ${usd(amount)} 的清單`, items: [item], withdraw: amount });
   notif.preview = composeNotif(acct, view, notif);
   return { acct, notif };
@@ -1040,7 +1016,7 @@ export function addOwn(acct0: Account, view: MarketView, ticker: string, premise
     ticker,
     title: half ? `新增自選 ${ticker}：距高點已跌超過 20% → 一開始就是減半狀態，只買標準比重的一半` : `新增自選 ${ticker}：買到標準比重 ${(std * 100).toFixed(1)}%`,
     choices: [{ id: 'DO', label: '照做', lines: sh ? [{ ticker, bucket: 'own', shares: sh, reason: '新增自選' }] : [] }],
-    why: '錢從核心出（賣核心 ETF）',
+    why: '錢從核心照比例拿（帳上現金先用）',
   });
   const notif = newNotif(acct, view, { kind: 'CASHFLOW', title: `新增自選 ${ticker}`, items: [item] });
   notif.preview = composeNotif(acct, view, notif);

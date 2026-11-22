@@ -451,7 +451,9 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect(mu.pct).toBeGreaterThan(0.12);
     const pltr = a.holdings.find((h) => h.ticker === 'PLTR')!;
     expect(pltr).toMatchObject({ bucket: 'mom', shares: 33, state: '排名第 1' });
-    expect(a.holdings.find((h) => h.ticker === 'VOO')).toMatchObject({ bucket: 'core', shares: 64 });
+    // T80：示範帳戶的核心從全部 VOO 改成固定比例（VOO 八成、SGOV 與現金兩成；allocation_redesign §1.1、第 7 章）
+    expect(a.holdings.find((h) => h.ticker === 'VOO')).toMatchObject({ bucket: 'core', shares: 54 });
+    expect(a.holdings.find((h) => h.ticker === 'SGOV')).toMatchObject({ bucket: 'core', shares: 62 });
     expect(a.status.map((s) => s.value)).toEqual(['未啟動', '全額']);
     expect(a.ranking[0]).toMatchObject({ rank: 1, ticker: 'PLTR', mark: 'HELD' });
   });
@@ -485,7 +487,7 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     await expectSame(sim);
   });
 
-  it('出金 30,000：MU 先減回 10%，其餘賣 VOO；填快照時扣掉轉出的錢', async () => {
+  it('出金 30,000：MU 先減回 10%，其餘照順序從動能高於目標的部分與核心拿；填快照時扣掉轉出的錢', async () => {
     const sim = simStart();
     const r = withdraw(sim.acct, sim.pre, 30000);
     sim.acct = r.acct;
@@ -496,7 +498,9 @@ describe('情境 ⑤ 你自己的操作：用網站走完', () => {
     expect(v.withdraw).toBe(30000);
     expect(v.items[0].headline).toBe('出金 $30,000');
     expect(v.items[0].explain.why).toContain('MU 在出金後會超過總資產 15%');
-    expect(orderOf(v, 'VOO')!.parts[0].reason).toBe('不夠的錢從核心拿（賣 VOO）');
+    // T80（allocation_redesign §1.2、§1.4）：從核心照比例拿，SGOV 也賣
+    expect(orderOf(v, 'VOO')!.parts[0].reason).toBe('不夠的錢從核心照比例拿（VOO 八成、SGOV 兩成；帳上現金先用）');
+    expect(orderOf(v, 'SGOV')!.parts[0].reason).toBe('不夠的錢從核心照比例拿（VOO 八成、SGOV 兩成；帳上現金先用）');
     expect(v.items[0].explain.facts!.find((f) => f.label === '自選 MU')!.note).toContain('單檔上限');
     expect(v.composed!.orders.every((o) => o.shares < 0)).toBe(true);
     expect(v.composed!.withdraw).toBe(30000);

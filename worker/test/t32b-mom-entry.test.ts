@@ -438,7 +438,8 @@ describe('T32b：月報之後才回來的否決（§3.3）', () => {
         expect(net.line.slice(n2).filter((t) => t.includes('的進場審查回來了'))).toEqual([]);
         // 按「排除」時理由欄先填
         const acct = (await loadAccount(db))!.acct;
-        const { view } = buildMarketView(await loadSeries(db, ['VOO', ...order]), '2026-11-30', 'VOO');
+        // T80（allocation_redesign §1.2）：清單的核心那幾行照比例買賣 VOO 與 SGOV，畫面要有 SGOV 的價格
+        const { view } = buildMarketView(await loadSeries(db, ['VOO', 'SGOV', ...order]), '2026-11-30', 'VOO');
         const v = notifView({ mode: 'real', acct, view, axis: [], rankOrder: order, rankSession: null, aiNotes: [], events: [], shadow: [] } as never, monthly).items.find((x) => x.key === it.key)!;
         expect(v.actions.find((x) => x.id === 'EXCLUDE')?.prefill).toBe('AI 否決：財報可信度');
         expect(v.aiLine).toBe(it.aiLine);

@@ -13,6 +13,12 @@ T2 重放驗收用：把 Python 回測的輸入與對照答案匯出成固定檔
     universe.json    每個換股日排名用的原始資料（成分股、權重、收盤、成交金額、252 日報酬），
                      用來驗證 TypeScript 的股票池與排名
     expected_<年>.json  回測「緩衝 0.10」情境的每日單位淨值、下單紀錄、事件（對照答案）
+
+新規則的基準（階段十二 T80；只寫這一組：加 --b12）：
+    cash.f64            現金（SGOV／國庫券）的累積報酬指數，對齊交易日（b10_common.cash_index）
+    expected_b12_<年>.json  B-12「M2 只有波動度＋SGOV 20%、有慢規則、偏移 0」的每日單位淨值、下單紀錄
+        （backtest/b10_account.py 的 simulate，設定和 b12_account.py 的那一列相同）
+    uv run python worker/scripts/export_replay_data.py --b12
 """
 from __future__ import annotations
 
@@ -35,7 +41,37 @@ RUNS = [("2000", ["MU", "NVDA", "MSFT"], "2000-02-01"),
         ("2013", ["MU", "NVDA", "MSFT", "META"], "2013-06-03")]
 
 
+def export_b12():
+    """新規則的基準：核心固定 SGOV 20%（±5 pp、每月檢查）、動能只依波動度減碼、自選有慢規則、偏移 0。"""
+    import b10_account as ba
+    import b10_common as bc
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    w = bc.World((0,), extra=["MU", "NVDA", "MSFT", "META"])
+    w.cash.to_numpy(dtype="<f8").copy().tofile(OUT / "cash.f64")
+    sc = replace(ba.Acct("M2 只有波動度", **ba.B8_MAIN), exit_rank=15, mom_200=False,
+                 core_policy="ratio", sgov=0.20, band=0.05, own_rule=True)
+    spy_c = w.prices.last_close["SPY"]
+    for tag, own, start in RUNS:
+        v, orders, events, extra = ba.simulate(sc, own, start, mb.END, w.ranks[0], w)
+        st = ab.account_stats(v, spy_c, orders)
+        exp = dict(
+            dates=[d.strftime("%Y-%m-%d") for d in v.index],
+            nav=[float(x) for x in v.to_numpy()],
+            orders=[dict(date=pd.Timestamp(r["date"]).strftime("%Y-%m-%d"), n_orders=int(r["n_orders"]),
+                         reasons=r["reasons"], ratio_only=bool(r["ratio_only"]), orders=r["orders"])
+                    for r in orders.to_dict("records")],
+            stats={k: float(st[k]) for k in ("年化", "Sharpe", "最大回撤", "下單日每年", "每次平均單數")},
+            extra={k: float(x) for k, x in extra.items()},
+        )
+        (OUT / f"expected_b12_{tag}.json").write_text(json.dumps(exp, ensure_ascii=False), encoding="utf-8")
+        print("B-12", tag, f"年化 {st['年化']*100:.2f}%  Sharpe {st['Sharpe']:.3f}  最大回撤 {st['最大回撤']*100:.1f}%  下單日 {len(orders)}")
+
+
 def main():
+    if "--b12" in sys.argv:
+        export_b12()
+        return
     OUT.mkdir(parents=True, exist_ok=True)
     data = mb.LeanData(mb.DEFAULT_LEAN)
     spy = data.bars("SPY").loc[:mb.END]
@@ -98,6 +134,7 @@ def main():
                 fee=mb.FEE, vol_window=mb.VOL_WINDOW, source=str(mb.DEFAULT_LEAN.name))
     (OUT / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     print(f"完成：{len(days)} 個交易日、{len(cols)} 檔、{len(ranks)} 個換股日 → {OUT}")
+    export_b12()
 
 
 if __name__ == "__main__":

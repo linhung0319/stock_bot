@@ -83,6 +83,7 @@ const ITEM_LABEL: Record<string, string> = {
   F23: 'AI 建議提高比重',
   F24: 'AI 審查的建議',
   F25: '你定的條件成立',
+  F26: '核心比例調回',
   CORE: '閒置現金',
 };
 
@@ -258,7 +259,7 @@ export interface NotifView {
   kept: string | null;
 }
 
-const isBalance = (l: OrderLine): boolean => l.bucket === 'core' && /^(錢交給核心|從核心拿錢)/.test(String(l.reason));
+const isBalance = (l: OrderLine): boolean => l.bucket === 'core' && /^(錢交給核心|從核心拿錢|帳上的現金買)/.test(String(l.reason));
 
 function lineView(view: MarketView, l: OrderLine, acct: Account): LineView {
   const px = priceAt(view, l.ticker);
@@ -501,7 +502,8 @@ export function capNoteOf(c: Composed): string | null {
 }
 
 // 建議單的順序照因果排：先是整個帳戶的規則，再來動能（先出場才有位置進場），然後自選、AI 的建議、現金流
-const ITEM_ORDER = ['F5', 'F6', 'F19', 'F2', 'F1', 'F17', 'F3', 'F4', 'F10', 'F7', 'F8', 'F25', 'F24', 'F23', 'F11', 'F12', 'F13', 'F14', 'F15', 'CORE'];
+// 核心比例調回（F26）是其他單合成之後才算的，排最後
+const ITEM_ORDER = ['F5', 'F6', 'F19', 'F2', 'F1', 'F17', 'F3', 'F4', 'F10', 'F7', 'F8', 'F25', 'F24', 'F23', 'F11', 'F12', 'F13', 'F14', 'F15', 'F26', 'CORE'];
 const orderOf = (f: string) => {
   const k = ITEM_ORDER.indexOf(f);
   return k < 0 ? ITEM_ORDER.length : k;
@@ -1010,6 +1012,10 @@ export function eventReason(reason: string, acct: Account): string {
     .replace(/^錢交給核心（崩盤規則啟動中：一半買核心 ETF）$/, `剩下的現金交給核心：崩盤規則啟動中，一半買 ${core}`)
     .replace(/^錢交給核心（崩盤規則啟動中：(一半)?放短債）$/, (_, h: string | undefined) => `剩下的現金交給核心：崩盤規則啟動中，${h ?? ''}放短債`)
     .replace(/^錢交給核心（買核心 ETF）$/, `剩下的現金交給核心：買 ${core}`)
+    // 2026-11-22 起照比例進出核心（allocation_redesign §1.2）
+    .replace(/^錢交給核心（([^（）]*成[^（）]*)）$/, '剩下的現金交給核心：$1')
+    .replace(/^從核心拿錢（([^（）]*成[^（）]*)）$/, '不夠的錢從核心拿：$1')
+    .replace(/^核心比例$/, '核心比例調回')
     .replace(/^從核心拿錢（賣核心 ETF）$/, `不夠的錢從核心拿：賣 ${core}`)
     .replace(/^從核心拿錢（先用短債）$/, '不夠的錢從核心拿：先用短債')
     .replace(/核心 ETF/g, core);

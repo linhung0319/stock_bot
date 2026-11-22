@@ -16,6 +16,7 @@ import type { HoldingDetail, NotifView } from '../src/app/site/views';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
 import {
+  CASH,
   DEFAULT_CONFIG,
   applySnapshot,
   cellKey,
@@ -336,7 +337,6 @@ describe('入金的分配：自選標準比重合計超過自選比例時照比�
     own: Object.fromEntries(Object.entries(std).map(([t, w]) => [t, { applied: half.includes(t) ? ('HALF' as const) : ('STD' as const), stdWeight: w }])),
     heldMom: ['M1'],
     effPrev: 1,
-    crash: false,
     volHist: [],
     volW: null,
   });
@@ -357,7 +357,10 @@ describe('入金的分配：自選標準比重合計超過自選比例時照比�
     const ownAfter = p.targets[own('A')] + p.targets[own('B')] + p.targets[own('C')];
     expect(ownAfter / 150).toBeLessThan(22 / 100);
     expect(p.targets[cellKey('mom', 'M1')]).toBeCloseTo(9, 9);
-    expect(p.targets[cellKey('core', cfg.coreTicker)]).toBeCloseTo(150 - ownAfter - 9, 9);
+    // T80（allocation_redesign §1.4）：進核心的錢照 80：20 分到 VOO 與現金格（原本全部進 VOO）
+    const coreAfter = p.targets[cellKey('core', cfg.coreTicker)] + p.targets[cellKey('core', CASH)];
+    expect(coreAfter).toBeCloseTo(150 - ownAfter - 9, 9);
+    expect(p.targets[cellKey('core', CASH)]).toBeCloseTo(0.2 * (coreAfter - 72), 9);
     // 減半之後的加回：照沒縮的標準比重補（A 減半中，加回補到 10%）
     const half = state({ A: 0.1, B: 0.1, C: 0.1 }, ['A']);
     const back = planDay({ cfg, values: { ...values, [own('A')]: 3 }, state: half, ownActions: { A: 'READD' } });

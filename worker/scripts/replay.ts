@@ -1,9 +1,9 @@
 // 重放驗收（T2）：npm run replay
 // 用回測的行為重放並和 backtest/results 比對，再列出「上線設定」各項差異對數字的影響。
 import { rankUniverse } from '../src/engine/momentum';
-import { replay, replayStats, type ReplayResult } from '../src/engine/replay';
-import type { EngineConfig } from '../src/engine/types';
-import { BACKTEST_CONFIG, fixturesAvailable, loadB8Orders, loadB8Stats, loadExpected, loadReplay, loadUniverse } from './replayData';
+import { replay, replayStats, type ReplayOrder, type ReplayResult } from '../src/engine/replay';
+import { DEFAULT_CONFIG, type EngineConfig } from '../src/engine/types';
+import { BACKTEST_CONFIG, b12Available, expectedOrders, fixturesAvailable, loadB12Stats, loadB8Orders, loadB8Stats, loadExpected, loadExpectedB12, loadReplay, loadUniverse, type Expected } from './replayData';
 
 if (!fixturesAvailable()) {
   console.error('找不到 worker/fixtures/replay。先在 repo 根目錄執行：uv run python worker/scripts/export_replay_data.py');
@@ -26,8 +26,7 @@ for (const [date, rows] of Object.entries(uni)) {
 }
 console.log(`股票池與排名：${Object.keys(uni).length} 個換股日，不符 ${rankMismatch} 個`);
 
-function compare(tag: string, r: ReplayResult) {
-  const exp = loadExpected(tag);
+function compare(r: ReplayResult, exp: Expected, csv: ReplayOrder[]) {
   let maxRel = 0;
   let firstBad = '';
   r.nav.forEach((v, i) => {
@@ -35,7 +34,6 @@ function compare(tag: string, r: ReplayResult) {
     if (rel > maxRel) maxRel = rel;
     if (rel > 1e-9 && !firstBad) firstBad = r.dates[i];
   });
-  const csv = loadB8Orders(tag);
   const mine = new Map(r.orders.map((o) => [o.date, o]));
   const theirs = new Map(csv.map((o) => [o.date, o]));
   const onlyMine = r.orders.filter((o) => !theirs.has(o.date)).map((o) => o.date);
@@ -83,6 +81,32 @@ for (const run of runs) {
       `${name}\n  年化 ${pct(s.cagr)}  Sharpe ${s.sharpe.toFixed(3)}  最大回撤 ${pct(s.maxDrawdown, 1)}  下單日/年 ${s.orderDaysPerYear.toFixed(2)}` +
         `  平均波動度比例 ${avgW.toFixed(2)}  跨桶減碼 ${trims} 次（減到自選 ${ownPart} 次）  月中當天通知 ${r.urgentDays} 天`,
     );
-    if (name.startsWith('回測')) compare(run.tag, r);
+    if (name.startsWith('回測')) compare(r, loadExpected(run.tag), loadB8Orders(run.tag));
+  }
+
+  // 新規則的基準（階段十二 T80，allocation_redesign §1.6）：核心固定 SGOV 20%、動能只依波動度減碼
+  if (!b12Available()) {
+    console.log('新規則的基準：找不到 cash.f64／expected_b12_*.json。先執行 uv run python worker/scripts/export_replay_data.py --b12');
+    continue;
+  }
+  const b12 = loadB12Stats(run.tag);
+  console.log(`B12_account.csv「M2 只有波動度＋SGOV 20%、有慢規則、偏移 0」：年化 ${pct(b12.cagr)}  Sharpe ${b12.sharpe.toFixed(3)}  最大回撤 ${pct(b12.maxDrawdown, 1)}`);
+  const newRule: [string, EngineConfig][] = [
+    ['新規則，回測的行為（對照 B-12「M2＋SGOV 20%」）', BACKTEST_CONFIG],
+    ['新規則，上線設定（三項都照設計文字）', { ...DEFAULT_CONFIG, coreTicker: 'SPY' }],
+  ];
+  for (const [name, cfg] of newRule) {
+    const r = replay(data, { cfg, own: run.own, start: run.start, end: run.end, fee, volWindow, core: 'ratio' });
+    const s = replayStats(r);
+    const avgW = r.volPath.length ? r.volPath.reduce((a, b) => a + b, 0) / r.volPath.length : 1;
+    const band = r.events.filter((e) => e.kind === 'CORE_BAND');
+    console.log(
+      `${name}\n  年化 ${pct(s.cagr)}  Sharpe ${s.sharpe.toFixed(3)}  最大回撤 ${pct(s.maxDrawdown, 1)}  下單日/年 ${s.orderDaysPerYear.toFixed(2)}` +
+        `  平均波動度比例 ${avgW.toFixed(2)}  核心比例調回 ${band.length} 次${band.length ? `（${band.map((e) => e.date).join(' ')}）` : ''}  月中當天通知 ${r.urgentDays} 天`,
+    );
+    if (name.includes('回測的行為')) {
+      const exp = loadExpectedB12(run.tag);
+      compare(r, exp, expectedOrders(exp));
+    }
   }
 }

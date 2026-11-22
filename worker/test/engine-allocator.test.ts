@@ -1,5 +1,7 @@
 // T1：分桶、核心當清算中心、上限、搭便車、入金出金、合併下單、通知分級。
 // 數字取自設計 §2.1、§2.1.1、§2.2、§2.5、§4.4。總資產一律用 100，金額就是百分比。
+// T80（階段十二，allocation_redesign §1.1～§1.4、§2.1）：核心改成固定比例（VOO 八成、現金格兩成），錢進出核心照比例；
+// 崩盤規則只剩重放用的舊路徑（planDay 的 legacyCrash），這裡標「舊路徑」的測試走它。新規則的單元測試在 t80-core-ratio.test.ts。
 import { describe, expect, it } from 'vitest';
 import {
   CASH,
@@ -31,24 +33,30 @@ const order30 = Array.from({ length: 30 }, (_, i) => 'R' + (i + 1));
 const monthly = (over: Partial<MonthlyInput> = {}): MonthlyInput => ({
   order: order30,
   excessVol: () => 0.2,
-  coreBelow200: false,
   ...over,
 });
 const sum = (m: CellMap) => Object.values(m).reduce((a, b) => a + b, 0);
 
-/** 已經跑了一段時間的帳戶：自選 MU、NVDA 各 10，動能 R1–R5 各 6，核心 VOO 50。 */
+/** 已經跑了一段時間的帳戶：自選 MU、NVDA 各 10，動能 R1–R5 各 6，核心 50 = VOO 40＋現金格 10（固定比例 80：20）。 */
 function steady(): { values: CellMap; state: RuleState } {
-  const values: CellMap = { [own('MU')]: 10, [own('NVDA')]: 10, [VOO]: 50 };
+  const values: CellMap = { [own('MU')]: 10, [own('NVDA')]: 10, [VOO]: 40, [CCASH]: 10 };
   for (const t of ['R1', 'R2', 'R3', 'R4', 'R5']) values[mom(t)] = 6;
   const state: RuleState = {
     own: { MU: { applied: 'STD', stdWeight: 0.1 }, NVDA: { applied: 'STD', stdWeight: 0.1 } },
     heldMom: ['R1', 'R2', 'R3', 'R4', 'R5'],
     effPrev: 1,
-    crash: false,
     volHist: [],
     volW: null,
   };
   return { values, state };
+}
+
+/** 舊路徑（崩盤規則，重放 B-8 用）的同一個帳戶：核心全部是 VOO 50，規則狀態帶 crash。 */
+function legacySteady(): { values: CellMap; state: RuleState } {
+  const { values, state } = steady();
+  values[VOO] = 50;
+  delete values[CCASH];
+  return { values, state: { ...state, crash: false } };
 }
 
 describe('三桶 20 / 30 / 50（設計 §2.1）', () => {
@@ -59,15 +67,16 @@ describe('三桶 20 / 30 / 50（設計 §2.1）', () => {
     expect(p.targets[own('MU')]).toBeCloseTo(10, 9);
     expect(p.targets[own('NVDA')]).toBeCloseTo(10, 9);
     for (const t of ['R1', 'R2', 'R3', 'R4', 'R5']) expect(p.targets[mom(t)]).toBeCloseTo(6, 9);
-    expect(p.targets[VOO]).toBeCloseTo(50, 9);
-    expect(p.targets[CCASH]).toBeCloseTo(0, 9);
+    // 核心 50 照固定比例：VOO 八成、現金格兩成（allocation_redesign §1.1）
+    expect(p.targets[VOO]).toBeCloseTo(40, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(10, 9);
     expect(p.state.heldMom).toEqual(['R1', 'R2', 'R3', 'R4', 'R5']);
     expect(sum(p.targets)).toBeCloseTo(100, 9);
   });
   it('比例是風險預算不是目標：沒有觸發的月份完全不動', () => {
     const { values, state } = steady();
-    // 核心漲到 60、動能各跌到 5：都在 ±50% 以內
-    values[VOO] = 60;
+    // VOO 漲到 48（現金格占核心 17.2%，在 15%～25% 之內）、動能各跌到 5：都在 ±50% 以內
+    values[VOO] = 48;
     for (const t of state.heldMom) values[mom(t)] = 5;
     const p = planDay({ cfg, values, state, monthly: monthly() });
     expect(p.targets).toEqual(values);
@@ -76,23 +85,26 @@ describe('三桶 20 / 30 / 50（設計 §2.1）', () => {
 });
 
 describe('核心當清算中心（設計 §2.1 資金流規則 1、2）', () => {
-  it('自選減半：賣掉當時市值的一半，錢進 VOO', () => {
+  it('自選減半：賣掉當時市值的一半，錢進核心（VOO 八成、現金格兩成）', () => {
     const { values, state } = steady();
     values[own('MU')] = 12; // 漲過，減半是減「當時持有」的一半
     const p = planDay({ cfg, values, state, ownActions: { MU: 'REDUCE' } });
     expect(p.targets[own('MU')]).toBeCloseTo(6, 9);
-    expect(p.targets[VOO]).toBeCloseTo(56, 9);
+    expect(p.targets[VOO]).toBeCloseTo(44.8, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(11.2, 9);
     expect(p.state.own.MU.applied).toBe('HALF');
     expect(p.why[own('MU')]).toBe('自選訊號');
   });
-  it('自選加回：回到標準比重，錢從 VOO 出', () => {
+  it('自選加回：回到標準比重，錢從核心照比例拿', () => {
     const { values, state } = steady();
     values[own('MU')] = 4;
-    values[VOO] = 56;
+    values[VOO] = 44.8;
+    values[CCASH] = 11.2;
     state.own.MU.applied = 'HALF';
     const p = planDay({ cfg, values, state, ownActions: { MU: 'READD' } });
     expect(p.targets[own('MU')]).toBeCloseTo(10, 9);
-    expect(p.targets[VOO]).toBeCloseTo(50, 9);
+    expect(p.targets[VOO]).toBeCloseTo(40, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(10, 9);
     expect(p.state.own.MU.applied).toBe('STD');
   });
   it('已經不適用的訊號不動（減半狀態再收到減半；標準狀態收到加回）', () => {
@@ -101,17 +113,17 @@ describe('核心當清算中心（設計 §2.1 資金流規則 1、2）', () => 
     const p = planDay({ cfg, values, state, ownActions: { MU: 'REDUCE', NVDA: 'READD' } });
     expect(p.targets).toEqual(values);
   });
-  it('崩盤規則啟動中：減下來的錢進現金，加回先用現金', () => {
-    const { values, state } = steady();
+  it('舊路徑（崩盤規則啟動中）：減下來的錢進現金，加回先用現金', () => {
+    const { values, state } = legacySteady();
     state.crash = true;
     values[VOO] = 25;
     values[CCASH] = 25;
-    const p = planDay({ cfg, values, state, ownActions: { MU: 'REDUCE' } });
+    const p = planDay({ cfg, values, state, legacyCrash: true, ownActions: { MU: 'REDUCE' } });
     expect(p.targets[CCASH]).toBeCloseTo(30, 9);
     expect(p.targets[VOO]).toBeCloseTo(25, 9);
     // 加回 30：現金只有 25，不夠的 5 賣 VOO
     const s2: RuleState = { ...state, own: { MU: { applied: 'HALF', stdWeight: 0.4 }, NVDA: state.own.NVDA } };
-    const p2 = planDay({ cfg, values, state: s2, ownActions: { MU: 'READD' } });
+    const p2 = planDay({ cfg, values, state: s2, legacyCrash: true, ownActions: { MU: 'READD' } });
     expect(p2.targets[own('MU')]).toBeCloseTo(40, 9);
     expect(p2.targets[CCASH]).toBeCloseTo(0, 9);
     expect(p2.targets[VOO]).toBeCloseTo(20, 9);
@@ -160,16 +172,17 @@ describe('動能換股與搭便車（設計 §2.1 第 5 點、§3）', () => {
   it('上次的策略單沒照做 → 這個月把差額再列一次（設計 §2.3.1）', () => {
     const { values, state } = steady();
     delete values[mom('R5')]; // 上個月的進場沒買
-    values[VOO] = 56;
+    values[VOO] = 44.8;
+    values[CCASH] = 11.2;
     const p = planDay({ cfg, values, state, monthly: monthly({ owed: ['R5'] }) });
     expect(p.targets[mom('R5')]).toBeCloseTo(6, 9);
     expect(p.why[mom('R5')]).toBe('策略單補做');
   });
 });
 
-describe('依波動度減碼與崩盤規則的資金流（設計 §4.1、§4.4）', () => {
+describe('依波動度減碼的資金流（設計 §4.1）；崩盤規則只剩舊路徑（設計 §4.4，重放 B-8 用）', () => {
   const hist = Array.from({ length: 24 }, () => 0.2);
-  it('比例 1 → 2/3：5 檔都降到 4%，減下來的 10% 進 VOO', () => {
+  it('比例 1 → 2/3：5 檔都降到 4%，減下來的 10% 進核心（VOO 8、現金格 2）', () => {
     const { values, state } = steady();
     state.volHist = hist;
     state.volW = 1;
@@ -178,13 +191,22 @@ describe('依波動度減碼與崩盤規則的資金流（設計 §4.1、§4.4�
       expect(p.targets[mom(t)]).toBeCloseTo(4, 9);
       expect(p.why[mom(t)]).toBe('波動度減碼');
     }
-    expect(p.targets[VOO]).toBeCloseTo(60, 9);
+    expect(p.targets[VOO]).toBeCloseTo(48, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(12, 9);
     expect(p.state.volW).toBeCloseTo(2 / 3, 12);
     expect(p.state.volHist).toHaveLength(25);
   });
-  it('崩盤規則啟動：核心一半換現金、動能部位減半', () => {
+  it('正式流程不看 200 日線：給了 coreBelow200 也不啟動崩盤規則，動能與核心都不動', () => {
     const { values, state } = steady();
     const p = planDay({ cfg, values, state, monthly: monthly({ coreBelow200: true }) });
+    expect(p.targets).toEqual(values);
+    expect(p.crashChanged).toBe(false);
+    expect('crash' in p.state).toBe(false);
+    expect(summarizeOrders(cfg, values, p).orders).toEqual([]);
+  });
+  it('舊路徑：崩盤規則啟動 → 核心一半換現金、動能部位減半', () => {
+    const { values, state } = legacySteady();
+    const p = planDay({ cfg, values, state, legacyCrash: true, monthly: monthly({ coreBelow200: true }) });
     for (const t of state.heldMom) expect(p.targets[mom(t)]).toBeCloseTo(3, 9);
     // 核心 = 100 − 20 − 15 = 65，一半現金
     expect(p.targets[CCASH]).toBeCloseTo(32.5, 9);
@@ -194,24 +216,30 @@ describe('依波動度減碼與崩盤規則的資金流（設計 §4.1、§4.4�
     expect(p.state.crash).toBe(true);
     expect(summarizeOrders(cfg, values, p).reasons).toEqual(['崩盤規則']);
   });
-  it('崩盤規則解除：現金全部換回 VOO、動能恢復', () => {
-    const { values, state } = steady();
+  it('舊路徑：崩盤規則解除 → 現金全部換回 VOO、動能恢復', () => {
+    const { values, state } = legacySteady();
     state.crash = true;
     state.effPrev = 0.5;
     for (const t of state.heldMom) values[mom(t)] = 3;
     values[VOO] = 32.5;
     values[CCASH] = 32.5;
-    const p = planDay({ cfg, values, state, monthly: monthly({ coreBelow200: false }) });
+    const p = planDay({ cfg, values, state, legacyCrash: true, monthly: monthly({ coreBelow200: false }) });
     for (const t of state.heldMom) expect(p.targets[mom(t)]).toBeCloseTo(6, 9);
     expect(p.targets[CCASH]).toBe(0);
     expect(p.targets[VOO]).toBeCloseTo(50, 9);
   });
-  it('全系統只有崩盤規則能讓錢變成現金：平時任何減碼都進 VOO', () => {
+  it('任何減碼的錢都照比例進核心：現金格跟著多兩成（舊路徑：平時全部進 VOO）', () => {
     const { values, state } = steady();
     state.volHist = hist;
     state.volW = 1;
+    // MU 減半 5、動能 1 → 1/3（每檔 6 → 2，共 20）：核心多 25 → VOO +20、現金格 +5
     const p = planDay({ cfg, values, state, ownActions: { MU: 'REDUCE' }, monthly: monthly({ excessVol: () => 0.5 }) });
-    expect(p.targets[CCASH] ?? 0).toBe(0);
+    expect(p.targets[VOO]).toBeCloseTo(60, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(15, 9);
+    const old = legacySteady();
+    const q = planDay({ cfg, values: old.values, state: { ...old.state, volHist: hist, volW: 1 }, legacyCrash: true, ownActions: { MU: 'REDUCE' }, monthly: monthly({ excessVol: () => 0.5, coreBelow200: false }) });
+    expect(q.targets[CCASH] ?? 0).toBe(0);
+    expect(q.targets[VOO]).toBeCloseTo(75, 9);
   });
 });
 
@@ -236,13 +264,15 @@ describe('上限（設計 §2.2）', () => {
   it('跨桶上限（買進）：自選已有 7%，動能最多買到合計 10%，被擋下的留在核心', () => {
     const { values, state } = steady();
     values[own('MU')] = 7;
-    values[VOO] = 53;
+    values[VOO] = 42.4;
+    values[CCASH] = 10.6;
     const o = ['MU', ...order30.filter((t) => t !== 'R5')]; // MU 排名第 1，R5 掉出股票池
     const p = planDay({ cfg, values, state, monthly: monthly({ order: o }) });
     expect(p.targets[mom('MU')]).toBeCloseTo(3, 9);
     expect(p.events).toContainEqual({ kind: 'CROSS_LIMIT_BUY', ticker: 'MU' });
-    // R5 賣 6、MU 只買 3 → 多的 3 留在核心
-    expect(p.targets[VOO]).toBeCloseTo(56, 9);
+    // R5 賣 6、MU 只買 3 → 多的 3 留在核心（照比例：VOO +2.4、現金格 +0.6）
+    expect(p.targets[VOO]).toBeCloseTo(44.8, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(11.2, 9);
   });
   it('跨桶上限（減碼）：自選＋動能合計超過 15% → 減回 10%，先減動能', () => {
     const { values, state } = steady();
@@ -292,11 +322,12 @@ describe('上限（設計 §2.2）', () => {
 });
 
 describe('入金（設計 §2.1.1）：只買不賣', () => {
-  it('依序補「低於目標最多」的格子；缺口 < 0.25% 不補；剩下的進 VOO', () => {
+  it('依序補「低於目標最多」的格子；缺口 < 0.25% 不補；剩下的進核心', () => {
     const { values, state } = steady();
     values[own('MU')] = 6; // 入金後目標 11 → 缺 5
     values[mom('R1')] = 4; // 目標 6.6 → 缺 2.6
-    values[VOO] = 56;
+    values[VOO] = 44.8;
+    values[CCASH] = 11.2;
     const p = planDay({ cfg, values, state, flow: { kind: '入金', amount: 10 } });
     expect(p.total).toBeCloseTo(110, 9);
     expect(p.targets[own('MU')]).toBeCloseTo(11, 9);
@@ -305,20 +336,26 @@ describe('入金（設計 §2.1.1）：只買不賣', () => {
     // 10 − 5 − 2.6 = 2.4 → NVDA 1 → 剩 1.4 → 兩檔動能各 0.6 → 剩 0.2 給下一檔
     expect(p.targets[own('NVDA')]).toBeCloseTo(11, 9);
     expect(sum(p.targets)).toBeCloseTo(110, 9);
-    expect(p.targets[VOO]).toBeCloseTo(56, 9);
+    // 錢在補格子時用完了：核心兩格都不變
+    expect(p.targets[VOO]).toBeCloseTo(44.8, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(11.2, 9);
     // 沒有任何一格被賣
     for (const k of Object.keys(values)) expect(p.targets[k]).toBeGreaterThanOrEqual(values[k] - 1e-9);
   });
-  it('都在目標附近 → 全部進 VOO；崩盤規則啟動時一半放現金', () => {
+  it('都在目標附近 → 全部進核心，照 80：20 分（舊路徑：平時全部進 VOO、崩盤規則啟動時一半放現金）', () => {
     const { values, state } = steady();
     for (const t of ['MU', 'NVDA']) values[own(t)] = 10.2;
     for (const t of state.heldMom) values[mom(t)] = 6.1;
     const p = planDay({ cfg, values, state, flow: { kind: '入金', amount: 1 } });
-    expect(p.targets[VOO]).toBeCloseTo(51, 9);
+    expect(p.targets[VOO]).toBeCloseTo(40.8, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(10.2, 9);
+    const old = planDay({ cfg, values, state: { ...state, crash: false }, legacyCrash: true, flow: { kind: '入金', amount: 1 } });
+    expect(old.targets[VOO]).toBeCloseTo(41, 9);
+    expect(old.targets[CCASH]).toBeCloseTo(10, 9);
     const s2 = { ...state, crash: true, effPrev: 0.5 };
-    const p2 = planDay({ cfg, values, state: s2, flow: { kind: '入金', amount: 1 } });
-    expect(p2.targets[VOO]).toBeCloseTo(50.5, 9);
-    expect(p2.targets[CCASH]).toBeCloseTo(0.5, 9);
+    const p2 = planDay({ cfg, values, state: s2, legacyCrash: true, flow: { kind: '入金', amount: 1 } });
+    expect(p2.targets[VOO]).toBeCloseTo(40.5, 9);
+    expect(p2.targets[CCASH]).toBeCloseTo(10.5, 9);
   });
   it('減半狀態的自選，目標是標準比重的一半', () => {
     const { values, state } = steady();
@@ -345,54 +382,59 @@ describe('入金（設計 §2.1.1）：只買不賣', () => {
   });
 });
 
-describe('出金（設計 §2.1.1）：只賣不買', () => {
-  it('順序 ①：崩盤規則啟動中，先用核心的現金', () => {
-    const { values, state } = steady();
+describe('出金（allocation_redesign §1.4）：只賣不買', () => {
+  it('舊路徑的順序 ①：崩盤規則啟動中，先用核心的現金', () => {
+    const { values, state } = legacySteady();
     state.crash = true;
     state.effPrev = 0.5;
     for (const t of state.heldMom) values[mom(t)] = 3;
     values[VOO] = 32.5;
     values[CCASH] = 32.5;
-    const p = planDay({ cfg, values, state, flow: { kind: '出金', amount: 25 } });
+    const p = planDay({ cfg, values, state, legacyCrash: true, flow: { kind: '出金', amount: 25 } });
     expect(p.targets[CCASH]).toBeCloseTo(7.5, 9);
     expect(p.targets[VOO]).toBe(32.5);
     expect(sum(p.targets)).toBeCloseTo(75, 9);
   });
-  it('順序 ② → ③：先賣動能高於目標的部分，再賣 VOO', () => {
+  it('順序 ① → ②：先賣動能高於目標的部分，再從核心照比例拿', () => {
     const { values, state } = steady();
     values[mom('R1')] = 9; // 出金後總資產 93，目標 5.58 → 高出 3.42
     const p = planDay({ cfg, values, state, flow: { kind: '出金', amount: 10 } });
     const T = 93;
     expect(p.targets[mom('R1')]).toBeCloseTo(T * 0.06, 9);
-    // 其餘 4 檔各高出 0.42 → 也賣到目標；剩下的賣 VOO
+    // 其餘 4 檔各高出 0.42 → 也賣到目標；剩下的 4.9 從核心拿：VOO 八成、現金格兩成
     for (const t of ['R2', 'R3', 'R4', 'R5']) expect(p.targets[mom(t)]).toBeCloseTo(T * 0.06, 9);
-    expect(p.targets[VOO]).toBeCloseTo(50 - (10 - 3.42 - 4 * 0.42), 9);
+    const fromCore = 10 - 3.42 - 4 * 0.42;
+    expect(p.targets[VOO]).toBeCloseTo(40 - 0.8 * fromCore, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(10 - 0.2 * fromCore, 9);
     expect(p.targets[own('MU')]).toBe(10); // 自選最後才動
     for (const k of Object.keys(values)) expect(p.targets[k]).toBeLessThanOrEqual(values[k] + 1e-9);
   });
   it('大額出金：自選先被單檔上限減回 10%，再照順序賣', () => {
     const { values, state } = steady();
     const p = planDay({ cfg, values, state, flow: { kind: '出金', amount: 85 } });
-    // 出金後總資產 15：自選各 10 > 15% → 減回 1.5（抵 17）；動能高於目標 0.9 的部分 25.5；其餘 42.5 賣 VOO
+    // 出金後總資產 15：自選各 10 > 15% → 減回 1.5（抵 17）；動能高於目標 0.9 的部分 25.5；其餘 42.5 從核心照比例拿（剩 7.5 = VOO 6＋現金格 1.5）
     expect(p.targets[own('MU')]).toBeCloseTo(1.5, 9);
     expect(p.targets[own('NVDA')]).toBeCloseTo(1.5, 9);
     for (const t of state.heldMom) expect(p.targets[mom(t)]).toBeCloseTo(0.9, 9);
-    expect(p.targets[VOO]).toBeCloseTo(7.5, 9);
+    expect(p.targets[VOO]).toBeCloseTo(6, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(1.5, 9);
   });
-  it('順序 ④：VOO 賣完才按比例賣動能', () => {
+  it('順序 ③：核心拿完才按比例賣動能', () => {
     const { values, state } = steady();
     state.effPrev = null; // 動能還沒有目標（沒有「高於目標」可賣）
     values[own('MU')] = 1;
     values[own('NVDA')] = 1;
-    values[VOO] = 10;
+    values[VOO] = 8;
+    values[CCASH] = 2;
     const p = planDay({ cfg, values, state, flow: { kind: '出金', amount: 41 } });
-    // 出金後總資產 1：自選各減回 0.1（抵 1.8）→ VOO 10 → 動能 30 按比例賣到剩 0.8
+    // 出金後總資產 1：自選各減回 0.1（抵 1.8）→ 核心 10 → 動能 30 按比例賣到剩 0.8
     expect(p.targets[VOO]).toBeCloseTo(0, 9);
+    expect(p.targets[CCASH]).toBeCloseTo(0, 9);
     for (const t of state.heldMom) expect(p.targets[mom(t)]).toBeCloseTo(0.16, 9);
     expect(p.targets[own('MU')]).toBeCloseTo(0.1, 9);
     expect(sum(p.targets)).toBeCloseTo(1, 9);
   });
-  it('順序 ⑤：其他都沒有了，最後才按比例賣自選', () => {
+  it('順序 ④：其他都沒有了，最後才按比例賣自選', () => {
     const state = emptyRuleState();
     const values: CellMap = {};
     for (let i = 0; i < 12; i++) {
@@ -421,7 +463,8 @@ describe('合併下單（設計 §2.3）', () => {
     const { values, state } = steady();
     // MU 自選減半（賣 5），同月 MU 進動能名單（買）
     values[own('MU')] = 4;
-    values[VOO] = 56;
+    values[VOO] = 44.8;
+    values[CCASH] = 11.2;
     const o = ['MU', ...order30.filter((t) => t !== 'R5')];
     const p = planDay({ cfg, values, state, ownActions: { MU: 'REDUCE' }, monthly: monthly({ order: o }) });
     expect(p.targets[own('MU')]).toBeCloseTo(2, 9);
@@ -475,9 +518,9 @@ describe('通知分級（設計 §2.5，B-7）', () => {
 
 describe('清單以整股為單位（設計 §2.1.1）', () => {
   const price = (t: string) => ({ MU: 100, NVDA: 200, VOO: 500, SGOV: 100, R1: 50, R6: 30 })[t] ?? 100;
-  const coreCtx = { cfg, price, bondTicker: 'SGOV', crash: false };
+  const coreCtx = { cfg, price, bondTicker: 'SGOV' };
 
-  it('慢規則減半：MU 50 股 → 賣 25 股；賣得的錢買 VOO（買單不超過現金＋賣單的 98%）', () => {
+  it('慢規則減半：MU 50 股 → 賣 25 股；賣得的錢照比例買 VOO 與 SGOV（買單不超過現金＋賣單的 98%）', () => {
     const shares = { [own('MU')]: 50, [VOO]: 100 };
     const values = valuesFromShares(shares, price, 0);
     const state: RuleState = { ...emptyRuleState(), own: { MU: { applied: 'STD', stdWeight: 0.1 } }, effPrev: 1 };
@@ -485,12 +528,13 @@ describe('清單以整股為單位（設計 §2.1.1）', () => {
     const lines = planToLines(p, values, { price, shares });
     expect(lines).toEqual([{ ticker: 'MU', bucket: 'own', shares: -25, reason: '自選訊號' }]);
     const c = composeWithCore(lines, { ...coreCtx, cash: 0, coreShares: 100, bondShares: 0, total: 55000 });
-    // 賣得 2500 × 98% = 2450 → VOO 4 股（2000）
+    // 賣得 2500 × 98% = 2450 → VOO floor(1960 ÷ 500) = 3 股、SGOV floor(490 ÷ 100) = 4 股；零頭留現金
     expect(c.merged).toEqual([
       { ticker: 'MU', shares: -25, parts: [lines[0]] },
-      { ticker: 'VOO', shares: 4, parts: [expect.objectContaining({ bucket: 'core', shares: 4 })] },
+      { ticker: 'VOO', shares: 3, parts: [expect.objectContaining({ bucket: 'core', shares: 3 })] },
+      { ticker: 'SGOV', shares: 4, parts: [expect.objectContaining({ bucket: 'core', shares: 4 })] },
     ]);
-    expect(c.cashAfter).toBe(500);
+    expect(c.cashAfter).toBe(600);
   });
   it('奇數股減半四捨五入；出場賣光；買進無條件捨去', () => {
     const shares = { [own('MU')]: 25, [mom('R1')]: 37, [VOO]: 100 };
@@ -508,28 +552,29 @@ describe('清單以整股為單位（設計 §2.1.1）', () => {
     // 總資產 54350，動能每檔 6% = 3261 → R6（30 元）108 股
     expect(lines).toContainEqual({ ticker: 'R6', bucket: 'mom', shares: 108, reason: '動能換股' });
   });
-  it('錢不夠時從核心拿：平時賣 VOO，崩盤規則啟動時先用短債', () => {
+  it('錢不夠時從核心照比例拿：SGOV 是 0 時全部賣 VOO；有 SGOV 時它出兩成', () => {
     const buy = [{ ticker: 'NVDA', bucket: 'own' as const, shares: 10, reason: '自選訊號' }];
     const a = composeWithCore(buy, { ...coreCtx, cash: 0, coreShares: 100, bondShares: 0, total: 52000 });
     expect(a.merged.find((m) => m.ticker === 'VOO')!.shares).toBe(-5); // 2000 ÷ 0.98 ÷ 500 → 5 股
     expect(a.cashAfter).toBeGreaterThanOrEqual(0);
-    const b = composeWithCore(buy, { ...coreCtx, crash: true, cash: 0, coreShares: 50, bondShares: 250, total: 52000 });
-    expect(b.merged.find((m) => m.ticker === 'SGOV')!.shares).toBe(-21);
-    expect(b.merged.find((m) => m.ticker === 'VOO')).toBeUndefined();
+    // 要拿 2000 ÷ 0.98 = 2041：SGOV round(408 ÷ 100) = 4 股、其餘 1641 → VOO 4 股
+    const b = composeWithCore(buy, { ...coreCtx, cash: 0, coreShares: 50, bondShares: 250, total: 52000 });
+    expect(b.merged.find((m) => m.ticker === 'SGOV')!.shares).toBe(-4);
+    expect(b.merged.find((m) => m.ticker === 'VOO')!.shares).toBe(-4);
+    expect(b.cashAfter).toBeGreaterThanOrEqual(0);
   });
-  it('帳上有多的現金（例如股利）→ 清單把它交給核心；差額太小就不動', () => {
-    const a = composeWithCore([], { ...coreCtx, cash: 3000, coreShares: 100, bondShares: 0, total: 53000 });
-    expect(a.merged).toEqual([{ ticker: 'VOO', shares: 5, parts: [expect.objectContaining({ shares: 5 })] }]);
-    const b = composeWithCore([], { ...coreCtx, cash: 100, coreShares: 100, bondShares: 0, total: 50100 });
-    expect(b.merged).toEqual([]);
+  it('帳上有多的現金（例如股利）：算在短債那一邊，沒有其他單就不為它下單（allocation_redesign §1.2）', () => {
+    const a = composeWithCore([], { ...coreCtx, cash: 3000, coreShares: 100, bondShares: 0, total: 53000, sweepCash: true });
+    expect(a.merged).toEqual([]);
+    expect(a.cashAfter).toBe(3000);
   });
-  it('崩盤規則切換時核心自己的單：啟動 → 一半換短債；解除 → 短債全部換回', () => {
+  it('崩盤規則切換時核心自己的單（舊通知顯示用，正式流程不再產生）：啟動 → 一半換短債；解除 → 短債全部換回', () => {
     const on = crashCoreLines({ ...coreCtx, cash: 0, coreShares: 100, bondShares: 0, total: 50000 }, true);
     expect(on).toEqual([
       { ticker: 'VOO', bucket: 'core', shares: -50, reason: '崩盤規則' },
       { ticker: 'SGOV', bucket: 'core', shares: 250, reason: '崩盤規則' },
     ]);
-    const off = crashCoreLines({ ...coreCtx, crash: true, cash: 0, coreShares: 50, bondShares: 250, total: 50000 }, false);
+    const off = crashCoreLines({ ...coreCtx, cash: 0, coreShares: 50, bondShares: 250, total: 50000 }, false);
     expect(off).toEqual([
       { ticker: 'SGOV', bucket: 'core', shares: -250, reason: '崩盤規則' },
       { ticker: 'VOO', bucket: 'core', shares: 50, reason: '崩盤規則' },

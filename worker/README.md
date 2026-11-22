@@ -23,10 +23,14 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 
 ## 重放驗收（T2）
 
-引擎用回測的輸入逐日重放，結果要和 `../backtest/results/B8_*` 完全相同。
+引擎用回測的輸入逐日重放，兩組基準都要對上（階段十二 T80 起）：
+
+- 舊路徑（崩盤規則，`planDay` 的 `legacyCrash`）：和 `../backtest/results/B8_*` 完全相同，證明舊路徑沒被改壞。
+- 正式流程的規則（核心固定 SGOV 20%、動能只依波動度減碼）：和 `../backtest/results/B12_account.csv` 的「M2 只有波動度＋SGOV 20%、有慢規則、偏移 0」相同。
 
 1. 在 repo 根目錄匯出固定檔（約 40 秒，輸出到 `worker/fixtures/replay/`，不進 git）：
    `uv run python worker/scripts/export_replay_data.py`
+   （已經有 B-8 的固定檔、只缺新規則那一組時：加 `--b12`，只寫 `cash.f64` 與 `expected_b12_*.json`）
 2. `npm run replay` 印出比對表；`npm test` 也會跑同一組驗收（沒有固定檔時標成 skipped）。
 
 日後要改規則：先用 Python 回測確認，再改 `src/engine/` 並重跑這個驗收。

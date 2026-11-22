@@ -4,6 +4,9 @@
 //   2. 改比例把自選改成 0% 再改回來：記下標準比重、改回時用記下的（沒有記錄用推薦比重）；0 股時不送定期審查、提前審查與條件監測
 //   3. 晚回覆的策略項目（動能、回調、上限、閒置現金、併進月報的入金）用回覆當天的價格重算股數
 //   4. 舊月報有崩盤切換又一整個月沒回覆：新月報照實際持股重列切換（核心的單、動能的補做），舊的切換項目以新月報為準取消
+//      T80（階段十二，allocation_redesign §1.3、§1.6）：崩盤規則退場、核心的欠單（coreOwe）拿掉，第 4 項裡崩盤切換的三個測試拿掉了
+//      （晚回覆重算崩盤項目核心那兩檔、舊月報的切換重列、切換翻回去不重列）；延伸的動能進場與依波動度減碼照舊。
+//      核心比例調回（F26）的晚回覆重算與舊月報取消在 t80-core-ratio.test.ts。
 // 市場是可重現的假資料；對外請求全部是假的（價格、成分股固定檔、EDGAR、雲端排程）。
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -17,18 +20,14 @@ import { runFlow } from '../src/app/flow';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
 import { startCondReviews, startEarlyReviews, startOwnRuns } from '../src/app/ownAi';
 import { EARLY_NOTE } from '../src/app/thesis';
-import { notifView } from '../src/app/site/views';
 import { explainItem, type ExplainContext } from '../src/app/site/explain';
 import type { CompanyFacts, XbrlFact } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
 import {
-  RELIST_OFF_NOTE,
   cancelCashflow,
   cellKey,
   changeRatio,
-  coreContext,
-  crashCoreLines,
   createAccount,
   deposit,
   ownHeld,
@@ -44,7 +43,6 @@ import {
 } from '../src/engine';
 import { freshDb } from './helpers/d1';
 import { cronTime, fakeFetcher, newWorld, type World } from './helpers/fakeSources';
-import { makeMarket } from './helpers/market';
 import { scenarios } from './helpers/scenarios';
 import { Sim } from './helpers/sim';
 
@@ -342,69 +340,6 @@ describe('T39b ③：晚回覆的策略項目用回覆當天的價格重算股�
     const entry = after.items.find((i) => i.f === 'F1' && before.items.find((b) => b.key === i.key)?.note)!;
     if (entry) expect(entry.note!.startsWith(before.items.find((b) => b.key === entry.key)!.note!)).toBe(true);
   });
-
-  it('崩盤切換提醒過才回：核心那兩檔照回覆當天的持股與價格重算（核心的一半換短債），動能減半那幾行照目標比例重算', () => {
-    const sim = stayDown();
-    sim.runUntil('2027-01-04');
-    const jan = sim.preOpen()!;
-    const f5 = jan.items.find((i) => i.f === 'F5' && !i.relist)!;
-    expect(f5.targetW).toBeDefined();
-    idleUntil(sim, '2027-01-11');
-    const view = sim.pre;
-    const after = notif(respond(sim.acct, view, jan.id, { mode: 'DO' }), jan.id).items.find((i) => i.key === f5.key)!;
-    const core = crashCoreLines(coreContext(sim.acct, view), true).filter((l) => l.shares !== 0);
-    expect(after.choices[0].lines.filter((l) => l.bucket === 'core')).toEqual(core);
-    for (const l of after.choices[0].lines.filter((x) => x.bucket === 'mom')) {
-      const old = f5.choices[0].lines.find((x) => x.bucket === 'mom' && x.ticker === l.ticker)!;
-      expect(l.shares).toBe(expectedShares(sim.acct, view, old, f5.targetW![cellKey('mom', l.ticker)]));
-    }
-    expect(after.note).toContain('晚回覆');
-  });
-});
-
-// ---------------------------------------------------------------- 第 4 項：舊月報的崩盤切換一整個月沒回覆
-
-/** 一路往下：12 月跌破均線、之後一直在均線之下（和 t33c 相同）。 */
-function stayDown(): Sim {
-  const sc = scenarios.s3();
-  return new Sim(makeMarket('2026-12-07', 95, { market: [{ n: 18, ret: -0.11, vol: 0.3 }, { n: 77, ret: -0.04 }] }), sc.init);
-}
-const ready = (acct: Account, view: MarketView) => ({ mode: 'real', acct, view, axis: [], rankOrder: [], rankSession: null, aiNotes: [], events: [], shadow: [], today: view.date, warnings: [] }) as never;
-
-describe('T39b ④：舊月報有崩盤切換又一整個月沒回覆', () => {
-  it('新月報不會自己涵蓋切換（核心換短債只在切換那個月列）→ 照「這次不做」重列：核心的一半換短債（照現在的持股）、動能那幾檔的差額；舊的切換項目以新月報為準取消', () => {
-    const sim = stayDown();
-    sim.runUntil('2027-01-04');
-    const jan = sim.preOpen()!;
-    const f5 = jan.items.find((i) => i.f === 'F5' && !i.relist)!;
-    expect(sim.acct.rule.crash).toBe(true);
-    const momTickers = f5.choices[0].lines.filter((l) => l.bucket === 'mom' && l.shares).map((l) => l.ticker);
-    expect(momTickers.length).toBeGreaterThan(0);
-    idleUntil(sim, '2027-02-01');
-    const feb = sim.preOpen()!;
-    expect(sim.acct.rule.crash).toBe(true);
-    // 舊的切換項目取消
-    const oldF5 = notif(sim.acct, jan.id).items.find((i) => i.key === f5.key)!;
-    expect(oldF5).toMatchObject({ cancelled: true, note: '上一份月報沒有回覆，這一項以 2027-02 月報為準' });
-    // 新月報重列核心的單：照現在的持股，核心的一半換短債
-    const re = feb.items.find((i: Item) => i.f === 'F5' && i.relist)!;
-    expect(re).toBeDefined();
-    expect(re.why).toBe('2027-01 月報一直沒有回覆，以這份為準');
-    const voo = re.choices[0].lines.find((l) => l.ticker === 'VOO')!.shares;
-    expect(voo).toBeLessThan(0);
-    expect(re.choices[0].lines.find((l) => l.ticker === 'SGOV')!.shares).toBeGreaterThan(0);
-    expect(Math.abs(-voo / sim.acct.lots.core.VOO - 0.5)).toBeLessThan(0.05);
-    expect(sim.acct.coreOwe).toBeUndefined();
-    // 動能那幾檔：還在名單上的以「策略單補做」列差額（減半），掉出名單的出場
-    for (const t of momTickers) expect(feb.items.some((i) => i.kind === 'STRATEGY' && !i.cancelled && i.choices[0].lines.some((l) => l.bucket === 'mom' && l.ticker === t && l.shares < 0))).toBe(true);
-    expect(feb.items.some((i) => i.f === 'F17')).toBe(true);
-    // 網站的說明：不是「你選了這次不做」
-    const why = notifView(ready(sim.acct, sim.pre), feb).items.find((x) => x.key === re.key)!.explain.why;
-    expect(why).toContain('上次（2027-01 月報）一直沒有回覆');
-    expect(why).not.toContain('你選了這次不做');
-    // 舊月報裡沒有其他還在等的策略項目
-    expect(notif(sim.acct, jan.id).items.filter((i) => i.kind === 'STRATEGY' && !i.cancelled)).toEqual([]);
-  });
 });
 
 // ---------------------------------------------------------------- 第 4 項的延伸：舊月報的其他策略項目（主持者驗收時要求的探測）
@@ -449,31 +384,5 @@ describe('T39b ④ 延伸：舊月報的動能進場（F1）與依波動度減�
     expect(notif(sim.acct, jan.id).items.find((i) => i.key === app.key)!.cancelled).toBe(true);
     expect(momShares(feb, 'APP')).toBeGreaterThan(0);
     expect(feb.items.find((i) => i.ticker === 'APP' && !i.cancelled)?.f).toBe('F17');
-  });
-});
-
-describe('T39b ④ 延伸：新月報出來之前崩盤規則已經翻回去', () => {
-  it('情境 ③：1 月啟動的月報整個 1 月沒回覆、2 月已經解除 → 不重列核心換短債；解除項目沒有短債要換回、寫「上次啟動你沒有做」；1 月的切換項目取消', () => {
-    const sc = scenarios.s3();
-    const sim = new Sim(sc.market, sc.init);
-    sim.runUntil('2027-01-04');
-    const jan = sim.preOpen()!;
-    const f5 = jan.items.find((i) => i.f === 'F5' && !i.relist)!;
-    expect(f5).toBeDefined();
-    idleUntil(sim, '2027-02-01');
-    const feb = sim.preOpen()!;
-    expect(sim.acct.rule.crash).toBe(false);
-    expect(sim.acct.coreOwe).toBeUndefined();
-    expect(feb.items.some((i) => (i.f === 'F5' || i.f === 'F6') && i.relist)).toBe(false);
-    const f6 = feb.items.find((i) => i.f === 'F6' && !i.relist)!;
-    expect(f6.choices[0].lines.filter((l) => l.bucket === 'core')).toEqual([]);
-    expect(f6.note).toBe(RELIST_OFF_NOTE);
-    expect(notif(sim.acct, jan.id).items.find((i) => i.key === f5.key)).toMatchObject({ cancelled: true, note: '上一份月報沒有回覆，這一項以 2027-02 月報為準' });
-    // 動能：1 月要減半的那幾檔不再減半（規則已經恢復）；解除那一項照現在的持股拉回完整的目標（只剩零頭的調整），不另外列策略單補做
-    expect(feb.items.some((i) => i.f === 'F17')).toBe(false);
-    for (const l of f5.choices[0].lines.filter((x) => x.bucket === 'mom' && x.shares < 0)) {
-      const sh = f6.choices[0].lines.filter((x) => x.bucket === 'mom' && x.ticker === l.ticker).reduce((t, x) => t + x.shares, 0);
-      expect(Math.abs(sh), l.ticker).toBeLessThan(Math.abs(l.shares) / 2);
-    }
   });
 });
