@@ -439,6 +439,20 @@ T77：文獻開關不加、200 日線拿掉。所以「動能的開關」只剩�
 
 `condMetItem`（現在賣出才產生項目）、`COND_ACTIONS`、`notifyTier` 要擴充；甲類通知只管賣出，加碼不走甲類（不發當天通知）。
 
+**實作時補的細節（T84，2026-11-23）**：
+
+1. **怎麼存**：同一張 `own_conditions`，`action` 多 `FILL`／`RAISE`，`direction` 寫 `UP`（改寫、草稿、勾選時程式都改成 `UP`，不靠 AI 寫對）。不用 migration：`action` 是 0012 用 `ALTER TABLE … ADD COLUMN action TEXT` 加的、0006 建表也沒有 `CHECK`，資料庫層不擋新值（`grep -n CHECK worker/migrations` 只有三處：兩張單列表的 `id = 1`、`web_source_ratings.tier`，都和 `own_conditions` 無關）。`COND_ACTIONS` 收五個值；另有 `EXIT_ACTIONS`（出場）、`ADD_ACTIONS`（加碼）兩組。`notifyTier` 對加碼條件回 `null`（不走甲類）。
+2. **編輯論點頁**：加碼條件自己一塊（「加碼條件（可以不寫）」，動作只有「提高到標準的 125%」「補到標準比重」），存檔時接在出場條件後面一起送（同一個 `exitConditions`、同一套整組取代與改寫）。上限：出場條件照舊最多 6 條，出場加加碼合計最多 8 條（網站與 API 都擋）。貼回討論的區塊只換出場條件那一塊、不動加碼條件；討論包把加碼條件另外列一段（寫明「在編輯論點頁自己改，不要寫進收尾區塊的出場條件」），免得 claude.ai 把它抄進出場條件、被當成重新審查。
+3. **改寫（`own_check_v7`）**：`U` 的 label 寫「使用者要的加碼條件（…；成立時：買進（提高到標準的 125%））」；題目多一句加碼條件 `direction` 寫 `UP`、不收價格條件。改寫結果：動作照使用者寫的那一條；**加碼條件寫成價格條件的擋下**（`blocked`：持股頁那一列沒有勾選框，寫「不會監測：加碼條件不收價格條件（跌到多少就加碼是『下跌加碼』的範圍，有它自己的限制）」；確認時也不收）。持股頁的改寫對照，加碼條件那一列多一行 `成立時：買進（提高到標準的 125%）（加碼條件，進月報、預設照做）`（§4.6 的「方向填錯」）。
+4. **出場與加碼不能只改動作互換**：字一樣但一個成立時賣、一個成立時買，不算同一條（`planExits` 不認成沿用，會送改寫）；確認改寫時的動作選單、持股頁「改成立時的動作」都只給同一組的動作，伺服器也擋（要互換就回編輯論點頁重寫，對照才寫得出「成立時：買進」）。AI 建議的、AI 監測中的條件不能改成加碼（§4.2 表最後一列）。
+5. **草稿（`own_draft_v4`）**：輸出多 `payload.adds`（0～2 條，`action` 是 `FILL`／`RAISE`，`kind` 只有 `XBRL`、`EVENT`，格式和出場條件同一套檢查）；**寫了價格條件、或其他格式不合格，整份退回**（和草稿的其他程式檢查一樣，不給半份）。採用時接在出場條件後面一起整組取代（8 條合計），寫進條件時方向 `UP`。整組取代的意思是：採用一份沒有加碼條件的草稿，你原本的加碼條件會撤下——採用前的對照會把它列在「撤下」裡（草稿有加碼條件時那一段的標題寫「出場條件與加碼條件」）。
+6. **成立時**（`notifyOwnCondition` → `queueAddCondition`，四條成立的路——程式比 XBRL、財報新聞稿、新申報三票、審查三票——都一樣）：
+   - 減半中 → 條件照樣標 `MET`，不提加碼，持股頁寫 `你定的加碼條件「…」成立；這檔在減半中，加回看 200 日線`（`buyBlocked` 的 `line`）。
+   - 先買一半還沒過關、動作是補到標準比重 → **當成先買一半的確認**（§4.1「兩者先到的算」）：`build.ok`（`cond: true`），下一份月報列的是補滿（F27），不另列 F28。已經過關、補滿在等月報 → 不另外列。
+   - 其他 → 記進 `OwnMeta.addMonthly`，下一份月報列 F28；不發當天通知。
+7. **F28（`addItem`，月報產生時）**：照當天的持股換算。不列的情況都寫持股頁（`buyBlocked`，`what` = 加碼）、**不留到下個月**（條件是一次性的；持股頁那一句寫「加碼條件只成立一次，要再用就到編輯論點頁重新定一條」）：減半中；`RAISE` 距上次提高未滿 12 個月（和 AI 的 125%、下跌加碼共用 `raisedAt`）；已經到那個比例、沒有要買的；§4.0 的程式檢查沒過（超過上限的部分砍掉，項目的 note 寫只買幾股）。同一檔同一份月報只列一項（`RAISE` 優先；其他的寫持股頁）；有 F28 `RAISE` 時同一份月報不列 AI 的 F23；F28 會讓先買一半結束的（先買一半的股票直接 `RAISE`：照做時先 `BUILD_END` 再提高——你定的條件就是確認），同一份月報不列 F27。選項：照做（`RAISE` 帶 `APPLY_TIER RAISE`，標準比重 × 1.25、記 `raisedAt`）／這次不做（不用理由）。預設照做（D10），影子紀錄的規則那條線就是照做的股數。
+8. **影子紀錄**：補滿（F27）與 F28 每一次回覆都記一筆（照做了也記；原本只有和規則不同時才記），之後看得到加碼的效果。
+
 ### 4.3 提高到 125%：門檻改看基本面
 
 現在的門檻（`raiseAllowed`）：標準狀態、沒有硬事件、**連續站上 200 日線 126 個交易日**、距上次提高滿 365 天、每條前提都成立且有申報引用。
@@ -484,6 +498,17 @@ T77：文獻開關不加、200 日線拿掉。所以「動能的開關」只剩�
   5. 審查的 3 票必須引用申報或財報判成立；只靠網頁證據的不出現這個選項（和「往上的檔位不能只靠網頁」一致）。
 - 這一項例外地出現在**當天的通知**上（因為它附在跌幅審查的那一則）；仍然不是另外發的通知。
 - 加碼之後又跌到下一級：照 §3.2 審查，結果可能是減半（賣的是加碼後的一半）。影子紀錄記得到這兩筆。
+
+**實作時補的細節（T84，2026-11-23）**：
+
+1. **審查面**（`drops.ts` 的 `dipCheck`，`dropDecision` 判成 `CLEAR` 時一起算，記在 `dropReview.dip`）：三票對證據包裡的每一條前提（信念不在證據包裡，所以就是「每一條可驗證的前提」）都判成立、判成立的引用有申報或財報（和財報後審查的「證實」同一個函式 `premisesConfirmed`），再加跌幅拆解的核對 `idioWithinHalf`（個股自身的跌幅不超過整段的一半；拆解算不出來算沒過）。沒過時 `why` 寫哪一項。
+2. **通知那一層的限制**（`report.ts` 的 `dipOffer`，純函式；`setThesisDrop` 每次重算那一項時呼叫，結果記在 `dropReview.dipOffer`，持股頁寫原因用）：結果是 `CLEAR` 而且審查面過了；有論點；不在減半；**一次下跌一次**；`STD`／`WATCH` → 提高到 125%（`raisedAt` 未滿 12 個月不給）、`BUILD`（審查後持有期間 `build` 還在、目標還是一半）→ 補滿到標準比重（不看間隔）；已經到那個比例不給；§4.0 的程式檢查（`buyCheck` 帶 `skipKey`：這一則跌幅審查項目本身不算「還沒結案的跌幅審查」），超過上限的砍掉、砍到 0 不給。T84 之前的審查沒有 `dip` → 不給、也不寫原因。
+3. **「一次下跌」怎麼認**：新欄位 `OwnMeta.watchSince`——進審查後持有（第一次比高點低 20% 觸發）那天寫，回到標準（`leaveWatch`）時拿掉。`OwnMeta.dipAdd = { episode: watchSince, level, offered, at }`：選項第一次出現在哪一級的通知上就記下（`offered`），同一級那一項重算（股數、晚回覆）照樣給，**別的級不再給**（不論上次有沒有選）；照做了 `at` 記那天（效果 `DIP_ADD`）。下一次下跌 `watchSince` 不同，可以再提（仍受 12 個月間隔限制）。
+4. **選項**：`id` 是 `AI`（AI 發起的，D10 預設不做），標題 `加碼：提高到標準的 125%，買 6 股`／`補滿到標準比重，買 12 股`；效果 `DIP_ADD` 加上 `APPLY_TIER RAISE`（記 `raisedAt`）或 `BUILD_END`（離開先買一半，補滿不算提高）。預設仍是不動（`choice` = `SKIP`；你已經選了加碼、重算時選項還在就保留）；規則那條線（`ruleChoice`）照舊是減半。整則仍是「預設不下單」的通知：2 個交易日沒回覆就 `AUTO_DEFAULT` 以不動結案。選項說明固定的那一句放在 `Item.dipAdd.note`（被上限砍掉一部分時後面加括號說明）。
+5. **結果回來之前你已經回覆了**（07:30～09:30 先選了不動）：沒有還沒回覆的項目可以掛選項，這一次不提（自動結案會等審查結果，所以只有你先回覆的情況）。
+6. **文字**：LINE 那一行 `MU 比高點低 21.4%：論點檢查（3 票）前提都沒有被判不成立，不減半。不用下單；這次多一個下跌加碼的選項（提高到標準的 125%，買 6 股，預設不動），要的話到網站選。`；推出去之後才回來的結果補推那一行也一樣多半句。網站：選項下面的說明（含固定那一句）、事實欄「下跌加碼」；持股頁審查後持有那一句多 `；通知上有下跌加碼的選項（…，預設不動）`、`；這次下跌選了加碼（11-24）` 或 `；沒有提下跌加碼：<原因>`。
+7. **影子紀錄**：照舊三條線（`thesisDropShadow`）：規則 = 減半的股數、AI = 0（審查的結論是不動）、實際 = 買進的股數，備註「下跌加碼：提高到標準的 125%」。論點檔的回應記 `DIP_ADD`。
+8. 順帶改正兩處 T82 的判斷：`decidedThesisDrop`（你已經選了要賣、在等下單）原本把「不是不動」都當成要賣，選了下跌加碼的不算；跌幅審查項目的「沒選就是這個」原本標在規則那條線（減半）上，改成標在實際的預設（沒有前提不成立時是不動）。
 
 ### 4.5 候補名單
 
@@ -571,14 +596,15 @@ T77：文獻開關不加、200 日線拿掉。所以「動能的開關」只剩�
 | `CoreContext`（`composeWithCore`） | `crash`、`halfUpTo` 拿掉；加 `fresh`（入金的新錢）、`sweepCash`（月報順便把現金買成 SGOV）（T80） | §1.2 |
 | `MonthlyContext` | `crash` 不再寫；加 `coreBand?: { s, bond, core }`（顯示用） | §1.3 |
 | `OwnState` | 加 `WATCH`、`BUILD`；另有 `OwnApplied`（`STD`／`HALF`／`BUILD`）給 `rule.own[*].applied` 用，`WATCH` 的目標記 `STD`（T82），先買一半記 `BUILD`、目標一半（T83；審查後持有期間 `build` 還在的也記 `BUILD`） | §3.3、§4.1 |
-| `OwnMeta` | 加 `watchLevel`（審到第幾級）、`build`、`dipAdd`；T83 另加 `buildAsk`（第一次設定標準比重時問）、`brokenAt`（最近一次前提被判不成立）、`earnChecks`（最近兩次財報後審查有沒有證實） | §3.3、§4.0、§4.1、§4.3、§4.4 |
-| `DropStatus`／`DropReview` | 狀態加 `BROKEN`、`CLEAR`、`SPLIT`（有論點的四種結果；`NONE` 沿用當「沒跑完」）；`DropReview` 加 `thesis`、`level`、`exit`、`splitPremise`／`splitVotes`、`attr`、重派的 `days`／`lastTry`／`sameDay`、`failed`（T82） | §3.2 |
-| `Item` | 加 `thesisDrop: { level }`（有論點的股票的跌幅審查項目）（T82） | §3.2 |
+| `OwnMeta` | 加 `watchLevel`（審到第幾級）、`build`、`dipAdd`；T83 另加 `buildAsk`（第一次設定標準比重時問）、`brokenAt`（最近一次前提被判不成立）、`earnChecks`（最近兩次財報後審查有沒有證實）；T84 另加 `addMonthly`（成立、等月報的加碼條件）、`watchSince`（這一次下跌從哪天開始），`dipAdd` 是 `{ episode, level, offered, at }`，`buyBlocked` 多 `line`（寫好的整句） | §3.3、§4.0、§4.1、§4.2、§4.3、§4.4 |
+| `DropStatus`／`DropReview` | 狀態加 `BROKEN`、`CLEAR`、`SPLIT`（有論點的四種結果；`NONE` 沿用當「沒跑完」）；`DropReview` 加 `thesis`、`level`、`exit`、`splitPremise`／`splitVotes`、`attr`、重派的 `days`／`lastTry`／`sameDay`、`failed`（T82）；T84 加 `dip`（下跌加碼的審查面）、`dipOffer`（通知上的選項最後算出來的樣子） | §3.2、§4.4 |
+| `Item` | 加 `thesisDrop: { level }`（有論點的股票的跌幅審查項目）（T82）；`dipAdd: { mode, shares, note }`（下跌加碼的選項，T84）；`Effect` 加 `DIP_ADD`（T84） | §3.2、§4.4 |
 | `ItemKind`／功能代號 | 加 F26 `CORE_BAND`、F27 `OWN_FILL`、F28 `OWN_ADD`、F29 `WATCH_ENTRY`；F5／F6 停用 | §5 |
 | 通知 | 結案方式加 `AUTO_DEFAULT`（`NotifStatus` 的一種；T82） | §3.2 |
 | 快照的結果 | 加 `watchHalved`（審查後持有、自己賣了一半而改成減半的代號）（T82） | §3.6 |
-| `own_conditions` | `action` 加 `FILL`、`RAISE`、`ENTRY`；`check` 加價格型（只限候補的進場條件）；不用 migration 加欄位（`direction` 已經有），實作時確認 | §4.2、§4.5 |
-| `own_drafts`／`OWN_DRAFT` | 可以替候補起草；輸出多「加碼條件」「進場條件」；prompt 升版 | §4.2、§4.5 |
+| `own_conditions` | `action` 加 `FILL`、`RAISE`、`ENTRY`；`check` 加價格型（只限候補的進場條件）；不用 migration 加欄位（`direction` 已經有）。T84 確認：`action` 沒有資料庫層的約束，`FILL`／`RAISE` 不用 migration | §4.2、§4.5 |
+| `own_drafts`／`OWN_DRAFT` | 可以替候補起草；輸出多「加碼條件」「進場條件」；prompt 升版（T84：`own_draft_v4` 的 `payload.adds`，v3 留著） | §4.2、§4.5 |
+| `OWN_CHECK` | prompt 升 `own_check_v7`（加碼條件，v6 留著）；一次最多 8 條（T84） | §4.2 |
 | `OWN_DROP` | prompt 升 `own_drop_v6`（題目改寫；減半、出清要對應一條不成立的前提；現有的 `confirm_ids` 由程式拿來判 §4.4）；`dropDecision` 拿掉跌幅拆解的核對；沒跑完時隔天重派，最多 3 個交易日 | §3.2、§4.4 |
 | `OWN_REVIEW` | `raiseAllowed` 改寫（§4.3）；prompt 裡 125% 的說明跟著改（`own_review_v6`，T83）；證據包的 `rule.detail` 多 `revenue`、`defaultCheck`（T83） | §4.1、§4.3 |
 | `CRASH_REVIEW` | 不再派出 | §1.6 |

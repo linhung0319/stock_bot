@@ -61,7 +61,7 @@ import { DISCUSSION_MODES, LIVE_CONDITION_CODES, THESIS_LIMITS, parseThesisBlock
 import type { ExitLine } from '../../ai/ownCheck';
 import { demoDiscussion } from '../discussion';
 import type { ThesisLogInput } from '../ledgerStore';
-import { MAX_OWNED, ruleResponseLogs, withRiskSeen, type CondAction } from '../thesis';
+import { COND_ACTIONS, MAX_OWNED, isAddAction, ruleResponseLogs, withRiskSeen, type CondAction } from '../thesis';
 import { RISK_SEEN_DAYS } from '../../ai/freshEyes';
 import { StaleExitsError } from '../ownCheckAi';
 import { thesisReviewHeld } from '../ownAi';
@@ -378,19 +378,25 @@ function addThesisTodo(acct: Account, tickers: string[]): Account {
 
 // ---------------------------------------------------------------- 編輯論點（T27，own_thesis §1.8）
 
-const COND_ACTION_SET: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
+const COND_ACTION_SET: readonly CondAction[] = COND_ACTIONS;
 
-/** 出場條件：[{ text, action }]，最多 6 條，每條 300 字；動作不認得的當成重新審查。T40 的 ref（[C12]）T42 起不收。 */
-function exitsOf(v: unknown): ExitLine[] {
+/**
+ * 出場條件與加碼條件：[{ text, action }]，每條 300 字；動作不認得的當成重新審查。T40 的 ref（[C12]）T42 起不收。
+ * 出場條件最多 6 條；T84（allocation_redesign §4.2）起動作是 FILL／RAISE 的是加碼條件，和出場條件合計最多 8 條（你定的條件的上限）。
+ */
+export function exitsOf(v: unknown): ExitLine[] {
   if (!Array.isArray(v)) return [];
-  if (v.length > THESIS_LIMITS.exits) throw new SiteError(422, `出場條件最多 ${THESIS_LIMITS.exits} 條`);
   const out: ExitLine[] = [];
   for (const x of v) {
     const o = (x ?? {}) as Record<string, unknown>;
-    const t = text(o.text, '出場條件', THESIS_LIMITS.exit, false);
+    const add = isAddAction(o.action);
+    const t = text(o.text, add ? '加碼條件' : '出場條件', THESIS_LIMITS.exit, false);
     if (!t) continue;
     out.push({ text: t, action: COND_ACTION_SET.includes(o.action as CondAction) ? (o.action as CondAction) : 'REVIEW' });
   }
+  const exits = out.filter((x) => !isAddAction(x.action)).length;
+  if (exits > THESIS_LIMITS.exits) throw new SiteError(422, `出場條件最多 ${THESIS_LIMITS.exits} 條`);
+  if (out.length > MAX_OWNED) throw new SiteError(422, `出場條件加加碼條件最多 ${MAX_OWNED} 條（你定的條件的上限；現在 ${exits} 條出場、${out.length - exits} 條加碼）`);
   return out;
 }
 
@@ -576,7 +582,7 @@ async function saveThesis(backend: SiteBackend, b: Record<string, unknown>, adop
     if (adopt && dp) {
       // 草稿的第幾條前提 → 存檔後的編號（出場條件的 premise_index 用）
       const idOf = (k: number | null) => (k !== null && dp.premises[k] ? (meta.premises.find((p) => premiseKey(p.text) === premiseKey(dp.premises[k].text))?.id ?? null) : null);
-      adoptAdd = adopt.plan.add.map((x) => ({ ticker: tk, runId: adopt.row.run_id, condId: `D${x.k + 1}`, direction: 'DOWN' as const, kind: x.kind, text: x.text, check: x.check, tierIfMet: x.action === 'REVIEW' ? null : x.action, manual: false, action: x.action, premiseId: idOf(x.premiseIndex) }));
+      adoptAdd = adopt.plan.add.map((x) => ({ ticker: tk, runId: adopt.row.run_id, condId: `D${x.k + 1}`, direction: isAddAction(x.action) ? ('UP' as const) : ('DOWN' as const), kind: x.kind, text: x.text, check: x.check, tierIfMet: x.action === 'EXIT' || x.action === 'HALF' ? x.action : null, manual: false, action: x.action, premiseId: idOf(x.premiseIndex) }));
       use = { id: adopt.row.id, runId: adopt.row.run_id, version, thesis: 'SAME', premises: { same: out.mapping.added.length, edited: 0, kept: out.mapping.kept.length }, exits: adopt.plan.add.length, exitsKept: adopt.plan.keep.length, exitsRewrite: adopt.plan.rewrite.length, peers: adopt.peers.save.length, peersSkipped: adopt.peers.skip, afterBreak: draftBreak };
       adoptUse = use;
     }

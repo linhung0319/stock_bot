@@ -12,22 +12,30 @@ import type { WebRatingRow } from '../data/webSources';
 import type { CondAction } from '../app/thesis';
 
 export const OWN_CHECK = 'OWN_CHECK';
-/** T69：v6 的 web:<網域> 不再限 S 列出的網域，只擋排除列表；能不能用來確認看網域的級別（confirm_audit_design §1.6）。 */
-export const OWN_CHECK_PROMPT = 'own_check_v6';
+/**
+ * T69：v6 的 web:<網域> 不再限 S 列出的網域，只擋排除列表；能不能用來確認看網域的級別（confirm_audit_design §1.6）。
+ * T84：v7 多加碼條件（allocation_redesign §4.2）：U 裡成立時「買進」的是加碼條件，direction 寫 UP、不收價格條件。
+ */
+export const OWN_CHECK_PROMPT = 'own_check_v7';
 
 /** 使用者寫的一條出場條件與選的成立時動作。 */
 export interface ExitLine {
   text: string;
   action: CondAction;
 }
-const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查' };
-const COND_ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
+const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）' };
+const COND_ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW', 'FILL', 'RAISE'];
+const isAdd = (a: CondAction | null | undefined): a is 'FILL' | 'RAISE' => a === 'FILL' || a === 'RAISE';
+/** 出場條件加加碼條件一次最多送幾條（你定的條件 8 條上限合計，T84）。 */
+export const OWN_CHECK_MAX = 8;
+/** 加碼條件不收價格條件（allocation_redesign §4.2：跌到多少就加碼是下跌加碼的範圍，有它自己的限制）：改寫與草稿的程式檢查擋下的那一句。 */
+export const ADD_PRICE_ISSUE = '加碼條件不收價格條件（跌到多少就加碼是「下跌加碼」的範圍，有它自己的限制）';
 
 export interface OwnCheckInput {
   runId: string;
   asOf: string;
   ticker: string;
-  /** 使用者寫的出場條件（最多 6 條）。 */
+  /** 使用者寫的出場條件與加碼條件（合計最多 8 條；加碼條件的動作是 FILL、RAISE，T84）。 */
   exits: ExitLine[];
   /** 這檔是不是已經持有（題目的寫法）。 */
   held: boolean;
@@ -61,8 +69,9 @@ export interface OwnCheckInput {
 
 export function ownCheckPack(inp: OwnCheckInput) {
   if (!inp.exits.length) throw new Error('沒有要改寫的出場條件');
-  const exits = inp.exits.slice(0, 6).map((e) => ({ text: e.text.trim().slice(0, 300), action: COND_ACTIONS.includes(e.action) ? e.action : 'REVIEW' }));
+  const exits = inp.exits.slice(0, OWN_CHECK_MAX).map((e) => ({ text: e.text.trim().slice(0, 300), action: COND_ACTIONS.includes(e.action) ? e.action : 'REVIEW' }));
   const who = inp.held ? `使用者持有自選股 ${inp.ticker}` : `使用者把 ${inp.ticker} 加進自選`;
+  const adds = exits.filter((e) => isAdd(e.action)).length;
   return buildPack({
     runId: inp.runId,
     fn: OWN_CHECK,
@@ -70,7 +79,8 @@ export function ownCheckPack(inp: OwnCheckInput) {
     asOf: inp.asOf,
     subject: { ticker: inp.ticker },
     question:
-      `${who}，寫了 ${exits.length} 條出場條件（facts 的 U 開頭，每條附使用者選的成立時動作）。` +
+      `${who}，寫了 ${exits.length - adds} 條出場條件${adds ? `與 ${adds} 條加碼條件` : ''}（facts 的 U 開頭，每條附使用者選的成立時動作）。` +
+      (adds ? '成立時「買進」的是加碼條件（論點被證實、要多買的時候）：direction 寫 UP，格式和出場條件相同（財報門檻、申報事件、網頁或法說會事件），不收價格條件（跌到多少就買不是加碼條件）。' : '') +
       '請把每一條改寫成可追蹤的格式（payload.conditions，格式和定期審查相同），每一條寫 line（對應的 U 編號）；數字門檻要對應證據包裡的數字；改寫不了的在 report 說明。' +
       'U 是使用者這次要的全部出場條件（整組取代 facts 的 C 開頭：目前監測中的條件）。每一條 U 都要標出和既有條件的關係：' +
       '和某條 C 是同一件事、門檻也一樣 → 寫 same（那條 C 的編號），不會新增、舊的保留；是在更新某條 C 或 W（例如門檻改了）→ 寫 supersedes（被更新的編號），使用者確認後舊的撤下；都不是就兩個都不寫（新的）。' +
@@ -91,7 +101,7 @@ export function ownCheckPack(inp: OwnCheckInput) {
     },
     facts: [
       ...inp.facts,
-      ...exits.map((e, k) => ({ id: `U${k + 1}`, label: `使用者要的出場條件（整組取代目前監測中的；成立時：${ACTION_TEXT[e.action]}）`, value: e.text })),
+      ...exits.map((e, k) => ({ id: `U${k + 1}`, label: `使用者要的${isAdd(e.action) ? '加碼條件' : '出場條件'}（整組取代目前監測中的；成立時：${ACTION_TEXT[e.action]}）`, value: e.text })),
       ...inp.condFacts,
       ...(inp.sources?.facts ?? []),
       ...inp.hits.map((h, k) => ({ id: `H${k + 1}`, label: `硬事件掃描：${h.code}（${h.sub}）`, value: h.date ?? inp.asOf, note: h.detail })),
@@ -118,7 +128,8 @@ export interface OwnCheckResult {
    * line：對到使用者寫的第幾條（0 起；對不到是 null）。
    */
   /** web（T53）：這條指名的網頁來源（網域）。T68 起勾選時不能改來源（選單拿掉）。 */
-  conditions: (ConditionDraft & { then: string; action: CondAction; from: string | null; supersedes: number | null; same: number | null; line: number | null; web: string[] })[];
+  /** blocked（T84）：程式擋下、不能確認的原因（加碼條件寫成價格條件）；可以確認是 null。 */
+  conditions: (ConditionDraft & { then: string; action: CondAction; from: string | null; supersedes: number | null; same: number | null; line: number | null; web: string[]; blocked: string | null })[];
   summary: string | null;
 }
 
@@ -140,15 +151,17 @@ export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: E
   if (!s) return { conditions: [], summary: outcome?.reason ?? null };
   const conditions = s.conditions
     .filter((c) => c.from === 'payload.conditions')
-    .slice(0, 6)
+    .slice(0, OWN_CHECK_MAX)
     .map((c, k) => {
       const tier = typeof c.raw.tier_if_met === 'string' && c.raw.tier_if_met in TIER_NAME ? (c.raw.tier_if_met as Tier) : null;
-      const direction = (c.raw.direction === 'UP' ? 'UP' : 'DOWN') as 'UP' | 'DOWN';
       const kind = (['XBRL', 'EVENT', 'PRICE'].includes(String(c.raw.kind)) ? c.raw.kind : 'EVENT') as ConditionDraft['kind'];
       const check = (c.raw.check ?? {}) as Record<string, unknown>;
       const line = /^U(\d+)$/.exec(String(c.raw.line ?? ''));
       const src = line ? exits[Number(line[1]) - 1] : undefined;
-      const action: CondAction = src?.action ?? (direction === 'DOWN' && (tier === 'EXIT' || tier === 'HALF') ? tier : 'REVIEW');
+      const action: CondAction = src?.action ?? (c.raw.direction !== 'UP' && (tier === 'EXIT' || tier === 'HALF') ? tier : 'REVIEW');
+      // 加碼條件（T84，allocation_redesign §4.2）：方向一律 UP；價格條件不收（擋下，不能確認）
+      const direction = (isAdd(action) || c.raw.direction === 'UP' ? 'UP' : 'DOWN') as 'UP' | 'DOWN';
+      const blocked = isAdd(action) && kind === 'PRICE' ? ADD_PRICE_ISSUE : null;
       const sup = typeof c.raw.supersedes === 'string' ? c.raw.supersedes.trim().toUpperCase() : '';
       const supId = sup && condMap[sup] ? condMap[sup] : null;
       // same（T42）：只認證據包的 C（監測中的你定的條件）；AI 沒標時，文字和監測中的一條相同的 U 當成 same
@@ -165,14 +178,15 @@ export function ownCheckResult(outcome: Outcome | null, ticker: string, exits: E
         text: String(c.raw.text ?? '').slice(0, 300),
         check,
         tierIfMet: tier,
-        manual: !c.auto,
+        manual: !c.auto || !!blocked,
         action,
         from: src?.text ?? null,
         supersedes: same === null ? supId : null,
         same,
         line: src ? Number(line![1]) - 1 : null,
-        then: c.auto ? confirmOf(kind, check, ratings) : `只記錄：${c.why ?? ''}`,
+        then: blocked ? `不會監測：${blocked}` : c.auto ? confirmOf(kind, check, ratings) : `只記錄：${c.why ?? ''}`,
         web: c.auto && kind === 'EVENT' ? namedWebDomains(check) : [],
+        blocked,
       };
     });
   return { conditions, summary: s.report?.split(/\n\s*\n/)[0]?.slice(0, 400) ?? null };

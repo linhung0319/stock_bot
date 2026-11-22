@@ -27,7 +27,8 @@ import { conditionFormatIssue, webRefDomain } from './ownReview';
 import { clauseMetNow, type ClauseQuarter } from './xbrlClause';
 
 export const OWN_DRAFT = 'OWN_DRAFT';
-export const OWN_DRAFT_PROMPT = 'own_draft_v3';
+/** T84：v4 可以附 0～2 條加碼條件（payload.adds；allocation_redesign §4.2），不收價格條件。 */
+export const OWN_DRAFT_PROMPT = 'own_draft_v4';
 
 /**
  * 程式檢查的數字（§2.2）。條數上限與字數上限同 parseThesisBlock 的 THESIS_LIMITS（src/ai/discussion.ts；這裡不 import 它，
@@ -38,6 +39,8 @@ export const DRAFT_LIMITS = {
   premisesMax: 5,
   exitsMin: 2,
   exitsMax: 6,
+  /** 加碼條件（T84，§4.2）：0～2 條。 */
+  addsMax: 2,
   thesis: 600,
   premise: 200,
   exit: 300,
@@ -67,6 +70,10 @@ export type CheckableBy = VerifyBy;
  */
 export const DATED_WORDS = /最新一季|最近一季|本季|這一季|財測約|財測為|目前股價|現在股價|目前的股價|現價/;
 const ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
+/** 加碼條件的動作（T84）：補到標準比重、提高到標準的 125%。 */
+const ADD_ACTIONS: readonly CondAction[] = ['FILL', 'RAISE'];
+/** 加碼條件不收價格條件（同 ownCheck.ts 的 ADD_PRICE_ISSUE；這裡不 import 改寫的模組）。 */
+const ADD_PRICE = '加碼條件不收價格條件（跌到多少就加碼是「下跌加碼」的範圍，有它自己的限制）';
 const XBRL_TYPES = ['xbrl_metric_below', 'xbrl_metric_above'];
 const ANSWERS = ['YES', 'NO', 'UNSURE'] as const;
 
@@ -133,6 +140,8 @@ export interface OwnDraft {
   thesis: string;
   premises: DraftPremise[];
   exits: DraftExit[];
+  /** 加碼條件（T84，own_draft_v4；0～2 條，action 是 FILL 或 RAISE，kind 只有 XBRL、EVENT）。v3 以前的草稿沒有這個欄位。 */
+  adds?: DraftExit[];
   /** domains：T69 以前的舊草稿才有（讀的地方當成可能沒有）；新的草稿只有 peers。 */
   sources: { peers: DraftPeer[]; domains?: DraftDomain[] };
   against: { text: string; evidence_ids: string[] }[];
@@ -186,7 +195,8 @@ export function ownDraftPack(inp: OwnDraftInput) {
       (brk ? `${brk.notice}。草稿不能沿用前提 ${brk.premiseId}（keep_id 不能寫 ${brk.premiseId}），也不要換個說法把它寫回來。` : '') +
       `${who}。請替使用者草擬這檔的論點（payload.thesis）、${DRAFT_LIMITS.premisesMin}～${DRAFT_LIMITS.premisesMax} 條前提` +
       `（每條寫怎樣算證實、怎樣算不成立〔最多 ${DRAFT_LIMITS.breaksClauses} 句〕、用什麼來源驗證與多久有新的一份；查不到的配一個查得到的替代指標，配不出來的標成信念，至少 ${DRAFT_LIMITS.checkableMin} 條不是信念）、` +
-      `${DRAFT_LIMITS.exitsMin}～${DRAFT_LIMITS.exitsMax} 條出場條件（至少一條是出清或減半的財報數字門檻）。` +
+      `${DRAFT_LIMITS.exitsMin}～${DRAFT_LIMITS.exitsMax} 條出場條件（至少一條是出清或減半的財報數字門檻），` +
+      `以及 0～${DRAFT_LIMITS.addsMax} 條加碼條件（payload.adds：論點被證實、值得多買的事，成立時補到標準比重 FILL 或提高到標準的 125% RAISE；格式和出場條件相同，只收財報門檻與申報或網頁事件，不收價格條件；沒有把握就不寫）。` +
       '反方先寫：這家公司最可能讓持有者後悔的三件事（各附證據），以及「如果現在沒有持股，今天用這個價格會不會買」的反方答案；正方要回應反方的三件事。' +
       '每一條前提都要查得到哪些證據顯示它成立、哪些顯示它不成立。這是草稿：使用者看過反方、按「採用」才會整份生效（論點、前提、出場條件、同業一起存），出場條件採用後直接開始監測，所以要寫成程式或申報查得到的格式。不要評論該不該買或賣、不要寫股數或價位。',
     policy: { level: 'A2', verdicts: ['DONE', 'INSUFFICIENT'], abstain: 'INSUFFICIENT', min_evidence: 0, samples: 1 },
@@ -384,6 +394,37 @@ export function checkDraft(s: CheckedSample, pack: Pick<EvidencePack, 'documents
   });
   if (!exits.some((x) => (x.action === 'EXIT' || x.action === 'HALF') && x.threshold)) errors.push('至少要一條動作是出清或減半、而且是財報數字門檻的出場條件（kind XBRL、指標程式算得出來、門檻有通過檢查的引用）');
 
+  // 加碼條件（T84，allocation_redesign §4.2）：0～2 條、動作是 FILL 或 RAISE、格式和出場條件相同；不收價格條件（整份退回，和其他檢查一樣）
+  const rawAdds = p.adds === undefined || p.adds === null ? [] : p.adds;
+  const adds: DraftExit[] = [];
+  if (!Array.isArray(rawAdds)) errors.push('adds 要是陣列');
+  else if (rawAdds.length > L.addsMax) errors.push(`加碼條件最多 ${L.addsMax} 條（送回 ${rawAdds.length} 條）`);
+  (Array.isArray(rawAdds) ? rawAdds : []).slice(0, L.addsMax + 1).forEach((raw, k) => {
+    const n = `加碼條件第 ${k + 1} 條`;
+    if (!isObj(raw)) return void errors.push(`${n}格式不對`);
+    const text = txt(raw.text);
+    const action = txt(raw.action).toUpperCase() as CondAction;
+    if (!text) errors.push(`${n}沒有文字`);
+    else if (text.length > L.exit) errors.push(`${n}超過 ${L.exit} 字`);
+    if (!ADD_ACTIONS.includes(action)) errors.push(`${n}的 action 要是 FILL（補到標準比重）或 RAISE（提高到標準的 125%）`);
+    const pi = raw.premise_index;
+    const premiseIndex = typeof pi === 'number' && Number.isInteger(pi) && pi >= 0 && pi < premises.length ? pi : null;
+    if (pi !== undefined && pi !== null && premiseIndex === null) errors.push(`${n}的 premise_index 對不到任何一條前提`);
+    const kindRaw = txt(raw.kind).toUpperCase();
+    const ev = ids(raw.evidence_ids).filter((id) => okIds.has(id));
+    if (kindRaw === 'PRICE') return void errors.push(`${n}：${ADD_PRICE}`);
+    if (kindRaw !== 'XBRL' && kindRaw !== 'EVENT') return void errors.push(`${n}的 kind 要是 XBRL 或 EVENT`);
+    const check = isObj(raw.check) ? raw.check : null;
+    if (kindRaw === 'EVENT') {
+      const event = draftEventCheck(raw.check, metrics);
+      if (event.issue) return void errors.push(`${n}（事件條件）：${event.issue}`);
+      return void adds.push({ text, action, premise_index: premiseIndex, evidence_ids: ev, kind: 'EVENT', check: event.check, threshold: false });
+    }
+    const threshold = !!check && XBRL_TYPES.includes(String(check.type)) && metrics.has(String(check.metric)) && typeof check.level === 'number' && Number.isFinite(check.level) && (check.quarters === undefined || (Number.isInteger(check.quarters) && Number(check.quarters) >= 1 && Number(check.quarters) <= 8));
+    if (!threshold) return void errors.push(`${n}（財報條件）：check 要寫 { "type": "xbrl_metric_above" 或 "xbrl_metric_below", "metric", "level", "quarters" }，指標要是程式算得出來的`);
+    adds.push({ text, action, premise_index: premiseIndex, evidence_ids: ev, kind: 'XBRL', check, threshold: ev.some((id) => goodIds.has(id)) });
+  });
+
   // 反方
   const rawAgainst = Array.isArray(p.against) ? p.against : null;
   const against: OwnDraft['against'] = [];
@@ -441,6 +482,7 @@ export function checkDraft(s: CheckedSample, pack: Pick<EvidencePack, 'documents
       thesis,
       premises,
       exits,
+      ...(adds.length ? { adds } : {}),
       sources: { peers },
       against,
       would_buy_today: { answer: answer as OwnDraft['would_buy_today']['answer'], why },

@@ -1,6 +1,6 @@
 // T10：F24 自選定期審查、F25 自選條件監測（ai_layer_design 的 F24、F25、F23 卡片）。
 // 純函式：證據包、payload 的逐欄檢查、結論怎麼變成引擎的輸入。資料抓取與排程在 src/app/ownAi.ts。
-import { TIER_NAME, VERIFY_EVERY_DEFAULT, buyCheck, type Account, type MarketView, type ReviewTrigger, type Tier } from '../engine';
+import { RAISE_GAP_DAYS, TIER_NAME, VERIFY_EVERY_DEFAULT, buyCheck, type Account, type MarketView, type ReviewTrigger, type Tier } from '../engine';
 import { GRADED_RATINGS, STRONG_RATINGS, TIER_TEXT, isExcluded, rateDomain, sameWebDomain, webLabel, type WebRatingRow } from '../data/webSources';
 import { webMetaOf, type WebMeta } from './added';
 import { keptByChoice, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
@@ -23,7 +23,7 @@ export const OWN_CONDITION_PROMPT = 'own_condition_v1';
  * 連續兩次財報後的審查都證實前提、最近兩季營收年增都是正的、標準狀態、距上次提高滿 365 天、過買進前的程式檢查。
  * 2026-11-22 之前是「連續站上 200 日均線 126 個交易日」，拿掉（漲了才加碼和看論點的方向不一致）。
  */
-export const RAISE_RULE = { gapDays: 365, earnings: 2 } as const;
+export const RAISE_RULE = { gapDays: RAISE_GAP_DAYS, earnings: 2 } as const;
 
 /** 最近兩季營收年增的程式核對（app 層由 XBRL 季度表算好，放進證據包的 rule.detail.revenue）：ok = 兩季都是正的；資料不夠是 false。 */
 export interface RevenueCheck {
@@ -64,8 +64,15 @@ export function raiseAllowed(acct: Account, ticker: string, asOf: string, opt: {
  */
 export function earningsConfirmed(outcome: Outcome, pack: Pick<EvidencePack, 'documents'> & { premises?: { id: string }[] }): { confirmed: boolean; why: string } {
   if (outcome.status !== 'AGREED') return { confirmed: false, why: '沒有三票一致的結論' };
-  const samples = outcome.samples.filter((s) => s.valid);
-  if (samples.length < OWN_REVIEW_SAMPLES) return { confirmed: false, why: '有效的票不到三張' };
+  return premisesConfirmed(outcome.samples.filter((s) => s.valid), pack, OWN_REVIEW_SAMPLES);
+}
+
+/**
+ * 每一條可驗證的前提都被每一票判成立、判成立的引用有申報或財報（不能只靠網頁）：財報後審查的「證實」（§4.3）與下跌加碼（§4.4，T84）共用。
+ * samples：合格的票；pack.premises：證據包裡的前提（信念不在裡面，所以就是「每一條可驗證的前提」）。純函式。
+ */
+export function premisesConfirmed(samples: CheckedSample[], pack: Pick<EvidencePack, 'documents'> & { premises?: { id: string }[] }, wanted = OWN_REVIEW_SAMPLES): { confirmed: boolean; why: string } {
+  if (samples.length < wanted) return { confirmed: false, why: '有效的票不到三張' };
   const ids = (pack.premises ?? []).map((p) => p.id);
   if (!ids.length) return { confirmed: false, why: '沒有可以驗證的前提' };
   const allHold = samples.every((s) => ids.every((id) => s.premises.some((p) => p.premise_id === id && p.status === 'HOLDS')));

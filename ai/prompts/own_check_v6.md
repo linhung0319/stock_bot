@@ -1,3 +1,5 @@
+> 不再使用（2026-11-23）：T84 起改用 `own_check_v7.md`（多了加碼條件；`allocation_redesign_2026-11-22.md` §4.2）。這份留著對照舊的執行紀錄。
+
 # own_check_v6：出場條件改寫與對照（F14）
 
 共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`docs/design/own_thesis_design_2026-11-15.md` 的 §1.8、`docs/design/web_evidence_design_2026-11-20.md` 的 §1.6、`docs/design/confirm_audit_design_2026-11-21.md` 的 §1.6（和 `ai_layer_design_2026-11-08.md` 的 F14 卡片不同時以前三份為準）。

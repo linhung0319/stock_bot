@@ -17,7 +17,7 @@ import type { CheckedSample, EvidencePack, PackDoc } from '../ai/check';
 import { MEDIA_MIN_DOMAINS, OWN_CONDITION, OWN_REVIEW, citedSources, condCite, confirmMode, conditionDecision, conditionPack, earningsConfirmed, namedWebDomains, ownReviewPack, packSources, reviewDecision, type ConditionDraft, type ProposedDraft, type RevenueCheck } from '../ai/ownReview';
 import { STRONG_RATINGS, sameWebDomain } from '../data/webSources';
 import { newRunId } from '../ai/pack';
-import { TIER_NAME, buildEarnings, clone, condMetNotice, ownHeld, recordEarnCheck, routeReview, type Account, type CondNotice, type MarketView, type OwnMeta, type ReviewTrigger, type Tier } from '../engine';
+import { TIER_NAME, buildEarnings, clone, condMetNotice, ownHeld, recordEarnCheck, routeReview, type Account, type AddNotice, type CondNotice, type MarketView, type OwnMeta, type ReviewTrigger, type Tier } from '../engine';
 import { ConflictError, loadAccount, saveAccount, thesisLogStmt } from './ledgerStore';
 import { isLastTradingDayOfMonth, nextTradingDay, type CalendarOverrides } from '../data/calendar';
 import { attribution } from '../ai/detect';
@@ -34,7 +34,7 @@ import type { Env, Fetcher } from './env';
 import { accOf, cikFor, fetchFilingChecks, handledStmt, loadEvents, sectorEtfs, setStateStmt, type FilingCheck, type SecEventRow } from './filings';
 import { briefNote } from './marketBrief';
 import { reviewHealthStmts, reviewStartFailed } from './reviewHealth';
-import { EARLY_NOTE, EVIDENCE_TEXT, MAX_AI_WATCH, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultCheck, defaultFacts, externalNeeds, revenueCheck, fileConditions, flaggedAccessions, fmtMetric, isAiWatch, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
+import { EARLY_NOTE, EVIDENCE_TEXT, MAX_AI_WATCH, MAX_REVIEW_8K, WEB_DUE_DAYS, afterLastReview, condFacts, defaultAction, defaultCheck, defaultFacts, externalNeeds, revenueCheck, fileConditions, flaggedAccessions, fmtMetric, isAddAction, isAiWatch, isOwned, newEvidence, noneResponses, notifyTier, ownerText, pickFilings, thesisFacts, thesisFile, thesisNote, xbrlProgress, type CondAction, type EvidenceReason, type FileCondition, type ThesisFile } from './thesis';
 
 export { cikFor } from './filings';
 export { loadConditions } from './thesis';
@@ -363,12 +363,14 @@ export function xbrlWhy(check: Record<string, unknown>, values: (number | null)[
  *     （tier_if_met 只是 AI 建議的檔位；舊列沒有 action 時也不照 tier_if_met 通知）
  *   動作是出清或減半 → 當天通知（不設上限）；monthly = 月審確認成立的 → 進隔天的月報（項目相同）
  *   換算出來不用賣 → 不發通知，條件照樣是成立（「要看的事」的 COND_MET_NO_SELL 由論點檔判斷）
+ *   加碼條件（動作是補到標準比重、提高到 125%，T84，allocation_redesign §4.2）→ 不走甲類、不發當天通知，見 queueAddCondition
  * why：理由（依 met_basis）；AI 建議、你勾選的條件另外寫一句是誰哪天勾的。
  */
 export function notifyOwnCondition(ctx: ApplyCtx, c: FileCondition, why: string, runIds: string[], label: string, monthly = false): void {
   const t = c.ticker;
   if (!ctx.acct.own[t]) return;
   const owned = isOwned(c);
+  if (owned && isAddAction(c.action)) return queueAddCondition(ctx, c, c.action, why, runIds, label);
   const tier = owned ? notifyTier(c) : null;
   if (!tier) {
     ctx.acct = clone(ctx.acct);
@@ -395,6 +397,36 @@ export function notifyOwnCondition(ctx: ApplyCtx, c: FileCondition, why: string,
   const r = condMetNotice(ctx.acct, ctx.view, t, spec);
   ctx.acct = r.acct;
   ctx.log.push(`${label} → ${r.notif ? `當天通知 #${r.notif.id}` : `不通知（${r.why}），列進要看的事`}`);
+}
+
+/**
+ * 你定的加碼條件成立（allocation_redesign §4.2，T84）：買進的建議只進月報（§4.0 第 2 點），不發當天通知。
+ *   減半中 → 條件照樣標成立（呼叫前已經標了），不提加碼；持股頁寫「條件成立；這檔在減半中，加回看 200 日線」（加回只看 §3.4）
+ *   先買一半還沒過關、動作是補到標準比重 → 當成先買一半的確認（§4.1「兩者先到的算」）：build.ok，下一份月報列補滿（F27）
+ *   先買一半已經過關（補滿在等月報）、動作是補到標準比重 → 不另外列
+ *   其他 → 記進 addMonthly，下一份月報列 F28（買進前的程式檢查在月報時做，股數照那天的持股算）
+ */
+export function queueAddCondition(ctx: ApplyCtx, c: FileCondition, action: 'FILL' | 'RAISE', why: string, runIds: string[], label: string): void {
+  const t = c.ticker;
+  ctx.acct = clone(ctx.acct);
+  const m = ctx.acct.own[t];
+  const rule = ctx.acct.rule.own[t];
+  if (!m || !rule) return;
+  const setAt = (c.acceptedAt ?? c.createdAt).slice(0, 10);
+  const md = `${Number(setAt.slice(5, 7))}/${Number(setAt.slice(8, 10))}`;
+  if (m.slow.state === 'HALF' || rule.applied === 'HALF') {
+    m.buyBlocked = { date: ctx.session, what: '加碼', text: '這檔在減半中', line: `你定的加碼條件「${c.text}」成立；這檔在減半中，加回看 200 日線` };
+    return void ctx.log.push(`${label}（加碼條件）→ 這檔在減半中，只標成立、不提加碼（加回看 200 日線）`);
+  }
+  if (action === 'FILL' && m.build && rule.applied === 'BUILD') {
+    if (m.build.ok) return void ctx.log.push(`${label}（加碼條件：補到標準比重）→ 先買一半已經確認過，補滿在等月報，不另外列`);
+    m.build.ok = { date: ctx.session, ...(runIds[0] ? { runId: runIds[0] } : {}), text: `你在 ${md} 定的加碼條件「${c.text}」成立`, cond: true };
+    delete m.build.last;
+    return void ctx.log.push(`${label}（加碼條件：補到標準比重）→ 當成先買一半的確認，下一份月報列補滿（F27）`);
+  }
+  const spec: AddNotice = { id: c.id, text: c.text, action, setAt, why: c.origin !== 'USER' && c.acceptedAt ? `${why}。這條是${ownerText(c)}` : why, metOn: ctx.session, premiseId: c.premiseId, runIds };
+  m.addMonthly = [...(m.addMonthly ?? []).filter((x) => x.id !== c.id), spec];
+  ctx.log.push(`${label}（加碼條件：${action === 'RAISE' ? '提高到標準的 125%' : '補到標準比重'}）→ 進下一份月報（F28），不發當天通知`);
 }
 
 /**
@@ -456,7 +488,7 @@ export async function applyOwnReview(ctx: ApplyCtx, run: AiRun): Promise<void> {
     ctx.stmts.push(metStmt(ctx.db, c.id, at, viaWeb ? `定期審查 ${run.runId} 3 票確認（${webBasis!.text}）` : `定期審查 ${run.runId} 3 票確認`, viaWeb ? 'WEB_VOTE' : 'REVIEW_VOTE'));
     const label = `${run.runId}：${mine ? '你定的' : 'AI 監測中的'}條件 ${c.condId} 由審查 3 票確認成立${viaWeb ? '（指名的網頁來源）' : ''}`;
     // 動作是重新審查（AI 監測中的一律是）：確認它成立的就是這次審查，結論照 §1.9 處理，不再另外開
-    if (!mine || !notifyTier(c)) ctx.log.push(`${label}（成立時重新審查）→ 這次審查就是重新審查，結論照建議的規則處理`);
+    if (!mine || (!notifyTier(c) && !isAddAction(c.action))) ctx.log.push(`${label}（成立時重新審查）→ 這次審查就是重新審查，結論照建議的規則處理`);
     else notifyOwnCondition(ctx, c, viaWeb ? `${webBasis!.text}，3 票確認（${webBasis!.note}）` : `${run.asOf} 的審查 3 票確認（引用在網站）`, [run.runId, c.runId], label, trigger === 'MONTHLY');
   }
   if (d.proposed.length) {

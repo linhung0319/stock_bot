@@ -604,7 +604,7 @@ describe('T55 own_drafts：結算、過期、匯出', () => {
 
   it('prompt：own_draft_v2 存在（T60 升版），寫明研究員可以找、其他角色不上網，反方先寫', () => {
     const p = readFileSync(join(ROOT, 'ai', 'prompts', `${OWN_DRAFT_PROMPT}.md`), 'utf8');
-    expect(OWN_DRAFT_PROMPT).toBe('own_draft_v3');
+    expect(OWN_DRAFT_PROMPT).toBe('own_draft_v4'); // T84：v4 可以附加碼條件
     expect(p).toContain('只有研究員可以用 WebSearch、可以取文件');
     expect(p).toContain('**反方**（Sonnet，**先寫**');
     expect(p).toContain('反方、正方、主筆不要用 WebSearch、不要取文件');

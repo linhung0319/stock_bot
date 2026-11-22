@@ -333,6 +333,8 @@ async function applyThesisDrop(ctx: ApplyCtx, run: AiRun, d: ReturnType<typeof d
     ...(d.exit ? { exit: true } : {}),
     ...(d.status === 'SPLIT' ? { splitPremise: d.splitPremise, splitVotes: d.splitVotes } : {}),
     ...(attr ? { attr } : {}),
+    // 下跌加碼的審查面（allocation_redesign §4.4，T84）：只有 CLEAR 有；通知上多不多一個加碼的選項還要看狀態與限制（report.ts 的 dipOffer）
+    ...(d.dip ? { dip: d.dip } : {}),
   };
   ctx.acct = acct;
   if (decided) {

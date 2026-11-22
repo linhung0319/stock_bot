@@ -89,6 +89,7 @@ const ITEM_LABEL: Record<string, string> = {
   F25: '你定的條件成立',
   F26: '核心比例調回',
   F27: '補滿（先買一半）',
+  F28: '你定的加碼條件成立',
   CORE: '閒置現金',
 };
 
@@ -459,14 +460,16 @@ function itemView(d: Ready, n: Notif, it0: Item): ItemView {
   }
   const choices: ChoiceView[] = it.choices.map((c) => {
     let label = c.label;
-    if (c.id === 'AI' && c.tier && !/（/.test(label)) label = `照 AI：${it.aiLine?.includes('維持減半') ? '維持減半' : TIER_NAME[c.tier]}`;
+    // 下跌加碼（T84）的選項標題本身就寫了要做什麼，不換成「照 AI：…」
+    if (c.id === 'AI' && c.tier && !/（/.test(label) && !it.dipAdd) label = `照 AI：${it.aiLine?.includes('維持減半') ? '維持減半' : TIER_NAME[c.tier]}`;
     return {
       id: c.id,
       label,
       text: c.id === 'SKIP' ? '不下單' : linesText(c.lines, single),
       lines: c.lines.map((l) => lineView(d.view, l, d.acct)),
       note: x.choiceNotes?.[c.id] ?? '',
-      isDefault: c.id === it.ruleChoice,
+      // 跌幅審查（有論點，T82）：規則的那條線一律是減半（影子紀錄用），但沒有前提不成立時預設是不動（T84 加下跌加碼時一併改正「沒選就是這個」的位置）
+      isDefault: c.id === (it.thesisDrop ? (holdsByDefault(it) ? 'SKIP' : 'RULE') : it.ruleChoice),
     };
   });
   return {
@@ -520,7 +523,7 @@ export function capNoteOf(c: Composed): string | null {
 
 // 建議單的順序照因果排：先是整個帳戶的規則，再來動能（先出場才有位置進場），然後自選、AI 的建議、現金流
 // 核心比例調回（F26）是其他單合成之後才算的，排最後
-const ITEM_ORDER = ['F5', 'F6', 'F19', 'F2', 'F1', 'F17', 'F3', 'F4', 'F10', 'F7', 'F8', 'F25', 'F24', 'F23', 'F27', 'F11', 'F12', 'F13', 'F14', 'F15', 'F26', 'CORE'];
+const ITEM_ORDER = ['F5', 'F6', 'F19', 'F2', 'F1', 'F17', 'F3', 'F4', 'F10', 'F7', 'F8', 'F25', 'F24', 'F23', 'F27', 'F28', 'F11', 'F12', 'F13', 'F14', 'F15', 'F26', 'CORE'];
 const orderOf = (f: string) => {
   const k = ITEM_ORDER.indexOf(f);
   return k < 0 ? ITEM_ORDER.length : k;
@@ -596,7 +599,7 @@ function holdNoticeText(acct: Account, n: Notif): string {
   const waiting = n.items.some((it) => !it.cancelled && !!it.ticker && dropReviewOpen(acct.own[it.ticker]?.dropReview));
   return waiting
     ? '這一則不用回覆、不用下單：AI 論點檢查還沒有結論，先不動。有了結論這裡會更新；判前提不成立時預設才會改成減半。想自己先賣可以選「減半」，系統當場給清單。'
-    : `這一則不用回覆、不用下單：${AUTO_DEFAULT_DAYS} 個交易日沒有回覆就自動以「不動」結案，不會提醒。結案前想賣可以改選「減半」，系統當場給清單。`;
+    : `這一則不用回覆、不用下單：${AUTO_DEFAULT_DAYS} 個交易日沒有回覆就自動以「不動」結案，不會提醒。結案前想賣可以改選「減半」${n.items.some((it) => !it.cancelled && !!it.dipAdd) ? '，想加碼可以選「加碼」（下跌加碼，這一次下跌只提這一次）' : ''}，系統當場給清單。`;
 }
 
 const refNameOf = (acct: Account, id: number | null | undefined): string | null => {
@@ -787,7 +790,22 @@ export function buildViewOf(acct: Account, view: MarketView, ticker: string, wei
 export function buyBlockedText(meta: Pick<Account['own'][string], 'buyBlocked'>, what: string | null, date: string): string | null {
   const x = meta.buyBlocked;
   if (!x || (what && x.what !== what) || Math.round((Date.parse(date) - Date.parse(x.date)) / 86400_000) >= 35) return null;
+  // 你定的加碼條件（T84，§4.2）：條件是一次性的，不會下個月再看；line 是寫好的整句（減半中、不用買、同一份月報已經列了另一條）
+  if (x.what === '加碼') return `${x.line ?? `加碼條件成立，但${x.text}，這次不提加碼`}。加碼條件只成立一次，要再用就到編輯論點頁重新定一條。`;
   return `${x.what}的條件${x.what === '補滿' ? '過關了' : '成立了'}，但${x.text}，這次不提${x.what}；下個月月報再看一次。`;
+}
+
+/**
+ * 下跌加碼那一段（allocation_redesign §4.4，T84）：跌幅審查前提都沒有被判不成立時，持股頁寫有沒有提加碼、沒提的原因。
+ * 照做了：「；這次下跌選了加碼（M/D）」；提過：「；通知上有加碼的選項（預設不動）」；沒提：「；沒有提下跌加碼：<原因>」。
+ */
+function dipText(meta: Account['own'][string]): string {
+  const dr = meta.dropReview;
+  const ep = meta.watchSince ?? dr?.session;
+  if (meta.dipAdd?.at && meta.dipAdd.episode === ep) return `；這次下跌選了加碼（${meta.dipAdd.at.slice(5)}）`;
+  const o = dr?.dipOffer;
+  if (!o) return '';
+  return o.ok ? `；通知上有下跌加碼的選項（${o.mode === 'FILL' ? '補滿到標準比重' : '提高到標準的 125%'}，預設不動）` : `；沒有提下跌加碼：${o.why}`;
 }
 
 /** DROP_LADDER 的下一級（還沒審過的最淺一級）；已經審到最後一級是 null。 */
@@ -807,7 +825,7 @@ export function watchNote(acct: Pick<Account, 'own' | 'notifs'>, ticker: string,
   let what: string;
   if (!dr) what = '跌幅審查之後沒有減半';
   else if (dr.status === 'PENDING') what = `${when}還在跑，先不動`;
-  else if (dr.status === 'CLEAR') what = `${when}沒有前提被判不成立，沒有減半`;
+  else if (dr.status === 'CLEAR') what = `${when}沒有前提被判不成立，沒有減半${dipText(meta)}`;
   else if (dr.status === 'SPLIT') what = `${when} 3 票沒有一致結論，沒有減半`;
   else if (dr.status === 'BROKEN') {
     const p = meta.premises.find((x) => x.id === dr.premiseId)?.text ?? dr.premiseId ?? '';

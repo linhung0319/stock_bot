@@ -50,9 +50,22 @@ interface CondRow {
   progress_json?: string | null;
   auto?: number | null;
 }
-/** 成立時做什麼（own_thesis §1.5）：出清／減半／重新審查。 */
-export type CondAction = 'EXIT' | 'HALF' | 'REVIEW';
-export const COND_ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
+/**
+ * 成立時做什麼（own_thesis §1.5）：出清／減半／重新審查（出場條件）；T84（allocation_redesign §4.2）起多兩個加碼條件的動作：
+ * FILL 補到標準比重、RAISE 提高到標準的 125%。加碼條件和出場條件同一張表、同一種格式、同一套監測，8 條上限合計。
+ */
+export type CondAction = 'EXIT' | 'HALF' | 'REVIEW' | 'FILL' | 'RAISE';
+export const COND_ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW', 'FILL', 'RAISE'];
+/** 出場條件的動作（AI 監測中的條件只會是這一組；AI 不能自己提加碼條件，§4.2）。 */
+export const EXIT_ACTIONS: readonly CondAction[] = ['EXIT', 'HALF', 'REVIEW'];
+/** 加碼條件的動作（§4.2）。 */
+export const ADD_ACTIONS: readonly CondAction[] = ['FILL', 'RAISE'];
+/** 這個動作是加碼（成立時買進）嗎。 */
+export const isAddAction = (a: unknown): a is 'FILL' | 'RAISE' => a === 'FILL' || a === 'RAISE';
+/** 兩個動作是不是同一種（都是出場、或都是加碼）：出場條件與加碼條件之間不能只改動作互換（要重新寫、送改寫，讓你看到「成立時：買進」）。 */
+export const sameActionKind = (a: CondAction | null | undefined, b: CondAction | null | undefined): boolean => isAddAction(a) === isAddAction(b);
+/** 加碼條件不收價格條件（§4.2）：程式檢查擋下的那一句（定義在 ai/ownCheck.ts，改寫、草稿共用）。 */
+export { ADD_PRICE_ISSUE } from '../ai/ownCheck';
 /** 財報類條件的進度（own_thesis §3.6.2）。values 新到舊；streak 是從最新一季起連續符合幾季。 */
 export interface CondProgress {
   at: string;
@@ -912,7 +925,7 @@ export function pickFilings<F extends Pick<Filing, 'accession' | 'form' | 'items
 const PACK_SOURCE_TEXT: Record<string, string> = { DISCUSSION: '討論後貼回，', TYPED: '在網站手寫，' };
 const ORIGIN_TEXT: Record<string, string> = { INITIAL: '上線時就持有', NEW: '新增自選', TRANSFER: '從動能轉入', ADOPT: '認養', MANUAL: '自己買進' };
 const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
-const OUTCOME_TEXT: Record<string, string> = { FOLLOW: '照做', REVISE: '修正論點', DISAGREE: '不同意', SKIPPED: '月報裡沒有動它（當成不同意）', NONE: '上次的失效通知沒有回應', RULE: '照規則', KEPT: '不動', HALVED: '減半' };
+const OUTCOME_TEXT: Record<string, string> = { FOLLOW: '照做', REVISE: '修正論點', DISAGREE: '不同意', SKIPPED: '月報裡沒有動它（當成不同意）', NONE: '上次的失效通知沒有回應', RULE: '照規則', KEPT: '不動', HALVED: '減半', DIP_ADD: '下跌加碼' };
 /** 回應的白話（甲類、慢規則通知的 SKIPPED 是「這次不做」；慢規則通知的 FOLLOW 是「照 AI」）。 */
 export const outcomeText = (r: { outcome: string; type?: string }): string =>
   r.outcome === 'SKIPPED' && (r.type === 'A' || r.type === 'R') ? '這次不做' : r.outcome === 'FOLLOW' && r.type === 'R' ? '照 AI' : r.outcome === 'RULE' ? '照規則減半' : (OUTCOME_TEXT[r.outcome] ?? r.outcome);
@@ -1004,7 +1017,8 @@ export function acceptStatus(c: Pick<FileCondition, 'kind' | 'check' | 'auto' | 
 /** 成立時要通知的檔位：動作是出清或減半；重新審查不發通知。沒有動作的舊列照舊（降級條件的 tier_if_met）。 */
 export function notifyTier(c: Pick<FileCondition, 'action' | 'direction' | 'tierIfMet'>): Tier | null {
   if (c.action === 'EXIT' || c.action === 'HALF') return c.action;
-  if (c.action === 'REVIEW') return null;
+  // 重新審查不發通知；加碼條件（T84）不走甲類，進月報（F28，ownAi.ts 的 notifyOwnCondition）
+  if (c.action === 'REVIEW' || isAddAction(c.action)) return null;
   return c.direction === 'DOWN' && c.tierIfMet ? c.tierIfMet : null;
 }
 
@@ -1035,7 +1049,7 @@ export const fmtMetric = (metric: string, v: number | null) => {
   return Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(0)}M` : v.toFixed(2);
 };
 const KIND_TEXT: Record<string, string> = { XBRL: '財報', EVENT: '事件', PRICE: '價格' };
-export const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查' };
+export const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）' };
 const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '—');
 
 /** 持股頁的一行進度：`最新一季 71.2%（門檻 70%）；已連續 1／2 季`。 */
@@ -1653,7 +1667,9 @@ export function ruleResponseLogs(acct: Pick<Account, 'own'>, n: Notif, session: 
       body: {
         notif: n.id,
         type: 'R',
-        outcome: it.choice === 'AI' ? 'FOLLOW' : it.choice === 'SKIP' ? (hold ? 'KEPT' : 'SKIPPED') : it.thesisDrop ? 'HALVED' : 'RULE',
+        // 下跌加碼（T84，allocation_redesign §4.4）：前提都沒有被判不成立時的 AI 選項是加碼，記 DIP_ADD（不是照 AI 賣）
+        outcome: it.choice === 'AI' ? (hold && it.dipAdd ? 'DIP_ADD' : 'FOLLOW') : it.choice === 'SKIP' ? (hold ? 'KEPT' : 'SKIPPED') : it.thesisDrop ? 'HALVED' : 'RULE',
+        ...(hold && it.dipAdd ? { dipAdd: { mode: it.dipAdd.mode, shares: it.dipAdd.shares } } : {}),
         reason: it.choice === 'SKIP' ? (it.reason ?? null) : null,
         aiOffered: offered,
         premiseId: it.brk?.type === 'B' ? it.brk.premiseId : null,

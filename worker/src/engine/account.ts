@@ -181,7 +181,22 @@ export interface OwnMeta {
    * 月報時有一筆買進（補滿 F27、提高到 125% F23…）的條件成立，但買進前的程式檢查（buyAllowed，allocation_redesign §4.0）沒過、這次不提：
    * 哪一天、哪一種買進、原因。持股頁寫一行（`補滿的條件過關了，但 11/06 有前提被判不成立，這次不提補滿`），不發通知；之後的月報再看一次。
    */
-  buyBlocked?: { date: string; what: string; text: string } | null;
+  buyBlocked?: { date: string; what: string; text: string; line?: string } | null;
+  /**
+   * 你定的加碼條件成立（F28，allocation_redesign §4.2，T84）：等下一份月報列成一項（預設照做）。月報產生時清掉（列了、或買進前的程式檢查沒過）。
+   * 一條條件只成立一次，沒過檢查的不留到下個月。
+   */
+  addMonthly?: AddNotice[];
+  /**
+   * 這一段審查後持有從哪一天開始（第一次比高點低 20% 的觸發日；allocation_redesign §4.4，T84）：下跌加碼的「一次下跌」以它為準。
+   * 進審查後持有時寫，回到標準（leaveWatch）時拿掉。舊資料沒有 = 用那一筆跌幅審查的觸發日。
+   */
+  watchSince?: string | null;
+  /**
+   * 下跌加碼（§4.4，T84）：這一次下跌（episode = watchSince）已經在第幾級的跌幅審查通知上提過（offered），選了的話 at 是照做的那天。
+   * 同一次下跌更深的幾級不再提，不論上次有沒有選。之後的下跌 episode 不同，可以再提（仍受 125% 的 12 個月間隔限制）。
+   */
+  dipAdd?: { episode: string; level: number; offered: string; at?: string | null } | null;
   /**
    * 「不同意」之後的靜默期（own_thesis §1.10）：乙類選「不同意，不動」、月報裡沒動它（SKIPPED）、修正論點但保留那條前提時寫入。
    * until 先寫 since 加 100 天；滿 45 天之後出現第一份財報類申報時改成那份申報的前一天。過期的留著給網站顯示。
@@ -257,7 +272,8 @@ export interface BuildInfo {
   since: string;
   confirmBy: 'EARNINGS';
   misses: number;
-  ok?: { date: string; runId?: string; text: string } | null;
+  /** cond（T84）：過關的是你定的加碼條件（FILL，§4.1「兩者先到的算」），不是財報後的審查。 */
+  ok?: { date: string; runId?: string; text: string; cond?: boolean } | null;
   last?: { date: string; text: string } | null;
 
   listed?: number | null;
@@ -345,6 +361,16 @@ export interface DropReview {
   sameDay?: number;
   /** 沒跑完、而且不會再重派了（3 個交易日都沒跑完，或 AI 層沒有設定）。 */
   failed?: boolean;
+  /**
+   * 下跌加碼的審查面（allocation_redesign §4.4，T84；只有 CLEAR 才有）：3 票對每一條可驗證的前提都判成立、引用有申報或財報，
+   * 而且程式核對跌幅拆解（個股自身不超過整段一半）。ok = false 時 why 是哪一項沒過（持股頁寫）。
+   */
+  dip?: { ok: boolean; why: string } | null;
+  /**
+   * 通知上下跌加碼的選項最後一次算出來的樣子（setThesisDrop 寫；持股頁寫「這次下跌沒有提加碼」的原因用）。
+   * ok：有給這個選項（mode RAISE 提高到 125%／FILL 先買一半時補滿，shares 股）；不給時 why 是原因。
+   */
+  dipOffer?: { ok: boolean; why: string; mode?: 'RAISE' | 'FILL'; shares?: number } | null;
 }
 
 /** 這一筆跌幅審查還會有結果嗎：還在跑，或沒跑完但還會重派。預設不下單的通知在這期間不自動結案。 */
@@ -395,11 +421,29 @@ export interface CondNotice {
 }
 
 /**
+ * 你定的加碼條件成立（F28，allocation_redesign §4.2，T84）：項目由引擎在月報時照當時的持股換算股數。
+ * action：FILL 補到標準比重／RAISE 提高到標準的 125%；setAt：你定的那一天；why：怎麼確認成立的。
+ */
+export interface AddNotice {
+  /** own_conditions 的列編號。 */
+  id: number;
+  text: string;
+  action: 'FILL' | 'RAISE';
+  setAt: string;
+  why: string;
+  /** 成立的訊號日。 */
+  metOn: string;
+  premiseId?: string | null;
+  runIds?: string[];
+}
+
+/**
  * OWN_COND：甲類（你定的條件成立）的項目（own_thesis §1.10）。
  * CORE_BAND：核心比例調回（F26，allocation_redesign §1.3）：預設照做、「這次不做」不用理由也不記欠單，下個月月報重算。
  * OWN_FILL：先買一半的補滿（F27，allocation_redesign §4.1）：只進月報、預設照做、不做不用理由；照做或不做都離開先買一半。
+ * OWN_ADD：你定的加碼條件成立（F28，§4.2）：只進月報、預設照做、不做不用理由（不買沒有風險要記）。
  */
-export type ItemKind = 'STRATEGY' | 'OWN_RULE' | 'AI_ONLY' | 'HARD' | 'CASHFLOW' | 'FIX' | 'OWN_COND' | 'CORE_BAND' | 'OWN_FILL';
+export type ItemKind = 'STRATEGY' | 'OWN_RULE' | 'AI_ONLY' | 'HARD' | 'CASHFLOW' | 'FIX' | 'OWN_COND' | 'CORE_BAND' | 'OWN_FILL' | 'OWN_ADD';
 export type ChoiceId = 'RULE' | 'AI' | 'DO' | 'SKIP';
 
 /** 清單上的選項做完之後，帳戶狀態要跟著改的事（存成資料，不存函式）。 */
@@ -413,7 +457,9 @@ export type Effect =
    * 離開先買一半（allocation_redesign §4.1）：補滿照做（keep = false，目標回到標準比重）或不做（keep = true，標準比重改成那時的實際比重，之後不再提）。
    * 只掛在補滿（F27）的選項上；「這次不做」的選項也有這個效果（整則不做時在回覆當下套用）。
    */
-  | { type: 'BUILD_END'; ticker: string; keep: boolean };
+  | { type: 'BUILD_END'; ticker: string; keep: boolean }
+  /** 下跌加碼照做了（allocation_redesign §4.4，T84）：OwnMeta.dipAdd.at 記那一天（提高到 125% 的 raisedAt 由同一個選項上的 APPLY_TIER RAISE 記）。 */
+  | { type: 'DIP_ADD'; ticker: string; episode: string };
 
 export interface Choice {
   id: ChoiceId;
@@ -470,6 +516,11 @@ export interface Item {
    * 規則的狀態在你照做減半之後才變成減半（選項的效果），其餘留在審查後持有。level：這次審的是 DROP_LADDER 的第幾級。
    */
   thesisDrop?: { level: number };
+  /**
+   * 下跌加碼（allocation_redesign §4.4，T84）：跌幅審查的結果是前提都沒有被判不成立、而且過了下跌加碼的限制 → 通知多一個選項（id AI，預設仍是不動）。
+   * mode：RAISE 提高到標準的 125%（標準、審查後持有）／FILL 補滿到標準比重（先買一半）；note 是選項說明固定的那一句。
+   */
+  dipAdd?: { mode: 'RAISE' | 'FILL'; shares: number; note: string };
   /**
    * 併進這個減半項目的乙類通知（own_thesis §3.4：慢規則通知產生時同一檔有還沒回覆的乙類 → 那一則標 SUPERSEDED，內容併進來）。
    * 之後重算「照 AI」時（refreshOwnAiChoice）沿用。

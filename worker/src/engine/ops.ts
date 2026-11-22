@@ -81,7 +81,11 @@ function applyEffects(acct: Account, view: MarketView, effects: Effect[] | undef
     else if (e.type === 'CLEAR_FLAG') {
       if (acct.own[e.ticker]) acct.own[e.ticker].flags = [];
     } else if (e.type === 'BUILD_END') endBuildIn(acct, view, e.ticker, e.keep);
-    else applyTier(acct, view, e.ticker, e.tier, f === 'F19' ? 'HARD_EVENT' : f === 'F25' ? 'EXIT_CONDITION' : 'EXIT_AI');
+    else if (e.type === 'DIP_ADD') {
+      // 下跌加碼照做了（allocation_redesign §4.4，T84）：記下哪一天（同一次下跌不會再提；提高到 125% 的 raisedAt 由同一個選項的 APPLY_TIER 記）
+      const m = acct.own[e.ticker];
+      if (m) m.dipAdd = { ...(m.dipAdd && m.dipAdd.episode === e.episode ? m.dipAdd : { episode: e.episode, level: m.watchLevel ?? 0, offered: view.date }), at: view.date };
+    } else applyTier(acct, view, e.ticker, e.tier, f === 'F19' ? 'HARD_EVENT' : f === 'F25' ? 'EXIT_CONDITION' : 'EXIT_AI');
   }
 }
 
@@ -281,7 +285,8 @@ export function respond(acct0: Account, view: MarketView, id: number, input: Res
       };
       // 慢規則項目上 AI 的那一行可能只是「同意減半」「沒有一致結論」（沒有另一個選項）：照規則做了就不用記
       // 崩盤項目一律記（每一次切換都有紀錄，§3.4）
-      if (crash || rec.ai !== null || rec.actual !== rec.rule || (it.aiLine && it.kind !== 'OWN_RULE')) acct.shadow.push(rec);
+      // 補滿（F27）、你定的加碼條件（F28）每一次都記三條線（allocation_redesign §6；T84）：照做了也記，之後看得到加碼的效果
+      if (crash || rec.ai !== null || rec.actual !== rec.rule || (it.aiLine && it.kind !== 'OWN_RULE') || it.kind === 'OWN_FILL' || it.kind === 'OWN_ADD') acct.shadow.push(rec);
       // 策略類不做 → 下一份月報把差額再列一次；自選規則與 AI 建議是一次性的，不再提醒。
       // 舊的崩盤項目（規則已經退場）與核心比例調回（F26，kind 是 CORE_BAND）不記欠單：下個月月報照持股重算（allocation_redesign §1.3）
       if (it.kind === 'STRATEGY' && it.choice === 'SKIP' && rec.rule !== 0 && !isCrashItem(it)) acct.mom.owe[tk] = { since: view.date, notif: n.id };

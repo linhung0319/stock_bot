@@ -458,13 +458,20 @@ const COND_ACTIONS = [
   ['HALF', '減半'],
   ['REVIEW', '重新審查'],
 ];
+/** 加碼條件成立時的動作（T84，allocation_redesign §4.2）：只能在這一組裡改；和出場條件不能只改動作互換。 */
+const ADD_ACTIONS = [
+  ['RAISE', '提高到標準的 125%'],
+  ['FILL', '補到標準比重'],
+];
+const isAddAct = (a) => a === 'FILL' || a === 'RAISE';
 const MAX_OWNED = 8;
 /** AI 監測中的條件一檔最多幾條（T71；和伺服器的 MAX_AI_WATCH 同一個數字）。 */
 const MAX_AI_WATCH = 3;
 
-/** 成立時做什麼的下拉選單。 */
+/** 成立時做什麼的下拉選單：加碼條件只給加碼的兩個動作，出場條件只給出場的三個（T84）。 */
 function actionSelect(value, onchange) {
-  return h('select', { style: 'width:auto;min-height:36px;padding:4px 10px', onchange }, COND_ACTIONS.map(([v, t]) => h('option', { value: v, selected: v === value }, t)));
+  const opts = isAddAct(value) ? ADD_ACTIONS : COND_ACTIONS;
+  return h('select', { style: 'width:auto;min-height:36px;padding:4px 10px', onchange }, opts.map(([v, t]) => h('option', { value: v, selected: v === value }, t)));
 }
 
 // T68（confirm_audit_design §1.6）：勾選條件時選「用哪個網頁來源確認」的選單拿掉了；
@@ -524,7 +531,7 @@ export function ownMonitor(ctx, d) {
   if (owned.length)
     out.push(
       h('h5', { style: 'margin-top:4px' }, `你定的（會通知的 ${live}／${MAX_OWNED} 條）`),
-      h('p', { class: 'small dim' }, '成立時照你選的動作通知你；之後的審查不會換掉它們。價格條件只記錄。'),
+      h('p', { class: 'small dim' }, '出場條件成立時照你選的動作通知你；加碼條件成立時在下一份月報列一項買進（預設照做）。之後的審查不會換掉它們。價格條件只記錄。'),
       owned.map((c) =>
         condRow(
           c,
@@ -533,7 +540,7 @@ export function ownMonitor(ctx, d) {
             : [
                 ...(c.recordOnly
                   ? [h('span', { class: 'small dim' }, '只記錄，不會通知')]
-                  : [h('span', { class: 'small' }, '成立時'), actionSelect(c.action, (e) => condOp(ctx, d.ticker, msg, { id: c.id, op: 'action', action: e.target.value }, `改成成立時${COND_ACTIONS.find(([v]) => v === e.target.value)[1]}`))]),
+                  : [h('span', { class: 'small' }, isAddAct(c.action) ? '成立時買進' : '成立時'), actionSelect(c.action, (e) => condOp(ctx, d.ticker, msg, { id: c.id, op: 'action', action: e.target.value }, `改成成立時${ACTION_NAME[e.target.value]}`))]),
                 h('button', { class: 'btn quiet', type: 'button', onclick: () => window.confirm(`撤下「${c.text}」？撤下之後不再監測。`) && condOp(ctx, d.ticker, msg, { id: c.id, op: 'retire' }, '已撤下') }, '撤下'),
               ],
         ),
@@ -585,7 +592,7 @@ export async function resendExits(ticker, exits, version = null) {
   return api.post('/ops/own-check', { ticker, exits, ...(version ? { version } : {}) });
 }
 
-const ACTION_NAME = Object.fromEntries(COND_ACTIONS);
+const ACTION_NAME = { ...Object.fromEntries(COND_ACTIONS), FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）' };
 const day2 = (iso) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '');
 
 /** 「出場條件還沒送去改寫」與「重送」（own_thesis §1.8 確認的第 3 點：不能沒有提示）。 */
@@ -673,7 +680,8 @@ function rewriteBlock(ctx, d) {
     const rows = c.conditions.map((x) => {
       const same = c.sames?.[x.condId] ?? null;
       let act = x.action;
-      const box = same ? null : h('input', { type: 'checkbox', checked: !x.manual, 'aria-label': '勾選：開始監測' });
+      // 程式擋下的（加碼條件寫成價格條件，T84）不能勾
+      const box = same || x.blocked ? null : h('input', { type: 'checkbox', checked: !x.manual, 'aria-label': '勾選：開始監測' });
       return { x, same, box, get act() { return act; }, sel: same || x.manual ? null : actionSelect(act, (e) => (act = e.target.value)) };
     });
     const tag = (r) => {
@@ -683,7 +691,7 @@ function rewriteBlock(ctx, d) {
     };
     const fresh = rows.filter((r) => !r.same).length;
     out.push(
-      h('h5', { style: 'margin-top:18px' }, `出場條件的改寫結果，等你確認（第 ${c.exitsVersion ?? '—'} 版論點，${day2(c.createdAt)} 送出）`),
+      h('h5', { style: 'margin-top:18px' }, `${c.conditions.some((x) => isAddAct(x.action)) ? '出場條件與加碼條件' : '出場條件'}的改寫結果，等你確認（第 ${c.exitsVersion ?? '—'} 版論點，${day2(c.createdAt)} 送出）`),
       h('p', { class: 'small dim' }, `你這次寫的是完整的出場條件，AI 對照了現在監測中的條件。${fresh ? '勾選的新條件確認後開始監測，成立時照你選的動作通知你。' : ''}確認之前，現在的條件照舊監測；不確認的話，30 天後這份結果不再列，舊的仍照舊監測。`),
       rows.map((r) =>
         h(
@@ -698,11 +706,13 @@ function rewriteBlock(ctx, d) {
               null,
               h('b', { style: 'font-weight:500' }, r.x.text),
               r.x.from ? h('span', { class: 'small faint', style: 'display:block' }, `你寫的：${r.x.from}`) : null,
-              r.same ? null : h('span', { class: 'small dim', style: 'display:block' }, r.x.then),
+              // 加碼條件（T84，§4.6「方向填錯」）：對照上寫明成立時是買進
+              isAddAct(r.x.action) ? h('span', { class: 'small rw-buy', style: 'display:block' }, `成立時：${ACTION_NAME[r.x.action]}（加碼條件，進月報、預設照做）`) : null,
+              r.same ? null : h('span', { class: `small ${r.x.blocked ? 'tone-warn' : 'dim'}`, style: 'display:block' }, r.x.then),
               tag(r),
             ),
           ),
-          r.sel ? h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, '成立時'), r.sel) : null,
+          r.sel ? h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, isAddAct(r.x.action) ? '成立時買進' : '成立時'), r.sel) : null,
         ),
       ),
       c.unmatched?.length ? h('div', { class: 'small', style: 'margin-top:8px;color:var(--warn)' }, h('b', null, 'AI 沒有改寫出來、不會監測的：'), h('ul', { style: 'margin:4px 0 0 1.2em' }, c.unmatched.map((x) => h('li', null, `${x.text} → ${ACTION_NAME[x.action] ?? '重新審查'}`))), h('p', { class: 'faint' }, '原因見下面 AI 的說明；要監測的話，改寫法後再存一次論點。')) : null,

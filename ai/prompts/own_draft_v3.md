@@ -1,3 +1,5 @@
+> 不再使用（2026-11-23）：T84 起改用 `own_draft_v4.md`（草稿可以附 0～2 條加碼條件；`allocation_redesign_2026-11-22.md` §4.2）。這份留著對照舊的執行紀錄。
+
 # own_draft_v3：論點草稿（OWN_DRAFT）
 
 共用的取證據包、取文件、外殼格式與送回方式見 `run.md`；這份只寫這個功能怎麼做。設計依據：`docs/design/web_evidence_design_2026-11-20.md` 第 2 章（§2.2 草稿任務、§2.4 怎麼避免 AI 出題又改考卷）與 §1.5（找資料的步驟）；`docs/design/composite_layer_design_2026-11-21.md` §2.2、§2.3（前提的「怎樣算證實」、怎麼驗證、信念）；`docs/design/own_thesis_design_2026-11-15.md` §1.4（論點是使用者的）；`docs/design/confirm_audit_design_2026-11-21.md` §1.2、§1.4、§1.6（網頁的級別與來源評級）、§2.2、§2.3（出場條件與同業）、§4（新眼光提出的風險）。

@@ -608,7 +608,12 @@ function thesisDrop(ctx: ExplainContext, n: Notif, it: Item): Explain {
       : {
           SKIP: `不賣、不用下單，也不用寫理由。${watch}`,
           RULE: '你自己想賣時用：賣一半，錢照比例交給核心；之後照減半處理，站回 200 日均線連續 10 天會提醒買回。AI 檢查的是論點有沒有壞，不是會不會繼續跌。',
+          // 下跌加碼（allocation_redesign §4.4，T84）：預設仍是不動；選項說明固定寫那一句
+          ...(aiChoice && it.dipAdd
+            ? { AI: `${it.dipAdd.mode === 'RAISE' ? '買到標準的 125%，錢從核心照比例拿；之後這檔的標準比重就是原本的 1.25 倍，和 AI 提的 125% 共用 12 個月的間隔。' : '你選了先買一半：這次就補滿到標準比重，錢從核心照比例拿，之後是一般的標準狀態。'}${it.dipAdd.note}` }
+            : {}),
         },
+    ...(!broken && it.dipAdd ? { facts: [{ label: '下跌加碼', value: `${it.dipAdd.mode === 'RAISE' ? '提高到標準的 125%' : '補滿到標準比重'}，買 ${it.dipAdd.shares} 股`, note: '3 票對每一條前提都判成立、引用有申報或財報；這次下跌有一半以上不是這檔自己跌的。預設仍是不動，一次下跌只提這一次。' }] } : {}),
   };
 }
 
@@ -1033,9 +1038,11 @@ function ownFill(ctx: ExplainContext, n: Notif, it: Item): Explain {
   const cur = acct.lots.own[t] ?? 0;
   const ok = /已確認（(.+)）→/.exec(it.title)?.[1] ?? '';
   const note = noteByRun(ctx.aiNotes, 'REVIEW', it.runIds) ?? findNote(ctx.aiNotes, 'REVIEW', t, n.date, it.runIds);
+  // 你定的加碼條件（補到標準比重）也算確認（§4.1「兩者先到的算」，T84）
+  const byCond = ok.includes('加碼條件');
   return {
     short: `先買的一半已確認：${ok}`,
-    why: `你開檔時選了「先買一半，確認後再補滿」。確認的條件是開檔之後的第一份財報過關：${ok}。所以把另一半補上，回到標準比重 ${fmtPct(std, 1)}。${it.note ? `${it.note}。` : ''}`,
+    why: `你開檔時選了「先買一半，確認後再補滿」。${byCond ? `確認的條件是開檔之後的第一份財報過關，或你定的加碼條件成立（兩者先到的算）：${ok}` : `確認的條件是開檔之後的第一份財報過關：${ok}`}。所以把另一半補上，回到標準比重 ${fmtPct(std, 1)}。${it.note ? `${it.note}。` : ''}`,
     rule: '你事先定的買法，條件到了照做（預設）；不做也不用寫理由。補滿和之後的加碼都先過同一組程式檢查（不在減半、沒有還沒結案的跌幅審查或 AI 判前提不成立、沒有硬事件標記、30 天內沒有前提被判不成立、這檔自選加動能不超過總資產 10%）。',
     math: Number.isFinite(px) ? [`標準比重 ${fmtPct(std, 1)} × 總資產 ${fmtMoney(total)} ÷ 前一日收盤 ${fmtPx(px)} = ${Math.floor((std * total) / px)} 股`, `已有 ${cur} 股 → 買 ${sh} 股`] : undefined,
     chart: t,
@@ -1043,6 +1050,33 @@ function ownFill(ctx: ExplainContext, n: Notif, it: Item): Explain {
     choiceNotes: {
       RULE: '買到標準比重，錢從核心照比例拿；這檔從此是一般的標準狀態。',
       SKIP: '不買。標準比重改成現在的比重，之後不會再提補滿；想再加碼，改標準比重或定加碼條件。',
+    },
+  };
+}
+
+/** 你定的加碼條件成立（F28，allocation_redesign §4.2，T84）：照你事先的決定買進（預設），不用理由。 */
+function ownAdd(ctx: ExplainContext, n: Notif, it: Item): Explain {
+  const { acct, view } = ctx;
+  const t = it.ticker!;
+  const doC = it.choices.find((c) => c.id === 'DO');
+  const sh = sharesOf(doC?.lines ?? [], t);
+  const c = closeOf(view, t);
+  const px = c ? c[view.i] : NaN;
+  const total = totalValue(acct, view);
+  const std = acct.rule.own[t]?.stdWeight ?? 0;
+  const cur = acct.lots.own[t] ?? 0;
+  const raise = doC?.tier === 'RAISE';
+  const m = /你在 (\d{4}-\d{2}-\d{2}) 定的加碼條件「(.+)」成立/.exec(it.title);
+  const goal = raise ? std * 1.25 : std;
+  return {
+    short: `你定的加碼條件成立：${m?.[2] ?? ''}`,
+    why: `規則沒有動作。這是你${m ? `在 ${md(m[1])} ` : '之前'}定的加碼條件「${m?.[2] ?? ''}」，當時決定成立時${raise ? '提高到標準的 125%' : '補到標準比重'}。確認：${it.why ?? ''}${it.note ? ` ${it.note}。` : ''}`,
+    rule: '你事先定的買進，條件到了照做（預設）；不做不用寫理由。買進的建議只進月報、不發當天通知。加碼和補滿都先過同一組程式檢查（不在減半、沒有還沒結案的跌幅審查或 AI 判前提不成立、沒有硬事件標記、30 天內沒有前提被判不成立、這檔自選加動能不超過總資產 10%）。每條條件只成立一次。',
+    math: Number.isFinite(px) ? [`${raise ? `標準比重 ${fmtPct(std, 1)} × 1.25` : `標準比重 ${fmtPct(std, 1)}`} × 總資產 ${fmtMoney(total)} ÷ 前一日收盤 ${fmtPx(px)} = ${Math.floor((goal * total) / px)} 股`, `已有 ${cur} 股 → 買 ${sh} 股`] : undefined,
+    chart: t,
+    choiceNotes: {
+      DO: raise ? '買到標準的 125%，錢從核心照比例拿；之後這檔的標準比重就是原本的 1.25 倍（不會自動降回來），12 個月內不會再提 125%。' : '買到標準比重，錢從核心照比例拿。',
+      SKIP: '不買，也不用寫理由。這條條件已經用掉；之後想再用，到編輯論點頁重新定一條。',
     },
   };
 }
@@ -1114,6 +1148,7 @@ export function explainItem(ctx: ExplainContext, n: Notif, it: Item): Explain {
   try {
     if (it.kind === 'OWN_COND') return ownCond(ctx, n, it);
     if (it.kind === 'OWN_FILL') return ownFill(ctx, n, it);
+    if (it.kind === 'OWN_ADD') return ownAdd(ctx, n, it);
     if (it.kind === 'AI_ONLY') return aiOnly(ctx, n, it);
     if (it.kind === 'HARD') return hard(ctx, n, it);
     switch (it.f) {

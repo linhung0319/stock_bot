@@ -204,7 +204,8 @@ const TRIGGER_TEXT: Record<string, string> = { MONTHLY: '月審', EARNINGS: '財
 const STATUS_TEXT: Record<string, string> = { SPLIT: '沒有一致結論', INVALID: '格式不合格，沒有結論', DATA_MISSING: '資料缺漏', TIMEOUT: '逾時，沒有結論', NO_RESULT: '沒有結果' };
 const PREM_TEXT: Record<string, string> = { HOLDS: '成立', BROKEN: '不成立', INSUFFICIENT: '證據不足' };
 const COND_STATE: Record<string, string> = { ACTIVE: '監測中', REVIEW_ONLY: '只在定期審查時檢查', MANUAL: '只記錄', MET: '已成立' };
-const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查' };
+const ACTION_TEXT: Record<CondAction, string> = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '加碼：補到標準比重', RAISE: '加碼：提高到標準的 125%' };
+const isAdd = (a: CondAction | null) => a === 'FILL' || a === 'RAISE';
 /** 全形空白（討論包裡日期與內容之間的分隔，照 §1.7 的範例）。 */
 const SP = '　';
 const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '—');
@@ -312,12 +313,15 @@ function premiseSection(file: ThesisFile): string[] {
 
 function conditionSection(file: ThesisFile): string[] {
   const isMine = (c: ThesisFile['conditions'][number]) => !!c.acceptedAt || c.origin === 'USER';
-  const owned = file.conditions.filter((c) => isMine(c) && c.status in COND_STATE && c.status !== 'MET');
+  // 加碼條件（T84，allocation_redesign §4.2）另外列：收尾區塊只寫出場條件，加碼條件在編輯論點頁自己改（貼回只換出場條件）
+  const all = file.conditions.filter((c) => isMine(c) && c.status in COND_STATE && c.status !== 'MET');
+  const owned = all.filter((c) => !isAdd(c.action));
+  const adds = all.filter((c) => isAdd(c.action));
   const met = file.conditions.filter((c) => isMine(c) && c.status === 'MET');
   // T71（confirm_audit_design §3）：AI 建議的條件寫入就監測（不是我定的，成立時只會再開一次審查）；舊資料的建議中照舊列
   const watch = file.conditions.filter((c) => !isMine(c) && c.status in COND_STATE && c.status !== 'MET');
   const proposed = file.conditions.filter((c) => c.status === 'PROPOSED');
-  if (!owned.length && !met.length && !watch.length && !proposed.length) return ['還沒有'];
+  if (!owned.length && !adds.length && !met.length && !watch.length && !proposed.length) return ['還沒有'];
   const L: string[] = [];
   if (owned.length) {
     // 不帶編號（T42）：收尾區塊寫要的全部出場條件；哪一條和舊的相同、取代哪一條，由 stock bot 改寫的 AI 對照
@@ -326,6 +330,10 @@ function conditionSection(file: ThesisFile): string[] {
       const act = c.action ? ACTION_TEXT[c.action] : '重新審查';
       L.push(`- ${c.text} → ${act}（${md(c.acceptedAt ?? c.createdAt)} 定；${COND_STATE[c.status]}）`);
     });
+  }
+  if (adds.length) {
+    L.push('加碼條件（成立時買進，只進月報；我在 stock bot 的編輯論點頁自己改，不要寫進收尾區塊的出場條件）：');
+    adds.forEach((c) => L.push(`- ${c.text} → ${ACTION_TEXT[c.action!]}（${md(c.acceptedAt ?? c.createdAt)} 定；${COND_STATE[c.status]}）`));
   }
   if (met.length) {
     L.push('已成立（一次性，不再監測；要再監測就寫成新的一條）：');
@@ -615,7 +623,8 @@ export function planExits(exits: { text: string; action: CondAction }[], live: L
   const actionChanged: ExitPlan['actionChanged'] = [];
   const sameByText: Record<number, number> = {};
   exits.forEach((x, index) => {
-    const hit = live.find((c) => !used.has(c.id) && premiseKey(c.text) === premiseKey(x.text));
+    // 出場條件和加碼條件（T84）字一樣也不算同一條：只改動作互換要重新送改寫，讓你在對照上看到「成立時：買進」
+    const hit = live.find((c) => !used.has(c.id) && premiseKey(c.text) === premiseKey(x.text) && isAdd(c.action ?? null) === isAdd(x.action));
     if (!hit) return;
     used.add(hit.id);
     sameByText[index] = hit.id;

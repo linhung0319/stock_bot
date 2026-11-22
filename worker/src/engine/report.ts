@@ -13,12 +13,14 @@ import {
   syncRunIds,
   totalValue,
   type Account,
+  type AddNotice,
   type Choice,
   type CondNotice,
   type CoreOwe,
   type CrashReviewInfo,
   type DropStatus,
   dropReviewOpen,
+  type Effect,
   type Item,
   type MarketView,
   type MonthlyContext,
@@ -33,7 +35,7 @@ import {
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
 import { drawdownFromHigh, excessVol } from './indicators';
 import { composeWithCore, coreBandLines, crashCoreLines, mergeByTicker, planToLines, tenths, type Composed, type CoreBand, type CoreContext, type OrderLine } from './orders';
-import { buyCheck } from './buy';
+import { buyCheck, raiseGapWhy } from './buy';
 import { DROP_LADDER, SLOW, dropLadder, halveShares, slowDayInput, stepSlowRule, stepWatch } from './slowRule';
 import { cellKey, coreCfg, setApplied, type OwnAction, type OwnState } from './types';
 
@@ -497,7 +499,7 @@ function setThesisDrop(acct: Account, view: MarketView, it: Item, since: string)
   const ticker = it.ticker;
   const meta = ticker ? acct.own[ticker] : undefined;
   if (!ticker || !meta) return false;
-  const sig = () => JSON.stringify([it.choices, it.aiLine, it.runIds, it.drop, it.brk, it.why, it.choice, it.reasonRequired]);
+  const sig = () => JSON.stringify([it.choices, it.aiLine, it.runIds, it.drop, it.brk, it.why, it.choice, it.reasonRequired, it.dipAdd]);
   const before = sig();
   const wasBroken = it.drop === 'BROKEN';
   const dr = meta.dropReview ?? null;
@@ -522,6 +524,7 @@ function setThesisDrop(acct: Account, view: MarketView, it: Item, since: string)
     set('drop', 'BROKEN');
     set('brk', { type: 'B', premiseId: broken.premiseId, withRule: true });
     set('reasonRequired', true);
+    delete it.dipAdd;
     // 預設減半：剛變成前提不成立、或原本選的選項已經不在了，就回到預設
     if (!wasBroken || !it.choices.some((c) => c.id === it.choice)) it.choice = 'RULE';
   } else {
@@ -544,16 +547,76 @@ function setThesisDrop(acct: Account, view: MarketView, it: Item, since: string)
       line = dr.failed ? 'AI 論點檢查沒有跑完，不動；之後財報後的審查與再跌一級時仍會檢查' : 'AI 論點檢查還沒有結論，先不動；會再檢查';
       drop = 'NONE';
     }
+    // 下跌加碼（allocation_redesign §4.4，T84）：前提都沒有被判不成立、而且更嚴的那幾項也過了 → 多一個加碼的選項（預設仍是不動）
+    // dip：審查面的結果（T84 之後的審查才有；沒有的不算，也不在持股頁寫原因）
+    const offer = dr?.status === 'CLEAR' && dr.thesis && dr.dip ? dipOffer(acct, view, ticker, it.thesisDrop?.level ?? 0, it.key) : null;
+    if (dr?.status === 'CLEAR') dr.dipOffer = offer ? { ok: offer.ok, why: offer.why, ...(offer.ok ? { mode: offer.mode, shares: offer.shares } : {}) } : null;
+    if (offer?.ok && offer.mode && offer.shares) {
+      const n = offer.shares;
+      const effects: Effect[] = [{ type: 'DIP_ADD', ticker, episode: offer.episode }, offer.mode === 'RAISE' ? { type: 'APPLY_TIER', ticker, tier: 'RAISE' } : { type: 'BUILD_END', ticker, keep: false }];
+      it.choices.push({ id: 'AI', label: offer.mode === 'RAISE' ? `加碼：提高到標準的 125%，買 ${n} 股` : `補滿到標準比重，買 ${n} 股`, ...(offer.mode === 'RAISE' ? { tier: 'RAISE' as Tier } : {}), lines: [{ ticker, bucket: 'own', shares: n, reason: '下跌加碼' }], effects });
+      it.dipAdd = { mode: offer.mode, shares: n, note: offer.cut ? `${DIP_ADD_NOTE}（${offer.cut}）` : DIP_ADD_NOTE };
+      // 一次下跌只提一次：記下這一次下跌在哪一級提過（同一級的這一項重算時照樣給）
+      if (meta.dipAdd?.episode !== offer.episode) meta.dipAdd = { episode: offer.episode, level: it.thesisDrop?.level ?? 0, offered: view.date };
+    } else delete it.dipAdd;
     set('aiLine', line);
     set('runIds', drop && drRun.length ? drRun : undefined);
     set('drop', drop);
     set('brk', undefined);
     set('reasonRequired', undefined);
-    it.choice = 'SKIP';
+    // 預設不動；你已經選了加碼、而且這個選項還在（重算股數時）就留著
+    it.choice = it.choice === 'AI' && it.choices.some((c) => c.id === 'AI') ? 'AI' : 'SKIP';
   }
   it.ruleChoice = 'RULE';
   it.why = THESIS_DROP_WHY;
   return before !== sig();
+}
+
+/** 下跌加碼選項說明固定的那一句（allocation_redesign §4.4）。 */
+export const DIP_ADD_NOTE = 'AI 檢查的是論點有沒有壞，不是會不會繼續跌。下跌時加碼，跌更深時虧得更多；這一次下跌只會提這一次。';
+
+/** 下跌加碼的選項算出來的樣子（dipOffer）。episode：這一次下跌（審查後持有從哪一天開始）；cut：被上限砍掉一部分時的說明。 */
+export interface DipOffer {
+  ok: boolean;
+  why: string;
+  episode: string;
+  mode?: 'RAISE' | 'FILL';
+  shares?: number;
+  cut?: string | null;
+}
+
+/**
+ * 下跌加碼（allocation_redesign §4.4，D5，T84）：這檔這一級的跌幅審查通知上能不能多一個加碼的選項。限制寫死在程式，AI 不能放寬：
+ *   1. 審查面（dropReview.dip，dropDecision 算的）：前提都沒有被判不成立，而且 3 票對每一條可驗證的前提都判成立、引用有申報或財報，
+ *      程式核對跌幅拆解（個股自身不超過整段一半）
+ *   2. 只有有論點的股票（跌幅審查本身就只有它們）；減半中沒有
+ *   3. 一次下跌只提一次：這一次下跌（watchSince）已經在別的一級提過 → 不給（不論上次有沒有選）
+ *   4. 標準、審查後持有 → 提高到標準的 125%，和 125% 共用 12 個月的間隔；先買一半 → 補滿到標準比重，不看間隔（補滿不算提高）
+ *   5. 買進前的程式檢查（§4.0；這一項本身不算還沒結案的跌幅審查）；超過上限的砍掉，砍到 0 不給
+ * level：這一項審的是第幾級；itemKey：這一項的 key。純函式（不改帳戶）。
+ */
+export function dipOffer(acct: Account, view: MarketView, ticker: string, level: number, itemKey?: string): DipOffer {
+  const meta = acct.own[ticker];
+  const rule = acct.rule.own[ticker];
+  const dr = meta?.dropReview;
+  const episode = meta?.watchSince ?? dr?.session ?? view.date;
+  const no = (why: string): DipOffer => ({ ok: false, why, episode });
+  if (!meta || !rule || !dr?.thesis) return no('不是有論點的股票的跌幅審查');
+  if (dr.status !== 'CLEAR') return no('跌幅審查的結果不是「前提都沒有被判不成立」');
+  if (!dr.dip?.ok) return no(dr.dip?.why ?? '審查沒有證實每一條前提');
+  if (defaultOnly(meta)) return no('這檔只有系統預設前提');
+  if (meta.slow.state === 'HALF' || rule.applied === 'HALF') return no('這檔在減半中');
+  if (meta.dipAdd && meta.dipAdd.episode === episode && meta.dipAdd.level !== level) return no(`這一次下跌已經在比高點低 ${ladderPct(meta.dipAdd.level)} 那一級提過加碼（一次下跌只提一次）`);
+  const mode: 'RAISE' | 'FILL' = meta.build && rule.applied === 'BUILD' ? 'FILL' : 'RAISE';
+  if (mode === 'RAISE') {
+    const gap = raiseGapWhy(meta, view.date);
+    if (gap) return no(`${gap}（和提高到 125% 共用間隔）`);
+  }
+  const want = Math.floor((rule.stdWeight * (mode === 'RAISE' ? 1.25 : 1) * totalValue(acct, view)) / priceOf(view, ticker) + 1e-9) - (acct.lots.own[ticker] ?? 0);
+  if (want <= 0) return no(mode === 'RAISE' ? '現在的持股已經到標準的 125%' : '現在的持股已經到標準比重');
+  const v = buyCheck(acct, view, ticker, view.date, want, itemKey);
+  if (!v.ok) return no(v.why ?? '買進前的程式檢查沒過');
+  return { ok: true, why: dr.dip.why, episode, mode, shares: v.shares, cut: v.cut ? v.why : null };
 }
 
 /** 跌幅審查的項目（有論點的股票）。dd：觸發那天距 52 週高點的跌幅；note 接在標題後面（併入月報的那一句）。 */
@@ -593,7 +656,8 @@ function openThesisDrop(acct: Account, ticker: string): { n: Notif; it: Item } |
  * 這時規則的狀態還是審查後持有（照做了才變），但不能再為同一件事另外發一張減半的單。
  */
 export function decidedThesisDrop(acct: Pick<Account, 'notifs'>, ticker: string): Notif | null {
-  return acct.notifs.find((n) => n.status === 'RESPONDED' && n.items.some((i) => i.ticker === ticker && !i.cancelled && i.f === 'F7' && !!i.thesisDrop && i.choice !== 'SKIP')) ?? null;
+  // 選了下跌加碼（前提都沒有被判不成立時的 AI 選項，T84）不是要賣
+  return acct.notifs.find((n) => n.status === 'RESPONDED' && n.items.some((i) => i.ticker === ticker && !i.cancelled && i.f === 'F7' && !!i.thesisDrop && (i.choice === 'RULE' || (i.choice === 'AI' && i.drop === 'BROKEN')))) ?? null;
 }
 
 /** 還沒回覆的跌幅審查項目取消（回到標準了、又跌一級重新審查、併入月報、你自己賣了一半）。整則都取消（月報以外）→ 通知跟著結束。回傳改了哪幾則。 */
@@ -622,6 +686,7 @@ export function cancelThesisDrop(acct: Account, ticker: string, note: string, st
 /** 這檔離開審查後持有（回到標準、減半、你自己賣了一半）：審到第幾級、這一次的審查結果、等月報的減半都清掉。 */
 export function leaveWatch(meta: OwnMeta): void {
   delete meta.watchLevel;
+  delete meta.watchSince;
   delete meta.dropReview;
   if (meta.pending?.action === 'REDUCE') meta.pending = null;
 }
@@ -689,7 +754,8 @@ export function thesisDropShadow(view: MarketView, n: Notif, it: Item, note?: st
   const rule = sum(it.choices.find((c) => c.id === 'RULE'));
   const aiC = it.choices.find((c) => c.id === 'AI');
   const ai = it.drop === 'BROKEN' ? (aiC ? sum(aiC) : rule) : it.drop === 'CLEAR' ? 0 : null;
-  const reason = note ?? it.reason;
+  // 下跌加碼（T84）：AI 的那條線仍是審查的結論（不動，0 股）；實際買了的那一筆備註寫明
+  const reason = note ?? it.reason ?? (it.dipAdd && it.choice === 'AI' ? `下跌加碼：${it.dipAdd.mode === 'RAISE' ? '提高到標準的 125%' : '補滿到標準比重'}` : undefined);
   return { date: view.date, f: it.f, ticker: tk, title: it.title, rule, ai, actual: sum(it.choices.find((c) => c.id === it.choice)), price: view.close[tk] ? priceOf(view, tk) : 0, choice: it.choice, notif: n.id, ...(it.runIds?.length ? { runIds: [...it.runIds] } : {}), ...(reason ? { note: reason } : {}) };
 }
 
@@ -929,6 +995,8 @@ export function dailyCheck(acct0: Account, view: MarketView): DailyResult {
     if (step.signal === 'REDUCE' && !defaultOnly(meta) && meta.pending?.action !== 'READD') {
       meta.slow = { state: 'WATCH', aboveRun: step.next.aboveRun, sinceSwitch: 0 };
       meta.watchLevel = Math.max(0, dropLadder(day.drawdown));
+      // 這一次下跌從今天開始（下跌加碼的「一次下跌一次」，§4.4）
+      meta.watchSince = view.date;
       meta.reduceDd = Number.isFinite(day.drawdown) ? day.drawdown : null;
       meta.pending = null;
       reviews.push(tk);
@@ -1159,6 +1227,23 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     }
     delete m.condMonthly;
   }
+  // F28：你定的加碼條件成立（allocation_redesign §4.2，T84）：買進前的程式檢查過了才列，預設照做；沒過的寫在持股頁、不留到下個月（條件是一次性的）。
+  // 同一檔同一個月只列一項（提高到 125% 優先）；這一項會讓先買一半結束的（BUILD_END），同一份月報不再列補滿（F27）
+  const addBuild = new Set<string>();
+  for (const [tk, m] of Object.entries(acct.own)) {
+    const queued = [...(m.addMonthly ?? [])].sort((a, b) => (a.action === b.action ? 0 : a.action === 'RAISE' ? -1 : 1));
+    delete m.addMonthly;
+    for (const c of queued) {
+      if (items.some((i) => i.f === 'F28' && i.ticker === tk)) {
+        m.buyBlocked = { date: view.date, what: '加碼', text: '同一份月報已經列了這檔的另一條加碼條件', line: `你定的加碼條件「${c.text}」成立；同一份月報已經列了這檔的另一條加碼條件，這一條不另外列` };
+        continue;
+      }
+      const it = addItem(acct, view, tk, c);
+      if (!it) continue;
+      items.push(it);
+      if (it.choices[0].effects?.some((e) => e.type === 'BUILD_END')) addBuild.add(tk);
+    }
+  }
   // F24／F23：AI 的月報建議（規則沒有動作的自選股）
   for (const [tk, m] of Object.entries(acct.own)) {
     // 這檔有慢規則項目：AI 的看法已經列在那一項上（§3.4），不另列一項；往下的建議算給過了
@@ -1175,6 +1260,8 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
     let sh = tierShares(acct, view, tk, tier, state);
     m.aiTier.suggest = false;
     if (!sh) continue;
+    // 同一份月報已經列了你定的加碼條件（F28）：AI 的提高到 125% 不另外列（兩條路共用 12 個月的間隔，§4.3）
+    if (tier === 'RAISE' && items.some((i) => i.f === 'F28' && i.ticker === tk)) continue;
     // 提高到 125%：買進前的程式檢查（allocation_redesign §4.0、§4.3）——沒過不列（持股頁寫原因），超過上限的部分砍掉
     let cutNote: string | null = null;
     if (tier === 'RAISE') {
@@ -1212,6 +1299,7 @@ export function monthlyReport(acct0: Account, view: MarketView, input: MonthlyCo
   }
   // F27：先買一半的補滿（allocation_redesign §4.1）：開檔後第一份財報的審查過關、買進前的程式檢查也過了 → 列一項，預設照做
   for (const tk of Object.keys(acct.own)) {
+    if (addBuild.has(tk)) continue;
     const it = fillItem(acct, view, tk);
     if (it) items.push(it);
   }
@@ -1838,7 +1926,9 @@ export function fillItem(acct: Account, view: MarketView, ticker: string): Item 
     kind: 'OWN_FILL',
     ticker,
     title: `${ticker}：先買的一半已確認（${b.ok.text}）→ 補滿到標準比重，買 ${v.shares} 股`,
-    why: `你開檔時選了先買一半、確認後再補滿；確認的條件是開檔之後的第一份財報過關。這是你事先定的，預設照做；不做的話標準比重改成現在的比重，之後不再提。`,
+    why: b.ok.cond
+      ? '你開檔時選了先買一半、確認後再補滿；你另外定的加碼條件成立，和開檔之後第一份財報過關一樣算確認（兩者先到的算）。這是你事先定的，預設照做；不做的話標準比重改成現在的比重，之後不再提。'
+      : '你開檔時選了先買一半、確認後再補滿；確認的條件是開檔之後的第一份財報過關。這是你事先定的，預設照做；不做的話標準比重改成現在的比重，之後不再提。',
     choices: [
       { id: 'RULE', label: `照做：補滿，買 ${v.shares} 股`, lines: [{ ticker, bucket: 'own', shares: v.shares, reason: '自選訊號' }], effects: [{ type: 'BUILD_END', ticker, keep: false }] },
       { id: 'SKIP', label: '這次不做（維持現在的大小）', lines: [], effects: [{ type: 'BUILD_END', ticker, keep: true }] },
@@ -1847,6 +1937,53 @@ export function fillItem(acct: Account, view: MarketView, ticker: string): Item 
     ruleChoice: 'RULE',
     ...(v.cut && v.why ? { note: v.why } : {}),
     ...(b.ok.runId ? { runIds: [b.ok.runId] } : {}),
+  });
+}
+
+/**
+ * 月報的你定的加碼條件（F28，allocation_redesign §4.2，T84）：成立時的動作是補到標準比重（FILL）或提高到標準的 125%（RAISE）。預設照做、不做不用理由。
+ *   減半中 → 不列，持股頁寫「條件成立；這檔在減半中，加回看 200 日線」（減半是價格底線或論點出問題造成的，加回只看 §3.4）
+ *   RAISE：和 125% 共用 12 個月的間隔（沒滿 → 不列）；先買一半的股票直接提高到 125%（照做時先離開先買一半、再提高：你定的條件就是確認）
+ *   FILL：補到標準比重（先買一半的在條件成立時就當成確認、走 F27；這裡還是先買一半的，照做時一樣離開先買一半）
+ *   不用買（已經到那個比例）→ 不列；買進前的程式檢查（§4.0）沒過 → 不列；兩種都寫持股頁（OwnMeta.buyBlocked），不留到下個月
+ * 直接改傳進來的帳戶（buyBlocked）。
+ */
+export function addItem(acct: Account, view: MarketView, ticker: string, c: AddNotice): Item | null {
+  const meta = acct.own[ticker];
+  const rule = acct.rule.own[ticker];
+  if (!meta || !rule) return null;
+  const goal = c.action === 'RAISE' ? '提高到標準的 125%' : '補到標準比重';
+  const block = (text: string, line?: string): null => {
+    meta.buyBlocked = { date: view.date, what: '加碼', text, ...(line ? { line } : {}) };
+    return null;
+  };
+  if (meta.slow.state === 'HALF' || rule.applied === 'HALF') return block('這檔在減半中', `你定的加碼條件「${c.text}」成立；這檔在減半中，加回看 200 日線`);
+  if (c.action === 'RAISE') {
+    const gap = raiseGapWhy(meta, view.date);
+    if (gap) return block(`${gap}（和 AI 提的 125% 共用間隔）`);
+  }
+  const build = !!meta.build && rule.applied === 'BUILD';
+  const level = c.action === 'RAISE' ? '標準的 125%' : '標準比重';
+  const want = Math.floor((rule.stdWeight * (c.action === 'RAISE' ? 1.25 : 1) * totalValue(acct, view)) / priceOf(view, ticker) + 1e-9) - (acct.lots.own[ticker] ?? 0);
+  if (want <= 0) return block(`現在的持股已經到${level}`, `你定的加碼條件「${c.text}」成立；現在的持股已經到${level}，不用買`);
+  const v = buyCheck(acct, view, ticker, view.date, want);
+  if (!v.ok) return block(v.why ?? '買進前的程式檢查沒過');
+  if (meta.buyBlocked?.what === '加碼') delete meta.buyBlocked;
+  const effects: Effect[] = [...(build ? [{ type: 'BUILD_END', ticker, keep: false } as Effect] : []), ...(c.action === 'RAISE' ? [{ type: 'APPLY_TIER', ticker, tier: 'RAISE' } as Effect] : [])];
+  return makeItem({
+    f: 'F28',
+    kind: 'OWN_ADD',
+    ticker,
+    title: `${ticker}：你在 ${c.setAt} 定的加碼條件「${c.text}」成立 → ${goal}，買 ${v.shares} 股`,
+    why: `${c.why}。這是你事先定的，預設照做；不做不用寫理由（不買沒有風險要記），這條條件已經用掉，要再用就重新定一條。${c.action === 'RAISE' ? '提高之後標準比重變成原本的 1.25 倍，和 AI 提的 125% 共用 12 個月的間隔。' : ''}${build ? '這檔還在先買一半：照做就當成確認，一起離開先買一半。' : ''}`,
+    choices: [
+      { id: 'DO', label: `照做：${goal}，買 ${v.shares} 股`, ...(c.action === 'RAISE' ? { tier: 'RAISE' as Tier } : {}), lines: [{ ticker, bucket: 'own', shares: v.shares, reason: '你定的加碼條件' }], ...(effects.length ? { effects } : {}) },
+      { id: 'SKIP', label: '這次不做', lines: [] },
+    ],
+    choice: 'DO',
+    ruleChoice: 'DO',
+    ...(v.cut && v.why ? { note: v.why } : {}),
+    ...(c.runIds?.length ? { runIds: [...c.runIds] } : {}),
   });
 }
 

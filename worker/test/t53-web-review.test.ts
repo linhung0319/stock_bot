@@ -658,7 +658,7 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
       });
       expect(save.body.rewrite.status).toBe('SENT');
       const run = (await getRun(c.db, save.body.rewrite.runId))!;
-      expect(run.pack.prompt_version).toBe('own_check_v6');
+      expect(run.pack.prompt_version).toBe('own_check_v7'); // T84：v7 多加碼條件
       const s = run.pack.facts.filter((f) => /^S\d+$/.test(f.id));
       // T68（confirm_audit_design §1.3、§1.7）：S 是種子（路徑限制只留有理由的）；這檔的 domains 不再列
       expect(s.map((f) => f.value)).toEqual([
@@ -918,7 +918,7 @@ describe('T53：prompt', () => {
   });
 
   it('own_check_v5：可以指名清單內的網頁來源；v4 開頭標「不再使用」', () => {
-    expect(OWN_CHECK_PROMPT).toBe('own_check_v6');
+    expect(OWN_CHECK_PROMPT).toBe('own_check_v7'); // T84：v7 多加碼條件
     const v5 = read('own_check_v5.md');
     expect(v5).toContain('`["web:trendforce.com"]`');
     expect(v5).toContain('**只能指名這裡列出的網域**');

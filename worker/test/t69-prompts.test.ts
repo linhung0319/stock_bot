@@ -47,7 +47,7 @@ const DOC_PROMPTS: Record<string, string> = { [OWN_REVIEW]: OWN_REVIEW_PROMPT, [
 
 describe('T69 prompt 升版（§1.4）', () => {
   it('四個功能的 prompt_version 是新版、檔案存在且指到 source_rating.md；舊檔留著、開頭寫「不再使用（2026-11-21）」；草稿的證據包帶新版', () => {
-    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT, OWN_DRAFT_PROMPT, MARKET_BRIEF_PROMPT, OWN_CHECK_PROMPT]).toEqual(['own_review_v6', 'own_drop_v6', 'own_draft_v3', 'market_brief_v2', 'own_check_v6']);
+    expect([OWN_REVIEW_PROMPT, OWN_DROP_PROMPT, OWN_DRAFT_PROMPT, MARKET_BRIEF_PROMPT, OWN_CHECK_PROMPT]).toEqual(['own_review_v6', 'own_drop_v6', 'own_draft_v4', 'market_brief_v2', 'own_check_v7']); // T84：草稿 v4、改寫 v7（舊版照樣檢查下面那幾條）
     const old: Record<string, string> = { own_review_v5: 'own_review_v4', own_drop_v5: 'own_drop_v4', own_draft_v3: 'own_draft_v2', market_brief_v2: 'market_brief_v1', own_check_v6: 'own_check_v5' };
     for (const [cur, prev] of Object.entries(old)) {
       const t = read(`${cur}.md`);
@@ -62,7 +62,7 @@ describe('T69 prompt 升版（§1.4）', () => {
     expect(Object.keys(DOC_PROMPTS).sort()).toEqual([...DOC_FNS].sort());
     for (const [fn, p] of Object.entries(DOC_PROMPTS)) expect(read(`${p}.md`), fn).toContain(`照 \`${RATING_REF}\` 開來源評級`);
     const draft = ownDraftPack({ runId: 'd', asOf: '2026-11-19', ticker: 'NVDA', trigger: 'MANUAL', held: true, premises: [], facts: [], docs: [DOC_Q], dataQuality: {}, thesisVersion: 0, fileId: null, broken: null, webDomains: [], now: T0 }).pack;
-    expect(draft.prompt_version).toBe('own_draft_v3');
+    expect(draft.prompt_version).toBe('own_draft_v4');
   });
 
   it('評級那一步只在會取文件的四個功能：其他現行的 prompt 與 run.md 都沒有提到 source_rating（run.md 不改、不用重貼）', () => {
@@ -71,7 +71,7 @@ describe('T69 prompt 升版（§1.4）', () => {
     for (const f of four) expect(current, f).toContain(f);
     const others = current.filter((f) => !four.includes(f) && f !== RATING);
     expect(others).toContain('run.md');
-    expect(others).toContain('own_check_v6.md');
+    expect(others).toContain('own_check_v7.md');
     expect(others).toContain('event_scan_v2.md');
     for (const f of others) expect(read(f), f).not.toContain('source_rating');
     expect(read('run.md')).not.toContain('來源評級');
@@ -426,7 +426,7 @@ describe('T69 own_check_v6（§1.6）', () => {
 
   it('不在種子（S）的網域照樣可以指名、開始監測；排除列表的照擋（只記錄）；題目與 prompt 不再寫「只能指名 S 列出的網域」', () => {
     const a = check(['web:memorywire.example']);
-    expect(a.pack.prompt_version).toBe('own_check_v6');
+    expect(a.pack.prompt_version).toBe('own_check_v7'); // T84
     expect(a.cond).toMatchObject({ manual: false, web: ['memorywire.example'], then: '審查時用 memorywire.example 的網頁檢查' });
     const b = check(['web:www.seekingalpha.com']);
     expect(b.cond.manual).toBe(true);

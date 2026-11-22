@@ -25,6 +25,18 @@ const ACTIONS = [
   ['REVIEW', '重新審查'],
 ];
 const LIMITS = { thesis: 600, premises: 5, premise: 200, exits: 6, exit: 300 };
+/**
+ * 加碼條件成立時的動作（T84，allocation_redesign §4.2）：和出場條件同一張表、同一種格式；出場加加碼合計最多 8 條（你定的條件的上限）。
+ * 寫在自己那一塊（貼回討論的結果只換出場條件，不動這一塊）。
+ */
+const ADD_ACTIONS = [
+  ['RAISE', '提高到標準的 125%'],
+  ['FILL', '補到標準比重'],
+];
+const MAX_OWNED = 8;
+const isAddAct = (a) => a === 'FILL' || a === 'RAISE';
+/** 加碼條件那一塊的說明（§4.2：成立時只進月報、預設照做；不收價格條件）。 */
+export const ADD_NOTE = '論點被證實、值得多買的事（例如：營業利益率連兩季高於 35%）。成立時在下一份月報列一項買進，預設照做；不收價格條件（下跌時加碼由跌幅審查另外處理）。';
 
 /**
  * 採用草稿之後要在持股頁寫的那幾行（T70，§2.1「存完回到持股頁，畫面寫『已採用 M/D 的草稿；要改字在這一頁改』」）：
@@ -175,8 +187,10 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   thesisIn.value = own.thesis?.text ?? '';
   const premList = h('div');
   const exitList = h('div');
+  const addList = h('div');
   const prems = [];
   const exits = [];
+  const adds = [];
   const noEnter = (el) => el.addEventListener('keydown', (ev) => ev.key === 'Enter' && ev.preventDefault());
   /**
    * 右邊的一條前提。每一條都有「怎麼驗證」那一塊（T60：用什麼查、來源、多久有新的一份、怎樣算證實、怎樣算不成立最多 3 句；
@@ -211,6 +225,10 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
       toast(`出場條件最多 ${LIMITS.exits} 條：先在「新的」拿掉一條`);
       return null;
     }
+    if (exits.length + adds.length >= MAX_OWNED) {
+      toast(`出場條件加加碼條件最多 ${MAX_OWNED} 條：先拿掉一條`);
+      return null;
+    }
     // 多行（T56：草稿的出場條件常常比一行長，單行輸入框會把後半截掉）；Enter 不換行
     const input = h('textarea', { class: 'prem-in', rows: 1, maxlength: LIMITS.exit, value: x.text, placeholder: '查得到的事，例如：毛利率連兩季低於 70%', 'aria-label': '出場條件' });
     noEnter(input);
@@ -227,6 +245,29 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     r.el = el;
     exits.push(r);
     exitList.append(el);
+    return r;
+  };
+  /** 右邊的一條加碼條件（T84）：成立時的動作只有「提高到標準的 125%」「補到標準比重」。 */
+  const addAdd = (x = { text: '', action: 'RAISE' }) => {
+    if (exits.length + adds.length >= MAX_OWNED) {
+      toast(`出場條件加加碼條件最多 ${MAX_OWNED} 條：先拿掉一條`);
+      return null;
+    }
+    const input = h('textarea', { class: 'prem-in', rows: 1, maxlength: LIMITS.exit, value: x.text, placeholder: '論點被證實的事，例如：營業利益率連兩季高於 35%', 'aria-label': '加碼條件' });
+    noEnter(input);
+    const sel = h('select', { style: 'width:auto', 'aria-label': '成立時買進' }, ADD_ACTIONS.map(([v, t]) => h('option', { value: v, selected: v === x.action }, t)));
+    const r = { input, sel };
+    input.addEventListener('input', changed);
+    sel.addEventListener('change', changed);
+    const el = h(
+      'div',
+      { class: 'exit-row add-row' },
+      h('div', { style: rowStyle.replace('margin-top:8px', 'margin-top:0') }, input, removeBtn(() => { adds.splice(adds.indexOf(r), 1); el.remove(); changed(); })),
+      h('div', { class: 'btn-row cond-ctl' }, h('span', { class: 'small' }, '成立時買進'), sel),
+    );
+    r.el = el;
+    adds.push(r);
+    addList.append(el);
     return r;
   };
   const fill = (p) => {
@@ -252,8 +293,11 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
   // 現在的前提連同「怎麼驗證」（T56 的怎樣算不成立；T60 的怎樣算證實、來源、信念）預填進右邊，可以改
   if (own.kind === 'THESIS') for (const p of own.premises) addPrem({ id: p.id, text: baseText(p), fields: premiseFieldsOf(p), open: false });
   if (!prems.length) addPrem();
-  // 出場條件預填目前監測中的（T42）：右邊就是存檔後要的完整清單，沒動就是沒改動
-  for (const c of live) addExit({ text: c.text, action: c.action ?? 'REVIEW' });
+  // 出場條件預填目前監測中的（T42）：右邊就是存檔後要的完整清單，沒動就是沒改動；加碼條件（T84）放自己那一塊
+  for (const c of live) {
+    if (isAddAct(c.action)) addAdd({ text: c.text, action: c.action });
+    else addExit({ text: c.text, action: c.action ?? 'REVIEW' });
+  }
   if (!exits.length) addExit();
 
   // ---- 貼上
@@ -291,7 +335,8 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     // 每一條都送「怎麼驗證」（T60）：右邊預填了現在的值，空的就是拿掉
     // 從審查提到的風險帶來的那一條帶 risk（T63）：存檔後那一件不再列在「要看的事」
     premises: prems.map((r) => ({ id: r.id, text: r.input.value.trim(), ...r.getFields(), ...(r.risk ? { risk: r.risk } : {}) })).filter((p) => p.text),
-    exitConditions: exits.map((r) => ({ text: r.input.value.trim(), action: r.sel.value })).filter((x) => x.text),
+    // 加碼條件（T84）接在出場條件後面一起送（同一張表、整組取代）
+    exitConditions: [...exits, ...adds].map((r) => ({ text: r.input.value.trim(), action: r.sel.value })).filter((x) => x.text),
     source,
     replyTo: reply && reply.checked ? replyNotif : null,
     ...(srcEd.changed() ? { webSources: srcEd.value() } : {}),
@@ -318,14 +363,14 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
           h('p', { class: 'faint', style: 'margin-top:4px' }, `沿用編號：之前的檢查結果接著算；這條前提如果在靜默期（你不同意過 AI 的判斷），靜默期結束，因為你不同意的是原本的字。字改了也算論點變動，${held ? reviewHeldText(held) : '隔天會開一次審查。'}意思已經不同的，按「當成新的一條」。`),
         )
       : null;
-  const actName = (v) => ACTIONS.find(([a]) => a === v)?.[1] ?? '重新審查';
+  const actName = (v) => (isAddAct(v) ? `買進（${ADD_ACTIONS.find(([a]) => a === v)?.[1]}）` : (ACTIONS.find(([a]) => a === v)?.[1] ?? '重新審查'));
   /**
    * 出場條件（T42 整組取代）：沒改動 → 一句「沒有改動」（只改動作的列出來，存檔直接改）；
    * 有改動 → 一句「存檔後送 AI 對照與改寫，回來後在持股頁確認；確認之前，現在的 N 條照舊監測」。
    */
   const exitPreview = (x) => {
     if (!x) return null;
-    const rows = exits.map((r) => r.input.value.trim()).filter(Boolean);
+    const rows = [...exits, ...adds].map((r) => r.input.value.trim()).filter(Boolean);
     if (!x.changed) {
       if (!x.live && !rows.length) return null;
       return [
@@ -582,6 +627,25 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
           ]);
         }),
       ),
+      // 加碼條件（T84，allocation_redesign §4.2）：成立時只在月報列一項買進，你決定；採用後和出場條件一起生效
+      items.adds.length
+        ? [
+            h('h5', { class: 'dr-h' }, `加碼條件（${items.adds.length} 條；成立時在月報列一項買進，預設照做）`),
+            h(
+              'ul',
+              { class: 'dr-list' },
+              items.adds.map((it) => {
+                const m = exitMonitorText(it);
+                return showRow([
+                  h('p', null, it.text),
+                  h('p', { class: 'small' }, h('span', { class: 'faint' }, '成立時：'), DRAFT_ACTION[it.action] ?? it.action, it.premiseIndex !== null && P.premises[it.premiseIndex] ? h('span', { class: 'faint' }, `；對應第 ${it.premiseIndex + 1} 條前提`) : null),
+                  h('p', { class: `small tone-${m.tone}` }, m.text),
+                  evList(it.evidence),
+                ]);
+              }),
+            ),
+          ]
+        : null,
       peerRows.length ? [h('h5', { class: 'dr-h' }, '同業（審查時 AI 可以另外讀的申報與新聞）'), h('ul', { class: 'dr-list' }, peerRows)] : null,
       P.not_checkable?.length ? [h('h5', { class: 'dr-h' }, 'stock bot 監測不了、要你自己留意的'), h('ul', { class: 'dr-plain' }, P.not_checkable.map((x) => h('li', { class: 'small' }, x)))] : null,
       P.report ? h('details', { class: 'more', style: 'margin-top:12px' }, h('summary', null, '主筆的說明'), h('p', { class: 'more-body small', style: 'white-space:pre-wrap' }, P.report)) : null,
@@ -717,10 +781,19 @@ export async function thesisEditPage(ctx, ticker, notifParam) {
     h(
       'div',
       { class: 'field', style: 'margin-bottom:0' },
-      h('span', null, `出場條件（最多 ${LIMITS.exits} 條）`),
+      h('span', null, `出場條件（最多 ${LIMITS.exits} 條；和加碼條件合計最多 ${MAX_OWNED} 條）`),
       h('small', null, live.length ? `這裡是存檔後你要的全部出場條件，已經填好現在監測中的 ${live.length} 條。沒改就不會送 AI；改了的話整組送 AI 對照，在持股頁確認後才換上新的。不會存成前提。` : '不會存成前提。存檔後送 AI 改寫成查得到的格式，你在持股頁確認才開始監測。'),
       exitList,
       h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addExit(); changed(); } }, '再加一條出場條件')),
+    ),
+    // 加碼條件（T84，allocation_redesign §4.2）：和出場條件同一套改寫與確認；改寫的對照寫「成立時：買進（…）」
+    h(
+      'div',
+      { class: 'field add-field', style: 'margin:14px 0 0' },
+      h('span', null, '加碼條件（可以不寫）'),
+      h('small', null, ADD_NOTE),
+      addList,
+      h('div', null, h('button', { class: 'linkbtn', type: 'button', onclick: () => { addAdd(); changed(); } }, adds.length ? '再加一條加碼條件' : '加一條加碼條件')),
     ),
     srcEd.el,
   );

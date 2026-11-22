@@ -18,7 +18,7 @@ export function hm(iso) {
 
 import { BELIEF_TEXT, VERIFY_TEXT, draftPremiseFields, verifyText } from './thesis-fields.js';
 
-export const ACTION_TEXT = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查' };
+export const ACTION_TEXT = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查', FILL: '買進（補到標準比重）', RAISE: '買進（提高到標準的 125%）' };
 export const ANSWER_TEXT = { YES: '會買', NO: '不會買', UNSURE: '說不準' };
 /** 前提查得到的來源（verify.by；T55 叫 checkable_by）→ 白話；NONE 是信念（T60）。 */
 export const CHECK_TEXT = VERIFY_TEXT;
@@ -42,6 +42,8 @@ export function draftItems(payload) {
       return { k, text: x.text, ...f, belief: f.verify?.by === 'NONE', keepId: x.keep_id ?? null, checkable: f.verify?.by ?? null, sourceHint: f.verify?.source ?? null, likeBroken: !!x.like_broken, evidence: x.evidence_ids ?? [] };
     }),
     exits: (p.exits ?? []).map((x, k) => ({ k, text: x.text, action: x.action, threshold: !!x.threshold, kind: x.kind ?? null, check: x.check ?? null, premiseIndex: x.premise_index ?? null, evidence: x.evidence_ids ?? [] })),
+    // 加碼條件（T84，own_draft_v4；舊草稿沒有）：k 接在出場條件後面（和採用時的編號一致）
+    adds: (p.adds ?? []).map((x, k) => ({ k: (p.exits ?? []).length + k, text: x.text, action: x.action, threshold: !!x.threshold, kind: x.kind ?? null, check: x.check ?? null, premiseIndex: x.premise_index ?? null, evidence: x.evidence_ids ?? [] })),
     peers: (p.sources?.peers ?? []).map((x, k) => ({ k, name: x.name, edgar: x.edgar ?? null, yahoo: x.yahoo ?? null })),
     domains: (p.sources?.domains ?? []).map((x, k) => ({ k, domain: x.domain, state: x.state, note: x.note, checkable: false })),
   };
@@ -102,7 +104,7 @@ export function draftNotices(draft) {
   return out;
 }
 
-const ACT = { EXIT: '出清', HALF: '減半', REVIEW: '重新審查' };
+const ACT = ACTION_TEXT;
 const STATUS_TEXT = { ACTIVE: '監測中', REVIEW_ONLY: '只在定期審查時檢查', MANUAL: '只記錄' };
 const peerText = (p) => `${p.name}（${[p.edgar && `EDGAR ${p.edgar}`, p.yahoo && `Yahoo ${p.yahoo}`].filter(Boolean).join('、')}）`;
 
@@ -131,7 +133,9 @@ export function adoptCompare(pv) {
     ...ep.add.map((x) => ({ tone: 'dim', text: `新增：${x.text}（成立時${ACT[x.action] ?? x.action}；採用後${STATUS_TEXT[x.status] ?? x.status}）` })),
     ...ep.rewrite.map((x) => ({ tone: 'warn', text: `送 AI 改寫、回來後在持股頁確認：${x.text}（${x.why}）` })),
   ];
-  if (ex.length) out.push({ h: '出場條件', rows: ex });
+  // 加碼條件（T84）和出場條件同一張表、一起整組取代：有加碼條件時標題寫兩種
+  const hasAdd = [...ep.add, ...ep.keep, ...ep.rewrite].some((x) => x.action === 'FILL' || x.action === 'RAISE');
+  if (ex.length) out.push({ h: hasAdd ? '出場條件與加碼條件' : '出場條件', rows: ex });
   const pp = dr.peerPlan ?? { save: [], skip: [], before: [] };
   const key = (p) => `${p.edgar ?? ''}|${p.yahoo ?? ''}`;
   const now = new Set(pp.save.map(key));

@@ -397,7 +397,7 @@ describe('T40 ③：出場條件的對照（own_thesis §1.8；T42 改成整組�
       const s = await c.api<{ rewrite: { status: string; runId: string } }>('POST', 'ops/own-thesis', { ...base, exitConditions: [{ text: '毛利率連兩季低於 55%', action: 'EXIT' }] });
       expect(s.body.rewrite.status).toBe('SENT');
       const run = (await getRun(c.db, s.body.rewrite.runId))!;
-      expect(run.pack.prompt_version).toBe('own_check_v6'); // T53：可以指名網頁來源（v5）
+      expect(run.pack.prompt_version).toBe('own_check_v7'); // T84：v7 多加碼條件； // T53：可以指名網頁來源（v5）
       expect(run.pack.question).toContain('supersedes');
       expect((run.pack.rule.detail as { condMap: Record<string, number> }).condMap).toEqual({ C1: old });
       expect(run.pack.facts.find((f) => f.id === 'C1')!.value).toBe('毛利率連兩季低於 58%');

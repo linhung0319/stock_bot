@@ -9,7 +9,7 @@
 import { DROP_CAUSE_TEXT, VERIFY_EVERY_DEFAULT, type Account, type DropStatus, type MarketView } from '../engine';
 import { keptByChoice, type CheckedSample, type EvidencePack, type Outcome, type PackDoc } from './check';
 import { attributionText, type Attribution } from './detect';
-import { brokenPremises } from './ownReview';
+import { brokenPremises, premisesConfirmed } from './ownReview';
 import { buildPack, ownPremises, ownRuleFacts, priceDoc, priceFacts } from './pack';
 
 export const OWN_DROP = 'OWN_DROP';
@@ -139,11 +139,31 @@ export interface DropDecision {
   /** 轉交硬事件法庭的代碼（和上面的結果無關）。 */
   escalate: string | null;
   why: string;
+  /**
+   * 下跌加碼的審查面（allocation_redesign §4.4，T84；只有 CLEAR 有）：3 票對每一條可驗證的前提都判成立、引用有申報或財報，
+   * 而且跌幅拆解的程式核對過了（個股自身不超過整段一半，idioWithinHalf）。不過時 why 寫哪一項沒過。
+   */
+  dip?: { ok: boolean; why: string };
+}
+
+/**
+ * 下跌加碼的審查面（§4.4，T84；純函式）：比「不減半」更嚴——每一票都對每一條可驗證的前提判成立而且有申報或財報的引用，
+ * 再加上程式核對跌幅拆解（這檔自己跌、原因不明時可以不賣，但不提加碼）。只看審查本身；狀態、間隔、一次下跌一次等限制在通知那一層（report.ts 的 dipOffer）。
+ */
+export function dipCheck(valid: CheckedSample[], pack: Pick<EvidencePack, 'documents' | 'rule' | 'policy' | 'premises'>): { ok: boolean; why: string } {
+  const c = premisesConfirmed(valid, pack, pack.policy.samples);
+  if (!c.confirmed) return { ok: false, why: c.why };
+  const attr = (pack.rule.detail as { attr?: { stock?: unknown; idio?: unknown } | null } | undefined)?.attr;
+  if (!idioWithinHalf(attr)) {
+    const a = attr && typeof attr.stock === 'number' && typeof attr.idio === 'number' ? `（個股 ${(attr.stock * 100).toFixed(0)}%、個股自身 ${(attr.idio * 100).toFixed(0)}%）` : '（跌幅拆解算不出來）';
+    return { ok: false, why: `這次下跌有一半以上是這檔自己跌的${a}` };
+  }
+  return { ok: true, why: `${c.why}；個股自身的跌幅不超過整段的一半` };
 }
 
 /**
  * 跌幅拆解的程式核對：拆解算得出來、個股是跌的、個股自身的跌幅不超過整段跌幅的一半。
- * 2026-11-22 起跌幅審查的結論不再用它（allocation_redesign §3.2：它擋的正是使用者決定接受的情況）；留給下跌加碼（§4.4）。
+ * 2026-11-22 起跌幅審查的結論不再用它（allocation_redesign §3.2：它擋的正是使用者決定接受的情況）；T84 起只給下跌加碼用（§4.4，dipCheck）。
  */
 export function idioWithinHalf(attr: { stock?: unknown; idio?: unknown } | null | undefined): boolean {
   if (!attr || typeof attr.stock !== 'number' || typeof attr.idio !== 'number' || !Number.isFinite(attr.stock) || !Number.isFinite(attr.idio)) return false;
@@ -163,16 +183,17 @@ export function idioWithinHalf(attr: { stock?: unknown; idio?: unknown } | null 
  *   NONE   沒跑完：票沒到齊、有不合格的票、逾時、被退回、資料缺漏 → 不動並重派
  *   BROKEN 前提不成立：三票都判同一條 BROKEN、每一票都有合格的引用（不看三票選的檔位）；三票都選出清時 exit = true
  *   CLEAR  前提都沒有被判不成立：沒有任何一票把任何前提判成不成立（被引用檢查降級的也算判過），而且三票都選不動。不看跌幅的歸類，也不核對跌幅拆解
+ *          （另外附下跌加碼的審查面 dip，§4.4：更嚴的「每一條都判成立、有申報或財報引用」與跌幅拆解的核對，只決定通知上多不多一個加碼的選項）
  *   SPLIT  票數不一致：跑完了，但對「哪一條前提不成立」沒有共識（只有 1、2 票判、各判不同的前提、引用沒過檢查），或沒有人判不成立但檔位不一致
  */
-export function dropDecision(outcome: Outcome, pack: Pick<EvidencePack, 'documents' | 'rule' | 'policy'>): DropDecision {
+export function dropDecision(outcome: Outcome, pack: Pick<EvidencePack, 'documents' | 'rule' | 'policy'> & { premises?: EvidencePack['premises'] }): DropDecision {
   const valid = outcome.samples.filter((x) => x.valid);
   const s = valid.find((x) => x.verdict === outcome.verdict);
   const cause = (s?.payload?.cause_class as string) ?? null;
   const escalate = outcome.samples.length && outcome.samples.every((x) => x.valid && x.payload?.escalate_to_F19 === true) ? String(s?.payload?.escalate_code) : null;
   const wanted = pack.policy.samples;
   const thesis = pack.policy.verdicts.includes('HOLD');
-  const out = (status: DropDecision['status'], why: string, extra: Partial<Pick<DropDecision, 'premiseId' | 'exit' | 'splitPremise' | 'splitVotes'>> = {}): DropDecision => ({ status, thesis, cause, premiseId: null, exit: false, splitPremise: null, splitVotes: 0, escalate, why, ...extra });
+  const out = (status: DropDecision['status'], why: string, extra: Partial<Pick<DropDecision, 'premiseId' | 'exit' | 'splitPremise' | 'splitVotes' | 'dip'>> = {}): DropDecision => ({ status, thesis, cause, premiseId: null, exit: false, splitPremise: null, splitVotes: 0, escalate, why, ...extra });
   if (thesis) {
     if (outcome.samples.length < wanted || valid.length < outcome.samples.length) return out('NONE', outcome.samples.length ? `沒跑完：${wanted} 票裡只有 ${valid.length} 票合格。` : outcome.reason);
     const missing = [...new Set(valid.flatMap((x) => x.dataMissing))];
@@ -185,7 +206,7 @@ export function dropDecision(outcome: Outcome, pack: Pick<EvidencePack, 'documen
     // 每條前提有幾票判不成立（被引用檢查降級的也算判過）
     const flagged = new Map<string, number>();
     for (const x of valid) for (const id of new Set(x.premises.filter((p) => p.status === 'BROKEN' || p.downgradedFrom === 'BROKEN').map((p) => p.premise_id))) flagged.set(id, (flagged.get(id) ?? 0) + 1);
-    if (!flagged.size && valid.every((x) => x.verdict === 'HOLD')) return out('CLEAR', `${wanted} 票一致：沒有任何前提被判不成立。`);
+    if (!flagged.size && valid.every((x) => x.verdict === 'HOLD')) return out('CLEAR', `${wanted} 票一致：沒有任何前提被判不成立。`, { dip: dipCheck(valid, { ...pack, premises: pack.premises ?? [] }) });
     const top = [...flagged.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'en', { numeric: true }))[0];
     return out('SPLIT', top ? `${wanted} 票裡有 ${top[1]} 票認為前提 ${top[0]} 不成立，沒有一致結論（要 ${wanted} 票都判同一條、每一票都有合格的引用）。` : `沒有任何一票判前提不成立，但 ${wanted} 票的檔位不一致。`, top ? { splitPremise: top[0], splitVotes: top[1] } : {});
   }

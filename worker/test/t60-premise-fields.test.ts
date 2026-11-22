@@ -282,13 +282,13 @@ const withP = (k: number, field: string, value: unknown) => {
 
 describe('T60 草稿的格式（own_draft_v2）', () => {
   it('prompt 升版：own_draft_v2 寫明 confirms_if、verify、breaks_if 最多 3 句、信念與至少 2 條；v1 留著、開頭寫不再使用', () => {
-    expect(OWN_DRAFT_PROMPT).toBe('own_draft_v3');
+    expect(OWN_DRAFT_PROMPT).toBe('own_draft_v4'); // T84：v4 可以附加碼條件
     const v2 = readFileSync(join(ROOT, 'ai', 'prompts', 'own_draft_v2.md'), 'utf8');
     for (const s of ['`confirms_if`', '`verify`', '1～3 句，一句寫一件事', '**至少要有 2 條不是信念的前提**', '配一個之後會出現在申報裡的替代指標', '**本文不放會過時的數字**', '寫之前先對證據包的 XBRL 季度表']) expect(v2).toContain(s);
     expect(v2).not.toContain('`NONE` 最多 1 條；');
     const v1 = readFileSync(join(ROOT, 'ai', 'prompts', 'own_draft_v1.md'), 'utf8');
     expect(v1.startsWith('> 不再使用（2026-11-21）')).toBe(true);
-    expect(pack().prompt_version).toBe('own_draft_v3');
+    expect(pack().prompt_version).toBe('own_draft_v4');
   });
 
   it('通過的草稿整理成新的形狀：confirms_if、breaks_if 陣列、verify（信念不存來源與天數）；證據包帶季度數字給程式比對', () => {

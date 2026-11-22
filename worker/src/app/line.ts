@@ -140,12 +140,17 @@ const HOLD_NOTICE_TEXT: Record<string, string> = {
 };
 
 /** 預設不動的跌幅審查那一行：`MU 比高點低 21.4%：論點檢查（3 票）前提都沒有被判不成立，不減半。不用下單；細節在網站。` */
-export function holdNoticeLine(it: Pick<Item, 'ticker' | 'title' | 'drop' | 'aiLine'>): string {
+export function holdNoticeLine(it: Pick<Item, 'ticker' | 'title' | 'drop' | 'aiLine' | 'dipAdd'>): string {
   const dd = /比 52 週高點低 ([\d.]+%)/.exec(it.title)?.[1];
   const failed = it.drop === 'NONE' && !!it.aiLine?.includes('沒有跑完');
   const say = HOLD_NOTICE_TEXT[failed ? 'FAILED' : (it.drop ?? 'NONE')] ?? HOLD_NOTICE_TEXT.NONE;
-  return `${it.ticker}${dd ? ` 比高點低 ${dd}` : ' 跌幅審查'}：${say}。不用下單；細節在網站。`;
+  // 下跌加碼（allocation_redesign §4.4，T84）：例外地附在當天這一則上，預設仍是不動
+  const dip = it.dipAdd ? `；這次多一個下跌加碼的選項（${dipWhat(it.dipAdd)}，預設不動），要的話到網站選` : '；細節在網站';
+  return `${it.ticker}${dd ? ` 比高點低 ${dd}` : ' 跌幅審查'}：${say}。不用下單${dip}。`;
 }
+
+/** 下跌加碼的選項那半句：「提高到標準的 125%，買 6 股」「補滿到標準比重，買 12 股」。 */
+export const dipWhat = (d: NonNullable<Item['dipAdd']>): string => `${d.mode === 'RAISE' ? '提高到標準的 125%' : '補滿到標準比重'}，買 ${d.shares} 股`;
 
 /** 月報的「要看的事」那一行：`持股有 3 件事要看（不用下單），在持股頁。`；不是月報或沒有就是 null。 */
 export function attentionLine(n: Pick<Notif, 'kind' | 'attention'>): string | null {

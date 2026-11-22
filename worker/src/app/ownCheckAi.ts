@@ -5,7 +5,7 @@
 // T70（confirm_audit_design §2.2）：採用 stock bot 的草稿時，草稿的出場條件直接寫進條件（adoptDraftExits，origin = AI_DRAFT_ACCEPTED），
 //   不走改寫與確認；之後你親手改出場條件的字，照舊走改寫與持股頁確認。
 import type { PackDoc } from '../ai/check';
-import { OWN_CHECK, ownCheckPack, ownCheckResult, type ExitLine, type OwnCheckResult } from '../ai/ownCheck';
+import { OWN_CHECK, OWN_CHECK_MAX, ownCheckPack, ownCheckResult, type ExitLine, type OwnCheckResult } from '../ai/ownCheck';
 import { newRunId, ownPremises, priceDoc, priceFacts } from '../ai/pack';
 import { recommendStdWeights, type Account, type MarketView } from '../engine';
 import { errText } from '../data/util';
@@ -19,7 +19,7 @@ import { SUPERSEDABLE, checkCap, supersedeStmts } from './ownConds';
 import { namedWebDomains, type ConditionDraft } from '../ai/ownReview';
 import { sourceFacts } from './webEvidence';
 import { loadRatings } from './webRatings';
-import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, REWRITE_DAYS, acceptStatus, aiTierText, condFacts, confirmText, defaultAction, fileConditions, fileKind, fmtMetric, isAiCond, isOwned, latestExitSet, ownerText, progressText, runOfSet, thesisFile, type CondAction, type ExitSet, type FileCondition } from './thesis';
+import { ACTION_TEXT, COND_ACTIONS, LIVE_CODES, isAddAction, sameActionKind, REWRITE_DAYS, acceptStatus, aiTierText, condFacts, confirmText, defaultAction, fileConditions, fileKind, fmtMetric, isAiCond, isOwned, latestExitSet, ownerText, progressText, runOfSet, thesisFile, type CondAction, type ExitSet, type FileCondition } from './thesis';
 
 /** 改寫結果或「還沒送去改寫」不是最新一版的出場條件（T42）：不能再勾選或重送。網站回 409。 */
 export class StaleExitsError extends Error {}
@@ -60,7 +60,7 @@ export interface ExitSetRef {
  */
 export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, exits: ExitLine[], now: Date, set?: ExitSetRef): Promise<AiRun> {
   if (!routineReady(env)) throw new Error('AI 層的雲端排程還沒設定（SETUP.md 的 T5），沒辦法送去改寫');
-  const clean = exits.map((e) => ({ text: e.text.trim().slice(0, 300), action: COND_ACTIONS.includes(e.action) ? e.action : ('REVIEW' as CondAction) })).filter((e) => e.text).slice(0, 6);
+  const clean = exits.map((e) => ({ text: e.text.trim().slice(0, 300), action: COND_ACTIONS.includes(e.action) ? e.action : ('REVIEW' as CondAction) })).filter((e) => e.text).slice(0, OWN_CHECK_MAX);
   if (!clean.length) throw new Error('沒有要改寫的出場條件');
   const ev = await gatherOwnEvidence(env, fetcher, ticker, view.date);
   const tf = await thesisFile(env.DB, acct, ticker, view.date);
@@ -190,7 +190,8 @@ export function confirmPlan(conditions: OwnCheckResult['conditions'], scope: num
   actionChanges: { cond: FileCondition; action: CondAction }[];
 } {
   const live = conds.filter((c) => isOwned(c) && LIVE_CODES.includes(c.status));
-  const fresh = conditions.filter((c) => c.same === null);
+  // 程式擋下的（加碼條件寫成價格條件，T84）不能確認
+  const fresh = conditions.filter((c) => c.same === null && !c.blocked);
   const pick = picked ? fresh.filter((c) => picked.includes(c.condId)) : fresh;
   const sups = new Map<string, FileCondition>();
   for (const c of pick) {
@@ -303,7 +304,14 @@ export async function acceptOwnConditions(env: Env, ticker: string, runId: strin
   const conds = await fileConditions(env.DB, acct, ticker);
   const plan = confirmPlan(v.conditions, set.live, conds, ids);
   // T68（confirm_audit_design §1.6）：勾選時不再選網頁來源；條件寫的 web:<網域> 原樣存，能不能確認看審查時那個網域的級別
-  const pick = plan.pick.map((c) => ({ ...c, action: COND_ACTIONS.includes(actions[c.condId] as CondAction) ? (actions[c.condId] as CondAction) : (c.action ?? defaultAction(c)) }));
+  // 勾選時可以改成立時的動作，但出場條件與加碼條件不能互換（T84：要互換就回編輯論點頁重寫，改寫的對照才寫得出「成立時：買進」）；
+  // 加碼條件的方向一律 UP
+  const pick = plan.pick.map((c) => {
+    const want = actions[c.condId] as CondAction;
+    const base = c.action ?? defaultAction(c);
+    const action = COND_ACTIONS.includes(want) && sameActionKind(want, base) ? want : base;
+    return { ...c, action, direction: isAddAction(action) ? ('UP' as const) : c.direction };
+  });
   if (!pick.length && !plan.retire.length && !plan.actionChanges.length) throw new Error('至少勾一條');
   checkCap(
     conds,

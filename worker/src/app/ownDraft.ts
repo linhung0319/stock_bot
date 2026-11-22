@@ -804,17 +804,19 @@ function adoptStatus(kind: AdoptExit['kind'], check: Record<string, unknown>): A
  *     和改寫同一個格式檢查）、價格條件（只記錄）→ 直接寫進條件（add）；監測不了格式的（舊草稿的事件條件沒有 confirm_by 等）→ 送改寫（rewrite）；
  *     監測中、草稿沒有的 → 撤下（retire）。
  */
-export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits'>, live: LiveCondition[]): AdoptPlan {
+export function draftAdoptPlan(d: Pick<OwnDraft, 'premises' | 'exits' | 'adds'>, live: LiveCondition[]): AdoptPlan {
   const premises: PremiseInput[] = d.premises.map((dp) => {
     const f = draftPremiseFields(dp);
     return dp.keep_id ? { id: dp.keep_id, text: dp.text, ...f } : { id: null, text: dp.text, origin: 'AI_DRAFT_ACCEPTED' as const, ...f };
   });
-  const exits = d.exits.map((x) => ({ text: x.text, action: (['EXIT', 'HALF', 'REVIEW'] as const).includes(x.action) ? x.action : ('REVIEW' as CondAction) }));
+  // 加碼條件（T84，own_draft_v4）接在出場條件後面，一起整組取代（你定的條件 8 條上限合計）；動作只認各自那一組
+  const all = [...d.exits.map((x) => ({ x, add: false })), ...(d.adds ?? []).map((x) => ({ x, add: true }))];
+  const exits = all.map(({ x, add }) => ({ text: x.text, action: add ? (x.action === 'RAISE' ? 'RAISE' : 'FILL') : (['EXIT', 'HALF', 'REVIEW'] as CondAction[]).includes(x.action) ? x.action : ('REVIEW' as CondAction) }));
   const plan = planExits(exits, live);
   const keep: AdoptPlan['keep'] = [];
   const add: AdoptExit[] = [];
   const rewrite: AdoptPlan['rewrite'] = [];
-  d.exits.forEach((x, k) => {
+  all.forEach(({ x }, k) => {
     const action = exits[k].action;
     const same = plan.sameByText[k];
     if (same !== undefined) {

@@ -6,7 +6,8 @@
 //   再之後的流程（通常是 03:30）：通知推出去之後結果才回來 → 補推一行（followUps），每個結果一次
 // 沒有在等的通知（AI 沒開成、AI 層沒設定、結果已經回來）照舊當場推。手動或補做的流程照同樣的條件判斷。
 // 這裡只放判斷；實際推播與存檔在 src/app/flow.ts 的 pushPending。
-import type { Account, Notif } from '../engine';
+import type { Account, Item, Notif } from '../engine';
+import { dipWhat } from './line';
 
 export interface PushFollowUp {
   /** 哪一則通知的結果。 */
@@ -40,9 +41,10 @@ const FOLLOW_STATES: readonly string[] = ['HOLD', 'EXIT', 'BROKEN', 'CLEAR', 'SP
  * 補推的那一行（own_thesis §3.5 的第三次排程）。有論點的股票的跌幅審查（allocation_redesign §3.2）：通知推出去時還沒有結論（先不動），
  * 結果回來才補一行——前提不成立時預設改成減半，要到網站決定；其餘仍是不動、不用下單。
  */
-export const dropFollowUpText = (ticker: string, state: DropFollowState, notif: number): string => {
+export const dropFollowUpText = (ticker: string, state: DropFollowState, notif: number, dip?: Item['dipAdd']): string => {
   if (state === 'BROKEN') return `${ticker} 的 AI 論點檢查回來了：前提不成立，預設改成減半。通知 #${notif} 已更新，到網站決定。`;
-  if (state === 'CLEAR') return `${ticker} 的 AI 論點檢查回來了：前提都沒有被判不成立，不減半。不用下單；細節在通知 #${notif}。`;
+  // 下跌加碼（allocation_redesign §4.4，T84）：例外地附在這一則上，預設仍是不動
+  if (state === 'CLEAR') return `${ticker} 的 AI 論點檢查回來了：前提都沒有被判不成立，不減半。不用下單${dip ? `；通知 #${notif} 多一個下跌加碼的選項（${dipWhat(dip)}，預設不動），要的話到網站選` : `；細節在通知 #${notif}`}。`;
   if (state === 'SPLIT') return `${ticker} 的 AI 論點檢查回來了：3 票沒有一致結論，不減半。不用下單；細節在通知 #${notif}。`;
   return `${ticker} 的 AI 論點檢查回來了：${state === 'HOLD' ? '建議不動' : '前提不成立，建議出清'}。通知 #${notif} 已更新，預設仍是照規則。`;
 };
@@ -73,7 +75,7 @@ export const dropWaiter: PushWaiter = {
         if (!dr || dr.told || !FOLLOW_STATES.includes(dr.status) || !it.drop || !FOLLOW_STATES.includes(it.drop)) continue;
         out.push({
           notif: n.id,
-          text: dropFollowUpText(t, it.drop as DropFollowState, n.id),
+          text: dropFollowUpText(t, it.drop as DropFollowState, n.id, it.dipAdd),
           told: (a) => {
             const d = a.own[t]?.dropReview;
             if (d && d.status !== 'PENDING') d.told = true;

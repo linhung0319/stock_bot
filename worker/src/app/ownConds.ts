@@ -2,13 +2,14 @@
 //   勾選  舊資料的 AI 建議（PROPOSED）→ 你定的條件：寫勾選時間與成立時的動作，狀態依確認方式；有 supersedes 的，被取代的那條 RETIRED
 //         （T71 起審查不再寫 PROPOSED，持股頁也沒有勾選的按鈕；端點留著給舊資料）
 //   撤下  你定的條件、AI 監測中的條件 → RETIRED
-//   改動作 你定的條件成立時做什麼（出清／減半／重新審查）
+//   改動作 你定的條件成立時做什麼（出清／減半／重新審查；加碼條件是補到標準比重／提高到 125%，T84）。出場與加碼之間不能只改動作互換
+//         （要回編輯論點頁重寫，改寫的對照才寫得出「成立時：買進」）
 //         AI 監測中的條件（T71，confirm_audit_design §3）改成出清或減半 → 寫 accepted_at，變成你定的（之後的審查換不掉）；
 //         有 supersedes 的，被取代的那條 RETIRED（和勾選同一套）
 // 你定的條件（ACTIVE＋REVIEW_ONLY）一檔最多 8 條；AI 監測中的另算（最多 3 條，由審查寫入時維持）。每一次都在 own_thesis_log 寫一筆 CONDITION。
 import type { Account } from '../engine';
 import { thesisLogStmt } from './ledgerStore';
-import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, acceptStatus, defaultAction, fileConditions, isAiWatch, isOwned, type CondAction, type FileCondition } from './thesis';
+import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, acceptStatus, defaultAction, fileConditions, isAddAction, isAiWatch, isOwned, sameActionKind, type CondAction, type FileCondition } from './thesis';
 
 export class CondError extends Error {}
 
@@ -55,7 +56,9 @@ export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'>, ti
   const conds = await fileConditions(db, acct, ticker);
   const c = conds.find((x) => x.id === id);
   if (!c) throw new CondError('找不到這條條件（可能是之前那一份論點檔的）。');
-  if (action !== undefined && action !== null && !isAction(action)) throw new CondError('成立時的動作只能是出清、減半或重新審查。');
+  if (action !== undefined && action !== null && !isAction(action)) throw new CondError('成立時的動作只能是出清、減半或重新審查（加碼條件是補到標準比重或提高到 125%）。');
+  // AI 不能自己提加碼條件（allocation_redesign §4.2）：AI 建議的、AI 監測中的條件不能變成加碼條件
+  if (isAddAction(action) && !isOwned(c)) throw new CondError('AI 建議的條件不能改成加碼（AI 不能自己提加碼條件）；要加碼條件，到編輯論點頁自己寫一條。');
   const at = now.toISOString();
   const stmts: D1PreparedStatement[] = [];
 
@@ -105,6 +108,7 @@ export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'>, ti
   if (op === 'action') {
     if (!isAction(action)) throw new CondError('要選成立時做什麼：出清、減半或重新審查。');
     if (action === c.action) return { id: c.id, status: c.status, action };
+    if (!sameActionKind(action, c.action ?? 'REVIEW')) throw new CondError(isAddAction(action) ? '出場條件不能直接改成加碼條件：到編輯論點頁把它寫成加碼條件，送去改寫、確認之後才生效。' : '加碼條件不能直接改成出場條件：到編輯論點頁把它寫成出場條件，送去改寫、確認之後才生效。');
     stmts.push(db.prepare('UPDATE own_conditions SET action = ? WHERE id = ?').bind(action, c.id));
     stmts.push(...logStmt(db, ticker, meta.fileId, session, at, c.id, 'ACTION_CHANGED', action));
     await db.batch(stmts);

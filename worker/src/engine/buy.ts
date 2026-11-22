@@ -1,5 +1,5 @@
 // 買進前的程式檢查（allocation_redesign §4.0，T83）：自選的每一種買進——先買一半的補滿（F27）、提高到 125%（F23）、
-// 之後的你定的加碼條件（F28）、下跌加碼、候補進場——都先過同一組檢查，任何一項不過就不提。
+// 你定的加碼條件（F28，T84）、下跌加碼（T84）、之後的候補進場——都先過同一組檢查，任何一項不過就不提。
 // buyAllowed 是純函式（只看傳進來的事實）；buyFacts 從帳戶狀態把事實整理出來。
 import { dropReviewOpen, priceOf, totalValue, type Account, type MarketView } from './account';
 import type { OwnApplied, OwnState } from './types';
@@ -75,13 +75,16 @@ export function buyAllowed(x: BuyFacts): BuyVerdict {
   return { ok: true, shares, cut: shares < want, why: shares < want ? `買進後會超過總資產 ${pct0(cap ?? 0)} 的上限（自選加動能），只買 ${shares} 股（原本 ${want} 股）` : null, code: null };
 }
 
-/** 從帳戶整理這一檔的事實。want：想買幾股（沒給 = 只看狀態）。不是自選回傳 null。 */
-export function buyFacts(acct: Account, view: MarketView | null, ticker: string, asOf: string, want?: number): BuyFacts | null {
+/**
+ * 從帳戶整理這一檔的事實。want：想買幾股（沒給 = 只看狀態）。不是自選回傳 null。
+ * skipKey（T84）：不算這一個項目（下跌加碼的選項就掛在那一則跌幅審查的項目上，那一項本身不算「還沒結案的跌幅審查」）。
+ */
+export function buyFacts(acct: Account, view: MarketView | null, ticker: string, asOf: string, want?: number, skipKey?: string): BuyFacts | null {
   const meta = acct.own[ticker];
   const rule = acct.rule.own[ticker];
   if (!meta || !rule) return null;
   const pending = acct.notifs.filter((n) => n.status === 'PENDING');
-  const live = (f: (it: (typeof pending)[number]['items'][number]) => boolean) => pending.some((n) => n.items.some((it) => !it.cancelled && it.ticker === ticker && f(it)));
+  const live = (f: (it: (typeof pending)[number]['items'][number]) => boolean) => pending.some((n) => n.items.some((it) => !it.cancelled && it.ticker === ticker && it.key !== skipKey && f(it)));
   const openDrop = dropReviewOpen(meta.dropReview) || meta.pending?.action === 'REDUCE' || live((it) => !!it.thesisDrop || it.f === 'F7');
   const ai = meta.aiTier;
   const openBreak = live((it) => it.brk?.type === 'B') || (!!ai?.suggest && !!ai.premiseId && (ai.tier === 'HALF' || ai.tier === 'EXIT'));
@@ -94,7 +97,16 @@ export function buyFacts(acct: Account, view: MarketView | null, ticker: string,
 }
 
 /** buyFacts → buyAllowed。不是自選：不過。 */
-export function buyCheck(acct: Account, view: MarketView | null, ticker: string, asOf: string, want?: number): BuyVerdict {
-  const f = buyFacts(acct, view, ticker, asOf, want);
+export function buyCheck(acct: Account, view: MarketView | null, ticker: string, asOf: string, want?: number, skipKey?: string): BuyVerdict {
+  const f = buyFacts(acct, view, ticker, asOf, want, skipKey);
   return f ? buyAllowed(f) : { ok: false, shares: 0, cut: false, why: '不是自選股', code: null };
+}
+
+/** 提高到 125% 的間隔（allocation_redesign §4.3）：距上次提高滿幾個日曆天。AI 提的 125%（F23）、你定的 RAISE 條件（F28）、下跌加碼共用（§4.2、§4.4）。 */
+export const RAISE_GAP_DAYS = 365;
+
+/** 距上次提高還沒滿 12 個月 → 原因；滿了或沒提高過 → null。 */
+export function raiseGapWhy(meta: { raisedAt: string | null }, asOf: string): string | null {
+  if (!meta.raisedAt || calDays(meta.raisedAt, asOf) >= RAISE_GAP_DAYS) return null;
+  return `上次提高到 125% 是 ${meta.raisedAt}，還沒滿 12 個月`;
 }
