@@ -2,7 +2,7 @@
 // 原則：每一項建議都同時帶著「做什麼」和「因為什麼」，畫面不用再去別的地方找理由。
 import type { Premise } from '../../engine';
 
-/** AI 的說明（定期審查、否決、條件成立、崩盤檢視、硬事件）。AI 層上線前，只有示範模式有（假內容）。 */
+/** AI 的說明（定期審查、否決、條件成立、跌幅審查、硬事件；崩盤檢視只剩舊紀錄）。示範模式的是假內容。 */
 export interface AiNote {
   kind: 'REVIEW' | 'VETO' | 'CONDITION' | 'CRASH' | 'HARD';
   ticker?: string;
@@ -73,7 +73,7 @@ export interface Explain {
   /** 要畫走勢圖的代號。 */
   chart?: string;
   ai?: AiNote;
-  /** 有 AI 的建議、但 AI 層還沒上線（沒有完整報告可以看）。 */
+  /** 有 AI 的建議、但找不到那一次的完整報告（例如示範模式、或紀錄對不上）。 */
   aiMissing?: boolean;
   /** 每個選項的一句話說明（選項 id → 文字）。 */
   choiceNotes?: Record<string, string>;

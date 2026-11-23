@@ -1,4 +1,4 @@
-// 規則的通知等到第二次排程再推（T31b；own_thesis_design_2026-11-15 §3.5。core_ai_design §3.2 的月報共用這一段：T33b 的 crashWaiter）。
+// 規則的通知等到第二次排程再推（T31b；own_thesis_design_2026-11-15 §3.5）。2026-11-22 起只剩跌幅審查（dropWaiter）會留住通知；晚到的進場否決只補推。
 //
 // 規則的通知不等 AI 的內容，只等到固定的時間：
 //   通知產生的那一次流程（通常是 UTC 23:30）：通知上有還在等的 AI 結果（waiting）→ 這次不推 LINE，編號記在 flow_state 的 push:held
@@ -57,7 +57,7 @@ export const dropFollowUpText = (ticker: string, state: DropFollowState, notif: 
  *   有論點的股票的跌幅審查（allocation_redesign §3.2）：等與講過了相同；補推的是前提不成立、都沒有被判不成立、票數不一致（沒跑完的不補推，會重派）
  */
 export const dropWaiter: PushWaiter = {
-  name: '減半檢視',
+  name: '跌幅審查',
   waiting: (acct, n) => reduceItems(n).some((it) => acct.own[it.ticker!]?.dropReview?.status === 'PENDING'),
   told(acct, n) {
     for (const it of reduceItems(n)) {
@@ -117,49 +117,7 @@ export const lateVetoWaiter: PushWaiter = {
   },
 };
 
-/** 月報裡會開檢視的崩盤項目（F5／F6，沒取消、不是重列的）。 */
-const crashItems = (n: Notif) => (n.kind === 'MONTHLY' ? n.items.filter((it) => (it.f === 'F5' || it.f === 'F6') && !it.cancelled && !it.relist) : []);
-
-/** 補推的那一行（core_ai §3.2 的 03:30）。month：月報的月份標籤（2026-12）。 */
-export const crashFollowUpText = (opinion: '照做' | '延後', month: string | undefined, notif: number): string =>
-  `崩盤規則的 AI 檢視回來了：${opinion}。${month ? `${Number(month.slice(5, 7))} 月` : ''}月報 #${notif} 已更新；規則的動作不變，預設仍是照做。`;
-
-/**
- * 崩盤規則的月報（core_ai §3.2，使用者 2026-11-15 決定）：
- *   等：月報有 F5／F6，而且那一項的檢視是 PENDING（補開成功、還在等）；其他狀態照舊當場推
- *   講過了：推出去時文字裡有「AI 檢視：」那一行（OPINION）的，told 設成 true
- *   補推：OPINION、told 是 false、通知還沒回覆（已經推過由 pushPending 判斷）；每份月報最多一次。03:30 之後才回來的在套用時就標成講過了（只放網站）
- */
-export const crashWaiter: PushWaiter = {
-  name: '崩盤規則檢視',
-  waiting: (_acct, n) => crashItems(n).some((it) => it.crashReview?.state === 'PENDING'),
-  told(_acct, n) {
-    for (const it of crashItems(n)) if (it.crashReview?.state === 'OPINION') it.crashReview.told = true;
-  },
-  followUps(acct) {
-    const out: PushFollowUp[] = [];
-    for (const n of acct.notifs) {
-      if (n.status !== 'PENDING') continue;
-      for (const it of crashItems(n)) {
-        const cr = it.crashReview;
-        if (!cr || cr.state !== 'OPINION' || !cr.opinion || cr.told) continue;
-        const key = it.key;
-        out.push({
-          notif: n.id,
-          text: crashFollowUpText(cr.opinion, n.monthly?.input.month, n.id),
-          told: (a) => {
-            const x = a.notifs.find((m) => m.id === n.id)?.items.find((i) => i.key === key);
-            if (x?.crashReview) x.crashReview.told = true;
-          },
-        });
-      }
-    }
-    return out;
-  },
-};
-
-/** 所有「等到下一次流程再推」的規則通知。 */
-// 崩盤規則的 crashWaiter 2026-11-22 起不在這裡（allocation_redesign §1.6：不再派 CRASH_REVIEW）；函式本體留給 T88 清。
+/** 所有「等到下一次流程再推」的規則通知。崩盤規則檢視的 crashWaiter 2026-11-22 起不再用（allocation_redesign §1.6），T88 刪掉。 */
 export const PUSH_WAITERS: PushWaiter[] = [dropWaiter, lateVetoWaiter];
 
 /** 這則新通知要不要等到下一次流程再推。 */

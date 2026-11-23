@@ -214,7 +214,7 @@ export function dropDecision(outcome: Outcome, pack: Pick<EvidencePack, 'documen
   if (outcome.status !== 'AGREED' || valid.length < wanted) return out('NONE', outcome.reason);
   if (outcome.verdict === 'EXIT') {
     const broken = brokenPremises(valid, pack, wanted);
-    return broken.length ? out('EXIT', `${wanted} 票都選出清，而且都判前提 ${broken[0]} 不成立（每一票都有合格的引用）。`, { premiseId: broken[0] }) : out('NONE', `${wanted} 票都選出清，但沒有一條前提三票都判「不成立」而且有合格的引用（申報、財報表，或清單內的網頁），照規則。`);
+    return broken.length ? out('EXIT', `${wanted} 票都選出清，而且都判前提 ${broken[0]} 不成立（每一票都有合格的引用）。`, { premiseId: broken[0] }) : out('NONE', `${wanted} 票都選出清，但沒有一條前提三票都判「不成立」而且有合格的引用（申報、財報表，或夠級別的網頁：一手、產業研究機構；媒體要兩個不同網站），照規則。`);
   }
   return out('NONE', outcome.reason);
 }

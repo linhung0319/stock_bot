@@ -23,7 +23,7 @@ import { OWN_CONDITION, OWN_REVIEW } from '../ai/ownReview';
 import { OWN_DRAFT } from '../ai/ownDraft';
 import { guard, type Applier, type ApplyCtx, type FlowExtras, type StartCtx, type StepResult } from './aiCtx';
 import { closeStaleRuns, getRun, listRuns } from './aiRuns';
-import { refreshMacro } from './crashAi';
+import { refreshMacro } from './macro';
 import { applyOwnDrop, markDropNone, startDropRuns } from './dropAi';
 import { applyOwnEarnings, startOwnEarnings } from './earningsAi';
 import type { Env, Fetcher } from './env';
@@ -72,7 +72,7 @@ export async function aiStep(env: Env, fetcher: Fetcher, now: Date, session: str
   const res: StepResult = { created: [], started: [], log: [], alerts: [] };
   const first = await loadAccount(db);
   if (!first) return res;
-  const targets = await scanTargets(db, first.acct);
+  const targets = scanTargets(first.acct);
   const ranking = await loadRanking(db);
   const sectors = Object.values(await sectorEtfs(db, targets.map((t) => t.ticker)));
   const series = await loadSeries(db, [...new Set([...requiredTickers(first.acct), ...targets.map((t) => t.ticker), ...sectors, ...(ranking?.order ?? [])])]);

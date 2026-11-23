@@ -221,7 +221,7 @@ export function whyBlock(x, ticker, meter = null) {
       }
     });
   }
-  return h('div', { class: 'slip-why' }, h('p', { class: 'why' }, x.why), meterEl(meter, 'big'), aiBlock(x.ai), x.aiMissing && !x.ai ? h('p', { class: 'small faint', style: { marginTop: '8px' } }, 'AI 的完整報告要等 AI 層上線後才會出現在這裡。') : null, det);
+  return h('div', { class: 'slip-why' }, h('p', { class: 'why' }, x.why), meterEl(meter, 'big'), aiBlock(x.ai), x.aiMissing && !x.ai ? h('p', { class: 'small faint', style: { marginTop: '8px' } }, '這一項找不到 AI 的完整報告（示範模式沒有真的 AI 執行；正式帳戶可以到「AI 紀錄」頁找這檔那一天的執行）。') : null, det);
 }
 
 // ---------------------------------------------------------------- 要下的單

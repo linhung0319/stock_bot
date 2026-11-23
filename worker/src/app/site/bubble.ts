@@ -155,9 +155,16 @@ function listOrders(c: ComposedView, side: -1 | 1): string {
   return `${side < 0 ? '賣' : '買'} ${xs.map((o) => `${o.ticker} ${Math.abs(o.shares)} 股`).join('、')}`;
 }
 
-/** 待辦頁：照建議做完的話會怎樣；沒有清單的待辦，就說要做什麼。 */
-export function todoBubble(todo: TodoView[], plan: { composed: ComposedView | null; items: Pick<ItemView, 'ticker' | 'headline' | 'kind' | 'choice' | 'cancelled' | 'label'>[] } | null): Bubble {
+/**
+ * 待辦頁：照建議做完的話會怎樣；沒有清單的待辦，就說要做什麼。
+ * fyi：「不用回覆」的通知（預設不動的跌幅審查，T86 P2，不算待辦）。沒有待辦、只有這種時，提一句有幾則可以看（T88）。
+ */
+export function todoBubble(todo: TodoView[], plan: { composed: ComposedView | null; items: Pick<ItemView, 'ticker' | 'headline' | 'kind' | 'choice' | 'cancelled' | 'label'>[] } | null, fyi: Pick<TodoView, 'title'>[] = []): Bubble {
   const t = todo[0];
+  if (!t && fyi.length) {
+    const which: Seg[] = fyi.length === 1 ? ['：「', em(fyi[0].title), '」'] : [];
+    return { k: '現在', say: tidy(['不用動。有 ', em(`${fyi.length} 則不用回覆的通知`), '可以看', ...which, '，在下面「不用回覆」那一塊；不用下單，也不用回覆。']), mood: 'idle' };
+  }
   if (!t) return { k: '現在', say: ['不用動。有新的月報或通知，會出現在這裡。'], mood: 'idle' };
   const more = todo.length > 1 ? `另外還有 ${todo.length - 1} 件。` : '';
   if (t.type === 'DECIDE' && plan?.composed) {

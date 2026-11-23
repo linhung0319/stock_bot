@@ -515,7 +515,7 @@ export async function handleTaskDocs(env: Env, fetcher: Fetcher, id: string, bod
 
 /**
  * GET /ai/task/<編號>/fresh：給新眼光的那一份（T63，composite_layer_design §3；組法在 src/ai/freshEyes.ts 的 freshView）。
- *   沒有前提、論點本文、歷次審查、條件與事件清單；有價格與跌幅拆解的數字、清單內的來源與目錄、申報與財報表的原文、新聞標題，
+ *   沒有前提、論點本文、歷次審查、條件與事件清單；有價格與跌幅拆解的數字、已有級別的網頁來源與目錄、申報與財報表的原文、新聞標題，
  *   以及到這一刻為止分析師取回的文件。協調的主代理在分析師做完之後取，原樣交給新眼光那個子代理。
  *   這次沒有請新眼光跑（證據包的 fresh_eyes.run 不是 true）、別的功能 → 403；還沒取證據包 → 409；送回結果之後、逾時 → 410。
  */

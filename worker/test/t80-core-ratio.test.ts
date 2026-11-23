@@ -483,7 +483,7 @@ describe('T80 月報的核心比例調回（F26，§1.3）', () => {
     sim.respond(jan.id, { mode: 'DO', choices: { [f26.key]: 'SKIP' } });
     expect(notifOf(sim.acct, jan.id).status).toBe('SKIPPED');
     expect(sim.acct.mom.owe).toEqual({});
-    expect(sim.acct.coreOwe).toBeUndefined();
+    expect(sim.acct).not.toHaveProperty('coreOwe');
     const sh = sim.acct.shadow.filter((s) => s.f === 'F26');
     expect(sh.map((s) => [s.ticker, s.rule, s.actual, s.choice])).toEqual(f26.choices[0].lines.map((l) => [l.ticker, l.shares, 0, 'SKIP']));
     idleUntil(sim, '2027-02-01');
@@ -684,7 +684,7 @@ describe('T80 舊帳戶資料（0.17.0 的樣本）讀進來不壞（§1.5）', 
     const a = OLD.a.acct;
     expect(a.rule.crash).toBe(true);
     expect(a.rule.effPrev).toBe(0.5);
-    expect(a.coreOwe).toMatchObject({ direction: 'ON' });
+    expect((a as Account & { coreOwe?: unknown }).coreOwe).toMatchObject({ direction: 'ON' });
     expect(Object.keys(a.mom.owe).sort()).toEqual(['AMD', 'APP', 'AVGO', 'NFLX', 'PLTR']);
     expect((a.cfg as Partial<EngineConfig>).coreBond).toBeUndefined();
     expect(OLD.b.acct.notifs.at(-1)!.items.map((i) => i.f)).toContain('F6');
@@ -696,8 +696,11 @@ describe('T80 舊帳戶資料（0.17.0 的樣本）讀進來不壞（§1.5）', 
     expect('crash' in a.rule).toBe(false);
     expect(a.rule.effPrev).toBe(a.rule.volW ?? 1);
     expect(a.rule.effPrev).toBe(1);
-    expect(a.coreOwe).toBeUndefined();
+    expect(a).not.toHaveProperty('coreOwe');
     expect(Object.keys(a.mom.owe)).toEqual(['APP']); // 1 月沒買的進場（F1 選了這次不做）留著
+    // T88：自選早就不用的 r1、f25Sent 讀進來時清掉（0.17.0 的樣本每檔都有 f25Sent）
+    expect(Object.values(before.own).some((m) => 'f25Sent' in m)).toBe(true);
+    for (const m of Object.values(a.own)) expect(m).not.toHaveProperty('f25Sent');
     expect(a.cfg).toMatchObject({ coreBond: 0.2, coreBand: 0.05, crashCut: 0.5 });
     expect(a.fromCrashRule).toBe(true);
     expect(a.lots).toEqual(before.lots);
@@ -780,17 +783,17 @@ describe('T80 舊帳戶資料（0.17.0 的樣本）讀進來不壞（§1.5）', 
     // 舊月報照預設回覆：照它列的單合成（核心吸收的差額照新規則分）
     const done = respond(acct, view, feb.id, { mode: 'DO' });
     expect(notifOf(done, feb.id).status).toBe('RESPONDED');
-    expect(done.coreOwe).toBeUndefined();
+    expect(done).not.toHaveProperty('coreOwe');
     // 這次不做：不再寫核心的欠單，動能也不記
     const skip = respond(acct, view, feb.id, { mode: 'SKIP' });
-    expect(skip.coreOwe).toBeUndefined();
+    expect(skip).not.toHaveProperty('coreOwe');
     expect(Object.keys(skip.mom.owe)).toEqual(Object.keys(acct.mom.owe));
     // 入金併進月報：還原舊的「月報前的狀態」再重算
     const dep = deposit(acct, view, 5000);
     expect(dep.mergedIntoMonthly).toBe(true);
     expect(dep.notif.items.some((i) => i.f === 'F5' || i.f === 'F6')).toBe(false);
     expect('crash' in dep.acct.rule).toBe(false);
-    expect(dep.acct.coreOwe).toBeUndefined();
+    expect(dep.acct).not.toHaveProperty('coreOwe');
     expect(dep.notif.items.some((i) => i.f === 'F11')).toBe(true);
   });
 });

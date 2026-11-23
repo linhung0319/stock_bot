@@ -335,30 +335,6 @@ export function mergeByTicker(lines: OrderLine[]): Composed['merged'] {
   return [...m.values()].filter((e) => e.shares !== 0 || e.parts.length > 1);
 }
 
-/**
- * 崩盤規則切換時核心自己的單（設計 §4.4）：
- *   啟動：核心（含現金）的一半換成短債；解除：短債全部換回核心 ETF。
- */
-export function crashCoreLines(ctx: CoreContext, turnOn: boolean): OrderLine[] {
-  const pv = ctx.price(ctx.cfg.coreTicker);
-  const pb = ctx.price(ctx.bondTicker);
-  if (turnOn) {
-    // 帳上現金不算在這裡：現金由 composeWithCore 照一半一半交給核心
-    const coreVal = ctx.coreShares * pv + ctx.bondShares * pb;
-    const move = coreVal * (1 - ctx.cfg.crashCut) - ctx.bondShares * pb;
-    if (move <= 0) return [];
-    return [
-      { ticker: ctx.cfg.coreTicker, bucket: 'core', shares: -Math.min(ctx.coreShares, Math.round(move / pv)), reason: '崩盤規則' },
-      { ticker: ctx.bondTicker, bucket: 'core', shares: Math.floor(move / pb), reason: '崩盤規則' },
-    ];
-  }
-  if (ctx.bondShares <= 0) return [];
-  return [
-    { ticker: ctx.bondTicker, bucket: 'core', shares: -ctx.bondShares, reason: '崩盤規則' },
-    { ticker: ctx.cfg.coreTicker, bucket: 'core', shares: Math.floor((ctx.bondShares * pb) / pv), reason: '崩盤規則' },
-  ];
-}
-
 // ---------------------------------------------------------------- 通知分級（§2.5）
 
 export type NotifyTier = 'SAME_DAY' | 'MONTHLY';

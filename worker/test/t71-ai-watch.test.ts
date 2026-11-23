@@ -138,7 +138,7 @@ async function review3(c: Ctx, o: VoteOpt = {}) {
   const pack = await reviewPack(c);
   return { pack, ctx: await apply(c, pack, [vote(pack, o), vote(pack, o), vote(pack, o)]) };
 }
-const op = (c: Ctx, id: number, o: 'accept' | 'retire' | 'action', action?: string) => conditionOp(c.db, c.acct, 'NVDA', id, o, action, '2026-11-20', new Date('2026-11-21T01:00:00Z'));
+const op = (c: Ctx, id: number, o: 'retire' | 'action', action?: string) => conditionOp(c.db, c.acct, 'NVDA', id, o, action, '2026-11-20', new Date('2026-11-21T01:00:00Z'));
 const urgent = (a: Account) => a.notifs.filter((n) => n.kind === 'URGENT');
 
 function qrow(end: string, gm: number | null): QuarterRow {
@@ -321,9 +321,10 @@ describe('T71：使用者改動作（§3）', () => {
       r = await post({ ticker: 'NVDA', id: b, op: 'retire' });
       expect(await r.json()).toMatchObject({ ok: true, status: 'RETIRED' });
       const s = await seed(c.db, { condId: 'A3', status: 'ACTIVE', action: 'REVIEW' });
+      // 勾選舊建議（accept）T88 拿掉
       r = await post({ ticker: 'NVDA', id: s, op: 'accept' });
       expect(r.status).toBe(422);
-      expect(((await r.json()) as { error: string }).error).toContain('不是建議中的條件');
+      expect(((await r.json()) as { error: string }).error).toContain('操作只能是 retire 或 action');
     });
   });
 });
@@ -373,9 +374,8 @@ describe('T71：舊的 PROPOSED 列讀得出來不壞', () => {
       expect(f.label).toBe('觀察項 W1（AI 建議、使用者還沒勾選；財報；11/19 的審查寫的）');
       const nums: DiscussionNumbers = { date: '2026-11-19', close: 100, fromHigh: -0.1, ma200: 90, vsMa: 0.1, slow: 'STD', ret1y: 0.2, weight: 0.05, stdWeight: 0.05, ownTotal: 0.1, ownBudget: 0.2, xbrl: null, openedHalf: null };
       expect(discussionPack(tf, nums, 'ROUTINE')).toContain('AI 建議、還沒勾選的（改版前的舊資料，不監測）：');
-      // 勾選（舊的端點）照舊可以：變成你定的
-      expect(await op(c, p, 'accept', 'HALF')).toMatchObject({ status: 'ACTIVE', action: 'HALF' });
-      expect(isOwned(await byId(c.db, p))).toBe(true);
+      // 勾選（舊的端點）T88 拿掉：舊建議只當輸入，不會變成你定的
+      expect(isOwned(await byId(c.db, p))).toBe(false);
     });
   });
 

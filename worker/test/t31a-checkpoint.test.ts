@@ -23,7 +23,7 @@ import { dueAttention, newEvidence, ownAttention, reviewFailsKey, reviewSplitsKe
 import type { CompanyFacts, XbrlFact } from '../src/data/edgar';
 import { buildMarketView } from '../src/data/marketView';
 import { loadSeries } from '../src/data/store';
-import { createAccount, dailyCheck, type Account, type MarketView, type OwnMeta } from '../src/engine';
+import { createAccount, dailyCheck, migrateAccount, type Account, type MarketView, type OwnMeta } from '../src/engine';
 import * as engine from '../src/engine';
 import type { HoldingDetail } from '../src/app/site/views';
 import { handle } from '../src/index';
@@ -474,15 +474,16 @@ describe('整條流程：月底檢查點（own_thesis §3.7）', () => {
 // ---------------------------------------------------------------- 拿掉 R1（own_thesis §3.9）
 
 describe('拿掉 R1', () => {
-  it('每日檢查不再算、不再寫紀錄；舊資料的 r1 留著不動；證據包沒有 R4、R5 的編號不變；引擎不再匯出 r1', () => {
+  it('每日檢查不再算、不再寫紀錄；舊資料的 r1 讀進來時清掉（T88）；證據包沒有 R4、R5 的編號不變；引擎不再匯出 r1', () => {
     const m = makeMarket('2026-06-01', 120);
     const view = viewAt(m, m.idx0 + 100);
     const acct = createAccount({ cash: 5000, core: { VOO: 100 }, own: { NVDA: { shares: 50, stdWeight: 0.1, premises: [{ id: 'P1', text: 'x', origin: 'USER' }] } } }, view);
     expect(acct.own.NVDA).not.toHaveProperty('r1');
     const legacy = structuredClone(acct);
-    legacy.own.NVDA.r1 = true;
+    (legacy.own.NVDA as { r1?: boolean }).r1 = true;
     const r = dailyCheck(legacy, view);
-    expect(r.acct.own.NVDA.r1).toBe(true); // 不讀不寫
+    expect(r.acct.own.NVDA).toHaveProperty('r1', true); // 每日檢查不讀不寫
+    expect(migrateAccount(structuredClone(legacy)).own.NVDA).not.toHaveProperty('r1'); // 讀進來時清掉（T88）
     expect(r.log.some((l) => l.what.includes('R1'))).toBe(false);
     // 慢規則照常前進（狀態和沒有 r1 的帳戶相同）
     expect(r.acct.own.NVDA.slow).toEqual(dailyCheck(acct, view).acct.own.NVDA.slow);

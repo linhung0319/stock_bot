@@ -22,7 +22,7 @@ import type { Env } from '../env';
 import { getRun, listRuns, type AiRun } from '../aiRuns';
 import { ConflictError, loadAccount, loadEvents, loadShadow, requiredTickers, saveAccount, saveSnapshot, saveSnapshotUndo, shadowTickers, snapshotUndoInfo, thesisLogStmt, undoSnapshot, type LoadedAccount, type SnapshotUndoInfo, type SnapshotWarn, type ThesisLogInput, warnOf } from '../ledgerStore';
 import { noteOfRun } from './aiViews';
-import { loadSnapshot, type MacroSnapshot } from '../crashAi';
+import { loadSnapshot, type MacroSnapshot } from '../macro';
 import { loadEvents as loadSecEvents, type SecEventRow } from '../filings';
 import { loadReviews, loadVetoReviews, type MomReview } from '../momAi';
 import { loadStrategyState } from '../strategyAi';

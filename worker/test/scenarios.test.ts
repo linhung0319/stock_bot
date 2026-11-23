@@ -291,7 +291,7 @@ describe('情境 ③ 大盤急跌再反彈（沒有崩盤規則）', () => {
   it('1 月 VOO 跌破 200 日線：月報沒有崩盤項目，動能不減半、核心比例在界線內不調；出金從核心照比例拿；2 月反彈也沒有要換回的', () => {
     const sc = scenarios.s3();
     // T82：MSFT 有論點（採用草稿來的前提），跌 20% 只觸發跌幅審查；這裡審查判前提 P1 不成立、變動不到 5% → 減半併入 1 月月報（allocation_redesign §3.2）
-    const sim = new Sim(sc.market, sc.init, { crashOpinion: { '2027-01': '延後' }, drops: { MSFT: { status: 'BROKEN', premiseId: 'P1' } } });
+    const sim = new Sim(sc.market, sc.init, { drops: { MSFT: { status: 'BROKEN', premiseId: 'P1' } } });
     sim.runUntil('2027-01-04');
     // VOO 訊號日收盤在 200 日均線之下（以前會啟動崩盤規則）
     const c = sim.market.close.VOO;

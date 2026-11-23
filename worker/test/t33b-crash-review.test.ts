@@ -1,15 +1,14 @@
 /// T33b：崩盤規則檢視的排程、顯示與影子（core_ai_design_2026-11-15 §5 的 T33b 那一列；§3.1～§3.5、§3.12）。
 // T80（階段十二，allocation_redesign §1.6）：月報不再產生崩盤項目（F5／F6），所以整條流程的測試——月報等檢視才推、補推、
 // 沒有結論的重開與告警、總經資料不足時項目上的字、項目上那一列的六種狀態、回覆崩盤項目的影子紀錄、月報等推的判斷——都拿掉了
-// （檢視的排程本身在 T81 退場）。這裡留下不靠月報項目的：總經資料的過期判斷、月份標籤、crashReviewFor 沒有執行時的狀態、
+// （檢視的排程本身在 T81 退場，本體在 T88 刪掉，crashReviewFor 的測試跟著拿掉）。這裡留下不靠月報項目的：總經資料的過期判斷、月份標籤、
 // 舊紀錄的檢視表與 AI 紀錄列表。
 import { describe, expect, it } from 'vitest';
-import { macroDashboard, dashboardText, isStale, macroQuality } from '../src/ai/crash';
-import { crashReviewFor, macroMissingText, macroMonthOf } from '../src/app/crashAi';
+import { macroDashboard, dashboardText, isStale, macroQuality } from '../src/ai/macro';
+import { macroMissingText, macroMonthOf } from '../src/app/macro';
 import { crashLogView, crashPreviewUnused } from '../src/app/site/views';
 import type { FredSeries } from '../src/data/fred';
 import type { Account, Notif, ShadowRecord } from '../src/engine';
-import { freshDb } from './helpers/d1';
 
 describe('T33b：總經資料（§3.5）', () => {
   it('過期：月資料停在 80 天前算過期、70 天前不算；日資料 11 天、週資料 22 天算過期；儀表板與 AI 看的文字標出來', () => {
@@ -46,22 +45,6 @@ describe('T33b：總經資料（§3.5）', () => {
 });
 
 // ---------------------------------------------------------------- 純函式：顯示、影子
-
-describe('T33b：月報項目上的那一列（§3.3）', () => {
-  it('crashReviewFor：沒有任何執行時，AI 層沒設定 → 沒有開；儀表板不足 → 總經資料抓不到', async () => {
-    const d = await freshDb();
-    try {
-      expect(await crashReviewFor(d.db, '2026-12', 'ON', { ready: false })).toEqual({ state: 'OFF' });
-      expect(await crashReviewFor(d.db, '2026-12', 'ON', { ready: true })).toEqual({ state: 'OFF' });
-      const rows = macroDashboard(new Map(), '2026-11-27');
-      await d.db.prepare("INSERT INTO macro_snapshots (month, as_of, data, created_at) VALUES ('2026-12', '2026-11-27', ?, 'x')").bind(JSON.stringify({ month: '2026-12', asOf: '2026-11-27', rows, breadth: null, core: null, missing: [] })).run();
-      expect(await crashReviewFor(d.db, '2026-12', 'ON', { ready: true })).toEqual({ state: 'NO_DATA' });
-      expect(await crashReviewFor(d.db, '2026-12', 'ON', { ready: false })).toEqual({ state: 'OFF' });
-    } finally {
-      await d.dispose();
-    }
-  });
-});
 
 describe('T33b：影子紀錄（§3.4；舊紀錄的顯示）', () => {
   it('檢視紀錄的表：每次切換一列（同一則通知合成一列），三個金額；上方那一句', () => {

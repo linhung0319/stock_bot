@@ -31,7 +31,7 @@ export interface Premise {
   addedAt?: string;
 }
 
-/** 前提用什麼查（composite §2.2；和草稿的 verify.by 同一組）：財報數字／這家公司的申報／同業的申報／清單內的網站／查不到（信念）。 */
+/** 前提用什麼查（composite §2.2；和草稿的 verify.by 同一組）：財報數字／這家公司的申報／同業的申報／網站（算不算數看網域級別）／查不到（信念）。 */
 export const VERIFY_BY = ['XBRL', 'FILING', 'PEER_FILING', 'WEB', 'NONE'] as const;
 export type VerifyBy = (typeof VERIFY_BY)[number];
 export interface PremiseVerify {
@@ -138,8 +138,6 @@ export interface OwnMeta {
   slow: SlowRuleState;
   /** 已觸發、還沒列進清單的訊號（變動 < 5%，等月報）。 */
   pending: { action: OwnAction; date: string } | null;
-  /** 2026-11-15 拿掉 R1（own_thesis §3.9）：不讀不寫，舊資料留著。 */
-  r1?: boolean | null;
   premises: Premise[];
   /** WATCH：從候補名單進場（allocation_redesign §4.5，promoteWatch 寫）。 */
   origin: 'INITIAL' | 'NEW' | 'TRANSFER' | 'ADOPT' | 'MANUAL' | 'WATCH';
@@ -166,8 +164,6 @@ export interface OwnMeta {
   raisedAt: string | null;
   /** 未解除的硬事件標記。 */
   flags: string[];
-  /** 每個月已發幾則 F25 當天通知。2026-11-15 起不再使用（own_thesis §1.9：你定的條件成立不設上限），欄位留著不讀。 */
-  f25Sent: Record<string, number>;
   /** 最近一次「AI 發起的當天通知」（乙類，own_thesis §1.10）的訊號日：每檔 30 個日曆天最多 1 則，超過的進月報。沒有 = 還沒發過。 */
   aiNotifiedAt?: string | null;
   /** 月審確認成立的你定的條件（甲類）：不當天通知，進隔天的月報（own_thesis §1.10）。月報產生時清掉。 */
@@ -528,11 +524,11 @@ export interface Item {
   why?: string;
   /** 這一項的 AI 建議或說明來自哪幾次 AI 執行（ai_runs.run_id，T13 起；之前的通知沒有這個欄位）。 */
   runIds?: string[];
-  /** F5／F6：上次選了「這次不做」、這份月報重列的那一項（core_ai §3.6，由 T33c 產生；重列的不開檢視）。 */
+  /** F5／F6：上次選了「這次不做」、這份月報重列的那一項（core_ai §3.6，由 T33c 產生；重列的不開檢視）。2026-11-22 起不再產生，舊通知的顯示用。 */
   relist?: boolean;
   /**
    * F5／F6：崩盤規則檢視的狀態（core_ai §3.2、§3.3；T33b 起）。網站那一列、LINE 那一行（aiLine 只在 OPINION 時寫）、影子紀錄的 ai 都看它。
-   * 沒有 = 舊通知或重列的那一項（重列的不開檢視）。月報之後才回來的結果由 applyCrashReview 更新（已經是 OPINION／NO_OPINION 就不動）。
+   * 沒有 = 舊通知或重列的那一項（重列的不開檢視）。2026-11-22 起不再產生、也不再更新（allocation_redesign §1.6）；舊通知的顯示與影子紀錄用。
    */
   crashReview?: CrashReviewInfo;
   /**
@@ -660,10 +656,6 @@ export interface MonthlyContext {
   emptySlots?: number;
   /** 月份標籤，例如 2026-12。 */
   month: string;
-  /** 舊月報（T33b 之前）：崩盤規則切換時 AI 檢視的一行意見。新的月報用 crashReview；讀到這個欄位時當成 { state: 'OPINION', opinion }。 */
-  crashOpinion?: '照做' | '延後';
-  /** 崩盤規則檢視在這個月份＋方向的狀態（core_ai §3.2，T33b 起取代 crashOpinion）：出月報前由 crashReviewFor 算好。 */
-  crashReview?: CrashReviewInfo;
   /** 同一家公司的不同類股：代號 → 公司（CIK）。同公司已經有一類在名單裡時，另一類不進場（設計 §2.4）。 */
   company?: Record<string, string>;
   /** 本月暫停換股的原因（成分股名單不一致、排名沒有產生）；order 這時是目前的動能名單，名單不變。 */
@@ -674,8 +666,8 @@ export interface MonthlyContext {
   watch?: Record<string, string>;
   /** 本月的否決是沿用之前的審查（momentum_ai §3.4）：代號 → 沿用的月份。 */
   vetoCarried?: Record<string, string>;
-  /** 這份月報用到的 AI 執行（ai_runs.run_id，T13）：崩盤規則檢視、F1 每檔的審查。（F20 說明附在月報的 notes T32d 拿掉，momentum_ai §3.6；舊月報的這兩個欄位不再讀。） */
-  runIds?: { crash?: string; entry?: Record<string, string> };
+  /** 這份月報用到的 AI 執行（ai_runs.run_id，T13）：F1 每檔的審查。（F20 說明附在月報的 notes T32d 拿掉，momentum_ai §3.6；舊月報的崩盤規則檢視 crash 2026-11-22 起不再寫，T88 拿掉型別；這幾個欄位不再讀。） */
+  runIds?: { entry?: Record<string, string> };
   /**
    * 訊號日的超額波動（依波動度減碼用；momentum_ai §3.11）。第一次產生月報時算好寫進來；之後的重算（暫停後、入金合併、排除）用它。
    * null = 算不出來；沒有這個欄位（舊月報）= 當場算。
@@ -699,7 +691,7 @@ export interface MonthlyContext {
    */
   attention?: Attention[];
   /**
-   * 訊號日核心 ETF 資料檢查的結果（core_ai §3.10）：代碼（MA_SHORT、DAY_GAP、MA_GAP、BOND_JUMP、NO_BENCH）。每日流程在產生月報前算好；重算沿用。
+   * 訊號日核心 ETF 資料檢查的結果（core_ai §3.10）：代碼（DAY_GAP、BOND_JUMP、NO_BENCH；0.17.0 以前的月報還可能有 MA_SHORT、MA_GAP）。每日流程在產生月報前算好；重算沿用。
    * 有 DAY_GAP、而且這份月報有核心比例調回 F26（舊的是崩盤規則切換 F5/F6）→ 項目的 note 寫 coreNote，LINE 加一行「注意：…」（T86 P14）。
    */
   coreCheck?: string[];
@@ -730,8 +722,6 @@ export interface SavedState {
   rule: RuleState;
   own: Record<string, OwnMeta>;
   owe: Account['mom']['owe'];
-  /** 2026-11-22 之前的月報才有（core_ai §3.6 的欠單）；還原時不讀（allocation_redesign §1.3）。 */
-  coreOwe?: CoreOwe;
   cash: number;
   /**
    * 候補裡月報會改的三個欄位（allocation_redesign §4.5；T85 乙段）：重算月報時還原，F29 才會照同一份輸入再列一次。
@@ -739,23 +729,6 @@ export interface SavedState {
    */
   watch?: Record<string, Pick<WatchMeta, 'lastListed' | 'entry' | 'blocked'>>;
 }
-
-/**
- * 崩盤項目（F5／F6，含重列的）選了「這次不做」、或快照顯示核心的單沒做（core_ai §3.6）：
- * 下一份月報規則還在同一個狀態就再列一次核心的單，已經翻回去就不用做。月報讀了就清掉。
- * direction：那一項是啟動（ON）還是解除（OFF）；since：那則通知的訊號日；notif：通知編號；reason：使用者寫的理由。
- */
-export interface CoreOwe {
-  direction: 'ON' | 'OFF';
-  since: string;
-  notif: number;
-  reason: string;
-}
-
-/** 快照顯示崩盤項目核心的單沒做時，coreOwe 記的理由（§3.6）。 */
-export const CORE_OWE_SNAPSHOT_REASON = '快照顯示沒有做';
-/** 上一份月報一直沒回覆、新月報出來時，舊月報裡的崩盤切換記成 coreOwe 的理由（T39b）。 */
-export const CORE_OWE_UNANSWERED_REASON = '上一份月報沒有回覆';
 
 /**
  * 崩盤規則檢視在某個月份＋方向的狀態（core_ai §3.2）：
@@ -838,11 +811,6 @@ export interface Account {
      */
     attnShown?: Record<string, Record<string, string>>;
   };
-  /**
-   * 崩盤項目選了「這次不做」之後欠的核心的單（core_ai §3.6）。2026-11-22 起不讀不寫（allocation_redesign §1.3：核心比例每月重算，不記欠單）；
-   * 舊帳戶讀進來時由 migrateAccount 清掉。型別留著給還沒退場的顯示程式，T88 清。
-   */
-  coreOwe?: CoreOwe;
   /**
    * 這個帳戶是從崩盤規則換到固定比例的（migrateAccount 讀到舊的規則狀態時設成 true）：
    * 之後第一次照做之前的核心比例調回（F26）多一句「一次性調整」的備註（allocation_redesign §1.5）。
@@ -1173,7 +1141,6 @@ export function newOwnMeta(view: MarketView, ticker: string, origin: OwnMeta['or
     aiTier: null,
     raisedAt: null,
     flags: [],
-    f25Sent: {},
     fileId: newFileId(ticker, view.date, lastClosed),
     thesis: null,
     premiseSeq: nextPremiseSeq({ premises: ps }),
@@ -1275,7 +1242,7 @@ function crashOwe(acct: Pick<Account, 'notifs'>, ticker: string, notif: number):
  * 讀進來的帳戶狀態轉成現在的樣子（allocation_redesign §1.5「資料的處理」；載入時呼叫，重複呼叫結果相同）：
  *   設定補上 coreBond、coreBand；
  *   規則狀態有 crash（0.17.0 以前）→ 拿掉、effPrev 重算成波動度比例、記下 fromCrashRule、mom.owe 裡原因是崩盤規則的清掉（其他原因的留著）；
- *   coreOwe 清掉。
+ *   coreOwe 清掉；自選的 r1、f25Sent（早就不用的欄位）清掉（T88）。
  * 持股不動：轉換靠第一次界線檢查（§1.5），不寫專用的轉換程式。直接改傳進來的物件並回傳它。
  */
 export function migrateAccount(acct: Account): Account {
@@ -1288,7 +1255,14 @@ export function migrateAccount(acct: Account): Account {
     acct.fromCrashRule = true;
     if (acct.mom?.owe) for (const [tk, o] of Object.entries(acct.mom.owe)) if (crashOwe(acct, tk, o.notif)) delete acct.mom.owe[tk];
   }
-  if (acct.coreOwe) delete acct.coreOwe;
+  // 0.17.0 以前的核心欠單（coreOwe，崩盤項目選了這次不做）與自選早就不用的欄位（r1：2026-11-15 拿掉 R1；f25Sent：F25 的每月計數）：
+  // 型別在 T88 拿掉，讀進來時清掉（沒有地方讀）
+  const legacy = acct as Account & { coreOwe?: unknown };
+  if (legacy.coreOwe !== undefined) delete legacy.coreOwe;
+  for (const m of Object.values(acct.own ?? {}) as (OwnMeta & { r1?: unknown; f25Sent?: unknown })[]) {
+    if (m.r1 !== undefined) delete m.r1;
+    if (m.f25Sent !== undefined) delete m.f25Sent;
+  }
   return acct;
 }
 

@@ -71,7 +71,6 @@ import type { ExitLine } from '../../ai/ownCheck';
 import { demoDiscussion } from '../discussion';
 import type { ThesisLogInput } from '../ledgerStore';
 import { COND_ACTIONS, MAX_OWNED, fileKind, isAddAction, isEntryAction, ruleResponseLogs, withRiskSeen, type CondAction } from '../thesis';
-import { RISK_SEEN_DAYS } from '../../ai/freshEyes';
 import { StaleExitsError } from '../ownCheckAi';
 import { thesisReviewHeld } from '../ownAi';
 import { demoProbe, parseWebSources, sameWebSources } from '../webEvidence';
@@ -491,30 +490,6 @@ async function openRisksOf(backend: SiteBackend, tk: string): Promise<RiskView[]
   if (!backend.ai) return [];
   const d = ready(await backend.load());
   return (await backend.ai.thesis(tk, d.acct, d.view))?.risks ?? [];
-}
-
-/**
- * POST /api/ops/own-risk：{ ticker, runId, k } → 「看過了，不加」（T63，composite_layer_design §3）。
- * 那一件記進這檔的 riskSeen（DISMISSED）、論點檔的 log 寫 RISK_SEEN；之後 180 個日曆天內，同一件事不再列進「要看的事」。
- * 不動論點、不動檔位、不發通知。那一件已經不在清單上（處理過、被新的審查換掉、過期）→ 409。
- * T71（confirm_audit_design §4）：新風險不再列「要看的事」，畫面拿掉這個按鈕；端點與舊的 riskSeen 留著（照舊讀）。
- */
-async function dismissRisk(backend: SiteBackend, b: Record<string, unknown>): Promise<Response> {
-  if (!backend.ai) throw new SiteError(400, '示範模式沒有審查紀錄。');
-  const tk = ticker(b.ticker);
-  const ref = riskRefOf({ runId: b.runId, k: b.k });
-  if (!ref) throw new SiteError(422, '沒有指定是哪一件');
-  const hit = (await openRisksOf(backend, tk)).find((r) => r.runId === ref.runId && r.k === ref.k);
-  if (!hit) throw new SiteError(409, '這一件已經不在清單上（處理過、被新的審查換掉，或超過 180 天），重新整理看看');
-  await mutate(backend, `${tk} 前提以外的風險：看過不加`, [], (d) => {
-    if (!d.acct.own[tk]) throw new SiteError(422, `${tk} 不在自選裡`);
-    const acct = clone(d.acct);
-    const meta = acct.own[tk];
-    meta.riskSeen = withRiskSeen(meta.riskSeen, [{ text: hit.text, at: d.view.date, runId: hit.runId, k: hit.k, outcome: 'DISMISSED' }], d.view.date);
-    const log: ThesisLogInput[] = meta.fileId ? [{ ticker: tk, fileId: meta.fileId, session: d.view.date, kind: 'RISK_SEEN', ref: hit.runId, body: { runId: hit.runId, k: hit.k, text: hit.text, outcome: 'DISMISSED' } }] : [];
-    return { acct, log };
-  });
-  return json({ ok: true, days: RISK_SEEN_DAYS });
 }
 
 /** 採用草稿（T70）時帶進 saveThesis 的：那一列草稿、怎麼存（前提、出場條件）、同業怎麼存與核對的結果。 */
@@ -939,8 +914,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     return json(parseThesisBlock(text(b.text, '貼上的內容', 30_000, false), tk));
   }
   if (rest === 'ops/own-thesis' && post) return saveThesis(backend, await body(req));
-  // 審查提到的前提以外的風險：「看過了，不加」（T63）。T71（confirm_audit_design §4）起畫面沒有這個按鈕，端點留著不用
-  if (rest === 'ops/own-risk' && post) return dismissRisk(backend, await body(req));
+  // 審查提到的前提以外的風險「看過了，不加」（POST /api/ops/own-risk，T63）：T71 起畫面沒有這個按鈕，T88 拿掉端點；舊的 riskSeen（DISMISSED）照舊讀
   // 試抓這檔的網頁證據來源（T52；不存）：{ ticker, webSources } → { items }
   if (rest === 'ops/own-sources/probe' && post) {
     const b = await body(req);
@@ -1048,7 +1022,7 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
       throw new SiteError(e instanceof StaleExitsError ? 409 : 422, errText(e));
     }
   }
-  // 條件的所有權（T26，own_thesis §1.5）：勾選舊資料的 AI 建議（accept；T71 起畫面沒有這個按鈕）、撤下（retire：你定的或 AI 監測中的）、
+  // 條件的所有權（T26，own_thesis §1.5）：撤下（retire：你定的或 AI 監測中的）、
   // 改成立時的動作（action；AI 監測中的改成出清或減半 → 變成你定的，T71）
   if (rest === 'ops/own-condition' && post) {
     if (!backend.ai) throw new SiteError(400, '示範模式沒有真的 AI。');
@@ -1056,8 +1030,8 @@ async function route(req: Request, rest: string, url: URL, backend: SiteBackend)
     const tk = ticker(b.ticker);
     const id = typeof b.id === 'number' && Number.isInteger(b.id) && b.id > 0 ? b.id : null;
     if (!id) throw new SiteError(422, '缺少條件的編號');
-    const op = b.op === 'accept' || b.op === 'retire' || b.op === 'action' ? b.op : null;
-    if (!op) throw new SiteError(422, '操作只能是 accept、retire 或 action');
+    const op = b.op === 'retire' || b.op === 'action' ? b.op : null;
+    if (!op) throw new SiteError(422, '操作只能是 retire 或 action');
     try {
       return json({ ok: true, ...(await backend.ai.condition(tk, id, op, b.action)) });
     } catch (e) {

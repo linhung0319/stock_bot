@@ -2,7 +2,7 @@
 // 純函式的規則偵測與檢查用構造的資料測；整條流程用假的 EDGAR（依 CIK 分開的申報）、假的雲端排程、假的 LINE、假的 FRED。
 import { describe, expect, it } from 'vitest';
 import { judge, type EvidencePack } from '../src/ai/check';
-import { checkCrashPayload, crashOpinionOf, macroDashboard } from '../src/ai/crash';
+import { macroDashboard } from '../src/ai/macro';
 import { attribution, earningsDivergence, epsQuarters, jumpMetrics, oneOffJump, shareGrowth, sicToEtf, suspectMoves } from '../src/ai/detect';
 import { dropDecision } from '../src/ai/drops';
 import { hardDecision, scanEvents } from '../src/ai/events';
@@ -276,7 +276,7 @@ describe('F7／F20／F5／F6／F21／F14：檢查與結論', () => {
     expect(bad.samples[0].payload).toMatchObject({ cause_class: 'UNKNOWN', escalate_to_F19: false });
   });
 
-  it('F5／F6：FRED CSV、儀表板（倒掛天數、年增、真空頭開始時的值）、意見只有 3 票一致才寫', () => {
+  it('總經儀表板：FRED CSV、儀表板（倒掛天數、年增、真空頭開始時的值）（崩盤規則檢視的意見與檢查 T88 刪掉）', () => {
     const s = parseFredCsv('T10Y3M', 'observation_date,T10Y3M\n2000-10-02,0.5\n2026-05-01,0.2\n2026-08-03,-0.1\n2026-11-02,-0.3\n2026-11-03,.\n2026-11-04,\n');
     expect(s.values).toEqual([0.5, 0.2, -0.1, -0.3]);
     const ind = parseFredCsv('INDPRO', 'DATE,INDPRO\n2025-10-01,100\n2026-10-01,103\n');
@@ -287,14 +287,6 @@ describe('F7／F20／F5／F6／F21／F14：檢查與結論', () => {
     expect(t.atBears['2000-10']).toBeNull();
     expect(rows.find((r) => r.id === 'INDPRO')!.derived).toBe('年增 3.0%');
     expect(rows.find((r) => r.id === 'NFCI')!.note).toContain('抓不到');
-    expect(crashOpinionOf({ status: 'AGREED', verdict: 'DELAY' } as never)).toBe('延後');
-    expect(crashOpinionOf({ status: 'SPLIT', verdict: 'DELAY' } as never)).toBeNull();
-    const pack = { rule: { detail: { direction: 'ON' } }, policy: { verdicts: ['FOLLOW', 'DELAY', 'INSUFFICIENT'] } } as unknown as EvidencePack;
-    const smp = { rawVerdict: 'FOLLOW', verdict: 'FOLLOW', issues: [] as string[], payload: { bear_prob: 1.4, opinion: 'DELAY' } };
-    checkCrashPayload(smp as never, pack);
-    // T33d 起不再檢查 bear_prob（送來就忽略，core_ai §3.9）；opinion 和 verdict 不同照樣記
-    expect(smp.payload.bear_prob).toBe(1.4);
-    expect(smp.issues).toEqual(['payload.opinion（DELAY）和 verdict 不同']);
   });
 
   it('F21：French 動能因子的回撤事件；不得建議停用或繼續；每條前提都要有正反證據', () => {

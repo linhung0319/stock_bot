@@ -367,7 +367,7 @@ describe('T26：審查三票確認你定的條件成立（§1.6 第 2 點）', (
 // ---------------------------------------------------------------- 勾選、撤下、改動作
 
 describe('T26：勾選、撤下、改動作', () => {
-  it('建議的條件沒勾選就不通知；勾選後成立會通知（財報條件，程式比對）', async () => {
+  it('舊資料的建議條件（PROPOSED）不通知、不標成立；勾選的操作 T88 拿掉（T71 起畫面沒有這個按鈕）', async () => {
     await withWorld(async (c) => {
       const { acct, view, axis } = await setup(c);
       const p = await seed(c.db, { condId: 'N1', status: 'PROPOSED', text: '毛利率低於 55%', check: GM(0.55), tier: 'EXIT' });
@@ -383,64 +383,44 @@ describe('T26：勾選、撤下、改動作', () => {
       expect(a.acct.notifs.filter((n) => n.kind === 'URGENT')).toEqual([]);
       expect(a.log.join('\n')).toContain('你還沒勾選，不通知');
       expect((await byId(c.db, p)).status).toBe('PROPOSED');
-      // 勾選（預設帶 AI 建議的檔位：出清）→ 監測中
-      expect(await conditionOp(c.db, acct, 'NVDA', p, 'accept', undefined, '2026-11-23', new Date('2026-11-24T01:00:00Z'))).toEqual({ id: p, status: 'ACTIVE', action: 'EXIT' });
-      expect(await byId(c.db, p)).toMatchObject({ status: 'ACTIVE', action: 'EXIT', acceptedAt: '2026-11-24T01:00:00.000Z' });
-      // 成立 → 通知
-      const b = await xbrl(acct);
-      const n = b.acct.notifs.find((x) => x.kind === 'URGENT')!;
-      // T29a：甲類，文字有誰哪天定的（AI 建議、你勾選）
-      expect(n.items[0]).toMatchObject({ f: 'F25', kind: 'OWN_COND', title: 'NVDA：你在 2026-11-24 定的條件「毛利率低於 55%」成立' });
-      expect(n.items[0].choices[0].tier).toBe('EXIT');
-      expect(await byId(c.db, p)).toMatchObject({ status: 'MET', metBasis: 'XBRL' });
+      // 勾選的操作拿掉了（T88）：舊建議不能再變成你定的；改動作也不行（只有你定的與 AI 監測中的可以）
+      await expect(conditionOp(c.db, acct, 'NVDA', p, 'accept' as never, undefined, '2026-11-23', new Date('2026-11-24T01:00:00Z'))).rejects.toThrow(CondError);
+      await expect(conditionOp(c.db, acct, 'NVDA', p, 'action', 'EXIT', '2026-11-23', new Date('2026-11-24T01:00:00Z'))).rejects.toThrow('只有你定的');
+      expect((await byId(c.db, p)).status).toBe('PROPOSED');
+      expect((await xbrl(acct)).acct.notifs.filter((n) => n.kind === 'URGENT')).toEqual([]);
     });
   });
 
-  it('第 9 條勾不進去；被取代的那一條不算；有 supersedes 的勾選後舊的那條變 RETIRED；log 寫 CONDITION', async () => {
+  // T88：勾選舊建議（accept）拿掉；第 9 條加不進去、有 supersedes 的取代舊的那條，改由「AI 監測中的條件改成出清或減半」那條路測（t71-ai-watch）
+  it('撤下、改動作；舊資料的只記錄建議照樣列出來；log 寫 CONDITION', async () => {
     await withWorld(async (c) => {
       const { acct } = await setup(c);
       const mine: number[] = [];
       for (let k = 1; k <= 8; k++) mine.push(await seed(c.db, { condId: `U${k}`, status: k % 2 ? 'ACTIVE' : 'REVIEW_ONLY', origin: 'USER', accepted: true, action: 'HALF', text: `你定的第 ${k} 條` }));
       await seed(c.db, { condId: 'M1', kind: 'PRICE', status: 'MANUAL', origin: 'USER', accepted: true, action: 'REVIEW', text: '收盤跌破 100（只記錄，不算在 8 條裡）', check: { type: 'price_close_below', level: 100 } });
-      const ninth = await seed(c.db, { condId: 'N1', status: 'PROPOSED', text: '第 9 條' });
-      const sup = await seed(c.db, { condId: 'N2', status: 'PROPOSED', text: '取代第 3 條', supersedes: mine[2] });
       const price = await seed(c.db, { condId: 'N3', kind: 'PRICE', status: 'PROPOSED', text: '收盤跌破 90', check: { type: 'price_close_below', level: 90 }, auto: false });
-      const op = (id: number, o: 'accept' | 'retire' | 'action', action?: string) => conditionOp(c.db, acct, 'NVDA', id, o, action, '2026-11-20', new Date('2026-11-21T01:00:00Z'));
-      await expect(op(ninth, 'accept')).rejects.toThrow(CondError);
-      await expect(op(ninth, 'accept')).rejects.toThrow('你定的條件已經有 8 條（上限 8 條），先撤下一條才能再加。');
-      expect((await byId(c.db, ninth)).status).toBe('PROPOSED');
-      // 只記錄的建議（價格）勾得進去：不算在 8 條裡
+      const op = (id: number, o: 'retire' | 'action', action?: string) => conditionOp(c.db, acct, 'NVDA', id, o, action, '2026-11-20', new Date('2026-11-21T01:00:00Z'));
+      // 舊資料的只記錄建議（價格）照樣列出來
       expect((await monitorView(c.env, 'NVDA')).find((x) => x.id === price)).toMatchObject({ code: 'PROPOSED', recordOnly: true });
-      expect(await op(price, 'accept', 'REVIEW')).toMatchObject({ status: 'MANUAL', action: 'REVIEW' });
-      // 取代第 3 條：數量不變，勾得進去；第 3 條 RETIRED
-      expect(await op(sup, 'accept', 'EXIT')).toEqual({ id: sup, status: 'ACTIVE', action: 'EXIT', retired: mine[2] });
-      expect(await byId(c.db, mine[2])).toMatchObject({ status: 'RETIRED' });
-      expect((await byId(c.db, mine[2])).note).toContain('取代');
-      // 撤下一條之後第 9 條就勾得進去
       expect(await op(mine[0], 'retire')).toMatchObject({ status: 'RETIRED' });
-      expect(await op(ninth, 'accept', 'HALF')).toMatchObject({ status: 'ACTIVE', action: 'HALF' });
       // 改動作
       expect(await op(mine[1], 'action', 'EXIT')).toMatchObject({ status: 'REVIEW_ONLY', action: 'EXIT' });
       expect((await byId(c.db, mine[1])).action).toBe('EXIT');
       // 不能做的
       await expect(op(mine[0], 'retire')).rejects.toThrow('只有你定的');
-      await expect(op(ninth, 'accept')).rejects.toThrow('不是建議中的條件');
+      await expect(op(price, 'retire')).rejects.toThrow('只有你定的');
       await expect(op(mine[1], 'action', 'SELL')).rejects.toThrow('出清、減半或重新審查');
       // log：每一次一筆 CONDITION（帳戶沒有存檔，不跟著快照的版本）
       const log = (await c.db.prepare("SELECT ref, body, account_version, session FROM own_thesis_log WHERE kind = 'CONDITION' ORDER BY id").all<{ ref: string; body: string; account_version: number | null; session: string }>()).results;
       expect(log.map((l) => JSON.parse(l.body))).toEqual([
-        { id: price, change: 'ACCEPTED', action: 'REVIEW', by: 'USER' },
-        { id: sup, change: 'ACCEPTED', action: 'EXIT', by: 'USER' },
-        { id: mine[2], change: 'RETIRED', action: 'HALF', by: 'USER' },
         { id: mine[0], change: 'RETIRED', action: 'HALF', by: 'USER' },
-        { id: ninth, change: 'ACCEPTED', action: 'HALF', by: 'USER' },
         { id: mine[1], change: 'ACTION_CHANGED', action: 'EXIT', by: 'USER' },
       ]);
       expect(log.every((l) => l.account_version === null && l.session === '2026-11-20')).toBe(true);
     });
   });
 
-  it('網站 API：/api/ops/own-condition 勾選、改動作、撤下；超過上限回 422；持股頁的資料（誰定的、成立時做什麼、進度）', async () => {
+  it('網站 API：/api/ops/own-condition 改動作、撤下（勾選 T88 拿掉，回 422）；持股頁的資料（誰定的、成立時做什麼、進度）', async () => {
     await withWorld(async (c) => {
       const p = await seed(c.db, { condId: 'N1', status: 'PROPOSED', text: '毛利率低於 55%', tier: 'HALF', createdAt: '2026-11-20T01:00:00.000Z' });
       await c.db.prepare('UPDATE own_conditions SET progress_json = ? WHERE id = ?').bind(JSON.stringify(xbrlProgress([qrow('2026-09-30', 0.6), qrow('2026-06-30', 0.5)], GM(0.55, 2), '2026-11-20')), p).run();
@@ -449,10 +429,12 @@ describe('T26：勾選、撤下、改動作', () => {
       // 持股頁：建議中的條件
       let m = (await monitorView(c.env, 'NVDA'))[0];
       expect(m).toMatchObject({ id: p, code: 'PROPOSED', status: '建議中', owned: false, action: 'HALF', actionText: '減半', origin: 'AI 建議，11/20 的審查寫的', confirm: '新財報出來時比對', progress: '最新一季 60.0%（2026-09-30，門檻 55.0%）；已連續 0／2 季' });
-      // 勾選
+      // 勾選舊建議（accept）T88 拿掉：422，條件不變
       let r = await post({ ticker: 'NVDA', id: p, op: 'accept', action: 'EXIT' });
-      expect(r.status).toBe(200);
-      expect(await r.json()).toEqual({ ok: true, id: p, status: 'ACTIVE', action: 'EXIT' });
+      expect(r.status).toBe(422);
+      expect((await monitorView(c.env, 'NVDA'))[0]).toMatchObject({ code: 'PROPOSED', owned: false });
+      // 以前勾過的（accepted_at 有寫）：持股頁寫「AI 建議，你在 11/21 定下」；可以改動作、撤下
+      await c.db.prepare("UPDATE own_conditions SET status = 'ACTIVE', accepted_at = '2026-11-21T02:00:00.000Z', action = 'EXIT' WHERE id = ?").bind(p).run();
       m = (await monitorView(c.env, 'NVDA'))[0];
       expect(m).toMatchObject({ code: 'ACTIVE', status: '監測中', owned: true, action: 'EXIT', actionText: '出清', origin: 'AI 建議，你在 11/21 定下' }); // T71：「勾選」改「定下」
       // 改動作、撤下
@@ -462,13 +444,12 @@ describe('T26：勾選、撤下、改動作', () => {
       expect(await r.json()).toMatchObject({ ok: true, status: 'RETIRED' });
       expect(await monitorView(c.env, 'NVDA')).toEqual([]); // 撤下的不列
       // 不能做的回 422 與白話的原因
-      for (let k = 1; k <= 8; k++) await seed(c.db, { condId: `U${k}`, status: 'ACTIVE', origin: 'USER', accepted: true, action: 'HALF' });
       const n9 = await seed(c.db, { condId: 'N9', status: 'PROPOSED' });
-      r = await post({ ticker: 'NVDA', id: n9, op: 'accept' });
+      r = await post({ ticker: 'NVDA', id: n9, op: 'retire' });
       expect(r.status).toBe(422);
-      expect(((await r.json()) as { error: string }).error).toContain('上限 8 條');
+      expect(((await r.json()) as { error: string }).error).toContain('只有你定的');
       expect((await post({ ticker: 'NVDA', id: n9, op: 'delete' })).status).toBe(422);
-      expect((await post({ ticker: 'NVDA', op: 'accept' })).status).toBe(422);
+      expect((await post({ ticker: 'NVDA', op: 'retire' })).status).toBe(422);
     });
   });
 });

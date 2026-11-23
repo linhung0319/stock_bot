@@ -1,8 +1,8 @@
 // 各功能自己的 payload 檢查（src/ai/check.ts 的 PayloadHook），依功能代號查。
-// 擬事件打分（MOM_SCORE）與單月大跌說明（DROP_EXPLAIN）T32d 起不再開（momentum_ai §3.7），沒有檢查。
+// 擬事件打分（MOM_SCORE）與單月大跌說明（DROP_EXPLAIN）T32d 起不再開（momentum_ai §3.7），沒有檢查；
+// 崩盤規則檢視（CRASH_REVIEW）2026-11-22 起不再開（allocation_redesign §1.6），T88 拿掉它的檢查。
 import { XBRL_METRICS } from '../data/edgar';
 import type { PayloadHook } from './check';
-import { CRASH_REVIEW, checkCrashPayload } from './crash';
 import { OWN_DROP, checkDropPayload } from './drops';
 import { OWN_EARNINGS, checkEarningsPayload } from './earnings';
 import { EVENT_SCAN, HARD_EVENT, checkEventScanPayload, checkHardEventPayload } from './events';
@@ -22,7 +22,6 @@ export const PAYLOAD_HOOKS: Record<string, PayloadHook> = {
   [HARD_EVENT]: (s, pack) => checkHardEventPayload(s, pack),
   [MOM_ENTRY]: (s, pack) => checkMomEntryPayload(s, pack),
   [OWN_DROP]: (s, pack) => checkDropPayload(s, pack),
-  [CRASH_REVIEW]: (s, pack) => checkCrashPayload(s, pack),
   [STRATEGY_REVIEW]: (s, pack) => checkStrategyPayload(s, pack),
   [OWN_CHECK]: (s, pack) => checkOwnCheckPayload(s, pack, METRICS),
   [OWN_EARNINGS]: (s) => checkEarningsPayload(s),

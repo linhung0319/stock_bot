@@ -20,7 +20,7 @@ export interface PackDoc {
   id: string;
   /** 來源編號，例如 edgar:0001341439-26-000123、xbrl:MU:GrossProfit:2026Q3、price:MU。 */
   source_id: string;
-  /** web：Worker 抓、存了快照的清單內網頁全文（T52；分析師向取文件的端點要了才加進來，web_evidence_design §1.4）。 */
+  /** web：Worker 抓、存了快照的網頁全文（T68 起排除列表以外都抓）（T52；分析師向取文件的端點要了才加進來，web_evidence_design §1.4）。 */
   kind: 'filing' | 'xbrl' | 'news' | 'price' | 'rule' | 'note' | 'table' | 'web';
   /** 這份資料的日期（申報日、新聞日、資料截止日），≤ as_of。 */
   date: string;

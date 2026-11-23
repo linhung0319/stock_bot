@@ -1,5 +1,6 @@
-// 風險層：依波動度減碼（設計 §4.1）與崩盤規則（設計 §4.4）。
-import { median, sma } from './indicators';
+// 風險層：依波動度減碼（設計 §4.1）。崩盤規則（設計 §4.4）2026-11-22 退場：重放 B-8 的舊路徑在 replay.ts 自己算 200 日線，
+// T88 刪掉沒有呼叫端的 crashRuleOn、crashDecision、validBars。
+import { median } from './indicators';
 
 /** 無條件捨去到 1/3 的倍數（0、1/3、2/3、1）。 */
 export function floorThird(x: number): number {
@@ -59,28 +60,3 @@ export function volScale(inp: VolScaleInput): VolScaleResult {
   };
 }
 
-/**
- * 崩盤規則（設計 §4.4）：每月換股日，核心 ETF 前一日收盤 < 200 日均線 → 啟動。
- * close 是到前一交易日為止的收盤，i 是前一交易日的位置。
- */
-export function crashRuleOn(close: ArrayLike<number>, i: number, maDays = 200): boolean {
-  const ma = sma(close, i, maDays);
-  return close[i] < ma;
-}
-
-/**
- * 上線用的崩盤規則判斷（core_ai §3.10）：均線算得出來時和 crashRuleOn 相同；
- * 算不出來（不滿 maDays 根有效收盤、今天的收盤缺）→ below 維持原狀態 prev、ok = false。重放用 crashRuleOn，不用這個。
- */
-export function crashDecision(close: ArrayLike<number> | undefined, i: number, prev: boolean, maDays = 200): { below: boolean; ok: boolean; ma: number } {
-  const ma = close ? sma(close, i, maDays) : NaN;
-  if (!close || !Number.isFinite(ma) || !Number.isFinite(close[i])) return { below: prev, ok: false, ma: NaN };
-  return { below: close[i] < ma, ok: true, ma };
-}
-
-/** 到 i 為止有幾根有效的收盤（告警文字用）。 */
-export function validBars(close: ArrayLike<number> | undefined, i: number): number {
-  let n = 0;
-  if (close) for (let k = 0; k <= i && k < close.length; k++) if (Number.isFinite(close[k])) n++;
-  return n;
-}

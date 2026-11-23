@@ -95,6 +95,14 @@ describe('待辦頁與帳戶頁的一句話', () => {
 
   it('沒有待辦：不用動', () => {
     expect(todoBubble([], null)).toMatchObject({ k: '現在', mood: 'idle' });
+    expect(plain(todoBubble([], null))).toBe('不用動。有新的月報或通知，會出現在這裡。');
+  });
+  it('沒有待辦、只有「不用回覆」的通知（T88）：說不用動，並提有幾則可以看；有待辦時照舊講待辦', () => {
+    const one = todoBubble([], null, [{ title: 'MSFT 比高點低 20.6%：跌幅審查' }]);
+    expect(one).toMatchObject({ k: '現在', mood: 'idle' });
+    expect(plain(one)).toBe('不用動。有 1 則不用回覆的通知可以看：「MSFT 比高點低 20.6%：跌幅審查」，在下面「不用回覆」那一塊；不用下單，也不用回覆。');
+    expect(plain(todoBubble([], null, [{ title: 'a' }, { title: 'b' }]))).toBe('不用動。有 2 則不用回覆的通知可以看，在下面「不用回覆」那一塊；不用下單，也不用回覆。');
+    expect(plain(todoBubble([todo('TRADE')], null, [{ title: 'a' }]))).not.toContain('不用回覆');
   });
   it('等你決定：列出賣、買、張數、做完的現金，以及預設不做的 AI 建議', () => {
     const b = todoBubble([todo('DECIDE')], { composed: full, items: [{ ticker: 'MSFT', headline: '買 MSFT 3 股', kind: 'AI_ONLY', choice: 'SKIP', cancelled: false, label: 'AI 建議提高比重' }] as Pick<ItemView, 'ticker' | 'headline' | 'kind' | 'choice' | 'cancelled' | 'label'>[] });

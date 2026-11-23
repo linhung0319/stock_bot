@@ -25,7 +25,6 @@ import { ranksAt, viewAt, type Market } from './market';
 export interface SimOptions {
   /** 本月被任務 A 否決的代號（月份 → 代號）。 */
   vetoes?: Record<string, string[]>;
-  crashOpinion?: Record<string, '照做' | '延後'>;
   /** σ 的歷史中位數 = 開始時的 σ × 這個倍數（原型預設 1.35：一開始不減碼）。 */
   sigmaMedianFactor?: number;
   /** 自動回覆每一則通知（照預設選項）。 */
@@ -97,7 +96,6 @@ export class Sim {
       order: ranksAt(this.market, this.d - 1, removedFromUniverse),
       vetoed: this.opt.vetoes?.[this.month],
       month: this.month,
-      crashOpinion: this.opt.crashOpinion?.[this.month],
     });
     this.acct = r.acct;
     this.log.push(`${this.date} 開盤前 月報 #${r.notif.id}：${r.notif.items.map((i) => i.title).join('｜') || r.notif.title}`);

@@ -1,5 +1,5 @@
 // 示範模式的腳本：每個情境要餵給引擎的 AI 輸入（和 test/scenarios.test.ts 餵的一樣），
-// 以及給網站顯示的 AI 說明。AI 層還沒做（T9 之後），這裡的 AI 內容全部是虛構的。
+// 以及給網站顯示的 AI 說明。AI 層已經上線，但示範模式不連真的 AI：這裡的 AI 內容全部是虛構的。
 import type { Tier } from '../engine';
 import type { AiNote } from '../app/site/types';
 

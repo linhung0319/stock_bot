@@ -318,7 +318,7 @@ export interface BriefDetail {
   /** 定稿的證據包裡有沒有附這個事件的暫定稿（有的話 changed_since_provisional 必填）。 */
   hasProvisional: boolean;
   manual?: boolean;
-  /** 清單內的網頁來源（共用清單）。 */
+  /** 已有級別的網頁來源（共用清單）。 */
   webDomains?: string[];
 }
 

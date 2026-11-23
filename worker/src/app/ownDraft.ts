@@ -228,7 +228,7 @@ export function weightFacts(acct: Account, view: MarketView, ticker: string): Fa
 
 /**
  * 開一次草稿（§2.2）：證據包＝論點檔（買進時的一句話、上一份論點檔、現行的前提與條件、事件、歷次審查與使用者的回應）、
- * 價格與規則狀態（只有比重）、XBRL、最近一份 10-Q／10-K 的 MD&A、最近的 8-K、目錄與清單內的網頁來源。
+ * 價格與規則狀態（只有比重）、XBRL、最近一份 10-Q／10-K 的 MD&A、最近的 8-K、目錄與已有級別的網頁來源。
  * 寫一列 own_drafts（PENDING）；沒觸發成的當場結算成 FAILED。
  */
 export async function startOwnDraft(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, trigger: DraftTrigger, now: Date, attnKeys: string[] | null = null): Promise<AiRun> {

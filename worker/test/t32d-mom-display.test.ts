@@ -232,7 +232,7 @@ describe('T32d：拿掉的執行沒有呼叫端', () => {
     const d = await freshDb();
     try {
       await d.db.prepare("INSERT INTO rankings (session, ord, detail, created_at) VALUES ('2026-11-27', ?, '{}', 'x')").bind(JSON.stringify(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'])).run();
-      const t = await scanTargets(d.db, { own: { NVDA: {} }, rule: { heldMom: ['A', 'B'] }, lots: { mom: { A: 5, C: 3 } } });
+      const t = scanTargets({ own: { NVDA: {} }, rule: { heldMom: ['A', 'B'] }, lots: { mom: { A: 5, C: 3 } } });
       expect(t).toEqual([
         { ticker: 'NVDA', role: 'OWN' },
         { ticker: 'A', role: 'MOM' },

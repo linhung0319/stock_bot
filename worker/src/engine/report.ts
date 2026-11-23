@@ -16,7 +16,6 @@ import {
   type AddNotice,
   type Choice,
   type CondNotice,
-  type CoreOwe,
   type CrashReviewInfo,
   type DropStatus,
   dropReviewOpen,
@@ -36,7 +35,7 @@ import {
 } from './account';
 import { dueOwnActions, ownSignalChange, planDay, type FlowInput, type PlanResult } from './allocator';
 import { drawdownFromHigh, excessVol } from './indicators';
-import { composeWithCore, coreBandLines, crashCoreLines, mergeByTicker, planToLines, tenths, type Composed, type CoreBand, type CoreContext, type OrderLine } from './orders';
+import { composeWithCore, coreBandLines, mergeByTicker, planToLines, tenths, type Composed, type CoreBand, type CoreContext, type OrderLine } from './orders';
 import { WATCH_ENTRY_EXPIRE_DAYS, WATCH_LIST_GAP_DAYS, buyAllowed, buyCheck, raiseGapWhy, watchBuyFacts, watchRecWeight } from './buy';
 import { DROP_LADDER, SLOW, dropLadder, halveShares, slowDayInput, stepSlowRule, stepWatch } from './slowRule';
 import { cellKey, coreCfg, setApplied, type OwnAction, type OwnState } from './types';
@@ -844,63 +843,17 @@ function itemsFromPlan(acct: Account, view: MarketView, plan: PlanResult, values
   return items;
 }
 
-// ---------------------------------------------------------------- 崩盤規則檢視的狀態（core_ai §3.2）
-
-/** 月報輸入裡的檢視狀態；舊月報只有 crashOpinion → 當成 { state: 'OPINION', opinion }。 */
-export function monthlyCrashReview(input: Pick<MonthlyContext, 'crashReview' | 'crashOpinion'>): CrashReviewInfo | undefined {
-  if (input.crashReview) return input.crashReview;
-  return input.crashOpinion ? { state: 'OPINION', opinion: input.crashOpinion } : undefined;
-}
-
-/** F5／F6 項目上和檢視有關的欄位：crashReview；aiLine 只在 OPINION 時寫；runIds 只要有執行就帶（舊月報用 runIds.crash）。 */
-function crashReviewFields(info: CrashReviewInfo | undefined, legacyRun?: string): Pick<Item, 'crashReview' | 'aiLine' | 'runIds'> {
-  if (!info) return {};
-  const runId = info.runId ?? legacyRun;
-  return { crashReview: clone(info), ...(info.state === 'OPINION' && info.opinion ? { aiLine: `AI 檢視：${info.opinion}` } : {}), ...(runId ? { runIds: [runId] } : {}) };
-}
+// ---------------------------------------------------------------- 崩盤規則檢視的狀態（舊通知的顯示用）
 
 /**
- * 月報之後才回來的檢視結果寫進 F5／F6 項目（core_ai §3.2 的 applyCrashReview 第 3 步；直接改傳進來的通知）：
- * crashReview、aiLine、runIds 換成新的，通知的 runIds 跟著重算。回傳有沒有改。
+ * F5／F6 項目上的檢視狀態；舊通知沒有 crashReview 時由 aiLine 推回（「AI 檢視：照做／延後」= 三票一致）。
+ * 崩盤規則與它的檢視 2026-11-22 起退場（allocation_redesign §1.6）：只剩網站顯示舊通知、回覆 0.18.0 以前還沒回覆的舊月報時的影子紀錄在用。
  */
-export function setCrashReview(n: Notif, it: Item, info: CrashReviewInfo): boolean {
-  const before = JSON.stringify([it.crashReview, it.aiLine, it.runIds]);
-  const f = crashReviewFields(info);
-  it.crashReview = f.crashReview;
-  if (f.aiLine) it.aiLine = f.aiLine;
-  else delete it.aiLine;
-  if (f.runIds) it.runIds = f.runIds;
-  syncRunIds(n);
-  return before !== JSON.stringify([it.crashReview, it.aiLine, it.runIds]);
-}
-
-/** F5／F6 項目上的檢視狀態；舊通知沒有 crashReview 時由 aiLine 推回（「AI 檢視：照做／延後」= 三票一致）。 */
 export function crashReviewOf(it: Pick<Item, 'crashReview' | 'aiLine'>): CrashReviewInfo | undefined {
   if (it.crashReview) return it.crashReview;
   const m = /^AI 檢視：(照做|延後)$/.exec(it.aiLine ?? '');
   return m ? { state: 'OPINION', opinion: m[1] as '照做' | '延後' } : undefined;
 }
-
-// ---------------------------------------------------------------- 崩盤項目「這次不做」之後（core_ai §3.6）
-
-/**
- * 欠的核心的單（coreOwe）重列時的行：用現在的市值重算（啟動：核心的一半減掉已經有的短債；解除：短債全部換回）。
- * 股數是 0 的行拿掉；動到的金額不到總資產的 orderMin（0.25%）就當成沒有要動的（例如之後自己補做了、只剩零頭）。
- */
-export function owedCoreLines(ctx: CoreContext, direction: CoreOwe['direction']): OrderLine[] {
-  const lines = crashCoreLines(ctx, direction === 'ON').filter((l) => l.shares !== 0);
-  const moved = lines.reduce((a, l) => Math.max(a, Math.abs(l.shares * ctx.price(l.ticker))), 0);
-  return moved > ctx.cfg.orderMin * ctx.total ? lines : [];
-}
-
-/** 欠的那一次是哪一份月報（月份標籤，例如 2027-01）；找不到通知就用訊號日的年月。 */
-export function coreOweMonth(acct: Pick<Account, 'notifs'>, owe: CoreOwe): string {
-  return acct.notifs.find((n) => n.id === owe.notif)?.monthly?.input.month ?? owe.since.slice(0, 7);
-}
-
-/** 解除那個月：上次啟動沒做時 F6 的備註（§3.6 的表）。 */
-export const RELIST_OFF_NOTE = '上次啟動你沒有做，這次沒有短債要換回';
-export const RELIST_OFF_NOTE_PART = '上次啟動你沒有做；這次只換回後來放進短債的部分';
 
 function excessVolOf(view: MarketView, benchmark: string) {
   const cache: Record<string, Float64Array> = {};
@@ -1134,13 +1087,12 @@ function savedState(acct: Account): SavedState {
 
 /**
  * 還原月報前的狀態（規則、自選、策略單的欠單）。2026-11-22 之前存的狀態：規則照 normRule 轉成現在的（拿掉崩盤、effPrev 只含波動度比例），
- * 核心的欠單（coreOwe）不還原（allocation_redesign §1.3、§1.5）。
+ * 0.17.0 以前存的核心欠單（coreOwe）不讀（allocation_redesign §1.3、§1.5）。
  */
 export function restoreSaved(acct: Account, before: SavedState): void {
   acct.rule = normRule(clone(before.rule));
   acct.own = clone(before.own);
   acct.mom.owe = clone(before.owe);
-  delete acct.coreOwe;
   // 候補裡月報會改的欄位（上次列進月報、等月報的進場條件、沒提的原因）：還在候補名單裡的才還原，重算時進場項目照同一份輸入再列一次
   for (const [t, w0] of Object.entries(before.watch ?? {})) {
     const w = acct.watch?.[t];

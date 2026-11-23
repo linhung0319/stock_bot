@@ -1,10 +1,10 @@
 // T33a：核心的修補（core_ai_design_2026-11-15 §5 的 T33a 那一列與「還沒決定的」C14）。
-// T80（階段十二，allocation_redesign §1.2、§1.6）：崩盤規則退場，這裡只留還適用的——C14（核心不夠付時買單往回減）與 crashDecision 這個純函式。
+// T80（階段十二，allocation_redesign §1.2、§1.6）：崩盤規則退場，這裡只留還適用的 C14（核心不夠付時買單往回減）；crashDecision 這個純函式沒有呼叫端，T88 刪掉。
 // 拿掉的：§3.8 崩盤規則啟動期間多的錢放短債（halfUpTo；錢進出核心改成一律照比例，測試在 t80-core-ratio.test.ts）、
 // §3.1 crashNeeds 看月報上的 F5、§3.3 崩盤項目的 AI 說明、§3.7 月報暫停後用訊號日的崩盤判斷、§3.10 月報裡均線不足不解除（月報不再產生 F5／F6）。
 import { describe, expect, it } from 'vitest';
 import { capNoteOf } from '../src/app/site/views';
-import { composeWithCore, crashDecision, DEFAULT_CONFIG, type OrderLine } from '../src/engine';
+import { composeWithCore, DEFAULT_CONFIG, type OrderLine } from '../src/engine';
 
 const cfg = DEFAULT_CONFIG;
 
@@ -39,15 +39,4 @@ describe('C14：核心不夠付時，買單會不會超過現金', () => {
     expect(capNoteOf(ok)).toBeNull();
     expect(ok.merged.find((m) => m.ticker === 'NVDA')!.shares).toBe(50);
   });
-});
-
-describe('§3.10 均線算不出來：crashDecision 維持原狀態', () => {
-  it('不滿 200 根有效收盤 → below = 原狀態、ok = false；夠的時候照收盤與均線', () => {
-    const up = Array.from({ length: 200 }, (_, k) => 100 + k);
-    expect(crashDecision(up, 199, true)).toMatchObject({ below: false, ok: true });
-    expect(crashDecision(up, 150, true)).toMatchObject({ below: true, ok: false });
-    expect(crashDecision(up, 150, false)).toMatchObject({ below: false, ok: false });
-    expect(crashDecision(undefined, 10, true)).toMatchObject({ below: true, ok: false });
-  });
-
 });

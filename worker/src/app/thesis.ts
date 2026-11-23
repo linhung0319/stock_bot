@@ -1499,7 +1499,7 @@ export const OWN_ATTN: AttnKind[] = [
           key: `PREMISE_NO_DATA:${ps.map((p) => p.id).join(',')}`,
           every: 6,
           since,
-          // T54：審查的 AI 現在可以另外取同業申報與清單內的網頁，月底也會因為這幾條再審（WEB_DUE），所以不再寫「監測不了」
+          // T54：審查的 AI 現在可以另外取同業申報與網頁（排除列表以外都能取，算不算數看網域級別），月底也會因為這幾條再審（WEB_DUE），所以不再寫「監測不了」
           text: `${file.ticker} 的前提 ${ps.map((p) => `${p.id}「${short(p.text)}」`).join('、')}最近一次審查 3 票都是證據不足：公司的申報、財報與 AI 另外取到的網頁裡都沒有找到依據。距上次審查滿 ${WEB_DUE_DAYS} 天，月底會為${which}再審一次、讓 AI 再去找；也可以改寫成查得到的事，或複製討論包到 claude.ai 討論`,
         },
       ];

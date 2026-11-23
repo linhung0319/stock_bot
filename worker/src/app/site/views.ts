@@ -45,7 +45,7 @@ import {
   watchRecWeight,
   type WatchMeta,
 } from '../../engine';
-import { CRASH_REVIEW } from '../../ai/crash';
+import { CRASH_REVIEW } from '../../ai/functions';
 import { HORIZONS, indexOn, type PriceBook } from '../../ai/shadow';
 import type { AiRun } from '../aiRuns';
 import type { RunRow } from './aiViews';
@@ -1269,7 +1269,7 @@ export function stateView(d: SiteData): StateView {
   const first = todo[0];
   const firstN = first?.type === 'DECIDE' ? r.acct.notifs.find((n) => n.id === first.id) : undefined;
   const plan = firstN ? notifView(r, firstN) : null;
-  return { ...base, hasAccount: true, account, todo, fyi, recent, thesisTodo: thesisTodoOf(r.acct), drafts: d.drafts ?? {}, brief: d.brief ?? null, notice: d.notice ?? null, bubble: { todo: todoBubble(todo, plan), account: accountBubble(account) } };
+  return { ...base, hasAccount: true, account, todo, fyi, recent, thesisTodo: thesisTodoOf(r.acct), drafts: d.drafts ?? {}, brief: d.brief ?? null, notice: d.notice ?? null, bubble: { todo: todoBubble(todo, plan, fyi), account: accountBubble(account) } };
 }
 
 // ---------------------------------------------------------------- 紀錄

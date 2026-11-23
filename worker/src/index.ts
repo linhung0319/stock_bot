@@ -19,7 +19,7 @@ import { getFlowState, ingest, pushPending, recentFlowRuns, runFlow, sendTestPus
 import { loadAccount, requiredTickers } from './app/ledgerStore';
 import { startOwnReview } from './app/ownAi';
 import { entryEvidence } from './app/momAi';
-import { buildSnapshot, macroMonthOf, saveSnapshot } from './app/crashAi';
+import { buildSnapshot, macroMonthOf, saveSnapshot } from './app/macro';
 import { entryRuleVerdict } from './ai/momEntry';
 import { buildMarketView } from './data/marketView';
 import { lineConfigured } from './app/line';

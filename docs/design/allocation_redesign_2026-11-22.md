@@ -167,6 +167,15 @@
 - **策略檢討提醒**：`STRATEGY_COST_NOTE` 接在提醒文字最後。
 - **`run.md`**：檔裡沒有崩盤檢視的列（每個功能的判斷寫在各自的 prompt 檔），不需要改、不需要重貼；`crash_review_v1／v2.md` 留著。
 
+**收尾時定的細節（T88，2026-11-23）**——把 T81 留下的本體清掉時，對照程式定的：
+
+- **刪掉的**（正式流程、網站、重放都沒有呼叫端）：崩盤規則檢視的排程與套用（`crashNeeds`、`crashDirection`、`startCrashRuns`、`crashReviewFor`、`applyCrashReview`、重開與告警 `CRASH_REVIEW_FAILED` 的文字）、`pushHold` 的 `crashWaiter`、證據包與檢查（`crashPack`、`checkCrashPayload`、`CRASH_EPISODES`、`baseRateText`、`crash_review_v2` 的版本常數）、月報的 `monthlyCrashReview`／`setCrashReview`、`coreOwe` 的型別與重列（`CoreOwe`、`owedCoreLines`、`coreOweMonth`、`RELIST_OFF_NOTE`、`crashCoreLines`）、`MonthlyContext.crashOpinion／crashReview`、`runIds.crash`、告警種類 `CORE_MA_MISSING`、`CRASH_REVIEW_FAILED`。
+- **`crashRuleOn`、`crashDecision`、`validBars` 也刪掉**：上面的表寫「`crashRuleOn` 留給重放驗收」，但重放的舊路徑（`replay.ts`）一直是自己用 `sma` 算 200 日線，沒有呼叫 `crashRuleOn`；`crashDecision` 只有已刪的 `crashDirection` 在用。重放 B-8、B-12 兩組數字逐位不變（T88 的驗收）。**留著給重放的**：`planDay` 的 `legacyCrash`、`RuleState.crash`、設定的 `crashCut`、`allocator` 的 `CRASH_ON／CRASH_OFF` 事件（只有 `legacyCrash` 會產生，型別上註明）。
+- **總經儀表板搬家**：`app/crashAi.ts` 改名 `app/macro.ts`（只留 `refreshMacro`、儀表板的存取、01:30 重抓、`MACRO_MISSING`、`snapshotDoc`），純函式從 `ai/crash.ts` 搬到 `ai/macro.ts`，`ai/crash.ts` 刪掉；功能代號 `CRASH_REVIEW` 搬到 `ai/functions.ts`（網站顯示舊的 AI 紀錄用）。
+- **舊資料照樣讀得到**（測試鎖著）：舊月報的 F5／F6 項目、`crashReview`、`aiLine`、`relist`（網站標「（已停用）」、影子紀錄的檢視表、AI 紀錄的「每月總經評語（已停用）」）；回覆 0.18.0 以前還沒回覆的舊月報時，F5／F6 的影子紀錄與不記欠單的判斷（`ops.ts` 的 `isCrashItem`、`owePendingMonthly`）；舊月報 LINE 文字的價格警告。舊帳戶的 `coreOwe` 在 `migrateAccount` 讀進來時清掉（型別拿掉之後用寬鬆的型別刪）。
+- **運作統計的 `crash_reviews` 那一段留著**：之後不會有新的列，期間包含 0.18.0 以前時才有東西；`records_guide` 標「已停用」。
+- 不需要 migration（沒有刪表或欄位；`macro_snapshots` 照舊存）。
+
 【D9，照建議】月報與帳戶頁**不顯示**「大盤在 200 日線上／下」（T77 留的「最多顯示」）。它不觸發任何動作，放在那裡只會讓人想自己擇時；大跌時市場摘要已經會說明原因。
 
 ### 1.7 照使用者的角度走一遍
@@ -723,7 +732,7 @@ T77：文獻開關不加、200 日線拿掉。所以「動能的開關」只剩�
 | 示範帳戶（`demo/scenarios.ts`） | 七個情境的起始核心從全部 VOO 改成 VOO 八成、SGOV 與現金兩成（四捨五入到整股），一開始就在界線內；情境 ③ 的市場不變，內容從「崩盤規則」變成「大盤急跌再反彈、沒有崩盤規則」（T80；示範腳本的文字在 T81／T89） | 第 7 章 |
 | 網站 | 帳戶頁：核心比例橫條、候補那一塊；持股頁：`WATCH`／`BUILD` 的說明、先買一半的選項、加碼條件；月報頁：四種新項目 | — |
 | 影子紀錄 | 不減半、下跌加碼、補滿、候補進場都記三條線 | — |
-| 運作統計 | 加：跌幅審查的四種結果各幾次、不減半之後 3／6 個月的報酬對照、F26 次數 | — |
+| 運作統計 | 加：跌幅審查的四種結果各幾次、不減半之後 3／6 個月的報酬對照、F26 次數（T88：`/admin/ops-report` 的三段 `new_items`（F26～F29 各一列：列了幾項、照做、這次不做、其他、還沒回覆；被取代的通知不算）、`drop_reviews`（每一檔：前提不成立、都沒有被判不成立、票數不一致、沒跑完、還在跑、不再重派的告警）、`kept_returns`（已決定的跌幅審查每一項：63／126 個交易日之後的報酬；「不減半多賺」以原部位計＝報酬的一半，賣掉的那一半假設放現金、利息不計；只有比例）。欄位說明在 `docs/analysis/records_guide.md`） | — |
 
 ---
 

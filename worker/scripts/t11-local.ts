@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dashboardText, macroDashboard } from '../src/ai/crash';
+import { dashboardText, macroDashboard } from '../src/ai/macro';
 import { entryRuleVerdict } from '../src/ai/momEntry';
 import { drawdownEpisodes, fetchFrenchMomentum, historyTable } from '../src/ai/strategy';
 import { entryEvidence } from '../src/app/momAi';

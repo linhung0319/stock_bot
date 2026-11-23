@@ -557,8 +557,6 @@ export interface MonthInputs {
   entryNotes?: Record<string, string>;
   /** 沿用之前審查的否決：代號 → 月份（遞補者的說明加「（沿用 … 的審查）」）。 */
   vetoCarried?: Record<string, string>;
-  /** 崩盤規則檢視的狀態（core_ai §3.2，T33b 起取代 crashOpinion）。 */
-  crashReview?: MonthlyContext['crashReview'];
   /** 這些輸入來自哪幾次 AI 執行（T13：月報的項目與通知帶 run_id）。 */
   runIds?: MonthlyContext['runIds'];
   /** 這個月可以列的候補進場（F29，allocation_redesign §4.5；app/watchEntry.ts 的 prepareWatchEntries）。 */

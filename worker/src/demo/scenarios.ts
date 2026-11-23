@@ -1,5 +1,5 @@
-// prototype/README.md 的 7 個情境：市場、起始帳戶（和 prototype/js/scenarios.js 相同的設定）。
-// 情境測試（test/）與網站的示範模式共用；示範模式另外需要的腳本（假的 AI 輸入與說明）在 demoScripts.ts。
+// 7 個情境的市場與起始帳戶（prototype/README.md；和 prototype/js/scenarios.js 相同的設定）。情境測試（test/）用全部 7 個；
+// 網站的示範模式只用其中 3 個（s1、s2、s5，見 demoScripts.ts 的 DemoId），示範另外需要的腳本（假的 AI 輸入與說明）在 demoScripts.ts。
 import type { InitialAccount, Premise } from '../engine';
 import { makeMarket, type Market } from './market';
 

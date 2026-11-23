@@ -503,7 +503,7 @@ function stepsBar(s) {
   return h('div', { class: 'qbar', role: 'img', 'aria-label': `要連續 ${s.need} 季，已經 ${s.done} 季符合` }, s.labels.map((l, k) => h('span', { class: k < s.done ? 'on' : null }, l)));
 }
 
-/** 條件的操作（勾選、撤下、改動作）：成功就重畫這一頁，失敗把原因寫在 msg。 */
+/** 條件的操作（撤下、改動作；勾選舊建議 T71 起沒有按鈕、T88 拿掉端點）：成功就重畫這一頁，失敗把原因寫在 msg。 */
 async function condOp(ctx, ticker, msg, body, done) {
   try {
     await api.post('/ops/own-condition', { ticker, ...body });

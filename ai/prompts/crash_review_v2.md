@@ -1,3 +1,5 @@
+> 不再使用（2026-11-22）：崩盤規則與它的 AI 檢視退場（`allocation_redesign_2026-11-22.md` §1.6；T81 拿掉排程的入口，T88 刪掉證據包與檢查的程式），不再開這個執行。這份留著對照舊的執行紀錄。
+
 # crash_review_v2：崩盤規則的 AI 檢視（F5／F6）
 
 共用的取證據包、外殼格式與送回方式見 `run.md`。設計依據：`docs/design/core_ai_design_2026-11-15.md` §3.1、§3.9（2026-11-15 起取代 `crash_review_v1`）、`docs/design/design_v2_momentum_2026-11-07.md` §4.4、`docs/design/ai_layer_design_2026-11-08.md` 的 F5／F6 卡片、§3.3、§8.1、§9.2。

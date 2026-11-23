@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { dashboardText, macroDashboard } from '../src/ai/crash';
+import { dashboardText, macroDashboard } from '../src/ai/macro';
 import { FUNCTIONS } from '../src/ai/functions';
 import { APPLIERS } from '../src/app/aiStep';
 import { ackNoCrashNote, noCrashNote, NO_CRASH_TEXT } from '../src/app/noCrashNote';
@@ -23,7 +23,7 @@ const market = scenarios.s3().market;
 describe('T81：排程不再派崩盤檢視', () => {
   it('APPLIERS 沒有 CRASH_REVIEW、PUSH_WAITERS 沒有崩盤檢視；AI 紀錄的功能名稱標已停用', () => {
     expect(Object.keys(APPLIERS)).not.toContain('CRASH_REVIEW');
-    expect(PUSH_WAITERS.map((w) => w.name)).toEqual(['減半檢視', '晚到的進場否決']);
+    expect(PUSH_WAITERS.map((w) => w.name)).toEqual(['跌幅審查', '晚到的進場否決']); // T88：內部名稱跟著 T86 P7 改叫跌幅審查
     expect(FUNCTIONS.CRASH_REVIEW.label).toBe('崩盤規則檢視（已停用）');
   });
 

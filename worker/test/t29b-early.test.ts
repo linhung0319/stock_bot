@@ -373,7 +373,7 @@ describe('§2.4 的表（照順序，第一個符合的決定）', () => {
       const r = (await reviews(c.db)).find((x) => x.runId === sc.res.started[0])!;
       expect(await eventById(c.db, p)).toMatchObject({ status: 'HANDLED', handled_note: `提前審查 ${r.runId}` });
       expect(r.pack.question.startsWith(`這次是提前審查，原因：最近 21 個交易日個股自身跌 15.0%；${EARLY_NO_FILING_ASK}。`)).toBe(true);
-      expect(EARLY_NO_FILING_ASK).toBe('沒有新的申報，請分析師找有沒有清單內來源的消息');
+      expect(EARLY_NO_FILING_ASK).toBe('沒有新的申報，請分析師找有沒有一手或產業研究機構網站的消息'); // T88：不再寫「清單內」
       expect(r.pack.rule.detail).toMatchObject({ trigger: 'EARLY', events: [p] });
       // 分析師可以取文件：證據包有清單內的網頁來源（S），doc_ctx 沒有被關掉
       expect(r.pack.facts.some((f) => /^S\d+$/.test(f.id))).toBe(true);

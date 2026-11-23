@@ -326,7 +326,7 @@ describe('T32c：法庭什麼時候開（§3.5，修 Q4、Q13）', () => {
       const acct = (await loadAccount(c.db))!.acct;
       const { view, axis } = buildMarketView(await loadSeries(c.db, ['VOO', 'SGOV', 'NVDA']), '2026-11-23', 'VOO');
       const sc: StartCtx = { env: c.env, fetcher: c.fetcher, acct, view, axis, session: '2026-11-23', ov: {} as StartCtx['ov'], now, checks: [], res: { created: [], started: [], log: [], alerts: [] }, extras: {} };
-      await startCourts(sc, await scanTargets(c.db, acct));
+      await startCourts(sc, scanTargets(acct));
       expect(sc.res.started).toEqual([]);
       expect(sc.res.log.join('\n')).toContain('NVDA 的硬事件法庭還在等結果');
       expect(await eventOf(c.db, 'NVDA', 'nasdaq-rss:NVDA:2026-11-23')).toMatchObject({ status: 'NEW' });

@@ -373,9 +373,10 @@ describe('T57 登記在報表裡', () => {
       // T61 在 premise_origin 後面加了一段 premise_prompt（前提的判定，依功能與 prompt 版本）
       // T65 在最後加了一段 db_size（資料庫大小，現在的大小；空的資料庫也有一行，t65 的測試看它）
       // T68 在 web_failed 後面加了一段 web_ratings（網頁來源的評級，t68 的測試看它）
-      expect(r.sections.slice(14, 23).map((s) => s.id)).toEqual(['premise_origin', 'premise_prompt', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'web_ratings', 'drafts', 'draft_failures']);
-      expect(OPS_SECTIONS).toHaveLength(24);
-      for (const s of r.sections.slice(14, 23)) {
+      // T88 在 crash_reviews 後面加了三段 new_items、drop_reviews、kept_returns（t57 這七段往後移 3 格，ops-report.test 看它們）
+      expect(r.sections.slice(17, 26).map((s) => s.id)).toEqual(['premise_origin', 'premise_prompt', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'web_ratings', 'drafts', 'draft_failures']);
+      expect(OPS_SECTIONS).toHaveLength(27);
+      for (const s of r.sections.slice(17, 26)) {
         expect(s.error, s.id).toBeUndefined();
         expect(s.rows, s.id).toEqual([]);
         expect(s.title.length).toBeGreaterThan(0);

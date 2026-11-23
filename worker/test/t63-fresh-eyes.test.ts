@@ -57,8 +57,7 @@ interface RisksJs {
   RISK_TITLE: string;
   RISK_ROW_HINT: string;
   riskMeta(r: Partial<RiskView>): string;
-  riskButtons(taken: boolean): { take: string | null; note: string | null; dismiss: string | null };
-  riskDismissed(days?: number): string;
+  riskButtons(taken: boolean): { take: string | null; note: string | null };
   riskPreviewLine(risks: unknown[] | null | undefined, days?: number): string | null;
 }
 const RJ = (await import('../public/js/thesis-risks.js' as string)) as RisksJs;
@@ -686,16 +685,15 @@ describe('T63：整條流程（假的 AI 回覆）', () => {
     expect(RJ.RISK_TITLE).toBe('審查提到、你的前提沒有涵蓋的事');
     expect(RJ.riskMeta({ date: '2026-11-20', label: '審查', source: '〔網頁｜媒體｜CNBC〕NAND prices slide', headline: false })).toBe('11/20 的審查提的；依據：〔網頁｜媒體｜CNBC〕NAND prices slide');
     expect(RJ.riskMeta({ date: '2026-11-20', label: '減半檢視', source: 'MU 最近的新聞標題（Yahoo，只有標題）', headline: true })).toBe('11/20 的減半檢視提的；依據：MU 最近的新聞標題（Yahoo，只有標題）（只有新聞標題，沒有讀到全文：當成線索）');
-    expect(RJ.riskButtons(false)).toEqual({ take: '帶進右欄', note: null, dismiss: null });
-    expect(RJ.riskButtons(true)).toMatchObject({ take: null, dismiss: null });
+    expect(RJ.riskButtons(false)).toEqual({ take: '帶進右欄', note: null }); // T88：拿掉一律是 null 的 dismiss
+    expect(RJ.riskButtons(true)).toMatchObject({ take: null });
     expect(RJ.riskButtons(true).note).toContain('已經帶進「新的」');
     expect(RJ.RISK_ROW_HINT).toContain('請改寫成「要繼續成立的事」');
-    expect(RJ.riskDismissed()).toBe('記下了：這件事 180 天內不再列在「要看的事」。');
     expect(RJ.riskPreviewLine([])).toBeNull();
     expect(RJ.riskPreviewLine(null)).toBeNull();
     expect(RJ.riskPreviewLine([{}, {}])).toBe('從審查提到的風險帶進來 2 條：存檔後這 2 件不再另外列在持股頁與這裡（180 天內同一件事也不再列）。');
     // 畫面的文字不出現內部代號
-    expect([RJ.RISK_TITLE, RJ.RISK_ROW_HINT, RJ.riskDismissed(), RJ.riskPreviewLine([{}])].join('')).not.toMatch(/NEW_RISK|new_risks|fresh|OVERLAP|DISMISSED|ADOPTED/);
+    expect([RJ.RISK_TITLE, RJ.RISK_ROW_HINT, RJ.riskPreviewLine([{}])].join('')).not.toMatch(/NEW_RISK|new_risks|fresh|OVERLAP|DISMISSED|ADOPTED/);
   });
 });
 
@@ -825,29 +823,20 @@ describe('T63：使用者看過不採用的，同一件事 180 天內不再列',
     expect(ownAttention([{ ticker: 'MU', ...fileOf({ reviews: [rev('r1', '2026-11-20', { newRisks: [item(0, RISK_NAND)] })] }) } as ThesisFile], { own: { MU: { riskSeen: [seen(RISK_NAND, '2026-11-21')] } as OwnMeta }, rule: { own: {} }, notifs: [] } as never, { date: '2026-11-22' }, OWN_ATTN.filter((k) => k.kind === 'NEW_RISK'))).toEqual([]);
   });
 
-  it('整條流程：按「看過了，不加」→ 記進帳戶與論點檔的 log、不再列、再按一次 409；之後的審查再提同一件事也不列；不動論點、不發通知', async () => {
+  it('舊資料：按過「看過了，不加」的（riskSeen DISMISSED）不再列；端點 T88 拿掉（404）；之後的審查再提同一件事也不列', async () => {
     await withWorld(async (c) => {
       const { run } = await runWithRisks(c, (d) => [{ text: RISK_NAND, source_id: d.source_id, date: d.date, quote: Q_TF1 }]);
-      const before = await acctOf(c.db);
-      expect((await c.call('POST', '/api/ops/own-risk', { ticker: 'NVDA', runId: run.runId, k: 5 })).status).toBe(409);
-      expect((await c.call('POST', '/api/ops/own-risk', { ticker: 'NVDA' })).status).toBe(422);
-      const res = await c.call<{ ok: boolean; days: number }>('POST', '/api/ops/own-risk', { ticker: 'NVDA', runId: run.runId, k: 0 });
-      expect(res).toMatchObject({ status: 200, body: { ok: true, days: 180 } });
+      // 「看過了，不加」T71 起畫面沒有按鈕、T88 拿掉端點
+      expect((await c.call('POST', '/api/ops/own-risk', { ticker: 'NVDA', runId: run.runId, k: 0 })).status).toBe(404);
+      // 0.18.0 以前按過的：帳戶裡留著的 riskSeen 照舊讀
+      const loaded = (await loadAccount(c.db))!;
+      const old = structuredClone(loaded.acct);
+      old.own.NVDA.riskSeen = [{ text: RISK_NAND, at: AS_OF, runId: run.runId, k: 0, outcome: 'DISMISSED' }];
+      await saveAccount(c.db, old, loaded, '舊資料：看過不加', new Date(`${AS_OF}T13:00:00Z`));
       const acct = await acctOf(c.db);
-      expect(acct.own.NVDA.riskSeen).toEqual([{ text: RISK_NAND, at: AS_OF, runId: run.runId, k: 0, outcome: 'DISMISSED' }]);
-      // 不動論點、不動檔位、不發通知
-      expect(acct.own.NVDA.premises).toEqual(before.own.NVDA.premises);
-      expect(acct.own.NVDA.thesis).toEqual(before.own.NVDA.thesis);
-      expect(acct.own.NVDA.aiTier).toEqual(before.own.NVDA.aiTier);
-      expect(acct.notifs.length).toBe(before.notifs.length);
-      expect(c.line).toEqual([]);
-      const log = (await c.db.prepare("SELECT file_id, body FROM own_thesis_log WHERE kind = 'RISK_SEEN'").all<{ file_id: string; body: string }>()).results;
-      expect(log.map((r) => [r.file_id, (JSON.parse(r.body) as { outcome: string }).outcome])).toEqual([[FILE, 'DISMISSED']]);
       const hd = (await c.call<HoldingBody>('GET', '/api/holding/NVDA')).body;
       expect(hd.thesis.risks).toEqual([]);
       expect(hd.attention.some((x) => x.kind === 'NEW_RISK')).toBe(false);
-      // 已經處理過：再按一次 409
-      expect((await c.call('POST', '/api/ops/own-risk', { ticker: 'NVDA', runId: run.runId, k: 0 })).status).toBe(409);
 
       // 100 天後的審查（滿 90 天，新眼光再跑）又提同一件事：還在 180 天內，不列
       const later = '2027-02-27';

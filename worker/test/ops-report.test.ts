@@ -302,7 +302,7 @@ describe('T16 運作統計：結構', () => {
   it('空的資料庫：每一段都有、列是空的、沒有錯誤', async () => {
     await withDb(async (_db, env) => {
       const r = await report(env);
-      expect(r.sections.map((s) => s.id)).toEqual(['notifications', 'choices', 'shadow', 'data_runs', 'flow_runs', 'alerts', 'pushes', 'ai_runs', 'ai_votes', 'ai_tasks', 'ai_rejections', 'checkpoints', 'crash_reviews', 'mom_entry', 'premise_origin', 'premise_prompt', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'web_ratings', 'drafts', 'draft_failures', 'db_size']); // T61 加了 premise_prompt；T65 加了 db_size；T68 加了 web_ratings
+      expect(r.sections.map((s) => s.id)).toEqual(['notifications', 'choices', 'shadow', 'data_runs', 'flow_runs', 'alerts', 'pushes', 'ai_runs', 'ai_votes', 'ai_tasks', 'ai_rejections', 'checkpoints', 'crash_reviews', 'new_items', 'drop_reviews', 'kept_returns', 'mom_entry', 'premise_origin', 'premise_prompt', 'web_runs', 'web_refused', 'web_skipped', 'web_failed', 'web_ratings', 'drafts', 'draft_failures', 'db_size']); // T61 加了 premise_prompt；T65 加了 db_size；T68 加了 web_ratings；T88 加了 new_items、drop_reviews、kept_returns
       for (const s of r.sections) {
         expect(s.error, s.id).toBeUndefined();
         // 資料庫大小（T65）是現在的大小，空的資料庫也有一行
@@ -328,6 +328,85 @@ describe('T16 運作統計：結構', () => {
       expect(rep.sections.at(-2)).toEqual({ id: 'extra', title: '後面的任務加的一段', rows: [{ x: 1 }] });
       expect(rep.sections.at(-1)).toMatchObject({ id: 'broken', rows: [], error: '這一段壞了' });
       expect(rep.sections.find((s) => s.id === 'notifications')?.rows.length).toBeGreaterThan(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------- T88：階段十二加的三段（allocation_redesign 第 6 章最後一列）
+
+describe('T88 運作統計：新項目的次數、跌幅審查的四種結果、不減半之後的報酬對照', () => {
+  const D = (k: number) => new Date(Date.UTC(2026, 9, 1) + k * 86_400_000).toISOString().slice(0, 10);
+  const days = Array.from({ length: 200 }, (_, k) => D(k));
+  /** 價格：MSFT 一路漲（每個交易日 +0.1%），MU 一路跌（每個交易日 −0.1%）。 */
+  async function prices(db: D1Database) {
+    for (const [t, g] of [['MSFT', 1.001], ['MU', 0.999]] as const) {
+      const a = days.map((_, k) => 100 * Math.pow(g, k));
+      await run(db, 'INSERT INTO price_series (ticker, fetched_at, session, last_date, n, bars) VALUES (?, ?, ?, ?, ?, ?)', t, 'x', days.at(-1), days.at(-1), days.length, JSON.stringify({ d: days, c: a, a, v: a.map(() => 0) }));
+    }
+  }
+  const keep = { id: 'RULE', lines: [] };
+  const halve = (t: string, sh: number) => ({ id: 'DO', lines: [{ ticker: t, bucket: 'own', shares: -sh }] });
+  const td = (t: string, drop: string, choice: string, extra: Record<string, unknown> = {}) => ({ key: `F7-${t}-${drop}`, f: 'F7', kind: 'OWN_RULE', ticker: t, thesisDrop: { level: 0 }, drop, choice, ruleChoice: 'DO', choices: [keep, halve(t, 5)], ...extra });
+
+  it('F26～F29 每一種一列（沒有的是 0）；被取代的通知、取消的項目不算', async () => {
+    await withDb(async (db, env) => {
+      await notif(db, 1, 'MONTHLY', '2026-12-01', 'RESPONDED', [item('F26', 'DO', 'DO'), item('F29', 'SKIP', 'DO'), item('F29', 'DO', 'DO', { key: 'F29-b' })]);
+      await notif(db, 2, 'MONTHLY', '2026-11-30', 'SUPERSEDED', [item('F26', 'DO', 'DO')]);
+      await notif(db, 3, 'MONTHLY', '2027-01-04', 'PENDING', [item('F26', 'DO', 'DO'), item('F28', 'DO', 'DO', { cancelled: true })]);
+      const r = await report(env, '?from=2026-11-01&to=2027-01-31');
+      expect(rows(r, 'new_items')).toEqual([
+        { f: 'F26', name: '核心比例調回', listed: 2, followed: 1, skipped: 0, other: 0, pending: 1 },
+        { f: 'F27', name: '先買一半的補滿', listed: 0, followed: 0, skipped: 0, other: 0, pending: 0 },
+        { f: 'F28', name: '你定的加碼條件', listed: 0, followed: 0, skipped: 0, other: 0, pending: 0 },
+        { f: 'F29', name: '候補進場', listed: 2, followed: 1, skipped: 1, other: 0, pending: 0 },
+        { f: '合計', name: null, listed: 4, followed: 2, skipped: 1, other: 0, pending: 1 },
+      ]);
+    });
+  });
+
+  it('跌幅審查：每一檔一列，四種結果＋還在跑＋不再重派的告警；併入月報被取代的那一則不重複算；只有預設前提的減半項目不算', async () => {
+    await withDb(async (db, env) => {
+      await notif(db, 1, 'URGENT', '2026-11-16', 'AUTO_DEFAULT', [td('MSFT', 'CLEAR', 'RULE')]);
+      await notif(db, 2, 'URGENT', '2026-11-17', 'SUPERSEDED', [td('MU', 'BROKEN', 'DO', { cancelled: true })]);
+      await notif(db, 3, 'MONTHLY', '2026-12-01', 'RESPONDED', [td('MU', 'BROKEN', 'DO')]);
+      await notif(db, 4, 'URGENT', '2026-12-10', 'RESPONDED', [td('MSFT', 'SPLIT', 'RULE')]);
+      await notif(db, 5, 'URGENT', '2026-12-20', 'PENDING', [td('NVDA', 'NONE', 'RULE')]);
+      await notif(db, 6, 'URGENT', '2026-12-21', 'PENDING', [td('AMD', 'PENDING', 'RULE')]);
+      await notif(db, 7, 'URGENT', '2026-12-22', 'RESPONDED', [{ key: 'old', f: 'F7', kind: 'OWN_RULE', ticker: 'TSLA', drop: 'AGREE', choice: 'DO', ruleChoice: 'DO', choices: [halve('TSLA', 3)] }]);
+      await run(db, "INSERT INTO alerts (at, session, kind, message, detail, sent_at) VALUES ('2026-12-26T00:00:00Z', NULL, 'REVIEW_FAILED', 'x', ?, NULL)", JSON.stringify({ ticker: 'NVDA', session: '2026-12-20', days: 3, runId: 'r' }));
+      await run(db, "INSERT INTO alerts (at, session, kind, message, detail, sent_at) VALUES ('2026-12-26T00:00:00Z', NULL, 'REVIEW_FAILED', 'x', ?, NULL)", JSON.stringify({ ticker: 'MSFT', count: 2, runId: 'r2' }));
+      const r = await report(env, '?from=2026-11-01&to=2027-01-31');
+      expect(rows(r, 'drop_reviews')).toEqual([
+        { ticker: 'AMD', reviews: 1, broken: 0, clear: 0, split: 0, not_finished: 0, pending: 1, gave_up: 0 },
+        { ticker: 'MSFT', reviews: 2, broken: 0, clear: 1, split: 1, not_finished: 0, pending: 0, gave_up: 0 },
+        { ticker: 'MU', reviews: 1, broken: 1, clear: 0, split: 0, not_finished: 0, pending: 0, gave_up: 0 },
+        { ticker: 'NVDA', reviews: 1, broken: 0, clear: 0, split: 0, not_finished: 1, pending: 0, gave_up: 1 },
+        { ticker: '合計', reviews: 5, broken: 1, clear: 1, split: 1, not_finished: 1, pending: 1, gave_up: 1 },
+      ]);
+    });
+  });
+
+  it('報酬對照：已決定的每一項一列，KEPT／HALVED；63、126 個交易日之後的報酬與「不減半多賺」= 報酬的一半；還沒滿是 null；合計是 KEPT 的平均', async () => {
+    await withDb(async (db, env) => {
+      await prices(db);
+      await notif(db, 1, 'URGENT', D(10), 'AUTO_DEFAULT', [td('MSFT', 'CLEAR', 'RULE')]);
+      await notif(db, 2, 'MONTHLY', D(20), 'RESPONDED', [td('MU', 'BROKEN', 'DO')]);
+      await notif(db, 3, 'URGENT', D(120), 'RESPONDED', [td('MU', 'BROKEN', 'SKIP', { choices: [halve('MU', 5), { id: 'SKIP', lines: [] }] })]);
+      await notif(db, 4, 'URGENT', D(130), 'PENDING', [td('MSFT', 'SPLIT', 'RULE')]);
+      const r = await report(env, `?from=${D(0)}&to=${D(199)}`);
+      const up = (h: number) => Math.round((Math.pow(1.001, h) - 1) * 10000) / 10000;
+      const down = (h: number) => Math.round((Math.pow(0.999, h) - 1) * 10000) / 10000;
+      const half = (x: number) => Math.round((x / 2) * 10000) / 10000;
+      const got = rows(r, 'kept_returns');
+      expect(got.slice(0, 3)).toEqual([
+        { notif: 1, date: D(10), ticker: 'MSFT', result: 'CLEAR', decision: 'KEPT', ret_3m: up(63), ret_6m: up(126), kept_vs_half_3m: half(up(63)), kept_vs_half_6m: half(up(126)) },
+        { notif: 2, date: D(20), ticker: 'MU', result: 'BROKEN', decision: 'HALVED', ret_3m: down(63), ret_6m: down(126), kept_vs_half_3m: half(down(63)), kept_vs_half_6m: half(down(126)) },
+        // 前提不成立但選了這次不做 → 沒有賣；6 個月還沒滿
+        { notif: 3, date: D(120), ticker: 'MU', result: 'BROKEN', decision: 'KEPT', ret_3m: down(63), ret_6m: null, kept_vs_half_3m: half(down(63)), kept_vs_half_6m: null },
+      ]);
+      expect(got[3]).toMatchObject({ date: '合計', decision: 'KEPT 2／HALVED 1／ADDED 0', ret_3m: 3, ret_6m: 2, kept_vs_half_6m: half(up(126)) });
+      expect(got[3].kept_vs_half_3m).toBeCloseTo((half(up(63)) + half(down(63))) / 2, 4);
+      expect(got).toHaveLength(4); // 還沒回覆的不算
     });
   });
 });

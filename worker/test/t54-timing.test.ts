@@ -136,7 +136,7 @@ describe('newEvidence：PEER（同業有新的財報新聞稿）', () => {
     const f = fileOf({ premises: [prem('P1', 'HOLDS'), prem('P2', 'INSUFFICIENT')], conditions: [cond()] });
     expect(lookForText(['FILING'], f, {})).toBeNull();
     expect(lookForText(['PEER'], f, {})).toBe('這次是月底檢查點：同業在上次有結論的審查之後有新的財報新聞稿（在 facts 的 M 開頭的目錄裡），請分析師看要不要取來讀。');
-    expect(lookForText(['WEB_DUE'], f, { C1: 7 })).toBe(`這次是月底檢查點：前提 P2，以及指名網頁來源的條件 C1 在公司的申報與財報裡可能查不到（上次證據不足、還沒檢查過，或要用指名的網頁來源確認），距上次有結論的審查已經滿 25 天，請分析師找有沒有清單內來源的新消息。`);
+    expect(lookForText(['WEB_DUE'], f, { C1: 7 })).toBe(`這次是月底檢查點：前提 P2，以及指名網頁來源的條件 C1 在公司的申報與財報裡可能查不到（上次證據不足、還沒檢查過，或要用指名的網頁來源確認），距上次有結論的審查已經滿 25 天，請分析師找有沒有一手或產業研究機構網站的新消息。`); // T88：不再寫「清單內」
   });
 });
 
@@ -275,7 +275,7 @@ describe('月底檢查點：WEB_DUE（web_evidence_design §1.7）', () => {
       expect(sc.res.started).toEqual([r.runId]);
       expect(r.pack.rule.detail).toMatchObject({ trigger: 'MONTHLY', reasons: ['WEB_DUE'] });
       expect(r.pack.question.startsWith('這次是月底檢查點：前提 P2 在公司的申報與財報裡可能查不到')).toBe(true);
-      expect(r.pack.question).toContain('請分析師找有沒有清單內來源的新消息。');
+      expect(r.pack.question).toContain('請分析師找有沒有一手或產業研究機構網站的新消息。'); // T88：不再寫「清單內」
       expect(sc.res.log.join('\n')).toContain('NVDA：月底檢查點有新證據（有要上網查的前提或條件，距上次審查滿 25 天），開審查');
       expect(await stateOf(c.db, checkpointKey(CHECKPOINT))).toMatchObject({ reviewed: [{ ticker: 'NVDA', reasons: ['WEB_DUE'] }], skipped: [] });
       const sec = await checkpointSection(c.db, { from: '2026-12-01', to: '2026-12-31', fromSource: 'param' });

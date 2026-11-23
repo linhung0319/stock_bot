@@ -1,10 +1,8 @@
 // T33d：核心的拿掉的、資料檢查、清單說明（core_ai_design_2026-11-15 §5 的 T33d 那一列；§3.9～§3.11）。
 // 整條流程用假的價格（helpers/fakeSources；假市場裡 SPY 和 VOO 同一組價格）、假的雲端排程、假的 LINE、假的 FRED。
 import { describe, expect, it } from 'vitest';
-import { CRASH_REVIEW_PROMPT, crashPack, checkCrashPayload } from '../src/ai/crash';
-import type { EvidencePack } from '../src/ai/check';
 import type { AiRun } from '../src/app/aiRuns';
-import { loadSnapshot } from '../src/app/crashAi';
+import { loadSnapshot } from '../src/app/macro';
 import type { Env, Fetcher } from '../src/app/env';
 import { runFlow, type Attempt } from '../src/app/flow';
 import { loadAccount, saveAccount } from '../src/app/ledgerStore';
@@ -93,7 +91,7 @@ const crashRunCount = async (db: D1Database) => (await db.prepare("SELECT COUNT(
 
 // ---------------------------------------------------------------- §3.9 拿掉每月評語、prompt 升版
 
-describe('T33d：拿掉每月評語；crash_review_v2（core_ai §3.9）', () => {
+describe('T33d：拿掉每月評語（core_ai §3.9；崩盤規則檢視的證據包與檢查 T88 刪掉）', () => {
   it('不會切換的月份：月報前一天與 01:30 都不開 CRASH_REVIEW，儀表板照樣算、存', async () => {
     await withWorld({ routine: true }, async ({ db, run }) => {
       await run('2026-11-27');
@@ -109,17 +107,6 @@ describe('T33d：拿掉每月評語；crash_review_v2（core_ai §3.9）', () =>
     });
     // T80：原本這裡對照「會切換的月份照樣開（預估）」。崩盤規則的狀態不再讀寫（allocation_redesign §1.5），
     // 帳戶不會再從啟動中解除，這個對照拿掉；檢視的排程在 T81 退場。
-  });
-
-  it('證據包用 crash_review_v2、不給條件種類；bear_prob 送來就忽略', () => {
-    const { pack } = crashPack({ runId: 'r1', asOf: '2026-11-27', direction: 'ON', dashboard: { id: 'DASH', source_id: 'macro:2026-11-27', kind: 'table', date: '2026-11-27', title: 'd', text: 'x' }, news: null, facts: [], dataQuality: {}, now: new Date('2026-11-28T00:00:00Z') });
-    expect(CRASH_REVIEW_PROMPT).toBe('crash_review_v2');
-    expect(pack.prompt_version).toBe('crash_review_v2');
-    expect(pack.condition_types).toEqual([]);
-    const p = { rule: { detail: { direction: 'ON' } } } as unknown as EvidencePack;
-    const smp = { rawVerdict: 'DELAY', verdict: 'DELAY', issues: [] as string[], payload: { direction: 'ON', opinion: 'DELAY', bear_prob: 7 } };
-    checkCrashPayload(smp as never, p);
-    expect(smp.issues).toEqual([]);
   });
 
   it('舊的每月評語在 AI 紀錄的標籤是「每月總經評語（已停用）」，NOTED 顯示成「只記錄」', () => {

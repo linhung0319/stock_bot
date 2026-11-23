@@ -252,7 +252,7 @@ describe('③ AI 建議產生的通知項目、通知、影子紀錄帶 run_id',
     const sc = scenarios.s3();
     const sim = new Sim(sc.market, sc.init);
     sim.runUntil('2027-01-04');
-    const r = monthlyReport(sim.acct, sim.pre, { order: ranksAt(sim.market, sim.d - 1), month: '2027-01', crashOpinion: '延後', runIds: { crash: 'run-crash' } });
+    const r = monthlyReport(sim.acct, sim.pre, { order: ranksAt(sim.market, sim.d - 1), month: '2027-01', ...({ crashOpinion: '延後', runIds: { crash: 'run-crash' } } as object) }); // 舊月報的欄位（T88 拿掉型別）
     expect(r.notif.items.some((i) => i.f === 'F5' || i.f === 'F6')).toBe(false);
     expect(r.notif.runIds ?? []).not.toContain('run-crash');
   });

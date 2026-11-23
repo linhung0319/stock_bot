@@ -2,15 +2,17 @@
 //   指定期間（?from=YYYY-MM-DD&to=YYYY-MM-DD，含頭尾；預設從上線日算起、到今天）內：
 //   通知次數、資料與排程失敗、告警、推播失敗、AI 執行與通過檢查的比例、照做／沒照做的次數。
 // 報表分段：每一段是一個函式（Period → { id, title, rows }），登記在 OPS_SECTIONS。之後的任務要加一段，就寫一個函式並放進這個陣列。
-// 只讀 D1，不改任何東西。數字都用 SQL 算（json_extract／json_each 讀 JSON 欄位），不把整張表載進記憶體（影子紀錄例外，見 shadowSection）。
+// 只讀 D1，不改任何東西。數字都用 SQL 算（json_extract／json_each 讀 JSON 欄位），不把整張表載進記憶體（影子紀錄例外，見 shadowSection；跌幅審查的報酬對照要讀那幾檔的價格，見 keptReturnsSection）。
 // 比例是 0～1 的小數（四捨五入到小數三位）；分母是 0 時是 null。
 // T57（web_evidence_design §2.4 第 7 點、§1.3、第 3 章）加了七段：前提的審查結果（依前提的來源）、每次執行取了多少網頁、被拒絕的原因、被略過與抓不到的網域、草稿的成功率與失敗原因。
 // T61（composite_layer_design §2.1）：前提的審查結果多一欄 stale（逾期）；加一段「前提的判定，依功能與 prompt 版本」（HOLDS 收緊前後對照）。
 // T65（composite_layer_design §4.1）：加一段「資料庫大小」（現在的大小，不看期間）；超過 300 MB 的告警由每日流程呼叫 dbSizeAlert。
+// T88（allocation_redesign 第 6 章最後一列）：加三段——新的四種月報項目（F26～F29）的次數、跌幅審查的四種結果、跌幅審查之後 3／6 個月的報酬對照。
 import { liveShadow, type ShadowRecord } from '../engine';
 import { DOC_FNS, parseAdded } from '../ai/added';
 import { webDomainOf } from '../data/webSources';
 import { WEB_DOC_PER_SITE } from '../data/webDoc';
+import { loadSeries } from '../data/store';
 import { launchDate } from './export';
 
 export type Cell = string | number | null;
@@ -349,6 +351,7 @@ export const checkpointSection: SectionFn = async (db, p) => {
  * 崩盤規則的切換與檢視（T33b，core_ai §3.4）：期間內（月報訊號日）每一次切換一列——月份、方向、通知、
  * 檢視的狀態（月報那一項現在的 crashReview.state；舊通知沒有是 null）、預估或補開（kind）、這個月份＋方向開了幾次、沒有結論幾次、補推幾次（pushes 的 FOLLOWUP）。
  * 重列的那一項（上次這次不做）不是切換，不列。合計列的 switches 是切換次數。
+ * 崩盤規則與它的檢視 2026-11-22 起退場（allocation_redesign §1.6）：之後不會再有新的列，留著看舊資料（期間包含 0.18.0 以前時才有東西）。
  */
 export const crashSection: SectionFn = async (db, p) => {
   const c = dateCond(p, 'n.date');
@@ -436,6 +439,139 @@ export const momEntrySection: SectionFn = async (db, p) => {
   return { id: 'mom_entry', title: MOM_ENTRY_TITLE, rows };
 };
 const MOM_ENTRY_TITLE = '動能新股進場審查（F1 法庭）：開了幾次、依代碼、否決、沿用、沒有結論、晚到；累積否決';
+
+// ---------------------------------------------------------------- 階段十二（allocation_redesign 第 6 章最後一列，T88）
+
+/** 階段十二新的四種月報項目（allocation_redesign §5）：核心比例調回、補滿、加碼條件、候補進場。 */
+const NEW_ITEM_FS = ['F26', 'F27', 'F28', 'F29'] as const;
+const NEW_ITEM_NAME: Record<(typeof NEW_ITEM_FS)[number], string> = { F26: '核心比例調回', F27: '先買一半的補滿', F28: '你定的加碼條件', F29: '候補進場' };
+
+/**
+ * 新的四種月報項目（T88；設計第 6 章最後一列要 F26 與 F29 的次數，F27、F28 同一段順便列）：每一種一列（有一種列過就四種都列，沒有的是 0；期間內四種都沒有時是空的）。
+ *   listed     期間內（通知的訊號日）列了幾項；被取代的通知（SUPERSEDED：暫停後重算、入金合併的舊版）與取消的項目不算，免得同一項算兩次
+ *   followed   已回覆的通知裡選的就是預設（規則）的選項
+ *   skipped    已回覆的通知裡選了「這次不做」（預設不是不做）
+ *   other      已回覆、選了其他選項
+ *   pending    通知還沒回覆
+ */
+export const newItemsSection: SectionFn = async (db, p) => {
+  const c = dateCond(p, 'n.date');
+  const choice = "json_extract(i.value, '$.choice')";
+  const rule = "COALESCE(json_extract(i.value, '$.ruleChoice'), '')";
+  const decided = "n.status IN ('RESPONDED', 'DONE', 'AUTO_DEFAULT')";
+  const got = await query(
+    db,
+    `SELECT json_extract(i.value, '$.f') AS f, COUNT(*) AS listed,
+       COALESCE(SUM(${decided} AND ${choice} = ${rule}), 0) AS followed,
+       COALESCE(SUM(${decided} AND ${choice} = 'SKIP' AND ${rule} != 'SKIP'), 0) AS skipped,
+       COALESCE(SUM(${decided} AND ${choice} != ${rule} AND ${choice} != 'SKIP'), 0) AS other,
+       COALESCE(SUM(n.status = 'PENDING'), 0) AS pending
+     FROM notifications n, json_each(n.body, '$.items') i
+     WHERE n.status NOT IN ('SUPERSEDED', 'CANCELLED') AND COALESCE(json_extract(i.value, '$.cancelled'), 0) = 0
+       AND json_extract(i.value, '$.f') IN (${NEW_ITEM_FS.map((f) => `'${f}'`).join(', ')}) AND ${c.sql}
+     GROUP BY f`,
+    c.args,
+  );
+  const by = new Map(got.map((r) => [String(r.f), r]));
+  const rows: Row[] = NEW_ITEM_FS.map((f) => {
+    const r = by.get(f);
+    return { f, name: NEW_ITEM_NAME[f], listed: n(r?.listed ?? 0), followed: n(r?.followed ?? 0), skipped: n(r?.skipped ?? 0), other: n(r?.other ?? 0), pending: n(r?.pending ?? 0) };
+  });
+  const title = '階段十二的新項目（F26 核心比例調回、F27 補滿、F28 加碼條件、F29 候補進場）：列了幾項、照做、這次不做、其他、還沒回覆';
+  return { id: 'new_items', title, rows: got.length ? withTotal(rows, { f: '合計', name: null }, ['listed', 'followed', 'skipped', 'other', 'pending']) : [] };
+};
+
+/** 有論點的股票的跌幅審查項目（F7 上有 thesisDrop）：被取代的通知不算（前提不成立、不到 5% 併入月報時，原本那一則整則被取代，月報上的才算）。 */
+const THESIS_DROP_ITEMS = `FROM notifications n, json_each(n.body, '$.items') i
+     WHERE n.status NOT IN ('SUPERSEDED', 'CANCELLED') AND json_extract(i.value, '$.f') = 'F7' AND json_extract(i.value, '$.thesisDrop') IS NOT NULL`;
+
+/**
+ * 跌幅審查的四種結果（T88；allocation_redesign §3.2 實作細節 1、第 6 章最後一列）：期間內（通知的訊號日）每一檔一列。
+ *   reviews       審了幾次（跌幅審查的項目數）
+ *   broken        前提不成立（預設減半）
+ *   clear         前提都沒有被判不成立（不減半）
+ *   split         票數不一致（不減半）
+ *   not_finished  沒跑完（項目上的結果是 NONE：還在重派、或 3 個交易日都沒跑完不再重派）
+ *   pending       結果還沒回來（PENDING）
+ *   gave_up       3 個交易日都沒跑完、不再重派的告警（REVIEW_FAILED 裡跌幅審查的那一種；告警時間在期間內）
+ */
+export const dropReviewSection: SectionFn = async (db, p) => {
+  const c = dateCond(p, 'n.date');
+  const drop = "json_extract(i.value, '$.drop')";
+  const rows = await query(
+    db,
+    `SELECT json_extract(i.value, '$.ticker') AS ticker, COUNT(*) AS reviews,
+       COALESCE(SUM(${drop} = 'BROKEN'), 0) AS broken,
+       COALESCE(SUM(${drop} = 'CLEAR'), 0) AS clear,
+       COALESCE(SUM(${drop} = 'SPLIT'), 0) AS split,
+       COALESCE(SUM(${drop} = 'NONE' OR ${drop} IS NULL), 0) AS not_finished,
+       COALESCE(SUM(${drop} = 'PENDING'), 0) AS pending
+     ${THESIS_DROP_ITEMS} AND ${c.sql}
+     GROUP BY ticker ORDER BY ticker`,
+    c.args,
+  );
+  // 跌幅審查的 REVIEW_FAILED（detail 有 days）和定期審查的（detail 有 count）分開
+  const a = atCond(p, 'at');
+  const gave = await query(db, `SELECT json_extract(detail, '$.ticker') AS ticker, COUNT(*) AS n FROM alerts WHERE kind = 'REVIEW_FAILED' AND json_extract(detail, '$.days') IS NOT NULL AND ${a.sql} GROUP BY ticker`, a.args);
+  const gaveBy = new Map(gave.map((r) => [String(r.ticker), n(r.n)]));
+  const out: Row[] = rows.map((r) => ({ ...r, gave_up: gaveBy.get(String(r.ticker)) ?? 0 }));
+  for (const [t, k] of gaveBy) if (!out.some((r) => r.ticker === t)) out.push({ ticker: t, reviews: 0, broken: 0, clear: 0, split: 0, not_finished: 0, pending: 0, gave_up: k });
+  return { id: 'drop_reviews', title: '跌幅審查（有論點的自選股比高點低 20% 以上）的四種結果：前提不成立、都沒有被判不成立、票數不一致、沒跑完（每一檔一列）', rows: withTotal(out, { ticker: '合計' }, ['reviews', 'broken', 'clear', 'split', 'not_finished', 'pending', 'gave_up']) };
+};
+
+/** 3／6 個月 ≈ 63／126 個交易日。 */
+export const KEPT_HORIZONS = { '3m': 63, '6m': 126 } as const;
+
+/**
+ * 不減半之後的報酬對照（T88；allocation_redesign §3.2「之後看得出不減半是加分還是扣分」、第 6 章最後一列）：
+ * 期間內（通知的訊號日）已經決定的跌幅審查項目，每一項一列。
+ *   decision        KEPT 沒有賣（不動、自動照預設結案、前提不成立但選了這次不做）／HALVED 賣了（減半或出清）／ADDED 下跌加碼
+ *   ret_3m、ret_6m  這檔從那天收盤到 63／126 個交易日之後的報酬（還原收盤；還沒滿就是 null）
+ *   kept_vs_half_3m、kept_vs_half_6m  不減半比照舊減半多賺（負的是少賺）的部分，以原本的部位計：報酬的一半（減半賣掉的那一半假設放現金、利息不計）
+ * 合計列：有幾項、各自有幾項滿 3／6 個月、kept_vs_half 的平均（只算沒有賣的 KEPT）。
+ * 只看比例，不寫金額與股數。
+ */
+export const keptReturnsSection: SectionFn = async (db, p) => {
+  const c = dateCond(p, 'n.date');
+  const items = await query(
+    db,
+    `SELECT n.id AS notif, n.date AS date, n.status AS status, i.value AS item
+     ${THESIS_DROP_ITEMS} AND n.status IN ('RESPONDED', 'DONE', 'AUTO_DEFAULT') AND COALESCE(json_extract(i.value, '$.cancelled'), 0) = 0 AND ${c.sql}
+     ORDER BY n.date, n.id`,
+    c.args,
+  );
+  const parsed = items.map((r) => ({ notif: r.notif, date: String(r.date), item: JSON.parse(String(r.item)) as { ticker: string; drop?: string; choice: string; choices: { id: string; lines: { ticker: string; shares: number }[] }[] } }));
+  const series = await loadSeries(db, parsed.map((x) => x.item.ticker));
+  const r4 = (x: number | null) => (x === null ? null : Math.round(x * 10000) / 10000);
+  const rows: Row[] = parsed.map(({ notif, date, item }) => {
+    const sh = (item.choices.find((ch) => ch.id === item.choice)?.lines ?? []).filter((l) => l.ticker === item.ticker).reduce((a, l) => a + l.shares, 0);
+    const decision = sh < 0 ? 'HALVED' : sh > 0 ? 'ADDED' : 'KEPT';
+    const s = series.get(item.ticker);
+    let k0 = -1;
+    if (s) for (let k = 0; k < s.d.length && s.d[k] <= date; k++) k0 = k;
+    const ret = (h: number): number | null => (s && k0 >= 0 && k0 + h < s.a.length && s.a[k0] > 0 ? s.a[k0 + h] / s.a[k0] - 1 : null);
+    const r3 = ret(KEPT_HORIZONS['3m']);
+    const r6 = ret(KEPT_HORIZONS['6m']);
+    return { notif, date, ticker: item.ticker, result: item.drop ?? null, decision, ret_3m: r4(r3), ret_6m: r4(r6), kept_vs_half_3m: r4(r3 === null ? null : r3 / 2), kept_vs_half_6m: r4(r6 === null ? null : r6 / 2) };
+  });
+  const kept = rows.filter((r) => r.decision === 'KEPT');
+  const avg = (key: 'kept_vs_half_3m' | 'kept_vs_half_6m'): number | null => {
+    const xs = kept.map((r) => r[key]).filter((x): x is number => typeof x === 'number');
+    return xs.length ? r4(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
+  };
+  const total: Row = {
+    notif: null,
+    date: '合計',
+    ticker: null,
+    result: null,
+    decision: `KEPT ${kept.length}／HALVED ${rows.filter((r) => r.decision === 'HALVED').length}／ADDED ${rows.filter((r) => r.decision === 'ADDED').length}`,
+    ret_3m: rows.filter((r) => r.ret_3m !== null).length,
+    ret_6m: rows.filter((r) => r.ret_6m !== null).length,
+    kept_vs_half_3m: avg('kept_vs_half_3m'),
+    kept_vs_half_6m: avg('kept_vs_half_6m'),
+  };
+  return { id: 'kept_returns', title: '跌幅審查之後 3／6 個月的報酬對照（每一項一列；kept_vs_half = 不減半比照舊減半多賺的部分，以原部位計；合計列的 ret_3m／ret_6m 是滿期的項數，kept_vs_half 是沒有賣的那幾項的平均）', rows: rows.length ? [...rows, total] : [] };
+};
 
 // ---------------------------------------------------------------- T57：網頁證據與草稿
 
@@ -953,7 +1089,7 @@ export const webRatingsSection: SectionFn = async (db) => {
   return { id: 'web_ratings', title, rows: ratings.map((r) => ({ domain: r.domain, tier: r.tier, reason: r.reason, site_name: r.site_name, rated_at: String(r.rated_at).slice(0, 10), run_id: r.run_id, cited: cited.get(String(r.domain))?.n ?? 0, cited_runs: cited.get(String(r.domain))?.runs.size ?? 0 })) };
 };
 
-export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, momEntrySection, premiseOriginSection, premisePromptSection, webRunsSection, webRefusedSection, webSkippedSection, webFailedSection, webRatingsSection, draftsSection, draftFailuresSection, dbSizeSection];
+export const OPS_SECTIONS: SectionFn[] = [notificationsSection, choicesSection, shadowSection, dataRunsSection, flowRunsSection, alertsSection, pushesSection, aiRunsSection, aiVotesSection, aiTasksSection, aiRejectionsSection, checkpointSection, crashSection, newItemsSection, dropReviewSection, keptReturnsSection, momEntrySection, premiseOriginSection, premisePromptSection, webRunsSection, webRefusedSection, webSkippedSection, webFailedSection, webRatingsSection, draftsSection, draftFailuresSection, dbSizeSection];
 
 export interface OpsReport {
   generated_at: string;

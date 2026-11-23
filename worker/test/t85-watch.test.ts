@@ -149,7 +149,7 @@ describe('T85 甲 ①：候補這個物件（引擎）', () => {
     const a = addWatch(addWatch(acct, view, 'AMD'), view, 'MSFT');
     expect(requiredTickers(a)).toEqual(requiredTickers(acct));
     expect(requiredTickers(a)).not.toContain('AMD');
-    const targets = await scanTargets({} as D1Database, a);
+    const targets = scanTargets(a);
     expect(targets.map((t) => t.ticker)).toEqual(['NVDA']);
   });
 

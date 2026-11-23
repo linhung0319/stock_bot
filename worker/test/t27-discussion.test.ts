@@ -406,7 +406,7 @@ describe('T27：討論包（§1.7）', () => {
     // T47：前提那一節最後說明審查讀得到什麼（每一種情境都有）；出場條件那一節接在後面
     // T54：說明改成審查也讀同業申報與清單內的網頁（文字在 PREMISE_DATA_NOTE；這裡驗位置與要點）
     expect(n).toContain(`不是我的論點。）\n\n${PREMISE_DATA_NOTE.slice(1).join('\n')}\n\n## 出場條件`);
-    expect(n).toContain('我填的同業在 EDGAR 的申報，以及清單內網站的網頁全文');
+    expect(n).toContain('我填的同業在 EDGAR 的申報，以及公開網站的網頁全文'); // T88：不再寫「清單內」（T68 起看網域級別）
     expect(n).toContain('距上次審查滿 25 天，月底會再審一次');
     expect(n).toContain('先告訴我這一條 stock bot 監測不了、要靠我自己留意。）');
     expect(n).not.toContain('只讀這家公司自己的資料');

@@ -74,6 +74,7 @@ export type PlanEventKind =
   | 'MOM_ENTRY'
   | 'MOM_EXIT'
   | 'VOL_SCALE'
+  // CRASH_ON／CRASH_OFF：只有重放 B-8 的舊路徑（legacyCrash）會產生（allocation_redesign §1.6）
   | 'CRASH_ON'
   | 'CRASH_OFF'
   | 'CORE_BAND'

@@ -30,10 +30,10 @@ import { docOf, newsDoc, xbrlDoc } from './ownAi';
 import { fileConditions, filePremises, isAiWatch, thesisFile } from './thesis';
 
 /**
- * 每日掃描與規則分類的對象：自選、動能持股（momentum_ai §3.2，T32d 起不再掃排名 6～10 的候選股，改由月報前一天的進場前回看看要進場的那幾檔）。
- * 角色 CAND 留在型別裡給舊資料；資料庫參數留著（呼叫端不用改）。
+ * 每日掃描與規則分類的對象：自選、動能持股（momentum_ai §3.2，T32d 起不再掃排名 6～10 的候選股，改由月報前一天的進場前回看看要進場的那幾檔；
+ * T88 拿掉留著的角色 CAND 與沒用的資料庫參數）。
  */
-export async function scanTargets(_db: D1Database, acct: { own: Record<string, unknown>; rule: { heldMom: string[] }; lots: { mom: Record<string, number> } }): Promise<ScanTarget[]> {
+export function scanTargets(acct: { own: Record<string, unknown>; rule: { heldMom: string[] }; lots: { mom: Record<string, number> } }): ScanTarget[] {
   const out = new Map<string, ScanTarget>();
   for (const t of Object.keys(acct.own)) out.set(t, { ticker: t, role: 'OWN' });
   for (const t of new Set([...acct.rule.heldMom, ...Object.keys(acct.lots.mom).filter((t) => acct.lots.mom[t] > 0)])) if (!out.has(t)) out.set(t, { ticker: t, role: 'MOM' });
@@ -69,11 +69,10 @@ const WINDOW_DAYS: Record<string, number> = { PENDING_MA: 365, ACCOUNTING: 180 }
 export async function applyRuleEvents(ctx: ApplyCtx, classified: Classified[]): Promise<void> {
   const at = ctx.now.toISOString();
   for (const c of classified) {
-    const held = c.role !== 'CAND';
     const own = c.role === 'OWN' && (ctx.acct.lots.own[c.ticker] ?? 0) > 0;
     const mom = (ctx.acct.lots.mom[c.ticker] ?? 0) > 0 || ctx.acct.rule.heldMom.includes(c.ticker);
-    const direct = (h: FilingHit) => held && h.byRule && !h.displayOnly && ((h.code === 'ACCOUNTING' && h.sub.startsWith('NT_')) || (h.code === 'PENDING_MA' && mom && !own));
-    const court = (h: FilingHit) => held && !h.displayOnly && !direct(h) && (!h.byRule || h.code === 'PENDING_MA');
+    const direct = (h: FilingHit) => h.byRule && !h.displayOnly && ((h.code === 'ACCOUNTING' && h.sub.startsWith('NT_')) || (h.code === 'PENDING_MA' && mom && !own));
+    const court = (h: FilingHit) => !h.displayOnly && !direct(h) && (!h.byRule || h.code === 'PENDING_MA');
     // 自選股、細項可以提前審查（own_thesis §2.3 最後一段）→ NEW，等提前審查；動能持股與候選股只記錄
     const early = (h: FilingHit) => c.role === 'OWN' && isAdvanceable(h.code, h.detailCode);
     ctx.stmts.push(...insertHitStmts(ctx.db, c.ticker, c.hits, 'EDGAR', at, (h) => (direct(h) ? 'HANDLED' : court(h) || early(h) ? 'NEW' : 'INFO')));
@@ -382,7 +381,7 @@ export async function startCourts(sc: StartCtx, targets: ScanTarget[], opt: { fe
       if (!fresh.some((e) => e.ticker === t)) await env.DB.prepare('DELETE FROM flow_state WHERE key = ?').bind(courtFailsKey(t)).run();
     }
   }
-  const pending = fresh.filter((e) => role.get(e.ticker) && role.get(e.ticker) !== 'CAND');
+  const pending = fresh.filter((e) => role.has(e.ticker));
   const byTicker = new Map<string, SecEventRow[]>();
   for (const e of pending) byTicker.set(e.ticker, [...(byTicker.get(e.ticker) ?? []), e]);
   const busy = new Set((await env.DB.prepare("SELECT DISTINCT ticker FROM ai_runs WHERE fn = ? AND (status = 'PENDING' OR applied_at IS NULL)").bind(HARD_EVENT).all<{ ticker: string | null }>()).results.map((r) => r.ticker));

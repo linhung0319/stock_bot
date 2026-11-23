@@ -29,7 +29,6 @@ import { LINE_PUSH_URL, notifText } from '../src/app/line';
 import { saveAccount } from '../src/app/ledgerStore';
 import { applyOwnReview, citedBasis, docLabel, startOwnReview, webDocLabel } from '../src/app/ownAi';
 import { monitorView } from '../src/app/ownCheckAi';
-import { conditionOp } from '../src/app/ownConds';
 import { foundView, noteOfRun } from '../src/app/site/aiViews';
 import { explainItem } from '../src/app/site/explain';
 import { acceptStatus, condFacts, confirmText, loadConditions, thesisFile } from '../src/app/thesis';
@@ -609,14 +608,13 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
   });
 
   // T68（confirm_audit_design §1.6）拿掉了「勾選時改來源」（withWebSource、condSources）：使用者沒有判斷網站的依據，條件寫的 web:<網域> 原樣存。
-  // 原本那個純函式的測試換成：勾選時送來源也不會改條件（API 的測試在下面的「出場條件改寫」）。
-  it('勾選建議的條件：不在這檔 domains 的來源照樣可以勾，條件寫的 web: 原樣存；只有預設前提的股票也可以勾，「怎麼確認」寫明現在不取網頁', async () => {
+  // T88 拿掉勾選舊建議（accept）之後，這裡只留「舊建議的來源照原樣顯示」；只有預設前提的股票「怎麼確認」寫明現在不取網頁。
+  it('舊資料的建議條件：條件寫的 web: 原樣存、照樣顯示；只有預設前提的股票，「怎麼確認」寫明現在不取網頁', async () => {
     await withWorld(
       async (c) => {
         const p = await seed(c.db, { condId: 'N1', status: 'PROPOSED', origin: 'AI', acceptedAt: null, text: 'SK 海力士宣布 HBM 產能倍增', check: { type: 'event', confirm_by: ['web:news.skhynix.com'] } });
-        const r = await conditionOp(c.db, c.acct, 'NVDA', p, 'accept', 'HALF', c.view.date, new Date('2026-11-20T02:00:00Z'));
-        expect(r).toMatchObject({ status: 'REVIEW_ONLY', action: 'HALF' });
-        expect((await loadConditions(c.db, 'NVDA')).find((x) => x.id === p)).toMatchObject({ check: { confirm_by: ['web:news.skhynix.com'] } });
+        expect((await loadConditions(c.db, 'NVDA')).find((x) => x.id === p)).toMatchObject({ status: 'PROPOSED', check: { confirm_by: ['web:news.skhynix.com'] } });
+        expect((await monitorView(c.env, 'NVDA')).find((x) => x.id === p)).toMatchObject({ code: 'PROPOSED', web: ['news.skhynix.com'] });
       },
       { sources: false },
     );
@@ -624,7 +622,6 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
       async (c) => {
         const p = await seed(c.db, { condId: 'N1', status: 'PROPOSED', origin: 'AI', acceptedAt: null, text: 'TrendForce 的新聞稿寫 HBM 合約價下跌' });
         expect((await monitorView(c.env, 'NVDA')).find((x) => x.id === p)!.confirm).toBe('審查時用 TrendForce 的網頁檢查（產業研究機構）（這檔只有系統預設前提，審查不取網頁；寫下你自己的前提之後才會用這個來源）');
-        expect((await conditionOp(c.db, c.acct, 'NVDA', p, 'accept', 'HALF', c.view.date, new Date('2026-11-20T02:00:00Z'))).status).toBe('REVIEW_ONLY');
       },
       { defaults: true },
     );
@@ -708,13 +705,13 @@ describe('T53：條件怎麼指名來源（§1.6）', () => {
       const mon = (await c.call<Hd>('GET', '/api/holding/NVDA')).body.monitor;
       expect(mon.find((x) => x.code === 'REVIEW_ONLY')).toMatchObject({ confirm: '審查時用 TrendForce 的網頁檢查（產業研究機構）', web: ['trendforce.com'] });
 
-      // 審查建議的條件（建議中）：看得到來源與級別；勾選時送來源也不理
+      // 舊資料的建議條件（建議中）：看得到來源與級別；勾選（accept）T88 拿掉
       const p1 = await seed(c.db, { condId: 'N1', status: 'PROPOSED', origin: 'AI', acceptedAt: null, text: 'SK 海力士宣布 HBM 產能倍增', check: { type: 'event', confirm_by: ['web:news.skhynix.com'] } });
       const mon2 = (await c.call<Hd>('GET', '/api/holding/NVDA')).body.monitor;
       expect(mon2.find((x) => x.id === p1)).toMatchObject({ code: 'PROPOSED', confirm: '審查時用 news.skhynix.com 的網頁檢查（來源還沒評級，評級之前不算數）', web: ['news.skhynix.com'] });
       expect(mon2.find((x) => x.id === p1)!.canSource).toBeUndefined();
-      expect((await c.call('POST', '/api/ops/own-condition', { ticker: 'NVDA', id: p1, op: 'accept', action: 'HALF', source: 'reuters.com' })).status).toBe(200);
-      expect((await loadConditions(c.db, 'NVDA')).find((x) => x.id === p1)).toMatchObject({ status: 'REVIEW_ONLY', check: { confirm_by: ['web:news.skhynix.com'] } });
+      expect((await c.call('POST', '/api/ops/own-condition', { ticker: 'NVDA', id: p1, op: 'accept', action: 'HALF', source: 'reuters.com' })).status).toBe(422);
+      expect((await loadConditions(c.db, 'NVDA')).find((x) => x.id === p1)).toMatchObject({ status: 'PROPOSED', check: { confirm_by: ['web:news.skhynix.com'] } });
     });
   });
 });

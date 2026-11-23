@@ -72,7 +72,7 @@ export interface ExitSetRef {
 
 /**
  * 把使用者要的出場條件送去改寫（own_thesis §1.8 確認的第 2 點；own_check_v4，T42 整組取代、標 same／supersedes）。
- * 證據包帶現行的論點（note）、前提與目前監測中的條件（C）、觀察項（W），每條出場條件帶使用者選的動作。
+ * 證據包帶現行的論點（note）、前提與目前監測中的條件（你定的 C、AI 監測中的 W；舊資料的觀察項也算 W），每條出場條件帶使用者選的動作。
  * set：這組出場條件是第幾版論點存的、存檔時監測中的條件（確認後撤下的範圍）；記在 rule.detail。
  */
 export async function startOwnCheck(env: Env, fetcher: Fetcher, acct: Account, view: MarketView, axis: string[], ticker: string, exits: ExitLine[], now: Date, set?: ExitSetRef): Promise<AiRun> {

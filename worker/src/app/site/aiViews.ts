@@ -4,9 +4,8 @@ import { DOC_FNS, LOOKUP_QUERIES, questionsCap, type AddedDoc, type RefuseReason
 import { FRESH_ROLE } from '../../ai/freshEyes';
 import { keptByChoice, type CheckedPremise, type CheckedSample, type Outcome } from '../../ai/check';
 import { TIER_TEXT } from '../../data/webSources';
-import { CRASH_REVIEW } from '../../ai/crash';
 import { EVENT_SCAN, scanQualified } from '../../ai/events';
-import { fnInfo, verdictText } from '../../ai/functions';
+import { CRASH_REVIEW, fnInfo, verdictText } from '../../ai/functions';
 import { CAUSE_KIND_TEXT, CONFIDENCE_TEXT, MARKET_BRIEF, TRIGGER_TEXT, briefLine, briefResult, type BriefDetail } from '../../ai/marketBrief';
 import { ENTRY_CODE_TEXT } from '../../ai/momEntry';
 import { followUp, type PriceBook } from '../../ai/shadow';

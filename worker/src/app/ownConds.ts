@@ -1,6 +1,5 @@
 // T26：條件的所有權（own_thesis §1.4、§1.5）。使用者在持股頁做的事：
-//   勾選  舊資料的 AI 建議（PROPOSED）→ 你定的條件：寫勾選時間與成立時的動作，狀態依確認方式；有 supersedes 的，被取代的那條 RETIRED
-//         （T71 起審查不再寫 PROPOSED，持股頁也沒有勾選的按鈕；端點留著給舊資料）
+//   （勾選舊資料的 AI 建議 PROPOSED：T71 起審查不再寫 PROPOSED、持股頁也沒有勾選的按鈕，T88 拿掉這個操作；舊的 PROPOSED 照舊讀、只當審查的輸入）
 //   撤下  你定的條件、AI 監測中的條件 → RETIRED
 //   改動作 你定的條件成立時做什麼（出清／減半／重新審查；加碼條件是補到標準比重／提高到 125%，T84）。出場與加碼之間不能只改動作互換
 //         （要回編輯論點頁重寫，改寫的對照才寫得出「成立時：買進」）
@@ -9,11 +8,11 @@
 // 你定的條件（ACTIVE＋REVIEW_ONLY）一檔最多 8 條；AI 監測中的另算（最多 3 條，由審查寫入時維持）。每一次都在 own_thesis_log 寫一筆 CONDITION。
 import { fileMeta, type Account } from '../engine';
 import { thesisLogStmt } from './ledgerStore';
-import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, acceptStatus, defaultAction, entryConditions, fileConditions, isAddAction, isAiWatch, isEntryAction, isOwned, sameActionKind, type CondAction, type FileCondition } from './thesis';
+import { COND_ACTIONS, MAX_OWNED, OWNED_LIVE, entryConditions, fileConditions, isAddAction, isAiWatch, isEntryAction, isOwned, sameActionKind, type CondAction, type FileCondition } from './thesis';
 
 export class CondError extends Error {}
 
-export type CondOp = 'accept' | 'retire' | 'action';
+export type CondOp = 'retire' | 'action';
 
 const isAction = (x: unknown): x is CondAction => COND_ACTIONS.includes(x as CondAction);
 
@@ -74,20 +73,6 @@ export async function conditionOp(db: D1Database, acct: Pick<Account, 'own'> & P
   if (isAddAction(action) && !isOwned(c)) throw new CondError('AI 建議的條件不能改成加碼（AI 不能自己提加碼條件）；要加碼條件，到編輯論點頁自己寫一條。');
   const at = now.toISOString();
   const stmts: D1PreparedStatement[] = [];
-
-  if (op === 'accept') {
-    if (c.status !== 'PROPOSED') throw new CondError(c.status === 'EXPIRED' ? '這條建議已經過期（之後的審查寫了新的建議）。' : '這條不是建議中的條件，不用再勾。');
-    const act: CondAction = isAction(action) ? action : defaultAction(c);
-    const check = c.check;
-    const status = acceptStatus(c);
-    const sup = c.supersedes ? conds.find((x) => x.id === c.supersedes && SUPERSEDABLE.includes(x.status)) : undefined;
-    if (OWNED_LIVE.includes(status)) checkCap(conds, 1, sup ? [sup.id] : []);
-    stmts.push(db.prepare("UPDATE own_conditions SET status = ?, accepted_at = ?, action = ?, check_json = ? WHERE id = ? AND status = 'PROPOSED'").bind(status, at, act, JSON.stringify(check), c.id));
-    stmts.push(...logStmt(db, ticker, meta.fileId, session, at, c.id, 'ACCEPTED', act));
-    if (sup) stmts.push(...supersedeStmts(db, ticker, meta.fileId, session, at, sup, c.text));
-    await db.batch(stmts);
-    return { id: c.id, status, action: act, ...(sup ? { retired: sup.id } : {}) };
-  }
 
   // AI 監測中的條件（T71）：可以撤下；改成出清或減半就變成你定的
   if (isAiWatch(c)) {

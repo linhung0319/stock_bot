@@ -8,7 +8,6 @@ import {
   DEFAULT_CONFIG,
   cellKey,
   composeWithCore,
-  crashCoreLines,
   dueOwnActions,
   emptyRuleState,
   mergeByTicker,
@@ -567,18 +566,6 @@ describe('清單以整股為單位（設計 §2.1.1）', () => {
     const a = composeWithCore([], { ...coreCtx, cash: 3000, coreShares: 100, bondShares: 0, total: 53000, sweepCash: true });
     expect(a.merged).toEqual([]);
     expect(a.cashAfter).toBe(3000);
-  });
-  it('崩盤規則切換時核心自己的單（舊通知顯示用，正式流程不再產生）：啟動 → 一半換短債；解除 → 短債全部換回', () => {
-    const on = crashCoreLines({ ...coreCtx, cash: 0, coreShares: 100, bondShares: 0, total: 50000 }, true);
-    expect(on).toEqual([
-      { ticker: 'VOO', bucket: 'core', shares: -50, reason: '崩盤規則' },
-      { ticker: 'SGOV', bucket: 'core', shares: 250, reason: '崩盤規則' },
-    ]);
-    const off = crashCoreLines({ ...coreCtx, cash: 0, coreShares: 50, bondShares: 250, total: 50000 }, false);
-    expect(off).toEqual([
-      { ticker: 'SGOV', bucket: 'core', shares: -250, reason: '崩盤規則' },
-      { ticker: 'VOO', bucket: 'core', shares: 50, reason: '崩盤規則' },
-    ]);
   });
   it('同一代號兩桶對沖 → 淨額 0，保留兩行（劃撥，不用下單）', () => {
     const m = mergeByTicker([

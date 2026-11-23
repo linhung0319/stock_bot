@@ -2,7 +2,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   annualizedVol,
-  crashRuleOn,
   drawdownFromHigh,
   excessVol,
   floorThird,
@@ -231,17 +230,5 @@ describe('依波動度減碼（設計 §4.1）', () => {
     expect(volScale({ ...base, sigma, prevW: 2 / 3, capFirst: true }).w).toBeCloseTo(2 / 3, 12);
     // 比值 1.05：兩種寫法都維持 2/3
     expect(volScale({ ...base, sigma: 0.2 / 1.05, prevW: 2 / 3 }).w).toBeCloseTo(2 / 3, 12);
-  });
-});
-
-describe('崩盤規則（設計 §4.4）', () => {
-  it('前一日收盤 < 200 日均線 → 啟動；之上 → 不啟動', () => {
-    const below = [...flat(199, 100), 95];
-    const above = [...flat(199, 100), 105];
-    expect(crashRuleOn(below, 199)).toBe(true);
-    expect(crashRuleOn(above, 199)).toBe(false);
-  });
-  it('均線資料不足 → 不啟動', () => {
-    expect(crashRuleOn([100, 90], 1)).toBe(false);
   });
 });

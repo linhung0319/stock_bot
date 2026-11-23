@@ -179,7 +179,6 @@ export type AlertKind =
   | 'FLOW_GAP' // 漏掉太多個交易日，沒有補做
   | 'MONTHLY_PAUSED' // 月報照出，但本月暫停換股
   | 'AI_TIMEOUT' // AI 任務逾時（照規則）
-  | 'CORE_MA_MISSING' // 核心 ETF 的 200 日均線算不出來，崩盤規則維持原狀態（core_ai §3.10）
   | 'CORE_PRICE_SUSPECT' // 核心 ETF 的價格和基準（SPY）對不上、或短債一天變動超過 1%、或核心均線算不出來，可能是資料錯誤（core_ai §3.10）
   | 'SCAN_FAILED' // 每日掃描連續 2 次以上沒有合格結論，寫出哪些文件還沒被 AI 看過（own_thesis §2.6）
   | 'NEWS_FAILED' // 新聞標題連續 2 個交易日以上所有對象都抓不到（之後每 10 個交易日再推一次）
@@ -188,7 +187,6 @@ export type AlertKind =
   | 'HARD_COURT_FAILED' // 同一檔的硬事件法庭連續 2 次以上沒有結論；事件過期停止重試時再推一次（momentum_ai §3.5）
   | 'F1_LOOKBACK_FAILED' // 進場前回看連續 2 次沒有結論，寫出哪些 8-K 還沒被 AI 看過（momentum_ai §3.2）
   | 'F1_COURT_FAILED' // 進場審查的法庭 2 次都沒有結論，月報照規則准許（momentum_ai §3.3）
-  | 'CRASH_REVIEW_FAILED' // 崩盤規則檢視同一個月份＋方向連續 2 次、3 次沒有結論（core_ai §3.1）
   | 'DRAFT_FAILED' // 新的自選自動開的論點草稿試了 2 次都沒有成功，不再自動草擬（web_evidence_design §2.5，T55）
   | 'MACRO_MISSING' // 總經資料（FRED）可用的序列不到 6 個、01:30 重抓之後還是不足；每個月份一次（core_ai §3.5）
   | 'DB_SIZE' // 資料庫超過 300 MB（D1 免費方案每個資料庫上限 500 MB）；超過時每 30 天一次（composite_layer_design §4.1，T65）

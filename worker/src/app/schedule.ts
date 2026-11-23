@@ -1,7 +1,8 @@
 // 三次排程各做什麼，集中在這裡（own_thesis_design_2026-11-15 §2.7；動能多做的在 momentum_ai_design §3.9、核心在 core_ai_design §3.12）。
 //
 //   FIRST   UTC 23:30（台灣 07:30）週一到週五：抓資料 → 每日檢查 → 月底出月報 → 套用 AI 結論 → 看新申報、開這一天所有新的 AI 執行 → 推播
-//           （這一次失敗的告警先不推，兩小時後會再試；新通知上有還在等的 AI 結果——例如慢規則減半的論點檢查——也先不推，等 FINAL）
+//           （這一次失敗的告警先不推，兩小時後會再試；新通知上有還在等的 AI 結果也先不推、等 FINAL——2026-11-22 起只有一種：
+//           自選股跌幅審查的那一則（src/app/pushHold.ts 的 dropWaiter）；其他規則通知照常當場推）
 //   FINAL   UTC 01:30（台灣 09:30）週二到週六：今天沒做完就再試一次（做了就和 FIRST 一樣開這一天的執行）；套用結論；
 //           接著開 finalStarts 的那幾種（硬事件法庭、當天沒有結論的每日掃描重掃…）；標記逾時；推播；還是沒做完就推缺席告警
 //   APPLY   UTC 03:30（台灣 11:30）週二到週六：只套用回來的結論、推新通知與告警、標記逾時。
@@ -12,7 +13,7 @@
 // wrangler.jsonc 的 triggers.crons 要和這裡相同（test/flow.test.ts 鎖住）。
 import type { ScanTarget } from '../ai/events';
 import { guard, type StartCtx } from './aiCtx';
-import { refreshMacro } from './crashAi';
+import { refreshMacro } from './macro';
 import { retryDropRuns } from './dropAi';
 import { startMarketBrief } from './marketBrief';
 import { rescanEvents, startCourts } from './events';
@@ -37,7 +38,7 @@ export interface SlotPlan {
   /** 流程沒跑完也推告警（FIRST 失敗先不推，等 FINAL）。 */
   alertOnFailure: boolean;
   /**
-   * 規則的通知等到下一次流程再推（own_thesis §3.5、core_ai §3.2；判斷在 src/app/pushHold.ts）：這次新產生的通知上有還在等的 AI 結果就先不推 LINE。
+   * 規則的通知等到下一次流程再推（own_thesis §3.5；判斷在 src/app/pushHold.ts，2026-11-22 起只有跌幅審查會等）：這次新產生的通知上有還在等的 AI 結果就先不推 LINE。
    * 23:30 與手動的流程會等；01:30 不管結果回來了沒都推（之前留住的與這次新產生的），03:30 補推之後才回來的結果。
    */
   holdWaiting: boolean;

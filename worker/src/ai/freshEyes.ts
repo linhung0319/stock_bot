@@ -54,8 +54,8 @@ export function freshPlan(fn: string, asOf: string, opt: { defaultOnly: boolean;
 // ---------------------------------------------------------------- 給新眼光的那一份
 
 /**
- * 給新眼光看的數字：價格（F）、跌幅拆解（A）、清單內的網頁來源（S）、可以取的文件的目錄（M）。
- * 其他一律不給：論點檔種類（T0）、預設前提的程式結果（D）、條件與觀察項（C、W）、事件清單（V：以上次審查為界，
+ * 給新眼光看的數字：價格（F）、跌幅拆解（A）、已有級別的網頁來源（S）、可以取的文件的目錄（M）。
+ * 其他一律不給：論點檔種類（T0）、預設前提的程式結果（D）、條件（你定的 C、AI 監測中的 W）、事件清單（V：以上次審查為界，
  * 每日掃描的說明可能帶著條件的文字）、規則狀態（R：R5 是上一次審查的檔位）。
  */
 const FRESH_FACT = /^(?:[FASM]\d+|M\+)$/;
@@ -104,7 +104,7 @@ export function freshView(pack: EvidencePack): FreshView {
     facts: pack.facts.filter((f) => FRESH_FACT.test(f.id)),
     documents: pack.documents.filter(freshShown),
     data_quality: pack.data_quality,
-    omitted: ['使用者的前提', '論點本文', '歷次審查的結論與使用者的回應', '條件與觀察項', '事件清單', '規則狀態與上一次審查的檔位'],
+    omitted: ['使用者的前提', '論點本文', '歷次審查的結論與使用者的回應', '條件（你定的與 AI 監測中的）', '事件清單', '規則狀態與上一次審查的檔位'],
   };
 }
 

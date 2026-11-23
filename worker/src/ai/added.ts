@@ -23,7 +23,7 @@ export const REFUSED_KEEP = 60;
  */
 export const DOC_FNS = ['OWN_REVIEW', 'OWN_DROP', 'OWN_DRAFT', 'MARKET_BRIEF', 'OWN_CONDITION'] as const;
 
-/** 目錄的一項（§1.2）：S1 同業在 EDGAR 的申報（kind filing）、S2 RSS 標題裡清單內的連結（kind web）。text 是放進 facts 的那一行。 */
+/** 目錄的一項（§1.2）：S1 同業在 EDGAR 的申報（kind filing）、S2 RSS 標題裡不在排除列表的連結（kind web；T68 起不限清單內）。text 是放進 facts 的那一行。 */
 export interface MenuEntry {
   id: string;
   kind: 'filing' | 'web';

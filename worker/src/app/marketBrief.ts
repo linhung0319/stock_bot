@@ -6,15 +6,15 @@
 //     2. 開不開（planOpen）：10 個交易日內最多 1 份暫定稿；事件最後一次觸發之後第 10 個交易日寫定稿；一個訊號日最多開一次。
 //        暫定稿、定稿各最多試 2 次（01:30 或隔天再試）。平靜的日子不跑，不設每月固定的一次。
 //   證據包（§1.3、§1.4）：程式算的數字（K）、持股屬於哪個族群（G，只有代號）、價格表（核心 ETF、各產業 ETF、漲跌最大的幾檔持股）、
-//     總經儀表板（當場重算一份，不存：macro_snapshots 是崩盤規則檢視照月份讀的，這裡不動它）、大盤與各族群的新聞標題、
-//     目錄（標題裡連結在清單內的文章）與清單內的網頁來源。研究員可以照現有的步驟向 Worker 取文件（src/app/webEvidence.ts）。
+//     總經儀表板（當場重算一份，不存：macro_snapshots 是月報前一天存的那一份，網站的儀表板讀它，這裡不動它）、大盤與各族群的新聞標題、
+//     目錄（RSS 標題裡連結不在排除列表的文章）與已有級別的網頁來源。研究員可以照現有的步驟向 Worker 取文件（src/app/webEvidence.ts）。
 //   結果：送回時當場結算（settleBriefs），逾時的在每日流程套用時結算（applyMarketBrief）→ market_briefs 的 READY 或 FAILED。
 //     只說明：不動帳戶、不發通知。
 //   分給個股、顯示（T65，§1.6～§1.8）：briefNote（個股證據包的 brief:<訊號日>）、briefLinesFor（LINE 那一行）、homeBrief（首頁那一行）；
 //     AI 紀錄頁的內容在 src/app/site/aiViews.ts 的 briefRunView。手動開的那一份三者都不用。
 import type { DocCtx, MenuEntry } from '../ai/added';
 import type { EvidencePack, PackDoc } from '../ai/check';
-import { macroQuality, macroUsable } from '../ai/crash';
+import { macroQuality, macroUsable } from '../ai/macro';
 import { BRIEF, BRIEF_HOME_DAYS, BRIEF_PACK_DAYS, MARKET_BRIEF, TRIGGER_TEXT, aiRunTrigger, briefFirstCause, briefLine, briefNoteDoc, assignTriggers, briefFacts, briefPeriod, briefResult, marketBriefPack, planOpen, priceTriggers, type BriefEvent, type BriefGroup, type BriefOpen, type BriefRowLite, type BriefStage, type BriefTrigger, type BriefTriggerKind, type MarketBrief, type TradingGap } from '../ai/marketBrief';
 import { newRunId, priceDoc } from '../ai/pack';
 import { addDays, tradingDaysBetween } from '../data/calendar';
@@ -26,7 +26,7 @@ import { errText } from '../data/util';
 import { ownHeld, type Account, type MarketView } from '../engine';
 import type { ApplyCtx, StartCtx } from './aiCtx';
 import { getRun, startRun, type AiRun } from './aiRuns';
-import { buildSnapshot, loadSnapshot, snapshotDoc, type MacroSnapshot } from './crashAi';
+import { buildSnapshot, loadSnapshot, snapshotDoc, type MacroSnapshot } from './macro';
 import type { Env, Fetcher } from './env';
 import { sectorEtfs, setStateStmt } from './filings';
 import { loadAccount, requiredTickers } from './ledgerStore';

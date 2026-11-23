@@ -103,7 +103,7 @@ export interface OwnEvidence {
   xbrl: PackDoc | null;
   docs: PackDoc[];
   news: PackDoc | null;
-  /** 這檔的 RSS 標題（含連結；T52 的目錄挑清單內的連結用）。舊的呼叫端沒給 = undefined。 */
+  /** 這檔的 RSS 標題（含連結；T52 的目錄挑連結用；T68 起不限清單內，標上網域的級別）。舊的呼叫端沒給 = undefined。 */
   headlines?: Headline[];
   dataQuality: Record<string, 'ok' | 'partial' | 'missing'>;
   notes: string[];
@@ -203,7 +203,7 @@ export async function reviewThesisEvidence(env: Env, fetcher: Fetcher, tf: Thesi
 
 /**
  * 月底檢查點的題目多一句（T54，web_evidence_design §1.7）：原因有 PEER → 同業有新的財報新聞稿（在目錄裡）；
- * 有 WEB_DUE → 哪幾條前提、條件需要外部資料（證據包的編號），請分析師找清單內來源的新消息。兩個都沒有 → null。
+ * 有 WEB_DUE → 哪幾條前提、條件需要外部資料（證據包的編號），請分析師找一手或產業研究機構網站的新消息。兩個都沒有 → null。
  * condMap：證據包的條件編號（C…、W…）→ 列編號（condFacts 的 map）。
  */
 export function lookForText(reasons: readonly string[], tf: Pick<ThesisFile, 'kind' | 'premises' | 'conditions'>, condMap: Record<string, number>): string | null {
@@ -214,7 +214,7 @@ export function lookForText(reasons: readonly string[], tf: Pick<ThesisFile, 'ki
     const byRow = new Map(Object.entries(condMap).map(([id, row]) => [row, id]));
     const conds = need.conds.map((row) => byRow.get(row)).filter((x): x is string => !!x);
     const what = [need.premises.length ? `前提 ${need.premises.join('、')}` : '', conds.length ? `指名網頁來源的條件 ${conds.join('、')}` : ''].filter(Boolean).join('，以及');
-    if (what) parts.push(`${what} 在公司的申報與財報裡可能查不到（上次證據不足、還沒檢查過，或要用指名的網頁來源確認），距上次有結論的審查已經滿 ${WEB_DUE_DAYS} 天，請分析師找有沒有清單內來源的新消息`);
+    if (what) parts.push(`${what} 在公司的申報與財報裡可能查不到（上次證據不足、還沒檢查過，或要用指名的網頁來源確認），距上次有結論的審查已經滿 ${WEB_DUE_DAYS} 天，請分析師找有沒有一手或產業研究機構網站的新消息`);
   }
   return parts.length ? `這次是月底檢查點：${parts.join('；')}。` : null;
 }
@@ -240,11 +240,11 @@ export async function startOwnReview(env: Env, fetcher: Fetcher, acct: Account, 
     await env.DB.batch(none.map((l) => thesisLogStmt(env.DB, l, null, now.toISOString())));
     tf = await thesisFile(env.DB, acct, ticker, view.date);
   }
-  // 你定的條件 C、觀察項 W（T26；財報類觀察項用這次的 XBRL 比對）
+  // 你定的條件 C、AI 監測中的條件 W（T26、T71；舊資料的觀察項也算 W；財報類的用這次的 XBRL 比對）
   const conds = tf ? condFacts(tf, ev.dataQuality.xbrl === 'ok' ? ev.rows : null) : undefined;
   const extra = tf ? await reviewThesisEvidence(env, fetcher, tf, ev, view.date) : { facts: [], filings: [], docs: [], notes: [] };
-  // 目錄（T52，web_evidence_design §1.2）：同業的申報、清單內的 RSS 連結，只有標題；只有預設前提的沒有目錄、不能取文件
-  // 清單內的網頁來源（T53，facts 的 S 開頭）跟目錄一起：分析師搜尋時優先挑、建議的條件指名來源時只能指名這些
+  // 目錄（T52，web_evidence_design §1.2）：同業的申報、RSS 裡不在排除列表的連結（T68 起），只有標題；只有預設前提的沒有目錄、不能取文件
+  // 已有級別的網頁來源（T53，facts 的 S 開頭）跟目錄一起：分析師搜尋時優先挑、建議的條件指名來源時只能指名這些
   const menu = tf && acct.own[ticker] ? await buildDocMenu(env, fetcher, { ticker, tf, meta: acct.own[ticker], asOf: view.date, headlines: ev.headlines ?? null }) : null;
   // 月底檢查點因為同業的新申報或「要上網查」開的審查（T54，web_evidence_design §1.7）：題目寫明要分析師找什麼
   const lookFor = tf && reasons && menu && !menu.ctx.off ? lookForText(reasons, tf, conds?.map ?? {}) : null;
@@ -913,7 +913,7 @@ export function monthlyWithin(session: string, ov: CalendarOverrides, n = EARLY_
 }
 
 /** 個股自身大跌、上次有結論的審查之後沒有新的申報或事件、這檔有論點時，提前審查的題目多的那一句（web_evidence_design §1.7）。 */
-export const EARLY_NO_FILING_ASK = '沒有新的申報，請分析師找有沒有清單內來源的消息';
+export const EARLY_NO_FILING_ASK = '沒有新的申報，請分析師找有沒有一手或產業研究機構網站的消息';
 
 /** 題目裡的事件說明（白話，給 AI 讀）。 */
 const EARLY_TEXT: Record<string, string> = {
@@ -940,7 +940,7 @@ export function earlyEventText(e: Pick<SecEventRow, 'code' | 'detail_code' | 'de
  *   2. 只限價格類：30 天內跑過減半檢視（F7）→ 「30 天內已經做過減半檢視」
  *   3. 只限價格類：上次有結論的審查之後沒有新的申報或事件（新證據沒有 FILING、EVENT，也不是 NEVER）：
  *      只有系統預設前提 → 「沒有新的申報可以檢查」（要看的事 PRICE_NO_FILING）；
- *      有論點 → 不擋，照下面的順序走（T54，web_evidence_design §1.7），開成時題目多一句「沒有新的申報，請分析師找有沒有清單內來源的消息」
+ *      有論點 → 不擋，照下面的順序走（T54，web_evidence_design §1.7），開成時題目多一句「沒有新的申報，請分析師找有沒有一手或產業研究機構網站的消息」
  *   4. 月審在接下來 3 個交易日內 → 「留給月審」
  *   5. 30 天內提前開過（earlyReviewAt）→ 「30 天內已經提前審查過，留給下一次審查」
  *   6. 其餘 → 開一次審查（觸發原因 EARLY，同一檔的事件併成一次），earlyReviewAt 記今天 → 「提前審查 <run_id>」

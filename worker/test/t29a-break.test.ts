@@ -474,7 +474,7 @@ describe('T29a：甲類（你定的條件成立）', () => {
       await ownXbrlConditions(ctx2, new Map([['NVDA', ROWS]]));
       const ns = urgents(ctx2.acct);
       expect(ns.map((n) => n.items[0].title)).toEqual(['NVDA：你在 2026-11-20 定的條件「毛利率低於 70%」成立', 'NVDA：你在 2026-11-20 定的條件「毛利率低於 69%」成立']);
-      expect(ctx2.acct.own.NVDA.f25Sent).toEqual({}); // 每月的計數不再用
+      expect(ctx2.acct.own.NVDA).not.toHaveProperty('f25Sent'); // 每月的計數不再用（T88 拿掉欄位）
       await saveAccount(c.db, ctx2.acct, loaded, '測試', new Date('2026-11-27T23:41:00Z'));
       expect((await c.api(`notif/${ns[1].id}/respond`, { mode: 'DO' })).status).toBe(200);
       expect((await logRows(c.db, 'RESPONSE')).map((l) => l.body)).toEqual([{ notif: ns[1].id, type: 'A', outcome: 'FOLLOW', reason: null }]);
