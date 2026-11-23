@@ -56,10 +56,10 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
   | 排程（UTC） | 台灣 | 做什麼 |
   |---|---|---|
   | `30 23 * * MON-FRI` | 07:30 | 抓資料 → 每日檢查 → 月底出月報 → 套用 AI 結論 → 看新申報、開這一天所有新的 AI 執行 → 推播（第一次失敗的告警先不推） |
-  | `30 1 * * TUE-SAT` | 09:30 | 今天沒跑完就重跑，還是不行就推缺席告警；套用 AI 結論之後接著開 `finalStarts`（硬事件法庭：掃描標到的硬事件候選不等到隔天；當天的每日掃描沒有合格結論就重掃一次；你定的「重新審查」條件成立後的審查；提前審查：掃描標到的自選股可提前事件不等到隔天；月報前一天與訊號日的動能進場審查重開 `momRecheck`；崩盤規則檢視：重抓不足的總經資料、沒有結論的重開一次）；推之前留住的通知（例如補開了崩盤檢視的月報）；標記逾時的 AI 任務 |
+  | `30 1 * * TUE-SAT` | 09:30 | 今天沒跑完就重跑，還是不行就推缺席告警；套用 AI 結論之後接著開 `finalStarts`（硬事件法庭：掃描標到的硬事件候選不等到隔天；當天的每日掃描沒有合格結論就重掃一次；你定的「重新審查」條件成立後的審查；提前審查：掃描標到的自選股可提前事件不等到隔天；月報前一天與訊號日的動能進場審查重開 `momRecheck`；沒跑完的跌幅審查重派一次；總經儀表板：重抓不足的資料）；推之前留住的通知（2026-11-22 起只有自選股跌 20% 的跌幅審查那一則會留）；標記逾時的 AI 任務 |
   | `30 3 * * TUE-SAT` | 11:30 | 只套用回來的 AI 結論、推新通知與告警（含通知推出去之後才回來的結果補推一行）、標記逾時。不抓資料、不跑每日檢查、不開新的執行；今天的每日流程沒做完就不套用 |
 
-  01:30 要多開的執行加在 `finalStarts`（掃描重開 T28、條件成立後的審查 T29a、提前審查 T29b、動能 `momRecheck` T32b、崩盤檢視 T33b 已接）。
+  01:30 要多開的執行加在 `finalStarts`（掃描重開 T28、條件成立後的審查 T29a、提前審查 T29b、動能 `momRecheck` T32b、總經儀表板的重抓 T33b、跌幅審查重派 T82 已接；崩盤檢視 2026-11-22 退場）。
 - 總經儀表板（`core_ai_design_2026-11-15.md` §3.5）：`src/ai/macro.ts`＋`src/app/macro.ts`。月報前一天抓 FRED、存一份（網站「AI 紀錄」上方的儀表板與市場摘要用）；可用的序列不到 6 個（抓不到或過期）記下來，01:30 重抓、還是不足推 `MACRO_MISSING`（每個月份一次）。崩盤規則的 AI 檢視（T33b，F5／F6）2026-11-22 起退場（`allocation_redesign_2026-11-22.md` §1.6），程式 T88 刪掉，原本的 `src/app/crashAi.ts` 改名成 `src/app/macro.ts`；舊的紀錄網站照樣看得到。
 - AI 任務逾時（45 分鐘）分兩種原因寫進「照規則」的結論與 `AI_TIMEOUT` 告警：雲端排程沒有來取證據包（`fetched_at` 是空的），或取了沒有送回。逾時標記之後才送到的結果回 410、存進 `ai_rejections`（`LATE`），不套用。
 - 手動：`POST /admin/flow`；狀態：`GET /admin/flow/status`；測試推播：`POST /admin/line/test`、`POST /admin/alert/test`。
@@ -104,7 +104,7 @@ Cloudflare Worker：規則引擎（TypeScript，純函式）、排程、網站�
 - 各功能：F18／F19 `src/ai/events.ts`＋`src/app/events.ts`；F1 `src/ai/momEntry.ts`＋`src/app/momAi.ts`；F7 `src/ai/drops.ts`＋`src/app/dropAi.ts`；F5／F6 已停用（T88 刪掉；總經儀表板在 `src/ai/macro.ts`＋`src/app/macro.ts`）；F21 `src/ai/strategy.ts`＋`src/app/strategyAi.ts`；F14 `src/ai/ownCheck.ts`＋`src/app/ownCheckAi.ts`。資料表 `migrations/0007_events_entry.sql`。
 - 用真實資料看規則段（不觸發 AI）：`npx tsx scripts/t11-local.ts MU NVDA`（F1 規則偵測、FRED 儀表板、French 動能因子回撤）。
 - 網站：「紀錄 → AI 紀錄」上方有本月動能進場審查、總經儀表板、最近的申報事件；持股頁見下面「自選股的論點與三層配合」；新增自選不再請 AI 草擬前提（T27 拿掉，論點改在 claude.ai 討論）。
-- prompt：`../ai/prompts/` 的 `event_scan_v2`（T28 起；`event_scan_v1` 不再使用）、`hard_event_v1`、`own_earnings_v1`（T29c）、`mom_entry_v2`（T32b 起；`mom_entry_v1` 不再使用）、`own_drop_v3`（T54 起；`own_drop_v1`、`own_drop_v2` 不再使用）、`crash_review_v2`（T33d 起；`crash_review_v1` 不再使用）、`strategy_review_v1`、`own_check_v2`（T27 起；`own_check_v1` 不再使用）。`mom_score_v1`、`drop_explain_v1` T32d 起不再使用。
+- prompt：`../ai/prompts/` 的 `event_scan_v2`（T28 起；`event_scan_v1` 不再使用）、`hard_event_v1`、`own_earnings_v1`（T29c）、`mom_entry_v2`（T32b 起；`mom_entry_v1` 不再使用）、`own_drop_v3`（T54 起；`own_drop_v1`、`own_drop_v2` 不再使用）、`crash_review_v2`（T33d 起；2026-11-22 崩盤規則檢視退場後不再使用）、`strategy_review_v1`、`own_check_v2`（T27 起；`own_check_v1` 不再使用）。`mom_score_v1`、`drop_explain_v1` T32d 起不再使用。階段十二起各功能的現行版本見 `../docs/design/mechanism_overview_2026-11-23.md` §4。
 
 ## 自選股的論點與三層配合（階段八，2026-11-16）
 
