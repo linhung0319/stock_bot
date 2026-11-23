@@ -163,7 +163,7 @@ export function todoBubble(todo: TodoView[], plan: { composed: ComposedView | nu
   const t = todo[0];
   if (!t && fyi.length) {
     const which: Seg[] = fyi.length === 1 ? ['：「', em(fyi[0].title), '」'] : [];
-    return { k: '現在', say: tidy(['不用動。有 ', em(`${fyi.length} 則不用回覆的通知`), '可以看', ...which, '，在下面「不用回覆」那一塊；不用下單，也不用回覆。']), mood: 'idle' };
+    return { k: '現在', say: tidy(['今天沒有要做的事。有 ', em(`${fyi.length} 則不用回覆的通知`), '可以看', ...which, '（在下面「不用回覆」那一塊）。']), mood: 'idle' };
   }
   if (!t) return { k: '現在', say: ['不用動。有新的月報或通知，會出現在這裡。'], mood: 'idle' };
   const more = todo.length > 1 ? `另外還有 ${todo.length - 1} 件。` : '';
