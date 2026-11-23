@@ -35,7 +35,7 @@ import { handleLineLogin } from './app/site/lineLogin';
 import { APPLY_CRON, FINAL_CRON, INGEST_CRON, attemptOfCron } from './app/schedule';
 import { loadCalendarOverrides, loadConstituents, loadRanking, loadSeries, recentAlerts, recentRuns, saveAlerts, seriesFreshness } from './data/store';
 
-export const VERSION = '0.18.0';
+export const VERSION = '0.18.1';
 
 // 三次排程（UTC 23:30、01:30、03:30）各做什麼寫在 src/app/schedule.ts
 export { APPLY_CRON, FINAL_CRON, INGEST_CRON };
